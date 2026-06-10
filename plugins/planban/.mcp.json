@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "planban": {
+      "cwd": "__PLANBAN_REPO_ROOT__",
+      "command": "node",
+      "args": [
+        "--import",
+        "tsx/esm",
+        "./plugins/planban/mcp/server.mjs"
+      ],
+      "env": {
+        "PLANBAN_REPO_ROOT": "__PLANBAN_REPO_ROOT__"
+      }
+    }
+  }
+}

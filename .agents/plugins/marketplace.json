@@ -1,0 +1,20 @@
+{
+  "name": "planban",
+  "interface": {
+    "displayName": "Planban"
+  },
+  "plugins": [
+    {
+      "name": "planban",
+      "source": {
+        "source": "local",
+        "path": "./plugins/planban"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

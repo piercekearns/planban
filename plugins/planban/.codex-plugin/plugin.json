@@ -1,0 +1,28 @@
+{
+  "name": "planban",
+  "version": "0.1.0+codex.20260610002304",
+  "description": "Local Codex planning workflows for Planban boards.",
+  "author": {
+    "name": "Planban"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Planban",
+    "shortDescription": "Use local Planban roadmap boards in Codex.",
+    "longDescription": "Planban helps Codex agents discover local roadmap state, read card specs and plans, launch the local board, and update roadmap items with the Planban status protocol.",
+    "developerName": "Planban",
+    "category": "Productivity",
+    "capabilities": [
+      "Planning",
+      "Local Files",
+      "Interactive"
+    ],
+    "brandColor": "#2563EB",
+    "defaultPrompt": [
+      "Open my Planban board.",
+      "Start work on a Planban card.",
+      "Review Planban roadmap state."
+    ]
+  }
+}

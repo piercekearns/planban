@@ -1,0 +1,48 @@
+{
+  "name": "planban",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "planban": "./bin/planban.mjs"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts serve",
+    "planban": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx/esm --test tests/*.test.ts",
+    "build": "vite build",
+    "preview": "tsx src/cli.ts serve --no-vite",
+    "smoke": "npm run build && tsx scripts/smoke.ts",
+    "release:build": "node scripts/build-public-release.mjs",
+    "release:audit": "node scripts/audit-public-release.mjs",
+    "plugin:configure": "node scripts/configure-local-plugin.mjs",
+    "planban:demo": "node --import tsx/esm src/cli.ts demo"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "chokidar": "^4.0.3",
+    "commander": "^14.0.2",
+    "express": "^5.2.1",
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tsx": "^4.21.0",
+    "vite": "^7.2.7",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.0.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
+  },
+  "license": "SEE LICENSE IN LICENSE.md"
+}
