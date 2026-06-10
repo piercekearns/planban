@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultPlanbanRoot } from "./paths";
-import { createCard, initializeProject, loadState, pathExists, readManifest, updateCard, writeDoc } from "./storage";
+import { createCard, initializeProject, loadState, moveCard, pathExists, readManifest, updateCard, writeDoc } from "./storage";
 import type { PlanbanResolvedState, PlanbanStatus } from "./types";
 
 const DEMO_REPO_ID = "planban-demo";
@@ -49,14 +49,14 @@ This demo prompt should open the Planban board, move this roadmap item into In P
   },
   {
     title: "Mark a card Complete when you are done",
-    status: "pending",
+    status: "in-progress",
     summary: "Completion should be intentional, especially when an agent is doing the work.",
-    nextAction: "When a task has been reviewed, move it to Complete.",
+    nextAction: "Drag this In Progress card to Complete once you are happy with the work.",
     spec: `# Mark A Card Complete When You Are Done
 
 Planban treats Complete as a deliberate user-controlled transition.
 
-Agents can run tests and prepare work for review, but your board should only mark a real task Complete when you confirm it is done.
+Agents can run tests and prepare work for review, but your board should only mark a real task Complete when you confirm it is done. Try that here by dragging this In Progress card into Complete.
 `,
   },
   {
@@ -116,6 +116,14 @@ async function seedDemoCards(cwd: string): Promise<PlanbanResolvedState> {
     }
     const card = state.roadmap.roadmapItems.find((item) => item.title === seed.title);
     if (!card) throw new Error(`Demo card was not created: ${seed.title}`);
+    if (card.status !== seed.status) {
+      state = await moveCard({
+        cwd,
+        cardId: card.id,
+        status: seed.status,
+        actor: "system",
+      });
+    }
     await writeDoc({
       cwd,
       cardId: card.id,

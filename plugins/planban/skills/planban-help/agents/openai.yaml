@@ -1,0 +1,7 @@
+interface:
+  display_name: "Planban Help"
+  short_description: "Show Planban actions and reopen tutorial/help"
+  brand_color: "#2563EB"
+  default_prompt: "Show me what I can do with Planban."
+policy:
+  allow_implicit_invocation: false

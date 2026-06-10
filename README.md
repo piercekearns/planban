@@ -9,7 +9,7 @@ It gives you a simple roadmap board, keeps your planning state local, and helps 
 Ask Codex:
 
 ```text
-Install Planban from the GitHub repo piercekearns/planban. Add it as a Codex plugin marketplace source, install the Planban plugin, verify the plugin and MCP tools are available, open the Planban Demo board, and then ask me whether I want to set up Planban for one of my local projects.
+Install Planban from the GitHub repo piercekearns/planban. Add it as a Codex plugin marketplace source, install the Planban plugin, verify the plugin and MCP tools are available, open the interactive Planban tutorial in the Codex in-app browser, and then ask me whether I want to set up Planban for one of my local projects.
 ```
 
 ## Manual Install
@@ -22,19 +22,21 @@ node scripts/configure-local-plugin.mjs
 codex plugin marketplace add "$PWD"
 codex plugin add planban@planban
 codex plugin list --marketplace planban
-node plugins/planban/scripts/launch-planban.mjs --demo
+node plugins/planban/scripts/launch-planban.mjs --tutorial
 ```
 
-Then open the printed local board URL. In Codex, ask your agent to open it in the in-app browser.
+Then open the printed local tutorial URL. In Codex, ask your agent to open it in the in-app browser.
 
 ## First Run
 
-Planban creates a `Planban Demo` board so you can try the product immediately.
+Planban opens a short local tutorial and creates a `Planban Demo` board so you can try the product immediately.
 
 Use it to:
 
+- learn how `/PB`, `/Planban`, and `Planban Tutorial` work inside Codex
 - drag cards between columns
 - open a roadmap item in Codex
+- inspect roadmap item details and specs
 - mark a card Complete when you are done
 - send feedback from the toolbar
 - ask Codex to create roadmap items from your existing plans
@@ -68,7 +70,9 @@ https://github.com/piercekearns/planban/issues/new/choose
 
 ## Updates
 
-Planban checks public version metadata from GitHub while the local board is open. If an update is available, the board shows a small update notice. Choose `Update with Codex` to open a draft prompt that asks your agent to update Planban, verify the plugin and MCP tools, and reopen the board.
+Planban checks public version metadata from GitHub while the local board is open. If an update is available, the board shows a small update notice. Choose `Update with Codex` to open a draft prompt that asks your agent to update Planban, verify the plugin and MCP tools, and open the right post-update surface.
+
+For the first tutorial release, the post-update surface is the interactive tutorial in the Codex in-app browser. Future releases may open the board with a concise "what changed" modal instead.
 
 Planban does not silently update itself and does not send private board contents, repo paths, logs, or project details as part of update checks.
 

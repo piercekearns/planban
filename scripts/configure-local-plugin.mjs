@@ -25,5 +25,5 @@ process.stdout.write(`Configured Planban plugin MCP runtime for ${repoRoot}
 Next:
   codex plugin marketplace add "${repoRoot}"
   codex plugin add planban@planban
-  node plugins/planban/scripts/launch-planban.mjs --demo
+  node plugins/planban/scripts/launch-planban.mjs --tutorial
 `);

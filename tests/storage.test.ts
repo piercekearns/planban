@@ -61,7 +61,7 @@ test("creates an idempotent demo board with tutorial cards", async () => {
     [
       ["Drag this card to In Progress", "up-next"],
       ["Open this roadmap item in Codex", "up-next"],
-      ["Mark a card Complete when you are done", "pending"],
+      ["Mark a card Complete when you are done", "in-progress"],
       ["Send feedback from the toolbar", "pending"],
       ["Ask Codex to create roadmap items from your plans", "pending"],
     ],

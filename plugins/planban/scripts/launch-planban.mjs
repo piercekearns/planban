@@ -20,6 +20,7 @@ function parseArgs(argv) {
     port: 4317,
     open: false,
     demo: false,
+    tutorial: false,
     noVite: false,
   };
 
@@ -32,6 +33,9 @@ function parseArgs(argv) {
     } else if (arg === "--open") {
       options.open = true;
     } else if (arg === "--demo") {
+      options.demo = true;
+    } else if (arg === "--tutorial") {
+      options.tutorial = true;
       options.demo = true;
     } else if (arg === "--no-vite") {
       options.noVite = true;
@@ -55,10 +59,12 @@ function printHelp() {
 Usage:
   node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo [--port 4317] [--open] [--no-vite]
   node plugins/planban/scripts/launch-planban.mjs --demo [--port 4317] [--open] [--no-vite]
+  node plugins/planban/scripts/launch-planban.mjs --tutorial [--port 4317] [--open] [--no-vite]
 
 Options:
   --cwd <path>   Repository with .planban/project.json. Defaults to the current directory.
   --demo         Create or reuse the Planban Demo board and launch it.
+  --tutorial     Create or reuse the demo board and launch the first-run tutorial.
   --port <port>  Local port to use. Defaults to 4317.
   --open         Open the board URL with the OS URL handler after the server is ready.
   --no-vite      Serve the built web bundle instead of Vite middleware.
@@ -119,6 +125,10 @@ async function boardUrl(baseUrl, status, cwd) {
   return repoId ? `${baseUrl}/boards/${encodeURIComponent(repoId)}` : baseUrl;
 }
 
+function tutorialUrl(baseUrl) {
+  return `${baseUrl}/tutorial?mode=first-run`;
+}
+
 function openUrl(url) {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "darwin"
@@ -167,7 +177,7 @@ async function main() {
 
   const existingStatus = await statusFor(baseUrl).catch(() => null);
   if (existingStatus) {
-    const url = await boardUrl(baseUrl, existingStatus, cwd);
+    const url = options.tutorial ? tutorialUrl(baseUrl) : await boardUrl(baseUrl, existingStatus, cwd);
     if (options.open) openUrl(url);
     process.stdout.write(`Planban already running at ${url}\n`);
     return;
@@ -184,7 +194,7 @@ async function main() {
   child.unref();
 
   const status = await waitForStatus(baseUrl);
-  const url = await boardUrl(baseUrl, status, cwd);
+  const url = options.tutorial ? tutorialUrl(baseUrl) : await boardUrl(baseUrl, status, cwd);
   if (options.open) openUrl(url);
   process.stdout.write(`Planban started at ${url}\n`);
 }

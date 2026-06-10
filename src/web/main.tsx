@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import {
   Archive,
   ArrowLeft,
+  ArrowRight,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -13,10 +14,12 @@ import {
   Copy,
   ExternalLink,
   FilePenLine,
+  HelpCircle,
   Loader2,
   MessageSquareText,
   Minimize2,
   Pencil,
+  Play,
   RefreshCw,
   RotateCcw,
   Send,
@@ -175,6 +178,14 @@ function isBoardDashboardPath() {
   return window.location.pathname === "/boards";
 }
 
+function isTutorialPath() {
+  return window.location.pathname === "/tutorial";
+}
+
+function tutorialPath(mode = "first-run") {
+  return `/tutorial?mode=${encodeURIComponent(mode)}`;
+}
+
 function replaceBoardPath(repoId: string | null) {
   const nextPath = repoId ? `/boards/${encodeURIComponent(repoId)}` : "/boards";
   if (window.location.pathname !== nextPath) window.history.replaceState(null, "", nextPath);
@@ -183,6 +194,35 @@ function replaceBoardPath(repoId: string | null) {
 function pushBoardPath(repoId: string | null) {
   const nextPath = repoId ? `/boards/${encodeURIComponent(repoId)}` : "/boards";
   if (window.location.pathname !== nextPath) window.history.pushState(null, "", nextPath);
+}
+
+function openTutorial(mode = "first-run") {
+  window.location.assign(tutorialPath(mode));
+}
+
+const tutorialStorageKey = "planban:tutorial:v1";
+
+type TutorialProgress = "completed" | "skipped" | null;
+
+function readTutorialProgress(): TutorialProgress {
+  try {
+    const raw = window.localStorage.getItem(tutorialStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { status?: unknown };
+    return parsed.status === "completed" || parsed.status === "skipped" ? parsed.status : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTutorialProgress(status: Exclude<TutorialProgress, null>) {
+  window.localStorage.setItem(
+    tutorialStorageKey,
+    JSON.stringify({
+      status,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
 }
 
 const labels: Record<Status, string> = {
@@ -362,6 +402,36 @@ async function copyFeedbackPrompt(state: PlanbanState, feedback: string) {
   await navigator.clipboard.writeText(prompt);
 }
 
+function buildTutorialCreatePrompt(state: PlanbanState, planningContext: string) {
+  const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
+  return [
+    "Hit enter to create Planban roadmap items with your agent.",
+    "",
+    "Use the Planban plugin or skill if it is available.",
+    "I want to turn rough project context into Planban roadmap items.",
+    "",
+    "Use this demo board as orientation only:",
+    formatOptionalLine("Demo board", boardUrl),
+    "",
+    "Ask me what project or repo I want to plan, then inspect the context I provide from repo docs, GitHub Issues, Notion, Linear, Jira, plain notes, or a short spoken/written project update.",
+    "If there is no Planban board for that project yet, ask before initializing one. Then create a small set of reviewable Planban roadmap items with clear titles, summaries, statuses, next actions, and specs.",
+    "Do not invent private project facts. Ask one concise clarifying question if the input is too thin.",
+    "",
+    "User-provided planning context:",
+    planningContext.trim() || "(The user has not added context yet. Ask one short question to get started.)",
+  ].join("\n");
+}
+
+async function openCodexPromptForState(state: PlanbanState, prompt: string) {
+  const url = new URL("codex://threads/new");
+  url.searchParams.set("path", state.cwd);
+  url.searchParams.set("prompt", prompt);
+  await api<{ opened: boolean }>("/api/open-codex-thread", {
+    method: "POST",
+    body: JSON.stringify({ url: url.toString() }),
+  });
+}
+
 function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
   const latest = status.latest;
@@ -378,6 +448,7 @@ function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
     formatOptionalLine("Latest plugin version", latest?.pluginVersion ?? "(unknown)"),
     formatOptionalLine("Latest MCP version", latest?.mcpVersion ?? "(unknown)"),
     formatOptionalLine("Release notes", latest?.releaseNotesUrl ?? "(none)"),
+    formatOptionalLine("Release-specific update instructions", latest?.updatePrompt ?? "(none)"),
     formatOptionalLine("Source", latest?.sourceUrl ?? status.current.sourceUrl),
     formatOptionalLine("Current board", boardUrl),
     "",
@@ -398,7 +469,8 @@ function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
     "codex plugin marketplace upgrade planban",
     "codex plugin add planban@planban",
     "",
-    "After updating, verify the Planban plugin and MCP tools are available, launch the Planban board, and confirm the running version.",
+    "After updating, verify the Planban plugin and MCP tools are available, then follow the release-specific update instructions above.",
+    "If no release-specific instructions are available, reopen the relevant Planban board in the Codex in-app browser and confirm the running version.",
   ].join("\n");
 }
 
@@ -498,6 +570,18 @@ function groupItems(items: RoadmapItem[]) {
   for (const status of statuses) {
     grouped[status].sort((a, b) => (a.priority ?? 9999) - (b.priority ?? 9999));
   }
+  return grouped;
+}
+
+function groupItemsInCurrentOrder(items: RoadmapItem[]) {
+  const grouped: Record<Status, RoadmapItem[]> = {
+    "in-progress": [],
+    "up-next": [],
+    pending: [],
+    complete: [],
+    archived: [],
+  };
+  for (const item of items) grouped[item.status].push(item);
   return grouped;
 }
 
@@ -1210,6 +1294,891 @@ function UpdateModal({
   );
 }
 
+function FirstRunPrompt({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <section className="first-run-prompt" aria-label="Planban tutorial">
+      <div>
+        <p className="eyebrow">Planban tour</p>
+        <h2>Take the two-minute tour</h2>
+        <p>
+          Learn how the board, cards, specs, and Codex prompts stay in sync.
+        </p>
+      </div>
+      <div className="first-run-prompt-actions">
+        <button
+          onClick={() => {
+            writeTutorialProgress("skipped");
+            onDismiss();
+          }}
+        >
+          Skip
+        </button>
+        <button className="primary" onClick={() => openTutorial("first-run")}>
+          <Play size={14} />
+          Start tutorial
+        </button>
+      </div>
+    </section>
+  );
+}
+
+const fallbackTutorialItems: RoadmapItem[] = [
+  {
+    id: "drag-this-card-to-in-progress",
+    title: "Drag this card to In Progress",
+    status: "up-next",
+    priority: 1,
+    summary: "Try the board by moving this card into In Progress.",
+    nextAction: "Move this card, then ask Codex to summarize the board.",
+    tags: [],
+    icon: null,
+    blockedBy: null,
+    specDoc: null,
+    planDoc: null,
+    completedAt: null,
+    updatedAt: null,
+  },
+  {
+    id: "open-this-roadmap-item-in-codex",
+    title: "Open this roadmap item in Codex",
+    status: "up-next",
+    priority: 2,
+    summary: "Use a card to start an agent thread with the right context.",
+    nextAction: "Start from a card when you want Codex to pick up the full planning context.",
+    tags: [],
+    icon: null,
+    blockedBy: null,
+    specDoc: null,
+    planDoc: null,
+    completedAt: null,
+    updatedAt: null,
+  },
+  {
+    id: "send-feedback-from-the-toolbar",
+    title: "Send feedback from the toolbar",
+    status: "pending",
+    priority: 3,
+    summary: "Feedback is handed to your agent before anything is filed publicly.",
+    nextAction: "Use the feedback icon or Planban Feedback when something is rough.",
+    tags: [],
+    icon: null,
+    blockedBy: null,
+    specDoc: null,
+    planDoc: null,
+    completedAt: null,
+    updatedAt: null,
+  },
+  {
+    id: "mark-a-card-complete-when-you-are-done",
+    title: "Mark a card Complete when you are done",
+    status: "in-progress",
+    priority: 1,
+    summary: "Completion should be intentional, especially when an agent is doing the work.",
+    nextAction: "Drag this In Progress card to Complete once you are happy with the work.",
+    tags: [],
+    icon: null,
+    blockedBy: null,
+    specDoc: null,
+    planDoc: null,
+    completedAt: null,
+    updatedAt: null,
+  },
+  {
+    id: "ask-codex-to-create-roadmap-items-from-your-plans",
+    title: "Ask Codex to create roadmap items from your plans",
+    status: "pending",
+    priority: 4,
+    summary: "Bring existing project context from docs, issues, Notion, Jira, Linear, or plain notes.",
+    nextAction: "Give Codex your current planning context and ask it to draft Planban roadmap items for review.",
+    tags: [],
+    icon: null,
+    blockedBy: null,
+    specDoc: null,
+    planDoc: null,
+    completedAt: null,
+    updatedAt: null,
+  },
+];
+
+function tutorialItemsFromState(state: PlanbanState | null) {
+  const source = state?.roadmap.roadmapItems.length ? state.roadmap.roadmapItems : fallbackTutorialItems;
+  return source.slice(0, 5).map((item) => ({ ...item }));
+}
+
+function TutorialBackground({ items }: { items: RoadmapItem[] }) {
+  return (
+    <div className="tutorial-background-board">
+      <header>
+        <div>
+          <p className="eyebrow">Planban</p>
+          <h2>Planban Demo</h2>
+        </div>
+        <div className="tutorial-background-actions">
+          <span>v1</span>
+          <span />
+          <span />
+        </div>
+      </header>
+      <TutorialMiniBoard items={items} selectedId={null} onSelect={() => undefined} />
+    </div>
+  );
+}
+
+function TutorialMiniBoard({
+  items,
+  selectedId,
+  onSelect,
+  onItemsChange,
+  draggable = false,
+}: {
+  items: RoadmapItem[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onItemsChange?: (items: RoadmapItem[], selectedId?: string) => void;
+  draggable?: boolean;
+}) {
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeSize, setActiveSize] = useState<{ width: number; height: number } | null>(null);
+  const [dragOverStatus, setDragOverStatus] = useState<Status | null>(null);
+  const [draftItems, setDraftItems] = useState<RoadmapItem[] | null>(null);
+  const draftItemsRef = useRef<RoadmapItem[] | null>(null);
+  const displayItems = draftItems ?? items;
+  const grouped = groupItemsInCurrentOrder(displayItems);
+  const visible = statuses.filter((status) => status !== "archived");
+
+  function updateDraftItems(nextItems: RoadmapItem[] | null) {
+    draftItemsRef.current = nextItems;
+    setDraftItems(nextItems);
+  }
+
+  function findStatus(id: string, currentItems = displayItems): Status | null {
+    if (statuses.includes(id as Status)) return id as Status;
+    return currentItems.find((item) => item.id === id)?.status ?? null;
+  }
+
+  function moveIntoStatus(currentItems: RoadmapItem[], id: string, status: Status, beforeId: string | null) {
+    const active = currentItems.find((item) => item.id === id);
+    if (!active) return currentItems;
+    const remaining = currentItems.filter((item) => item.id !== id);
+    const moved = { ...active, status };
+    const insertAt = beforeId
+      ? remaining.findIndex((item) => item.id === beforeId)
+      : remaining.map((item) => item.status).lastIndexOf(status) + 1;
+    const safeInsertAt = insertAt >= 0 ? insertAt : remaining.length;
+    return [...remaining.slice(0, safeInsertAt), moved, ...remaining.slice(safeInsertAt)];
+  }
+
+  function moveWithinStatus(currentItems: RoadmapItem[], id: string, overId: string, status: Status) {
+    const statusItems = groupItemsInCurrentOrder(currentItems)[status];
+    const from = statusItems.findIndex((item) => item.id === id);
+    const to = statusItems.findIndex((item) => item.id === overId);
+    if (from < 0 || to < 0 || from === to) return currentItems;
+    const movedStatusItems = arrayMove(statusItems, from, to);
+    return statuses.flatMap((entryStatus) => (entryStatus === status ? movedStatusItems : groupItemsInCurrentOrder(currentItems)[entryStatus]));
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    const id = String(event.active.id);
+    setActiveId(id);
+    updateDraftItems(items);
+    onSelect(id);
+    const rect = event.active.rect.current.initial;
+    setActiveSize(rect ? { width: rect.width, height: rect.height } : null);
+  }
+
+  function handleDragOver(event: DragOverEvent) {
+    const draggingId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId) return;
+    const currentItems = draftItemsRef.current ?? items;
+    const target = findStatus(overId, currentItems);
+    setDragOverStatus(target);
+    if (!target) return;
+    const active = currentItems.find((item) => item.id === draggingId);
+    if (!active) return;
+    const overItem = currentItems.find((item) => item.id === overId);
+    const nextItems = overItem && overItem.id !== draggingId && overItem.status === active.status
+      ? moveWithinStatus(currentItems, draggingId, overId, active.status)
+      : active.status === target
+        ? currentItems
+        : moveIntoStatus(currentItems, draggingId, target, overItem?.id ?? null);
+    if (nextItems !== currentItems) updateDraftItems(nextItems);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const id = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    const currentItems = draftItemsRef.current ?? items;
+    setActiveId(null);
+    setActiveSize(null);
+    setDragOverStatus(null);
+    updateDraftItems(null);
+    if (!overId) return;
+
+    const active = currentItems.find((item) => item.id === id);
+    const target = findStatus(overId, currentItems);
+    if (!active || !target) return;
+    const overItem = currentItems.find((item) => item.id === overId);
+    const nextItems = overItem && overItem.status === active.status
+      ? moveWithinStatus(currentItems, id, overId, active.status)
+      : moveIntoStatus(currentItems, id, target, overItem?.id ?? null);
+    onItemsChange?.(nextItems, id);
+  }
+
+  function handleDragCancel() {
+    setActiveId(null);
+    setActiveSize(null);
+    setDragOverStatus(null);
+    updateDraftItems(null);
+  }
+
+  const board = (
+    <div className="tutorial-mini-board" aria-label="Planban tutorial board preview">
+      {visible.map((status) => (
+        <TutorialMiniColumn
+          key={status}
+          status={status}
+          items={grouped[status]}
+          highlighted={dragOverStatus === status}
+          draggable={draggable}
+          onSelect={onSelect}
+          selectedId={selectedId}
+        />
+      ))}
+    </div>
+  );
+
+  if (!draggable) return board;
+
+  const activeItem = activeId ? displayItems.find((item) => item.id === activeId) ?? items.find((item) => item.id === activeId) : null;
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={boardCollisionDetection}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      {board}
+      <DragOverlay>
+        {activeItem ? (
+          <button className="tutorial-mini-card drag-card" style={activeSize ?? undefined}>
+            <b>{activeItem.title}</b>
+            {activeItem.nextAction || activeItem.summary ? <span>{activeItem.nextAction || activeItem.summary}</span> : null}
+          </button>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+function TutorialMiniColumn({
+  status,
+  items,
+  highlighted,
+  draggable,
+  selectedId,
+  onSelect,
+}: {
+  status: Status;
+  items: RoadmapItem[];
+  highlighted: boolean;
+  draggable: boolean;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const { setNodeRef } = useDroppable({ id: status, disabled: !draggable });
+  return (
+    <section ref={setNodeRef} className={`tutorial-mini-column ${draggable ? "drag-enabled" : ""} ${highlighted ? "highlighted" : ""}`}>
+      <header>
+        <span>{labels[status]}</span>
+        <b>{items.length}</b>
+      </header>
+      <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
+        <div className="tutorial-mini-stack">
+          {items.map((item) => (
+            draggable ? (
+              <TutorialMiniSortableCard
+                key={item.id}
+                item={item}
+                selected={selectedId === item.id}
+                onSelect={onSelect}
+              />
+            ) : (
+              <button
+                key={item.id}
+                className={`tutorial-mini-card ${selectedId === item.id ? "active" : ""}`}
+                onClick={() => onSelect(item.id)}
+              >
+                <b>{item.title}</b>
+                {item.nextAction || item.summary ? <span>{item.nextAction || item.summary}</span> : null}
+              </button>
+            )
+          ))}
+        </div>
+      </SortableContext>
+    </section>
+  );
+}
+
+function TutorialMiniSortableCard({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: RoadmapItem;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.45 : 1,
+  };
+  return (
+    <button
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`tutorial-mini-card ${selected ? "active" : ""} ${isDragging ? "is-dragging" : ""}`}
+      onClick={() => onSelect(item.id)}
+    >
+      <b>{item.title}</b>
+      {item.nextAction || item.summary ? <span>{item.nextAction || item.summary}</span> : null}
+    </button>
+  );
+}
+
+function TutorialLiveBoard({
+  items: sourceItems,
+  onSelect,
+  onItemsChange,
+  draggable = true,
+}: {
+  items: RoadmapItem[];
+  onSelect: (id: string) => void;
+  onItemsChange?: (items: RoadmapItem[], selectedId?: string) => void;
+  draggable?: boolean;
+}) {
+  const [items, setItems] = useState<RoadmapItem[]>(sourceItems);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeSize, setActiveSize] = useState<{ width: number; height: number } | null>(null);
+  const [dragOver, setDragOver] = useState<Status | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const grouped = useMemo(() => groupItemsInCurrentOrder(items), [items]);
+  const activeItem = activeId ? items.find((item) => item.id === activeId) : null;
+  const visibleStatuses = statuses.filter((status) => status !== "archived");
+
+  useEffect(() => {
+    setItems(sourceItems);
+  }, [sourceItems]);
+
+  function moveItem(id: string, status: Status) {
+    if (!draggable) return;
+    setItems((previous) => {
+      const nextItems = previous.map((item) => (item.id === id ? { ...item, status } : item));
+      onItemsChange?.(nextItems, id);
+      return nextItems;
+    });
+    onSelect(id);
+  }
+
+  function findStatus(id: string): Status | null {
+    if (statuses.includes(id as Status)) return id as Status;
+    return items.find((item) => item.id === id)?.status ?? null;
+  }
+
+  function onDragStart(event: DragStartEvent) {
+    if (!draggable) return;
+    const id = String(event.active.id);
+    setActiveId(id);
+    onSelect(id);
+    const rect = event.active.rect.current.initial;
+    setActiveSize(rect ? { width: rect.width, height: rect.height } : null);
+  }
+
+  function onDragOver(event: DragOverEvent) {
+    if (!draggable) return;
+    const draggingId = String(event.active.id);
+    if (!event.over) return;
+    const target = findStatus(String(event.over.id));
+    setDragOver(target);
+    if (!target) return;
+    setItems((previous) => {
+      const active = previous.find((item) => item.id === draggingId);
+      if (!active || active.status === target) return previous;
+      return previous.map((item) => (item.id === draggingId ? { ...item, status: target } : item));
+    });
+  }
+
+  function onDragEnd(event: DragEndEvent) {
+    if (!draggable) return;
+    const id = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    setActiveId(null);
+    setActiveSize(null);
+    setDragOver(null);
+    if (!overId) {
+      setItems(sourceItems);
+      return;
+    }
+
+    const active = items.find((item) => item.id === id);
+    const targetStatus = findStatus(overId);
+    if (!active || !targetStatus) return;
+
+    let nextItems = items;
+    const overItem = items.find((item) => item.id === overId);
+    if (overItem && overItem.status === active.status) {
+      const columnItems = grouped[active.status];
+      const from = columnItems.findIndex((item) => item.id === id);
+      const to = columnItems.findIndex((item) => item.id === overId);
+      const movedColumn = arrayMove(columnItems, from, to);
+      nextItems = statuses.flatMap((status) => (status === active.status ? movedColumn : grouped[status]));
+    } else {
+      const remaining = items.filter((item) => item.id !== id);
+      const moved = { ...active, status: targetStatus };
+      const insertAt = overItem
+        ? remaining.findIndex((item) => item.id === overItem.id)
+        : remaining.map((item) => item.status).lastIndexOf(targetStatus) + 1;
+      const safeInsertAt = insertAt >= 0 ? insertAt : remaining.length;
+      nextItems = [...remaining.slice(0, safeInsertAt), moved, ...remaining.slice(safeInsertAt)];
+    }
+
+    setItems(nextItems);
+    onItemsChange?.(nextItems, id);
+    onSelect(id);
+  }
+
+  function onDragCancel() {
+    setActiveId(null);
+    setActiveSize(null);
+    setDragOver(null);
+    setItems(sourceItems);
+  }
+
+  return (
+    <section className="tutorial-live-board" aria-label="Interactive Planban board tutorial">
+      <DndContext
+        sensors={sensors}
+        collisionDetection={boardCollisionDetection}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDragEnd={onDragEnd}
+        onDragCancel={onDragCancel}
+      >
+        <div className="board-grid" style={{ gridTemplateColumns: visibleStatuses.map(() => "minmax(230px, 1fr)").join(" ") }}>
+          {visibleStatuses.map((status) => (
+            <Column
+              key={status}
+              status={status}
+              items={grouped[status]}
+              collapsed={false}
+              cardsHidden={false}
+              highlighted={dragOver === status}
+              onToggleCollapsed={() => undefined}
+              onToggleCards={() => undefined}
+              onSelect={onSelect}
+              onStartCodex={() => undefined}
+              onMove={moveItem}
+              onDelete={() => undefined}
+              readOnly={!draggable}
+            />
+          ))}
+        </div>
+        <DragOverlay>
+          {activeId ? (
+            <article className={`card drag-card ${activeItem?.nextAction || activeItem?.summary ? "" : "compact"}`} style={activeSize ?? undefined}>
+              {activeItem ? <CardContent item={activeItem} /> : null}
+            </article>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+    </section>
+  );
+}
+
+function TutorialIntroPreview() {
+  return (
+    <section className="tutorial-intro-preview">
+      <div>
+        <p className="eyebrow">Project memory</p>
+        <h3>Use boards as a second brain</h3>
+        <p>Store plans, ideas, rough notes, future features, priorities, and what to work on next.</p>
+      </div>
+      <ArrowRight size={18} />
+      <div>
+        <p className="eyebrow">Codex works</p>
+        <h3>Start from the same state</h3>
+        <p>Your agent can read and update the board, then keep the card status and docs in sync.</p>
+      </div>
+    </section>
+  );
+}
+
+function TutorialDetailPreview({ item, onBack }: { item: RoadmapItem | null; onBack?: () => void }) {
+  return (
+    <aside className="tutorial-detail-preview revealed">
+      <header>
+        <div>
+          <p className="eyebrow">Roadmap item</p>
+          <h3>{item?.title ?? "Selected card"}</h3>
+        </div>
+        {onBack ? <button onClick={onBack}>Back to board</button> : null}
+      </header>
+      <dl>
+        <div>
+          <dt>Status</dt>
+          <dd>{item ? labels[item.status] : "None"}</dd>
+        </div>
+        <div>
+          <dt>Next action</dt>
+          <dd>{item?.nextAction ?? "Each card can carry the next useful thing for you or Codex to do."}</dd>
+        </div>
+        <div>
+          <dt>Spec</dt>
+          <dd>Specs and plans sit with the card so a new agent thread can start with context.</dd>
+        </div>
+      </dl>
+    </aside>
+  );
+}
+
+function TutorialPlanningComposer({
+  state,
+  planningContext,
+  onPlanningContextChange,
+}: {
+  state: PlanbanState | null;
+  planningContext: string;
+  onPlanningContextChange: (value: string) => void;
+}) {
+  const [message, setMessage] = useState<string | null>(null);
+  const prompt = state ? buildTutorialCreatePrompt(state, planningContext) : "";
+  const hasPlanningContext = planningContext.trim().length > 0;
+  const promptDisabledReason = !state
+    ? "The demo board is still loading."
+    : !hasPlanningContext
+      ? "Please provide some context in the box above before copying a prompt or opening a Codex thread."
+      : undefined;
+  const canUsePrompt = Boolean(state) && hasPlanningContext;
+
+  async function copyPrompt() {
+    if (!canUsePrompt) {
+      if (promptDisabledReason) setMessage(promptDisabledReason);
+      return;
+    }
+    await navigator.clipboard?.writeText(prompt).catch(() => undefined);
+    setMessage("Prompt copied. Paste it into Codex when you are ready.");
+  }
+
+  async function openInCodex() {
+    if (!state || !canUsePrompt) {
+      if (promptDisabledReason) setMessage(promptDisabledReason);
+      return;
+    }
+    try {
+      await openCodexPromptForState(state, prompt);
+      setMessage("Opened a Codex draft thread. Your tutorial progress will be here when you come back.");
+    } catch {
+      await navigator.clipboard?.writeText(prompt).catch(() => undefined);
+      setMessage("Could not open Codex automatically, so the prompt was copied if clipboard access was available.");
+    }
+  }
+
+  return (
+    <section className="tutorial-composer">
+      <p className="eyebrow">Try it with your context</p>
+      <label htmlFor="tutorial-planning-context">
+        Paste a project note, repo summary, issue list, external planning export, or a rough description.
+      </label>
+      <textarea
+        id="tutorial-planning-context"
+        value={planningContext}
+        onChange={(event) => onPlanningContextChange(event.target.value)}
+        placeholder="Example: I have a local project for a small SaaS dashboard. The next work is onboarding, billing settings, and a cleaner release checklist..."
+      />
+      <div className="tutorial-composer-actions">
+        <span className={`tutorial-action-tooltip ${!canUsePrompt ? "blocked" : ""}`} data-tooltip={promptDisabledReason}>
+          <button onClick={copyPrompt} disabled={!canUsePrompt}>
+            <Copy size={14} />
+            Copy prompt
+          </button>
+        </span>
+        <span className={`tutorial-action-tooltip ${!canUsePrompt ? "blocked" : ""}`} data-tooltip={promptDisabledReason}>
+          <button className="primary" onClick={openInCodex} disabled={!canUsePrompt}>
+            <Send size={14} />
+            Open in Codex thread
+          </button>
+        </span>
+      </div>
+      {message ? <p className="tutorial-status">{message}</p> : null}
+    </section>
+  );
+}
+
+function TutorialFeedbackPreview() {
+  return (
+    <section className="tutorial-feedback-preview">
+      <div className="tutorial-toolbar-preview" aria-hidden="true">
+        <span>v1</span>
+        <button>
+          <MessageSquareText size={15} />
+        </button>
+        <button>
+          <RefreshCw size={15} />
+        </button>
+      </div>
+      <div>
+        <p className="eyebrow">Feedback button</p>
+        <h3>Send rough feedback through your agent</h3>
+        <p>
+          Type the bug, request, or reaction. Planban turns it into a Codex-ready prompt, then your
+          agent helps prepare a GitHub issue before anything is public.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+const tutorialSteps = [
+  {
+    title: "Planban keeps planning shared",
+    copy: "Use each Planban board as a project second brain: plans, ideas, rough notes, future features, priorities, and roadmap state that Codex can read and update with you.",
+  },
+  {
+    title: "Cards move as work changes",
+    copy: "Drag cards between Up Next, In Progress, Pending, and Complete so priority and status stay visible. Try moving the In Progress card to Complete when the work is reviewed.",
+  },
+  {
+    title: "Cards hold the working context",
+    copy: "Click to open a card and see its next action, spec, plan, and the context Codex should use when starting work.",
+  },
+  {
+    title: "Open Planban from any thread",
+    copy: "Codex browser tabs are thread-local, but Planban can be summoned again from your Codex chat thread with /PB, /Planban, or a plain prompt.",
+  },
+  {
+    title: "Create planning from rough context",
+    copy: "Codex can create Planban boards for the projects that need them, then populate those boards from notes, repo docs, GitHub Issues, or connected tools such as Notion, Linear, and Jira.",
+  },
+  {
+    title: "Feedback is agent-native too",
+    copy: "Use the feedback icon on your board or the /planban feedback command in your agent. Your agent packages the issue before anything is sent to us.",
+  },
+] as const;
+
+function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null) => void }) {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get("mode") ?? "first-run";
+  const [state, setState] = useState<PlanbanState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [tutorialItems, setTutorialItems] = useState<RoadmapItem[]>(() => tutorialItemsFromState(null));
+  const [selectedId, setSelectedId] = useState<string | null>("drag-this-card-to-in-progress");
+  const [detailRevealed, setDetailRevealed] = useState(false);
+  const [planningContext, setPlanningContext] = useState("");
+  const step = tutorialSteps[stepIndex]!;
+  const selectedItem = tutorialItems.find((item) => item.id === selectedId) ?? tutorialItems[0] ?? null;
+  const isFinalStep = stepIndex === tutorialSteps.length - 1;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadDemo() {
+      try {
+        const demoState = await api<PlanbanState>("/api/demo", { method: "POST", body: "{}" });
+        if (cancelled) return;
+        setState(demoState);
+        const nextItems = tutorialItemsFromState(demoState);
+        setTutorialItems(nextItems);
+        setSelectedId(nextItems.find((item) => item.id === "drag-this-card-to-in-progress")?.id ?? nextItems[0]?.id ?? null);
+      } catch (loadError) {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Could not prepare the demo board");
+      }
+    }
+    void loadDemo();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function finish(status: "completed" | "skipped") {
+    writeTutorialProgress(status);
+    if (state) onSelectBoard(state.manifest.repoId);
+    else window.location.assign("/boards");
+  }
+
+  function goToStep(index: number) {
+    setStepIndex(Math.max(0, Math.min(tutorialSteps.length - 1, index)));
+    if (index !== 2) setDetailRevealed(false);
+    if (index === 1) {
+      const completionCard = tutorialItems.find((item) => item.id === "mark-a-card-complete-when-you-are-done");
+      if (completionCard) setSelectedId(completionCard.id);
+    }
+  }
+
+  function resetTutorialDemoState() {
+    const nextItems = tutorialItemsFromState(state);
+    setTutorialItems(nextItems);
+    setSelectedId(nextItems.find((item) => item.id === "drag-this-card-to-in-progress")?.id ?? nextItems[0]?.id ?? null);
+  }
+
+  function moveTutorialItem(id: string, status: Status, beforeId: string | null = null) {
+    setTutorialItems((current) => {
+      const active = current.find((item) => item.id === id);
+      if (!active) return current;
+      const remaining = current.filter((item) => item.id !== id);
+      const moved = { ...active, status };
+      let insertAt = -1;
+      if (beforeId) {
+        insertAt = remaining.findIndex((item) => item.id === beforeId);
+      }
+      if (insertAt < 0) {
+        const targetIndexes = remaining
+          .map((item, index) => (item.status === status ? index : -1))
+          .filter((index) => index >= 0);
+        insertAt = targetIndexes.length ? Math.max(...targetIndexes) + 1 : remaining.length;
+      }
+      return [...remaining.slice(0, insertAt), moved, ...remaining.slice(insertAt)];
+    });
+    setSelectedId(id);
+  }
+
+  return (
+    <main className="tutorial-screen">
+      <div className="tutorial-background" aria-hidden="true">
+        <TutorialBackground items={tutorialItems} />
+      </div>
+
+      <section className="tutorial-shell" aria-label="Planban tutorial">
+        <header className="tutorial-header">
+          <div>
+            <p className="eyebrow">{mode === "whats-new" ? "Planban update" : "Welcome to Planban"}</p>
+            <h1>A local board that Codex can work from</h1>
+          </div>
+          <div className="tutorial-header-actions">
+            <button
+              onClick={() => {
+                resetTutorialDemoState();
+                setDetailRevealed(false);
+                setPlanningContext("");
+                goToStep(0);
+              }}
+            >
+              <RotateCcw size={14} />
+              Restart
+            </button>
+            <button onClick={() => finish("skipped")}>Skip</button>
+          </div>
+        </header>
+
+        <div className="tutorial-body">
+          <section className="tutorial-copy">
+            <div className="tutorial-progress" aria-label={`Step ${stepIndex + 1} of ${tutorialSteps.length}`}>
+              {tutorialSteps.map((entry, index) => (
+                <button
+                  key={entry.title}
+                  className={index === stepIndex ? "active" : index < stepIndex ? "done" : ""}
+                  aria-label={`Go to step ${index + 1}: ${entry.title}`}
+                  onClick={() => goToStep(index)}
+                />
+              ))}
+            </div>
+            <p className="tutorial-step-label">Step {stepIndex + 1} of {tutorialSteps.length}</p>
+            <h2>{step.title}</h2>
+            <p>{step.copy}</p>
+
+            {stepIndex === 1 ? (
+              <button className="tutorial-action" onClick={() => moveTutorialItem(selectedItem?.id ?? "mark-a-card-complete-when-you-are-done", "complete")}>
+                <ArrowRight size={14} />
+                Move selected card to Complete
+              </button>
+            ) : null}
+
+            {stepIndex === 2 ? (
+              <p className="tutorial-hint">Click a card below to open its details.</p>
+            ) : null}
+
+            {error ? <p className="tutorial-status">Demo board fallback active: {error}</p> : null}
+          </section>
+
+          <section className={`tutorial-stage ${stepIndex === 3 ? "empty" : ""}`}>
+            {stepIndex === 0 ? (
+              <TutorialIntroPreview />
+            ) : stepIndex === 3 ? (
+              null
+            ) : stepIndex === 4 ? (
+              <TutorialPlanningComposer
+                state={state}
+                planningContext={planningContext}
+                onPlanningContextChange={setPlanningContext}
+              />
+            ) : stepIndex === 5 ? (
+              <TutorialFeedbackPreview />
+            ) : stepIndex === 2 && detailRevealed ? (
+              <div className="tutorial-stage-board">
+                <TutorialDetailPreview item={selectedItem} onBack={() => setDetailRevealed(false)} />
+              </div>
+            ) : (
+              <div className="tutorial-stage-board">
+                {stepIndex === 1 ? (
+                  <TutorialLiveBoard
+                    items={tutorialItems}
+                    onSelect={setSelectedId}
+                    onItemsChange={(nextItems, nextSelectedId) => {
+                      setTutorialItems(nextItems);
+                      if (nextSelectedId) setSelectedId(nextSelectedId);
+                    }}
+                  />
+                ) : stepIndex === 2 ? (
+                  <TutorialLiveBoard
+                    items={tutorialItems}
+                    onSelect={(id) => {
+                      setSelectedId(id);
+                      setDetailRevealed(true);
+                    }}
+                    draggable={false}
+                  />
+                ) : (
+                  <TutorialMiniBoard
+                    items={tutorialItems}
+                    selectedId={selectedId}
+                    onSelect={(id) => {
+                      setSelectedId(id);
+                      if (stepIndex === 2) setDetailRevealed(true);
+                    }}
+                  />
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <footer className="tutorial-footer">
+          <button onClick={() => goToStep(stepIndex - 1)} disabled={stepIndex === 0}>
+            Back
+          </button>
+          {isFinalStep ? (
+            <button className="primary" onClick={() => finish("completed")}>
+              <CheckCircle2 size={14} />
+              Finish tutorial
+            </button>
+          ) : (
+            <button className="primary" onClick={() => goToStep(stepIndex + 1)}>
+              Next
+              <ArrowRight size={14} />
+            </button>
+          )}
+        </footer>
+      </section>
+    </main>
+  );
+}
+
 function isCardDetailsHistory(entry: HistoryEntry, cardId: string) {
   return (
     entry.affectedCards.includes(cardId) &&
@@ -1570,11 +2539,13 @@ function BoardView({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload | null>(null);
+  const [showFirstRunPrompt, setShowFirstRunPrompt] = useState(() => readTutorialProgress() === null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const boardId = state.manifest.repoId;
   const displayState = preview?.state ?? state;
   const previewVersion = preview?.version ?? null;
   const isPreviewing = preview !== null;
+  const isDemoBoard = boardId === "planban-demo";
 
   useEffect(() => {
     setItems(displayState.roadmap.roadmapItems);
@@ -1869,12 +2840,21 @@ function BoardView({
             </div>
           ) : null}
           <div className="header-actions">
-            <HistoryPicker
-              history={history}
-              previewVersion={previewVersion}
-              onSelectVersion={previewHistoryVersion}
-              onReturnToCurrent={returnToCurrent}
-            />
+            {!isDemoBoard ? (
+              <HistoryPicker
+                history={history}
+                previewVersion={previewVersion}
+                onSelectVersion={previewHistoryVersion}
+                onReturnToCurrent={returnToCurrent}
+              />
+            ) : null}
+            <TooltipButton
+              label="Open Planban tutorial"
+              className="toolbar-icon-button tooltip-below"
+              onClick={() => openTutorial("first-run")}
+            >
+              <HelpCircle size={14} />
+            </TooltipButton>
             <TooltipButton label="Provide feedback" className="toolbar-icon-button tooltip-below" onClick={() => setFeedbackOpen(true)}>
               <MessageSquareText size={14} />
             </TooltipButton>
@@ -1905,6 +2885,10 @@ function BoardView({
           status={updateStatus}
           onClose={() => setUpdateOpen(false)}
         />
+      ) : null}
+
+      {showFirstRunPrompt && !isPreviewing ? (
+        <FirstRunPrompt onDismiss={() => setShowFirstRunPrompt(false)} />
       ) : null}
 
       {preview ? (
@@ -2070,6 +3054,11 @@ function App() {
       if (requestId !== appLoadRequestRef.current) return;
       setInitialized(status.initialized);
       setBoards(boardsPayload.boards);
+      if (isTutorialPath()) {
+        setSelectedRepoId(null);
+        setState(null);
+        return;
+      }
       const routeRepoId = repoIdFromPath();
       const nextRepoId = isBoardDashboardPath()
         ? null
@@ -2111,6 +3100,7 @@ function App() {
   }, [loadSelectedBoard, selectedRepoId]);
 
   if (error) return <main className="error-screen">{error}</main>;
+  if (isTutorialPath()) return <TutorialPage onSelectBoard={selectBoard} />;
   if (!selectedRepoId && boards.length > 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} />;
   if (initialized === false && boards.length === 0) {
     return (

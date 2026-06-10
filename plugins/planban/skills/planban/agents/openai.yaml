@@ -1,0 +1,7 @@
+interface:
+  display_name: "Planban"
+  short_description: "Use local Planban roadmap boards in Codex"
+  brand_color: "#2563EB"
+  default_prompt: "Open my Planban board."
+policy:
+  allow_implicit_invocation: true

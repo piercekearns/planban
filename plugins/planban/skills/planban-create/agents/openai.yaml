@@ -1,0 +1,7 @@
+interface:
+  display_name: "Planban Create"
+  short_description: "Create boards or roadmap items from rough notes"
+  brand_color: "#2563EB"
+  default_prompt: "Create Planban roadmap items from this context."
+policy:
+  allow_implicit_invocation: false

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.1",
-  "pluginVersion": "0.1.1",
-  "mcpVersion": "0.1.1",
+  "version": "0.1.2",
+  "pluginVersion": "0.1.2",
+  "mcpVersion": "0.1.2",
   "storageSchemaVersion": 1,
   "minimumStorageSchemaVersion": 1,
-  "publishedAt": "2026-06-10T01:30:00.000Z",
+  "publishedAt": "2026-06-10T23:11:25.000Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.1",
-  "summary": "Adds local-board update detection, version reporting, and Codex-ready update prompts.",
-  "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen the Planban board."
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.2",
+  "summary": "Adds the interactive first-run tutorial, faster Planban command ergonomics, feedback flow polish, and board UI fixes.",
+  "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then open the interactive Planban tutorial in the Codex in-app browser using node plugins/planban/scripts/launch-planban.mjs --tutorial."
 }

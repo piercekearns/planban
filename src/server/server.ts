@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import chokidar from "chokidar";
 import type { ViteDevServer } from "vite";
 import { defaultPlanbanRoot } from "../core/paths";
+import { ensureDemoBoard } from "../core/demo";
 import {
   idempotencyFingerprint,
   PlanbanIdempotencyConflictError,
@@ -301,6 +302,17 @@ export async function startServer(options: ServeOptions) {
         currentRepoId: currentBoard?.repoId ?? null,
         boards: await listBoards(),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/demo", async (_req, res, next) => {
+    try {
+      const state = await ensureDemoBoard();
+      await registerBoardFromState(state);
+      sendEvent("state", { repoId: state.manifest.repoId, revision: state.roadmap.revision });
+      res.json(state);
     } catch (error) {
       next(error);
     }
