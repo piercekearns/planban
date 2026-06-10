@@ -14,6 +14,7 @@ import {
   createCard,
 } from "./core/storage";
 import { PLANBAN_STATUSES, type PlanbanStatus } from "./core/types";
+import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
 
 function cwdOption(value: string | undefined) {
@@ -49,7 +50,7 @@ async function readStdin(): Promise<string> {
 }
 
 const program = new Command();
-program.name("planban").description("Codex-native local planning board").version("0.1.0");
+program.name("planban").description("Codex-native local planning board").version(PLANBAN_VERSION);
 
 program
   .command("init")

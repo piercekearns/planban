@@ -36,10 +36,17 @@ import {
   loadHistoryState,
 } from "../core/storage";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
+import {
+  compareVersions,
+  currentVersionInfo,
+  PLANBAN_UPDATE_MANIFEST_URL,
+  type PlanbanUpdateManifest,
+} from "../core/version";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
 const DIST_WEB_ROOT = resolve(PACKAGE_ROOT, "dist/web");
+const UPDATE_CHECK_TIMEOUT_MS = 3500;
 
 export interface ServeOptions {
   cwd: string;
@@ -101,6 +108,74 @@ function updateItemCodexThreadMeta(
     },
     updatedAt: new Date().toISOString(),
   };
+}
+
+function isUpdateManifest(value: unknown): value is PlanbanUpdateManifest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.schemaVersion === 1 &&
+    typeof candidate.version === "string" &&
+    typeof candidate.pluginVersion === "string" &&
+    typeof candidate.mcpVersion === "string" &&
+    typeof candidate.storageSchemaVersion === "number" &&
+    typeof candidate.minimumStorageSchemaVersion === "number" &&
+    typeof candidate.publishedAt === "string" &&
+    typeof candidate.sourceUrl === "string" &&
+    typeof candidate.releaseNotesUrl === "string" &&
+    typeof candidate.summary === "string" &&
+    typeof candidate.updatePrompt === "string"
+  );
+}
+
+async function fetchLatestUpdateManifest(url: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "planban-update-check",
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Update metadata returned HTTP ${response.status}`);
+    const payload = await response.json() as unknown;
+    if (!isUpdateManifest(payload)) throw new Error("Update metadata did not match the Planban manifest schema");
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function updateStatus() {
+  const current = currentVersionInfo();
+  const metadataUrl = process.env.PLANBAN_UPDATE_MANIFEST_URL || PLANBAN_UPDATE_MANIFEST_URL;
+  const checkedAt = new Date().toISOString();
+  try {
+    const latest = await fetchLatestUpdateManifest(metadataUrl);
+    const updateAvailable = compareVersions(latest.version, current.version) > 0;
+    const compatible = latest.minimumStorageSchemaVersion <= current.storageSchemaVersion;
+    return {
+      checkedAt,
+      metadataUrl,
+      current,
+      latest,
+      updateAvailable,
+      compatible,
+      checkError: null,
+    };
+  } catch (error) {
+    return {
+      checkedAt,
+      metadataUrl,
+      current,
+      latest: null,
+      updateAvailable: false,
+      compatible: true,
+      checkError: error instanceof Error ? error.message : "Update check failed",
+    };
+  }
 }
 
 async function recentCodexSessionFiles(root = codexSessionsRoot()) {
@@ -207,6 +282,14 @@ export async function startServer(options: ServeOptions) {
     try {
       const status = await getStatus(cwd);
       res.json({ ...status, currentRepoId: currentBoard?.repoId ?? ("repoId" in status ? status.repoId : null) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/update-status", async (_req, res, next) => {
+    try {
+      res.json(await updateStatus());
     } catch (error) {
       next(error);
     }

@@ -66,6 +66,12 @@ Codex can then help you review the issue draft and file it through GitHub. You c
 
 https://github.com/piercekearns/planban/issues/new/choose
 
+## Updates
+
+Planban checks public version metadata from GitHub while the local board is open. If an update is available, the board shows a small update notice. Choose `Update with Codex` to open a draft prompt that asks your agent to update Planban, verify the plugin and MCP tools, and reopen the board.
+
+Planban does not silently update itself and does not send private board contents, repo paths, logs, or project details as part of update checks.
+
 ## Local Storage
 
 Planban keeps live planning state on your machine:

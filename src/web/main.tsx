@@ -9,7 +9,9 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  CircleArrowUp,
   Copy,
+  ExternalLink,
   FilePenLine,
   Loader2,
   MessageSquareText,
@@ -94,6 +96,37 @@ interface BoardRecord {
 interface BoardsPayload {
   currentRepoId: string | null;
   boards: BoardRecord[];
+}
+
+interface VersionInfo {
+  version: string;
+  pluginVersion: string;
+  mcpVersion: string;
+  storageSchemaVersion: number;
+  sourceUrl: string;
+}
+
+interface UpdateManifest {
+  version: string;
+  pluginVersion: string;
+  mcpVersion: string;
+  storageSchemaVersion: number;
+  minimumStorageSchemaVersion: number;
+  publishedAt: string;
+  sourceUrl: string;
+  releaseNotesUrl: string;
+  summary: string;
+  updatePrompt: string;
+}
+
+interface UpdateStatusPayload {
+  checkedAt: string;
+  metadataUrl: string;
+  current: VersionInfo;
+  latest: UpdateManifest | null;
+  updateAvailable: boolean;
+  compatible: boolean;
+  checkError: string | null;
 }
 
 interface DocPayload {
@@ -327,6 +360,74 @@ async function copyFeedbackPrompt(state: PlanbanState, feedback: string) {
   if (!navigator.clipboard) throw new Error("Clipboard access is unavailable");
   const prompt = buildFeedbackPrompt(state, feedback);
   await navigator.clipboard.writeText(prompt);
+}
+
+function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
+  const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
+  const latest = status.latest;
+  return [
+    "Hit enter to update Planban with your agent.",
+    "",
+    "Use the Planban plugin or skill if it is available.",
+    "I want to update my local Planban install safely.",
+    "",
+    formatOptionalLine("Current Planban version", status.current.version),
+    formatOptionalLine("Current plugin version", status.current.pluginVersion),
+    formatOptionalLine("Current MCP version", status.current.mcpVersion),
+    formatOptionalLine("Latest Planban version", latest?.version ?? "(unknown)"),
+    formatOptionalLine("Latest plugin version", latest?.pluginVersion ?? "(unknown)"),
+    formatOptionalLine("Latest MCP version", latest?.mcpVersion ?? "(unknown)"),
+    formatOptionalLine("Release notes", latest?.releaseNotesUrl ?? "(none)"),
+    formatOptionalLine("Source", latest?.sourceUrl ?? status.current.sourceUrl),
+    formatOptionalLine("Current board", boardUrl),
+    "",
+    "Before changing anything, inspect how Planban is installed on this machine.",
+    "If it is installed from the public Git marketplace source, refresh the marketplace snapshot and reinstall/refresh the Planban plugin.",
+    "If it is installed from a local clone, pull the latest repo changes, install dependencies, rerun the local plugin configuration script if needed, and refresh/reinstall the Planban plugin.",
+    "Before any storage migration, create a timestamped backup of the affected ~/.planban state and explain how to restore it.",
+    "Do not upload or expose private board contents, repo paths, logs, or local project details.",
+    "",
+    "Likely public marketplace commands, to verify before running:",
+    "codex plugin marketplace upgrade planban",
+    "codex plugin add planban@planban",
+    "",
+    "Likely local clone commands, to verify before running:",
+    "git pull",
+    "npm install",
+    "node scripts/configure-local-plugin.mjs",
+    "codex plugin marketplace upgrade planban",
+    "codex plugin add planban@planban",
+    "",
+    "After updating, verify the Planban plugin and MCP tools are available, launch the Planban board, and confirm the running version.",
+  ].join("\n");
+}
+
+async function openCodexUpdateThread(state: PlanbanState, status: UpdateStatusPayload) {
+  const prompt = buildUpdatePrompt(state, status);
+  const url = new URL("codex://threads/new");
+  url.searchParams.set("path", state.cwd);
+  url.searchParams.set("prompt", prompt);
+
+  try {
+    await api<{ opened: boolean }>("/api/open-codex-thread", {
+      method: "POST",
+      body: JSON.stringify({ url: url.toString() }),
+    });
+    return { opened: true, copied: false };
+  } catch (error) {
+    await navigator.clipboard?.writeText(prompt).catch(() => undefined);
+    window.alert(
+      error instanceof Error
+        ? `Could not open Codex automatically. The update prompt has been copied if clipboard access is available.\n\n${error.message}`
+        : "Could not open Codex automatically. The update prompt has been copied if clipboard access is available.",
+    );
+    return { opened: false, copied: true };
+  }
+}
+
+async function copyUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
+  if (!navigator.clipboard) throw new Error("Clipboard access is unavailable");
+  await navigator.clipboard.writeText(buildUpdatePrompt(state, status));
 }
 
 function versionLabel(version: number, currentVersion: number | null) {
@@ -991,6 +1092,124 @@ function FeedbackModal({
   );
 }
 
+function UpdateModal({
+  state,
+  status,
+  onClose,
+}: {
+  state: PlanbanState;
+  status: UpdateStatusPayload | null;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState<"open" | "copy" | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const latest = status?.latest ?? null;
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  async function openInCodex() {
+    if (!status) return;
+    setBusy("open");
+    setMessage(null);
+    try {
+      const result = await openCodexUpdateThread(state, status);
+      setMessage(result.opened ? "Opened a Codex draft thread. Hit enter there to continue." : "Copied the update prompt.");
+      if (result.opened) onClose();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copyPrompt() {
+    if (!status) return;
+    setBusy("copy");
+    setMessage(null);
+    try {
+      await copyUpdatePrompt(state, status);
+      setMessage("Copied. Paste it into Codex to update Planban through your agent.");
+    } catch {
+      setMessage("Clipboard access was blocked. Try opening a Codex draft instead.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return createPortal(
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="update-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="update-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="feedback-modal-header">
+          <div>
+            <p className="eyebrow">Planban updates</p>
+            <h2 id="update-title">{status?.updateAvailable ? "Update available" : "Planban updates"}</h2>
+            {status ? (
+              <p className="update-version-line">
+                {status.current.version}
+                {latest?.version ? ` -> ${latest.version}` : ""}
+              </p>
+            ) : null}
+          </div>
+          <TooltipButton label="Close updates" className="toolbar-icon-button" onClick={onClose}>
+            <X size={14} />
+          </TooltipButton>
+        </header>
+        <div className="update-modal-body">
+          {status ? (
+            <>
+              {status.checkError ? (
+                <p className="update-note">Could not check for updates: {status.checkError}</p>
+              ) : status.updateAvailable ? (
+                <section className="update-summary">
+                  <p className="eyebrow">What's changed</p>
+                  <p>{latest?.summary}</p>
+                </section>
+              ) : (
+                <p className="update-note">You are on the latest known Planban version.</p>
+              )}
+              {!status.compatible ? (
+                <p className="update-warning">This update may require a storage migration. Ask Codex to back up your Planban data before updating.</p>
+              ) : null}
+              <div className="update-links">
+                {latest?.releaseNotesUrl ? (
+                  <a href={latest.releaseNotesUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink size={13} />
+                    View release notes
+                  </a>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <p className="update-note">Checking for updates...</p>
+          )}
+          {message ? <p className="feedback-status">{message}</p> : null}
+        </div>
+        <footer className="feedback-actions">
+          <button onClick={copyPrompt} disabled={!status || busy !== null}>
+            {busy === "copy" ? <Loader2 size={14} className="spin" /> : <Copy size={14} />}
+            Copy prompt
+          </button>
+          <button className="primary" onClick={openInCodex} disabled={!status || busy !== null}>
+            {busy === "open" ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+            Update with Codex
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function isCardDetailsHistory(entry: HistoryEntry, cardId: string) {
   return (
     entry.affectedCards.includes(cardId) &&
@@ -1349,6 +1568,8 @@ function BoardView({
   const [history, setHistory] = useState<HistoryPayload | null>(null);
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const boardId = state.manifest.repoId;
   const displayState = preview?.state ?? state;
@@ -1369,10 +1590,17 @@ function BoardView({
     return payload;
   }, [boardId]);
 
+  const loadUpdateStatus = useCallback(async () => {
+    const payload = await api<UpdateStatusPayload>("/api/update-status");
+    setUpdateStatus(payload);
+    return payload;
+  }, []);
+
   useEffect(() => {
     setPreview(null);
     void loadHistory().catch(() => setHistory(null));
-  }, [boardId, loadHistory]);
+    void loadUpdateStatus().catch(() => undefined);
+  }, [boardId, loadHistory, loadUpdateStatus]);
 
   const selectedItem = selectedId ? items.find((item) => item.id === selectedId) : null;
   const activeItem = activeId ? items.find((item) => item.id === activeId) : null;
@@ -1625,36 +1853,59 @@ function BoardView({
           </div>
           <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
         </div>
-        <div className="header-actions">
-          <HistoryPicker
-            history={history}
-            previewVersion={previewVersion}
-            onSelectVersion={previewHistoryVersion}
-            onReturnToCurrent={returnToCurrent}
-          />
-          <TooltipButton label="Provide feedback" className="toolbar-icon-button tooltip-below" onClick={() => setFeedbackOpen(true)}>
-            <MessageSquareText size={14} />
-          </TooltipButton>
-          <TooltipButton label="Refresh board from disk" className="toolbar-icon-button tooltip-below" onClick={refreshState}>
-            <RefreshCw size={14} />
-          </TooltipButton>
-          {hasArchivedCards ? (
-            <TooltipButton
-              label={showArchived ? "Hide archived cards" : "Show archived cards"}
-              className={`archive-toggle ${showArchived ? "active" : ""}`}
-              aria-pressed={showArchived}
-              onClick={() => setShowArchived((value) => !value)}
-            >
-              <span>Archive</span>
-              <span className="archive-switch" aria-hidden="true">
-                <span className="archive-switch-knob" />
-              </span>
-            </TooltipButton>
+        <div className="header-controls">
+          {updateStatus?.updateAvailable ? (
+            <div className="header-update-row">
+              <button
+                className="toolbar-button update-available-button"
+                onClick={() => {
+                  setUpdateOpen(true);
+                  void loadUpdateStatus().catch(() => undefined);
+                }}
+              >
+                <CircleArrowUp size={14} />
+                <span>Update Available</span>
+              </button>
+            </div>
           ) : null}
+          <div className="header-actions">
+            <HistoryPicker
+              history={history}
+              previewVersion={previewVersion}
+              onSelectVersion={previewHistoryVersion}
+              onReturnToCurrent={returnToCurrent}
+            />
+            <TooltipButton label="Provide feedback" className="toolbar-icon-button tooltip-below" onClick={() => setFeedbackOpen(true)}>
+              <MessageSquareText size={14} />
+            </TooltipButton>
+            <TooltipButton label="Refresh board from disk" className="toolbar-icon-button tooltip-below" onClick={refreshState}>
+              <RefreshCw size={14} />
+            </TooltipButton>
+            {hasArchivedCards ? (
+              <TooltipButton
+                label={showArchived ? "Hide archived cards" : "Show archived cards"}
+                className={`archive-toggle ${showArchived ? "active" : ""}`}
+                aria-pressed={showArchived}
+                onClick={() => setShowArchived((value) => !value)}
+              >
+                <span>Archive</span>
+                <span className="archive-switch" aria-hidden="true">
+                  <span className="archive-switch-knob" />
+                </span>
+              </TooltipButton>
+            ) : null}
+          </div>
         </div>
       </header>
 
       {feedbackOpen ? <FeedbackModal state={state} onClose={() => setFeedbackOpen(false)} /> : null}
+      {updateOpen ? (
+        <UpdateModal
+          state={state}
+          status={updateStatus}
+          onClose={() => setUpdateOpen(false)}
+        />
+      ) : null}
 
       {preview ? (
         <section className="history-preview-banner">

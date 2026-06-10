@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdir, rm } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { createCard, initializeProject, readDoc, setCardStatus } from "../src/core/storage";
@@ -30,6 +31,7 @@ test.beforeEach(async () => {
 
 test.afterEach(() => {
   delete process.env.PLANBAN_HOME;
+  delete process.env.PLANBAN_UPDATE_MANIFEST_URL;
 });
 
 test("serves the built app and exposes state APIs", async () => {
@@ -42,9 +44,10 @@ test("serves the built app and exposes state APIs", async () => {
     assert.equal(html.status, 200);
     assert.match(await html.text(), /Planban/);
 
-    const status = await jsonFetch<{ initialized: boolean; repoId: string }>(`${server.url}/api/status`);
+    const status = await jsonFetch<{ initialized: boolean; repoId: string; version: { version: string } }>(`${server.url}/api/status`);
     assert.equal(status.initialized, true);
     assert.equal(status.repoId, repoId);
+    assert.equal(status.version.version, "0.1.1");
 
     const state = await jsonFetch<{ roadmap: { roadmapItems: Array<{ id: string }> } }>(`${server.url}/api/state`);
     assert.deepEqual(
@@ -53,6 +56,51 @@ test("serves the built app and exposes state APIs", async () => {
     );
   } finally {
     await server.close();
+  }
+});
+
+test("reports update status from public version metadata", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const manifestServer = createHttpServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      schemaVersion: 1,
+      version: "0.1.2",
+      pluginVersion: "0.1.2",
+      mcpVersion: "0.1.2",
+      storageSchemaVersion: 1,
+      minimumStorageSchemaVersion: 1,
+      publishedAt: "2026-06-10T01:30:00.000Z",
+      sourceUrl: "https://github.com/piercekearns/planban",
+      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.2",
+      summary: "Test update",
+      updatePrompt: "Update Planban.",
+    }));
+  });
+  await new Promise<void>((resolveListen) => manifestServer.listen(0, resolveListen));
+  const address = manifestServer.address();
+  assert.equal(typeof address, "object");
+  process.env.PLANBAN_UPDATE_MANIFEST_URL = `http://127.0.0.1:${address?.port}/latest.json`;
+  const server = await startServer({ cwd, port: 4331, useVite: false });
+
+  try {
+    const status = await jsonFetch<{
+      current: { version: string };
+      latest: { version: string } | null;
+      updateAvailable: boolean;
+      compatible: boolean;
+      checkError: string | null;
+    }>(`${server.url}/api/update-status`);
+    assert.equal(status.current.version, "0.1.1");
+    assert.equal(status.latest?.version, "0.1.2");
+    assert.equal(status.updateAvailable, true);
+    assert.equal(status.compatible, true);
+    assert.equal(status.checkError, null);
+  } finally {
+    await server.close();
+    await new Promise<void>((resolveClose, rejectClose) => {
+      manifestServer.close((error) => error ? rejectClose(error) : resolveClose());
+    });
   }
 });
 

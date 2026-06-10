@@ -32,6 +32,7 @@ import type {
   PlanbanHistoryActor,
 } from "./types";
 import { PLANBAN_STATUSES } from "./types";
+import { currentVersionInfo } from "./version";
 
 const STATUS_LABELS: Record<PlanbanStatus, string> = {
   "in-progress": "In Progress",
@@ -764,6 +765,7 @@ export async function getStatus(cwdInput: string) {
       initialized: false,
       cwd,
       manifestPath: manifestPath(cwd),
+      version: currentVersionInfo(),
     };
   }
   const planningRoot = resolvePlanningRoot(manifest);
@@ -777,5 +779,6 @@ export async function getStatus(cwdInput: string) {
     roadmapPath: liveRoadmapPath,
     roadmapExists: await pathExists(liveRoadmapPath),
     repoId: manifest.repoId,
+    version: currentVersionInfo(),
   };
 }

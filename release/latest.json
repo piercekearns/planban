@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "0.1.1",
+  "pluginVersion": "0.1.1",
+  "mcpVersion": "0.1.1",
+  "storageSchemaVersion": 1,
+  "minimumStorageSchemaVersion": 1,
+  "publishedAt": "2026-06-10T01:30:00.000Z",
+  "sourceUrl": "https://github.com/piercekearns/planban",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.1",
+  "summary": "Adds local-board update detection, version reporting, and Codex-ready update prompts.",
+  "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen the Planban board."
+}
