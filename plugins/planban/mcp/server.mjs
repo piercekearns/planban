@@ -25,7 +25,7 @@ const { PLANBAN_STATUSES } = typesModule;
 const { ensureDemoBoard } = demoModule;
 
 const SERVER_NAME = "Planban MCP";
-const SERVER_VERSION = "0.1.4";
+const SERVER_VERSION = "0.1.5";
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,

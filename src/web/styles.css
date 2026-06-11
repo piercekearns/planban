@@ -267,6 +267,7 @@ h1 {
   flex-direction: column;
   align-items: flex-end;
   align-self: flex-end;
+  justify-content: flex-end;
   gap: 5px;
   min-height: 53px;
   padding-bottom: 0;
@@ -274,6 +275,7 @@ h1 {
 
 .header-controls.has-update {
   align-self: center;
+  justify-content: space-between;
 }
 
 .header-update-row,
@@ -1105,18 +1107,17 @@ h1 {
   margin-top: 16px;
 }
 
-.tutorial-hint {
+.tutorial-status {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface-subtle);
   padding: 8px 9px;
 }
 
-.tutorial-status {
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-subtle);
-  padding: 8px 9px;
+.tutorial-status.success {
+  border-color: color-mix(in oklab, var(--accent) 26%, var(--border));
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface-subtle));
+  color: var(--text);
 }
 
 .tutorial-stage {
@@ -1167,6 +1168,49 @@ h1 {
 
 .tutorial-live-board .card {
   padding-bottom: 12px;
+}
+
+.tutorial-step-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--accent) 9%, var(--bg));
+  color: var(--text);
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.tutorial-step-action > div {
+  min-width: 170px;
+  flex: 1 1 190px;
+}
+
+.tutorial-step-action b {
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.tutorial-step-action span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+.tutorial-step-action .tutorial-action {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.tutorial-step-action .tutorial-status {
+  flex: 1 0 100%;
+  margin: 0;
 }
 
 .tutorial-intro-preview {

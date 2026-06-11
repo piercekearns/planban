@@ -847,9 +847,16 @@ function SortableCard({
     <article
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
+      {...(readOnly ? {} : attributes)}
+      {...(readOnly ? {} : listeners)}
+      role="button"
       tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(item.id);
+        }
+      }}
       onClick={() => onSelect(item.id)}
       className={`card ${hasDescription ? "" : "compact"} ${readOnly ? "read-only" : ""} ${isDragging ? "is-dragging" : ""}`}
     >
@@ -2078,10 +2085,12 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
   const [tutorialItems, setTutorialItems] = useState<RoadmapItem[]>(() => tutorialItemsFromState(null));
   const [selectedId, setSelectedId] = useState<string | null>("drag-this-card-to-in-progress");
   const [detailRevealed, setDetailRevealed] = useState(false);
+  const [stepTwoMoved, setStepTwoMoved] = useState(false);
   const [planningContext, setPlanningContext] = useState("");
   const step = tutorialSteps[stepIndex]!;
   const selectedItem = tutorialItems.find((item) => item.id === selectedId) ?? tutorialItems[0] ?? null;
   const isFinalStep = stepIndex === tutorialSteps.length - 1;
+  const nextButtonLabel = stepIndex === 1 ? "Next: open a card" : "Next";
 
   useEffect(() => {
     let cancelled = false;
@@ -2122,6 +2131,7 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
     const nextItems = tutorialItemsFromState(state);
     setTutorialItems(nextItems);
     setSelectedId(nextItems.find((item) => item.id === "drag-this-card-to-in-progress")?.id ?? nextItems[0]?.id ?? null);
+    setStepTwoMoved(false);
   }
 
   function moveTutorialItem(id: string, status: Status, beforeId: string | null = null) {
@@ -2143,6 +2153,7 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
       return [...remaining.slice(0, insertAt), moved, ...remaining.slice(insertAt)];
     });
     setSelectedId(id);
+    if (status === "complete") setStepTwoMoved(true);
   }
 
   return (
@@ -2190,14 +2201,30 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
             <p>{step.copy}</p>
 
             {stepIndex === 1 ? (
-              <button className="tutorial-action" onClick={() => moveTutorialItem(selectedItem?.id ?? "mark-a-card-complete-when-you-are-done", "complete")}>
-                <ArrowRight size={14} />
-                Move selected card to Complete
-              </button>
+              <div className="tutorial-step-action">
+                <div>
+                  <b>Move a card</b>
+                  <span>Try moving the selected In Progress card to Complete.</span>
+                </div>
+                <button className="tutorial-action" onClick={() => moveTutorialItem(selectedItem?.id ?? "mark-a-card-complete-when-you-are-done", "complete")}>
+                  <ArrowRight size={14} />
+                  Move selected card
+                </button>
+                {stepTwoMoved ? (
+                  <p className="tutorial-status success">
+                    Card moved. Choose Next: open a card to continue.
+                  </p>
+                ) : null}
+              </div>
             ) : null}
 
             {stepIndex === 2 ? (
-              <p className="tutorial-hint">Click a card below to open its details.</p>
+              <div className="tutorial-step-action">
+                <div>
+                  <b>Click any card</b>
+                  <span>Planban cards open into the working context Codex can read.</span>
+                </div>
+              </div>
             ) : null}
 
             {error ? <p className="tutorial-status">Demo board fallback active: {error}</p> : null}
@@ -2229,6 +2256,7 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
                     onItemsChange={(nextItems, nextSelectedId) => {
                       setTutorialItems(nextItems);
                       if (nextSelectedId) setSelectedId(nextSelectedId);
+                      setStepTwoMoved(true);
                     }}
                   />
                 ) : stepIndex === 2 ? (
@@ -2266,7 +2294,7 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
             </button>
           ) : (
             <button className="primary" onClick={() => goToStep(stepIndex + 1)}>
-              Next
+              {nextButtonLabel}
               <ArrowRight size={14} />
             </button>
           )}

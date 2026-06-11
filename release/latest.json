@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.4",
-  "pluginVersion": "0.1.4",
-  "mcpVersion": "0.1.4",
+  "version": "0.1.5",
+  "pluginVersion": "0.1.5",
+  "mcpVersion": "0.1.5",
   "storageSchemaVersion": 1,
   "minimumStorageSchemaVersion": 1,
-  "publishedAt": "2026-06-11T02:24:00.000Z",
+  "publishedAt": "2026-06-11T17:34:31.000Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.4",
-  "summary": "Fixes the update modal copy flow when Codex blocks clipboard access.",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.5",
+  "summary": "Fixes tutorial card clicks and clarifies the step 2 to step 3 tutorial flow.",
   "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen Planban in the Codex in-app browser.",
   "postUpdateRoute": "board-with-changelog",
   "showTutorialWhenUpdatingFromBefore": "0.1.2",
-  "changelogTitle": "Update prompt copy fallback",
-  "changelogSummary": "If clipboard access is blocked, Planban now shows the update prompt inside the modal so you can still select it or open a Codex draft."
+  "changelogTitle": "Tutorial flow polish",
+  "changelogSummary": "Tutorial cards now open reliably in the inspect step, the move-to-open transition is clearer, and the board header controls stay aligned when no update is available."
 }
