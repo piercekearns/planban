@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultPlanbanRoot } from "./paths";
+import { registerBoardFromState } from "./registry";
 import { createCard, initializeProject, loadState, moveCard, pathExists, readManifest, updateCard, writeDoc } from "./storage";
 import type { PlanbanResolvedState, PlanbanStatus } from "./types";
 
@@ -169,5 +170,7 @@ export async function ensureDemoBoard(): Promise<PlanbanResolvedState> {
     });
   }
 
-  return await seedDemoCards(cwd);
+  const state = await seedDemoCards(cwd);
+  await registerBoardFromState(state, { kind: "demo" });
+  return state;
 }

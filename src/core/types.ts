@@ -120,6 +120,8 @@ export interface PlanbanBoardRecord {
   planningRoot: string;
   roadmapPath: string;
   manifestPath: string;
+  kind?: "project" | "demo";
+  archivedAt?: string | null;
   lastOpenedAt: string;
   updatedAt: string;
 }

@@ -15,7 +15,17 @@ import {
   runIdempotentBoardMutation,
 } from "../core/persistence";
 import { importT3 } from "../core/importT3";
-import { listBoards, registerBoardFromCwd, registerBoardFromState, resolveBoardCwd, touchBoard } from "../core/registry";
+import {
+  archiveBoard,
+  deleteBoard,
+  listAllBoards,
+  listBoards,
+  registerBoardFromCwd,
+  registerBoardFromState,
+  resolveBoardCwd,
+  restoreBoard,
+  touchBoard,
+} from "../core/registry";
 import {
   getStatus,
   initializeProject,
@@ -114,6 +124,7 @@ function updateItemCodexThreadMeta(
 function isUpdateManifest(value: unknown): value is PlanbanUpdateManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
+  const postUpdateRoute = candidate.postUpdateRoute;
   return (
     candidate.schemaVersion === 1 &&
     typeof candidate.version === "string" &&
@@ -125,7 +136,12 @@ function isUpdateManifest(value: unknown): value is PlanbanUpdateManifest {
     typeof candidate.sourceUrl === "string" &&
     typeof candidate.releaseNotesUrl === "string" &&
     typeof candidate.summary === "string" &&
-    typeof candidate.updatePrompt === "string"
+    typeof candidate.updatePrompt === "string" &&
+    (postUpdateRoute === undefined || postUpdateRoute === "tutorial" || postUpdateRoute === "board" || postUpdateRoute === "board-with-changelog") &&
+    (candidate.tutorialVersion === undefined || typeof candidate.tutorialVersion === "number") &&
+    (candidate.showTutorialWhenUpdatingFromBefore === undefined || typeof candidate.showTutorialWhenUpdatingFromBefore === "string") &&
+    (candidate.changelogTitle === undefined || typeof candidate.changelogTitle === "string") &&
+    (candidate.changelogSummary === undefined || typeof candidate.changelogSummary === "string")
   );
 }
 
@@ -296,12 +312,48 @@ export async function startServer(options: ServeOptions) {
     }
   });
 
-  app.get("/api/boards", async (_req, res, next) => {
+  app.get("/api/boards", async (req, res, next) => {
     try {
+      const includeArchived = req.query.includeArchived === "true";
       res.json({
         currentRepoId: currentBoard?.repoId ?? null,
-        boards: await listBoards(),
+        boards: includeArchived ? await listAllBoards() : await listBoards(),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/boards/:repoId/archive", async (req, res, next) => {
+    try {
+      const board = await archiveBoard(req.params.repoId);
+      sendEvent("boards", { repoId: req.params.repoId, action: "archive" });
+      res.json({ board });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/boards/:repoId/restore", async (req, res, next) => {
+    try {
+      const board = await restoreBoard(req.params.repoId);
+      sendEvent("boards", { repoId: req.params.repoId, action: "restore" });
+      res.json({ board });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/boards/:repoId", async (req, res, next) => {
+    try {
+      const confirmRepoId = typeof req.body?.confirmRepoId === "string" ? req.body.confirmRepoId.trim() : "";
+      if (confirmRepoId !== req.params.repoId) {
+        res.status(422).json({ error: "confirmRepoId must match the board repo id" });
+        return;
+      }
+      const result = await deleteBoard(req.params.repoId);
+      sendEvent("boards", { repoId: req.params.repoId, action: "delete" });
+      res.json(result);
     } catch (error) {
       next(error);
     }
@@ -310,7 +362,7 @@ export async function startServer(options: ServeOptions) {
   app.post("/api/demo", async (_req, res, next) => {
     try {
       const state = await ensureDemoBoard();
-      await registerBoardFromState(state);
+      await registerBoardFromState(state, { kind: "demo" });
       sendEvent("state", { repoId: state.manifest.repoId, revision: state.roadmap.revision });
       res.json(state);
     } catch (error) {

@@ -6,6 +6,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { ensureDemoBoard } from "../src/core/demo";
 import { registryPath } from "../src/core/paths";
+import { archiveBoard, deleteBoard, listAllBoards, listBoards, restoreBoard } from "../src/core/registry";
 import {
   createCard,
   deleteArchivedCard,
@@ -85,6 +86,27 @@ test("creates an idempotent demo board with tutorial cards", async () => {
 
   const second = await ensureDemoBoard();
   assert.equal(second.roadmap.roadmapItems.length, 5);
+  assert.equal((await listAllBoards()).find((board) => board.repoId === "planban-demo")?.kind, "demo");
+});
+
+test("archives, restores, and deletes whole boards with a backup", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+
+  const archived = await archiveBoard(repoId);
+  assert.equal(archived.archivedAt !== null, true);
+  assert.deepEqual(await listBoards(), []);
+  assert.equal((await listAllBoards()).find((board) => board.repoId === repoId)?.archivedAt, archived.archivedAt);
+
+  const restored = await restoreBoard(repoId);
+  assert.equal(restored.archivedAt, null);
+  assert.equal((await listBoards()).map((board) => board.repoId)[0], repoId);
+
+  const deleted = await deleteBoard(repoId);
+  assert.equal(deleted.repoId, repoId);
+  assert.equal(typeof deleted.backupPath, "string");
+  assert.equal((await listAllBoards()).find((board) => board.repoId === repoId), undefined);
+  await assert.rejects(stat(planningRoot));
+  assert.equal(JSON.parse(await readFile(join(deleted.backupPath!, "roadmap.json"), "utf8")).project.title, "Storage Test");
 });
 
 test("creates cards with linked docs and persists exact reorder", async () => {

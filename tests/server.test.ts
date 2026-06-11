@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
@@ -47,7 +47,7 @@ test("serves the built app and exposes state APIs", async () => {
     const status = await jsonFetch<{ initialized: boolean; repoId: string; version: { version: string } }>(`${server.url}/api/status`);
     assert.equal(status.initialized, true);
     assert.equal(status.repoId, repoId);
-    assert.equal(status.version.version, "0.1.2");
+    assert.equal(status.version.version, "0.1.3");
 
     const state = await jsonFetch<{ roadmap: { roadmapItems: Array<{ id: string }> } }>(`${server.url}/api/state`);
     assert.deepEqual(
@@ -65,16 +65,20 @@ test("reports update status from public version metadata", async () => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       schemaVersion: 1,
-      version: "0.1.3",
-      pluginVersion: "0.1.3",
-      mcpVersion: "0.1.3",
+      version: "0.1.4",
+      pluginVersion: "0.1.4",
+      mcpVersion: "0.1.4",
       storageSchemaVersion: 1,
       minimumStorageSchemaVersion: 1,
       publishedAt: "2026-06-10T01:30:00.000Z",
       sourceUrl: "https://github.com/piercekearns/planban",
-      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.3",
+      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.4",
       summary: "Test update",
       updatePrompt: "Update Planban.",
+      postUpdateRoute: "board-with-changelog",
+      changelogTitle: "Test changelog",
+      changelogSummary: "A richer test update.",
+      showTutorialWhenUpdatingFromBefore: "0.1.3",
     }));
   });
   await new Promise<void>((resolveListen) => manifestServer.listen(0, resolveListen));
@@ -86,16 +90,18 @@ test("reports update status from public version metadata", async () => {
   try {
     const status = await jsonFetch<{
       current: { version: string };
-      latest: { version: string } | null;
+      latest: { version: string; postUpdateRoute?: string; changelogTitle?: string } | null;
       updateAvailable: boolean;
       compatible: boolean;
       checkError: string | null;
     }>(`${server.url}/api/update-status`);
-    assert.equal(status.current.version, "0.1.2");
-    assert.equal(status.latest?.version, "0.1.3");
+    assert.equal(status.current.version, "0.1.3");
+    assert.equal(status.latest?.version, "0.1.4");
     assert.equal(status.updateAvailable, true);
     assert.equal(status.compatible, true);
     assert.equal(status.checkError, null);
+    assert.equal(status.latest?.postUpdateRoute, "board-with-changelog");
+    assert.equal(status.latest?.changelogTitle, "Test changelog");
   } finally {
     await server.close();
     await new Promise<void>((resolveClose, rejectClose) => {
@@ -128,6 +134,51 @@ test("lists registered boards and serves board-specific state APIs", async () =>
     assert.equal(first.roadmap.roadmapItems[0]?.id, "alpha");
     assert.equal(second.roadmap.project.title, "Other Board");
     assert.equal(second.roadmap.roadmapItems[0]?.id, "beta");
+  } finally {
+    await server.close();
+  }
+});
+
+test("archives, restores, and deletes whole boards through the board API", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  await initializeProject({ cwd: otherCwd, title: "Other Board", repoId: otherRepoId, updateAgents: false });
+  const server = await startServer({ cwd, port: 4332, useVite: false });
+
+  try {
+    await jsonFetch<{ board: { repoId: string; archivedAt: string } }>(`${server.url}/api/boards/${repoId}/archive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    const active = await jsonFetch<{ boards: Array<{ repoId: string }> }>(`${server.url}/api/boards`);
+    assert.deepEqual(active.boards.map((board) => board.repoId), [otherRepoId]);
+
+    const all = await jsonFetch<{ boards: Array<{ repoId: string; archivedAt?: string | null }> }>(
+      `${server.url}/api/boards?includeArchived=true`,
+    );
+    assert.equal(all.boards.find((board) => board.repoId === repoId)?.archivedAt !== null, true);
+
+    await jsonFetch<{ board: { repoId: string; archivedAt: null } }>(`${server.url}/api/boards/${repoId}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    const rejected = await fetch(`${server.url}/api/boards/${repoId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmRepoId: "wrong" }),
+    });
+    assert.equal(rejected.status, 422);
+
+    const deleted = await jsonFetch<{ repoId: string; backupPath: string }>(`${server.url}/api/boards/${repoId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmRepoId: repoId }),
+    });
+    assert.equal(deleted.repoId, repoId);
+    assert.equal(JSON.parse(await readFile(join(deleted.backupPath, "roadmap.json"), "utf8")).project.title, "Server Test");
   } finally {
     await server.close();
   }

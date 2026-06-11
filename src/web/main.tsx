@@ -92,6 +92,8 @@ interface BoardRecord {
   planningRoot: string;
   roadmapPath: string;
   manifestPath: string;
+  kind?: "project" | "demo";
+  archivedAt?: string | null;
   lastOpenedAt: string;
   updatedAt: string;
 }
@@ -110,6 +112,7 @@ interface VersionInfo {
 }
 
 interface UpdateManifest {
+  schemaVersion?: 1;
   version: string;
   pluginVersion: string;
   mcpVersion: string;
@@ -120,6 +123,11 @@ interface UpdateManifest {
   releaseNotesUrl: string;
   summary: string;
   updatePrompt: string;
+  postUpdateRoute?: "tutorial" | "board" | "board-with-changelog";
+  tutorialVersion?: number;
+  showTutorialWhenUpdatingFromBefore?: string;
+  changelogTitle?: string;
+  changelogSummary?: string;
 }
 
 interface UpdateStatusPayload {
@@ -434,7 +442,9 @@ async function openCodexPromptForState(state: PlanbanState, prompt: string) {
 
 function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
+  const tutorialUrl = `${window.location.origin}/tutorial?mode=first-run`;
   const latest = status.latest;
+  const postUpdateInstruction = updatePostInstallInstruction(status, boardUrl, tutorialUrl);
   return [
     "Hit enter to update Planban with your agent.",
     "",
@@ -449,29 +459,71 @@ function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
     formatOptionalLine("Latest MCP version", latest?.mcpVersion ?? "(unknown)"),
     formatOptionalLine("Release notes", latest?.releaseNotesUrl ?? "(none)"),
     formatOptionalLine("Release-specific update instructions", latest?.updatePrompt ?? "(none)"),
+    formatOptionalLine("Post-update route", postUpdateInstruction),
     formatOptionalLine("Source", latest?.sourceUrl ?? status.current.sourceUrl),
     formatOptionalLine("Current board", boardUrl),
     "",
     "Before changing anything, inspect how Planban is installed on this machine.",
-    "If it is installed from the public Git marketplace source, refresh the marketplace snapshot and reinstall/refresh the Planban plugin.",
-    "If it is installed from a local clone, pull the latest repo changes, install dependencies, rerun the local plugin configuration script if needed, and refresh/reinstall the Planban plugin.",
+    "The public README install flow normally creates a local clone marketplace. If that is the install shape, update the clone first, then reinstall the plugin from that local marketplace.",
+    "Only use codex plugin marketplace upgrade planban when the marketplace is actually a Git-backed marketplace snapshot.",
     "Before any storage migration, create a timestamped backup of the affected ~/.planban state and explain how to restore it.",
     "Do not upload or expose private board contents, repo paths, logs, or local project details.",
     "",
-    "Likely public marketplace commands, to verify before running:",
-    "codex plugin marketplace upgrade planban",
-    "codex plugin add planban@planban",
-    "",
-    "Likely local clone commands, to verify before running:",
+    "Primary local clone commands, to verify before running:",
     "git pull",
     "npm install",
     "node scripts/configure-local-plugin.mjs",
+    "codex plugin add planban@planban",
+    "",
+    "Git-backed marketplace fallback, only if inspection confirms that install shape:",
     "codex plugin marketplace upgrade planban",
     "codex plugin add planban@planban",
     "",
-    "After updating, verify the Planban plugin and MCP tools are available, then follow the release-specific update instructions above.",
-    "If no release-specific instructions are available, reopen the relevant Planban board in the Codex in-app browser and confirm the running version.",
+    "After updating, verify the running Planban version, the installed plugin version, MCP tools, and board load.",
+    postUpdateInstruction,
   ].join("\n");
+}
+
+function versionParts(version: string) {
+  const core = version.trim().replace(/^v/u, "").split(/[+-]/u)[0] ?? "0";
+  return core.split(".").map((part) => {
+    const value = Number.parseInt(part, 10);
+    return Number.isFinite(value) ? value : 0;
+  });
+}
+
+function compareVersionStrings(left: string, right: string) {
+  const leftParts = versionParts(left);
+  const rightParts = versionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = leftParts[index] ?? 0;
+    const rightValue = rightParts[index] ?? 0;
+    if (leftValue > rightValue) return 1;
+    if (leftValue < rightValue) return -1;
+  }
+  return 0;
+}
+
+function shouldRouteToTutorial(status: UpdateStatusPayload) {
+  const latest = status.latest;
+  if (!latest) return false;
+  if (latest.postUpdateRoute === "tutorial") return true;
+  if (!latest.showTutorialWhenUpdatingFromBefore) return false;
+  return compareVersionStrings(status.current.version, latest.showTutorialWhenUpdatingFromBefore) < 0;
+}
+
+function updatePostInstallInstruction(status: UpdateStatusPayload, boardUrl: string, tutorialUrl: string) {
+  const latest = status.latest;
+  if (shouldRouteToTutorial(status)) {
+    return `After updating, open ${tutorialUrl} in the Codex in-app browser so the user can see the Planban tutorial. If the board opens instead, make sure the Planban tour banner is visible when the tutorial has not been completed or skipped locally.`;
+  }
+  if (latest?.postUpdateRoute === "board-with-changelog") {
+    const title = latest.changelogTitle ? ` titled "${latest.changelogTitle}"` : "";
+    const summary = latest.changelogSummary ? ` Summary: ${latest.changelogSummary}` : "";
+    return `After updating, reopen ${boardUrl} in the Codex in-app browser and show the what's-new modal${title}.${summary}`;
+  }
+  return `After updating, reopen ${boardUrl} in the Codex in-app browser and confirm the running version.`;
 }
 
 async function openCodexUpdateThread(state: PlanbanState, status: UpdateStatusPayload) {
@@ -1225,7 +1277,7 @@ function UpdateModal({
   }
 
   return createPortal(
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="modal-backdrop update-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
         className="update-modal"
         role="dialog"
@@ -1256,7 +1308,8 @@ function UpdateModal({
               ) : status.updateAvailable ? (
                 <section className="update-summary">
                   <p className="eyebrow">What's changed</p>
-                  <p>{latest?.summary}</p>
+                  {latest?.changelogTitle ? <h3>{latest.changelogTitle}</h3> : null}
+                  <p>{latest?.changelogSummary ?? latest?.summary}</p>
                 </section>
               ) : (
                 <p className="update-note">You are on the latest known Planban version.</p>
@@ -2815,16 +2868,18 @@ function BoardView({
 
   return (
     <main className="board-screen">
-      <header className="app-header">
+      <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
           <div className="board-breadcrumb">
-            <button onClick={() => onSelectBoard(null)}>Planban</button>
-            <span>/</span>
-            <span>{state.roadmap.project.title}</span>
+            <span className="board-breadcrumb-main">
+              <button className="board-breadcrumb-home" onClick={() => onSelectBoard(null)}>Planban</button>
+              <span>/</span>
+              <span>{state.roadmap.project.title}</span>
+            </span>
           </div>
           <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
         </div>
-        <div className="header-controls">
+        <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
           {updateStatus?.updateAvailable ? (
             <div className="header-update-row">
               <button
@@ -2944,7 +2999,112 @@ function BoardView({
   );
 }
 
-function BoardDashboard({ boards, onSelectBoard }: { boards: BoardRecord[]; onSelectBoard: (repoId: string) => void }) {
+function BoardDashboard({
+  boards,
+  onSelectBoard,
+  onBoardsChanged,
+}: {
+  boards: BoardRecord[];
+  onSelectBoard: (repoId: string) => void;
+  onBoardsChanged: () => Promise<void>;
+}) {
+  const [showArchivedBoards, setShowArchivedBoards] = useState(false);
+  const [pendingAction, setPendingAction] = useState<{ kind: "archive" | "delete"; board: BoardRecord } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [busyAction, setBusyAction] = useState<"archive" | "delete" | "restore" | null>(null);
+  const [toast, setToast] = useState<{ tone: "success" | "error"; message: string; detail?: string } | null>(null);
+  const activeBoards = boards.filter((board) => !board.archivedAt);
+  const archivedBoards = boards.filter((board) => board.archivedAt);
+  const visibleBoards = showArchivedBoards ? archivedBoards : activeBoards;
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timeout = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  useEffect(() => {
+    if (showArchivedBoards && archivedBoards.length === 0) {
+      setShowArchivedBoards(false);
+    }
+  }, [archivedBoards.length, showArchivedBoards]);
+
+  useEffect(() => {
+    if (!pendingAction) return undefined;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !busyAction) closeBoardActionModal();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busyAction, pendingAction]);
+
+  function closeBoardActionModal() {
+    setPendingAction(null);
+    setDeleteConfirm("");
+  }
+
+  function startBoardAction(kind: "archive" | "delete", board: BoardRecord) {
+    setDeleteConfirm("");
+    setPendingAction({ kind, board });
+  }
+
+  async function restoreWholeBoard(board: BoardRecord) {
+    setBusyAction("restore");
+    try {
+      await api<{ board: BoardRecord }>(`/api/boards/${encodeURIComponent(board.repoId)}/restore`, {
+        method: "POST",
+        body: "{}",
+      });
+      await onBoardsChanged();
+      setToast({ tone: "success", message: `Restored ${board.title}` });
+    } catch (error) {
+      setToast({
+        tone: "error",
+        message: `Could not restore ${board.title}`,
+        detail: error instanceof Error ? error.message : "Restore failed.",
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function confirmBoardAction() {
+    if (!pendingAction) return;
+    const { kind, board } = pendingAction;
+    if (kind === "delete" && deleteConfirm !== board.repoId) return;
+    setBusyAction(kind);
+    try {
+      if (kind === "archive") {
+        await api<{ board: BoardRecord }>(`/api/boards/${encodeURIComponent(board.repoId)}/archive`, {
+          method: "POST",
+          body: "{}",
+        });
+        await onBoardsChanged();
+        setToast({ tone: "success", message: `Archived ${board.title}` });
+      } else {
+        const result = await api<{ repoId: string; backupPath: string | null }>(`/api/boards/${encodeURIComponent(board.repoId)}`, {
+          method: "DELETE",
+          body: JSON.stringify({ confirmRepoId: board.repoId }),
+        });
+        await onBoardsChanged();
+        setToast({
+          tone: "success",
+          message: `Deleted ${board.title}`,
+          detail: result.backupPath ? "Backup saved locally." : "No local planning root existed to back up.",
+        });
+      }
+      closeBoardActionModal();
+    } catch (error) {
+      setToast({
+        tone: "error",
+        message: kind === "archive" ? `Could not archive ${board.title}` : `Could not delete ${board.title}`,
+        detail: error instanceof Error ? error.message : "Board action failed.",
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   return (
     <main className="board-dashboard">
       <header className="app-header">
@@ -2952,25 +3112,151 @@ function BoardDashboard({ boards, onSelectBoard }: { boards: BoardRecord[]; onSe
           <p className="eyebrow">Planban</p>
           <h1>Boards</h1>
         </div>
+        {archivedBoards.length > 0 ? (
+          <button
+            className={`archive-toggle ${showArchivedBoards ? "active" : ""}`}
+            aria-pressed={showArchivedBoards}
+            onClick={() => setShowArchivedBoards((value) => !value)}
+          >
+            <span>{showArchivedBoards ? "Active boards" : "Archived boards"}</span>
+            <span className="archive-switch" aria-hidden="true">
+              <span className="archive-switch-knob" />
+            </span>
+          </button>
+        ) : null}
       </header>
       <section className="board-list">
-        {boards.length > 0 ? (
-          boards.map((board) => (
-            <button key={board.repoId} className="board-list-item" onClick={() => onSelectBoard(board.repoId)}>
-              <span>
-                <b>{board.title}</b>
-                <small>{board.cwd}</small>
+        {visibleBoards.length > 0 ? (
+          visibleBoards.map((board) => (
+            <article key={board.repoId} className={`board-list-item ${board.archivedAt ? "archived" : ""}`}>
+              <button className="board-list-open" onClick={() => onSelectBoard(board.repoId)} disabled={Boolean(board.archivedAt)}>
+                <span>
+                  <span className="board-list-title-row">
+                    <b>{board.title}</b>
+                    {board.kind === "demo" ? <small className="board-kind-pill">Demo</small> : null}
+                    {board.archivedAt ? <small className="board-kind-pill">Archived</small> : null}
+                  </span>
+                  <small>{board.cwd}</small>
+                </span>
+                <small>{board.repoId}</small>
+              </button>
+              <span className="board-list-actions">
+                {board.archivedAt ? (
+                  <TooltipButton
+                    label={`Restore ${board.title}`}
+                    tooltipPlacement="top"
+                    className="board-list-action-button"
+                    onClick={() => void restoreWholeBoard(board)}
+                  >
+                    <RotateCcw size={14} />
+                  </TooltipButton>
+                ) : (
+                  <TooltipButton
+                    label={`Archive ${board.title}`}
+                    tooltipPlacement="top"
+                    className="board-list-action-button"
+                    onClick={() => startBoardAction("archive", board)}
+                  >
+                    <Archive size={14} />
+                  </TooltipButton>
+                )}
+                <TooltipButton
+                  label={`Delete ${board.title}`}
+                  tooltipPlacement="top"
+                  className="board-list-action-button danger"
+                  onClick={() => startBoardAction("delete", board)}
+                >
+                  <Trash2 size={14} />
+                </TooltipButton>
               </span>
-              <small>{board.repoId}</small>
-            </button>
+            </article>
           ))
         ) : (
           <div className="empty-boards">
-            <h2>No Planban boards registered yet</h2>
-            <p>Open Planban from a project or initialize a repo to add it to this device.</p>
+            <h2>{showArchivedBoards ? "No archived boards" : "No Planban boards registered yet"}</h2>
+            <p>
+              {showArchivedBoards
+                ? "Archived boards will appear here when you hide boards from your normal list."
+                : "Open Planban from a project or initialize a repo to add it to this device."}
+            </p>
           </div>
         )}
       </section>
+      {pendingAction ? (
+        <div className="modal-backdrop board-action-backdrop" role="presentation" onMouseDown={() => {
+          if (!busyAction) closeBoardActionModal();
+        }}>
+          <section
+            className="board-action-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="board-action-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="feedback-modal-header">
+              <div>
+                <p className="eyebrow">{pendingAction.kind === "archive" ? "Archive board" : "Delete board"}</p>
+                <h2 id="board-action-title">
+                  {pendingAction.kind === "archive"
+                    ? pendingAction.board.kind === "demo"
+                      ? "Remove this demo board?"
+                      : `Archive ${pendingAction.board.title}?`
+                    : `Delete ${pendingAction.board.title}?`}
+                </h2>
+              </div>
+              <TooltipButton label="Close" className="toolbar-icon-button" onClick={closeBoardActionModal} disabled={Boolean(busyAction)}>
+                <X size={14} />
+              </TooltipButton>
+            </header>
+            <div className="board-action-modal-body">
+              {pendingAction.kind === "archive" ? (
+                <>
+                  <p>Archive hides this board from your normal board list while keeping its local Planban state intact.</p>
+                  <p>You can restore it later from the archived boards view.</p>
+                </>
+              ) : (
+                <>
+                  <p>Delete removes this board from Planban after creating a timestamped local backup.</p>
+                  <p>Planban will not delete the source project repository.</p>
+                  <label className="board-delete-confirm">
+                    <span>Type <b>{pendingAction.board.repoId}</b> to confirm.</span>
+                    <input
+                      autoFocus
+                      value={deleteConfirm}
+                      onChange={(event) => setDeleteConfirm(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && deleteConfirm === pendingAction.board.repoId && !busyAction) {
+                          event.preventDefault();
+                          void confirmBoardAction();
+                        }
+                      }}
+                      placeholder={pendingAction.board.repoId}
+                      disabled={busyAction === "delete"}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+            <footer className="feedback-actions">
+              <button onClick={closeBoardActionModal} disabled={Boolean(busyAction)}>Cancel</button>
+              <button
+                className={`board-action-confirm ${pendingAction.kind === "delete" ? "danger primary" : "archive primary"}`}
+                onClick={() => void confirmBoardAction()}
+                disabled={Boolean(busyAction) || (pendingAction.kind === "delete" && deleteConfirm !== pendingAction.board.repoId)}
+              >
+                {busyAction === pendingAction.kind ? <Loader2 size={14} className="spin" /> : pendingAction.kind === "archive" ? <Archive size={14} /> : <Trash2 size={14} />}
+                {pendingAction.kind === "archive" ? "Archive" : "Delete board"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+      {toast ? (
+        <div className={`toast ${toast.tone}`} role="status" aria-live="polite">
+          <b>{toast.message}</b>
+          {toast.detail ? <span>{toast.detail}</span> : null}
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -3049,7 +3335,7 @@ function App() {
     try {
       const [status, boardsPayload] = await Promise.all([
         api<{ initialized: boolean; currentRepoId: string | null }>("/api/status"),
-        api<BoardsPayload>("/api/boards"),
+        api<BoardsPayload>("/api/boards?includeArchived=true"),
       ]);
       if (requestId !== appLoadRequestRef.current) return;
       setInitialized(status.initialized);
@@ -3060,10 +3346,17 @@ function App() {
         return;
       }
       const routeRepoId = repoIdFromPath();
+      const activeBoards = boardsPayload.boards.filter((board) => !board.archivedAt);
       const nextRepoId = isBoardDashboardPath()
         ? null
         : routeRepoId ?? selectedRepoIdRef.current ?? status.currentRepoId ?? null;
       if (nextRepoId) {
+        if (!activeBoards.some((board) => board.repoId === nextRepoId)) {
+          replaceBoardPath(null);
+          setSelectedRepoId(null);
+          setState(null);
+          return;
+        }
         replaceBoardPath(nextRepoId);
         setSelectedRepoId(nextRepoId);
         await loadSelectedBoard(nextRepoId);
@@ -3080,6 +3373,7 @@ function App() {
     void load();
     const events = new EventSource("/api/events");
     events.addEventListener("state", () => void load());
+    events.addEventListener("boards", () => void load());
     return () => events.close();
   }, [load]);
 
@@ -3101,7 +3395,7 @@ function App() {
 
   if (error) return <main className="error-screen">{error}</main>;
   if (isTutorialPath()) return <TutorialPage onSelectBoard={selectBoard} />;
-  if (!selectedRepoId && boards.length > 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} />;
+  if (!selectedRepoId && boards.length > 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
   if (initialized === false && boards.length === 0) {
     return (
       <Onboarding
@@ -3125,9 +3419,9 @@ function App() {
       />
     );
   }
-  if (!selectedRepoId && boards.length === 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} />;
+  if (!selectedRepoId && boards.length === 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
   if (!state) return <main className="loading-screen">Loading Planban...</main>;
-  return <BoardView state={state} boards={boards} onStateChange={setState} onSelectBoard={selectBoard} />;
+  return <BoardView state={state} boards={boards.filter((board) => !board.archivedAt)} onStateChange={setState} onSelectBoard={selectBoard} />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

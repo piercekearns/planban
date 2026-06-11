@@ -1,8 +1,8 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { defaultPlanningRoot, expandHome, manifestPath, registryPath, roadmapPath } from "./paths";
+import { boardBackupsRoot, defaultPlanningRoot, expandHome, manifestPath, registryPath, roadmapPath } from "./paths";
 import { manifestSchema } from "./schema";
 import type { PlanbanBoardRecord, PlanbanBoardRegistry, PlanbanResolvedState } from "./types";
 
@@ -13,6 +13,8 @@ const boardRecordSchema = z.object({
   planningRoot: z.string().min(1),
   roadmapPath: z.string().min(1),
   manifestPath: z.string().min(1),
+  kind: z.enum(["project", "demo"]).optional(),
+  archivedAt: z.string().min(1).nullable().optional(),
   lastOpenedAt: z.string().min(1),
   updatedAt: z.string().min(1),
 });
@@ -50,7 +52,25 @@ function resolvePlanningRoot(manifest: { repoId: string; storage?: { root?: stri
 async function readRegistryFile(): Promise<PlanbanBoardRegistry> {
   const path = registryPath();
   if (!(await pathExists(path))) return { version: 1, boards: [] };
-  return registrySchema.parse(JSON.parse(await readFile(path, "utf8")));
+  const parsed = registrySchema.parse(JSON.parse(await readFile(path, "utf8")));
+  return {
+    version: 1,
+    boards: parsed.boards.map((board) => {
+      const record: PlanbanBoardRecord = {
+        repoId: board.repoId,
+        title: board.title,
+        cwd: board.cwd,
+        planningRoot: board.planningRoot,
+        roadmapPath: board.roadmapPath,
+        manifestPath: board.manifestPath,
+        lastOpenedAt: board.lastOpenedAt,
+        updatedAt: board.updatedAt,
+      };
+      if (board.kind) record.kind = board.kind;
+      if (board.archivedAt !== undefined) record.archivedAt = board.archivedAt;
+      return record;
+    }),
+  };
 }
 
 async function writeRegistryFile(registry: PlanbanBoardRegistry) {
@@ -64,12 +84,25 @@ async function writeRegistryFile(registry: PlanbanBoardRegistry) {
 export async function listBoards(): Promise<PlanbanBoardRecord[]> {
   const registry = await readRegistryFile();
   return registry.boards
+    .filter((board) => !board.archivedAt)
     .slice()
     .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt) || a.title.localeCompare(b.title));
 }
 
-export async function registerBoardFromState(state: PlanbanResolvedState): Promise<PlanbanBoardRecord> {
+export async function listAllBoards(): Promise<PlanbanBoardRecord[]> {
+  const registry = await readRegistryFile();
+  return registry.boards
+    .slice()
+    .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt) || a.title.localeCompare(b.title));
+}
+
+export async function registerBoardFromState(
+  state: PlanbanResolvedState,
+  options: { kind?: PlanbanBoardRecord["kind"] } = {},
+): Promise<PlanbanBoardRecord> {
   const timestamp = nowIso();
+  const registry = await readRegistryFile();
+  const existing = registry.boards.find((board) => board.repoId === state.manifest.repoId);
   const record: PlanbanBoardRecord = {
     repoId: state.manifest.repoId,
     title: state.roadmap.project.title,
@@ -77,16 +110,16 @@ export async function registerBoardFromState(state: PlanbanResolvedState): Promi
     planningRoot: state.planningRoot,
     roadmapPath: state.roadmapPath,
     manifestPath: state.manifestPath,
+    kind: options.kind ?? existing?.kind ?? "project",
+    archivedAt: null,
     lastOpenedAt: timestamp,
     updatedAt: timestamp,
   };
 
-  const registry = await readRegistryFile();
-  const existing = registry.boards.find((board) => board.repoId === record.repoId);
   const boards = existing
     ? registry.boards.map((board) =>
         board.repoId === record.repoId
-          ? { ...board, ...record, lastOpenedAt: record.lastOpenedAt }
+          ? { ...board, ...record, lastOpenedAt: record.lastOpenedAt, archivedAt: null }
           : board,
       )
     : [...registry.boards, record];
@@ -105,6 +138,57 @@ export async function touchBoard(repoId: string): Promise<void> {
   });
 }
 
+export async function archiveBoard(repoId: string): Promise<PlanbanBoardRecord> {
+  const registry = await readRegistryFile();
+  const existing = registry.boards.find((board) => board.repoId === repoId);
+  if (!existing) throw new Error(`Planban board not found: ${repoId}`);
+  const timestamp = nowIso();
+  const archived = { ...existing, archivedAt: existing.archivedAt ?? timestamp, updatedAt: timestamp };
+  await writeRegistryFile({
+    version: 1,
+    boards: registry.boards.map((board) => (board.repoId === repoId ? archived : board)),
+  });
+  return archived;
+}
+
+export async function restoreBoard(repoId: string): Promise<PlanbanBoardRecord> {
+  const registry = await readRegistryFile();
+  const existing = registry.boards.find((board) => board.repoId === repoId);
+  if (!existing) throw new Error(`Planban board not found: ${repoId}`);
+  const timestamp = nowIso();
+  const restored = { ...existing, archivedAt: null, lastOpenedAt: timestamp, updatedAt: timestamp };
+  await writeRegistryFile({
+    version: 1,
+    boards: registry.boards.map((board) => (board.repoId === repoId ? restored : board)),
+  });
+  return restored;
+}
+
+function safeTimestamp(timestamp: string) {
+  return timestamp.replace(/[:.]/g, "-");
+}
+
+export async function deleteBoard(repoId: string): Promise<{ repoId: string; backupPath: string | null }> {
+  const registry = await readRegistryFile();
+  const existing = registry.boards.find((board) => board.repoId === repoId);
+  if (!existing) throw new Error(`Planban board not found: ${repoId}`);
+
+  const timestamp = nowIso();
+  let backupPath: string | null = null;
+  if (await pathExists(existing.planningRoot)) {
+    backupPath = join(boardBackupsRoot(), `${repoId}-${safeTimestamp(timestamp)}-${basename(existing.planningRoot)}`);
+    await mkdir(dirname(backupPath), { recursive: true });
+    await cp(existing.planningRoot, backupPath, { recursive: true, force: false, errorOnExist: true });
+    await rm(existing.planningRoot, { recursive: true, force: true });
+  }
+
+  await writeRegistryFile({
+    version: 1,
+    boards: registry.boards.filter((board) => board.repoId !== repoId),
+  });
+  return { repoId, backupPath };
+}
+
 export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoardRecord | null> {
   const cwd = resolve(cwdInput);
   const manifest = await readManifest(cwd);
@@ -114,6 +198,8 @@ export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoa
   if (!(await pathExists(liveRoadmapPath))) return null;
   const raw = JSON.parse(await readFile(liveRoadmapPath, "utf8")) as { project?: { title?: unknown } };
   const timestamp = nowIso();
+  const registry = await readRegistryFile();
+  const existing = registry.boards.find((board) => board.repoId === manifest.repoId);
   const record: PlanbanBoardRecord = {
     repoId: manifest.repoId,
     title: typeof raw.project?.title === "string" ? raw.project.title : manifest.repoId,
@@ -121,11 +207,12 @@ export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoa
     planningRoot,
     roadmapPath: liveRoadmapPath,
     manifestPath: manifestPath(cwd),
+    kind: existing?.kind ?? "project",
+    archivedAt: null,
     lastOpenedAt: timestamp,
     updatedAt: timestamp,
   };
 
-  const registry = await readRegistryFile();
   const boards = registry.boards.some((board) => board.repoId === record.repoId)
     ? registry.boards.map((board) => (board.repoId === record.repoId ? { ...board, ...record } : board))
     : [...registry.boards, record];

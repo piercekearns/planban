@@ -75,6 +75,9 @@ test("Planban MCP server registers focused tools", () => {
     [
       "planban_status",
       "planban_list_boards",
+      "planban_archive_board",
+      "planban_restore_board",
+      "planban_delete_board",
       "planban_get_board",
       "planban_get_card",
       "planban_read_doc",
@@ -84,6 +87,52 @@ test("Planban MCP server registers focused tools", () => {
       "planban_launch_board",
     ],
   );
+});
+
+test("Planban MCP board lifecycle tools require deliberate delete confirmation", async () => {
+  await withPlanbanProject(async ({ planbanHome }) => {
+    const responses = runMcpServer([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "planban_archive_board", arguments: { repoId: "mcp-test" } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "planban_list_boards", arguments: { includeArchived: true } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "planban_restore_board", arguments: { repoId: "mcp-test" } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "planban_delete_board", arguments: { repoId: "mcp-test", confirmRepoId: "wrong" } },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "planban_delete_board", arguments: { repoId: "mcp-test", confirmRepoId: "mcp-test" } },
+      },
+    ], { PLANBAN_HOME: planbanHome });
+
+    assert.equal(responses[1].result.structuredContent.board.repoId, "mcp-test");
+    assert.equal(responses[2].result.structuredContent.boards[0].archivedAt !== null, true);
+    assert.equal(responses[3].result.structuredContent.board.archivedAt, null);
+    assert.equal(responses[4].error.code, -32602);
+    assert.match(responses[4].error.message, /confirmRepoId/);
+    assert.equal(responses[5].result.structuredContent.repoId, "mcp-test");
+    assert.match(responses[5].result.structuredContent.backupPath, /mcp-test/);
+  });
 });
 
 test("Planban MCP read tools inspect boards, cards, and docs", async () => {

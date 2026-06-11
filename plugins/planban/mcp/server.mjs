@@ -20,12 +20,12 @@ const typesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "sr
 const demoModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/demo.ts")).href);
 
 const { getStatus, loadState, moveCard, readDoc, updateCard, writeDoc } = storageModule;
-const { listBoards, resolveBoardCwd } = registryModule;
+const { archiveBoard, deleteBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { ensureDemoBoard } = demoModule;
 
 const SERVER_NAME = "Planban MCP";
-const SERVER_VERSION = "0.1.2";
+const SERVER_VERSION = "0.1.3";
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -275,8 +275,38 @@ const tools = [
     name: "planban_list_boards",
     title: "List Planban Boards",
     description: "List registered local Planban boards on this device.",
-    inputSchema: schema.object({}),
+    inputSchema: schema.object({
+      includeArchived: { type: "boolean", description: "Include archived boards." },
+    }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "planban_archive_board",
+    title: "Archive Planban Board",
+    description: "Archive a whole Planban board. This hides it from normal board lists but keeps local planning state intact.",
+    inputSchema: schema.object({
+      repoId: { type: "string", description: "Registered Planban repo id to archive." },
+    }, ["repoId"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "planban_restore_board",
+    title: "Restore Planban Board",
+    description: "Restore an archived Planban board.",
+    inputSchema: schema.object({
+      repoId: { type: "string", description: "Registered Planban repo id to restore." },
+    }, ["repoId"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "planban_delete_board",
+    title: "Delete Planban Board",
+    description: "Delete a whole Planban board after creating a timestamped local backup. This never deletes the user's source project repository.",
+    inputSchema: schema.object({
+      repoId: { type: "string", description: "Registered Planban repo id to delete." },
+      confirmRepoId: { type: "string", description: "Must exactly match repoId." },
+    }, ["repoId", "confirmRepoId"]),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
   {
     name: "planban_get_board",
@@ -378,8 +408,31 @@ async function callTool(name, rawArgs) {
   }
 
   if (name === "planban_list_boards") {
-    const boards = await listBoards();
+    const boards = optionalBoolean(args.includeArchived, "includeArchived") ? await listAllBoards() : await listBoards();
     return textResult(`Found ${boards.length} Planban board${boards.length === 1 ? "" : "s"}.`, { boards });
+  }
+
+  if (name === "planban_archive_board") {
+    const board = await archiveBoard(requireString(args.repoId, "repoId"));
+    return textResult(`Archived Planban board ${board.repoId}.`, { board });
+  }
+
+  if (name === "planban_restore_board") {
+    const board = await restoreBoard(requireString(args.repoId, "repoId"));
+    return textResult(`Restored Planban board ${board.repoId}.`, { board });
+  }
+
+  if (name === "planban_delete_board") {
+    const repoId = requireString(args.repoId, "repoId");
+    const confirmRepoId = requireString(args.confirmRepoId, "confirmRepoId");
+    if (confirmRepoId !== repoId) throw new Error("confirmRepoId must exactly match repoId.");
+    const result = await deleteBoard(repoId);
+    return textResult(
+      result.backupPath
+        ? `Deleted Planban board ${repoId}. A local backup was created at ${result.backupPath}.`
+        : `Deleted Planban board ${repoId}. No planning root existed to back up.`,
+      result,
+    );
   }
 
   if (name === "planban_get_board") {

@@ -24,6 +24,10 @@ export function registryPath(): string {
   return join(defaultPlanbanRoot(), INDEX_FILE);
 }
 
+export function boardBackupsRoot(): string {
+  return join(defaultPlanbanRoot(), "backups", "boards");
+}
+
 export function slugify(input: string): string {
   const slug = input
     .trim()

@@ -1,6 +1,6 @@
 {
   "name": "planban",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "bin": {
@@ -14,8 +14,6 @@
     "build": "vite build",
     "preview": "tsx src/cli.ts serve --no-vite",
     "smoke": "npm run build && tsx scripts/smoke.ts",
-    "release:build": "node scripts/build-public-release.mjs",
-    "release:audit": "node scripts/audit-public-release.mjs",
     "plugin:configure": "node scripts/configure-local-plugin.mjs",
     "planban:demo": "node --import tsx/esm src/cli.ts demo"
   },

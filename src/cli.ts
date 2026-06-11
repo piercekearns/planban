@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ensureDemoBoard } from "./core/demo";
 import { importT3 } from "./core/importT3";
+import { archiveBoard, deleteBoard, listAllBoards, restoreBoard } from "./core/registry";
 import {
   getStatus,
   initializeProject,
@@ -85,6 +86,45 @@ program
   .option("-o, --output <format>", "output format")
   .action(async (options) => {
     print(await ensureDemoBoard(), options);
+  });
+
+program
+  .command("list-boards")
+  .description("list registered Planban boards")
+  .option("--include-archived", "include archived boards")
+  .option("-o, --output <format>", "output format")
+  .action(async (options) => {
+    const boards = await listAllBoards();
+    print(options.includeArchived ? boards : boards.filter((board) => !board.archivedAt), options);
+  });
+
+program
+  .command("archive-board")
+  .description("archive a whole Planban board without deleting its local planning state")
+  .argument("<repoId>")
+  .option("-o, --output <format>", "output format")
+  .action(async (repoId, options) => {
+    print(await archiveBoard(repoId), options);
+  });
+
+program
+  .command("restore-board")
+  .description("restore an archived Planban board")
+  .argument("<repoId>")
+  .option("-o, --output <format>", "output format")
+  .action(async (repoId, options) => {
+    print(await restoreBoard(repoId), options);
+  });
+
+program
+  .command("delete-board")
+  .description("delete a whole Planban board after creating a timestamped local backup")
+  .argument("<repoId>")
+  .option("--yes", "confirm deletion")
+  .option("-o, --output <format>", "output format")
+  .action(async (repoId, options) => {
+    if (!options.yes) throw new Error("Refusing to delete a board without --yes");
+    print(await deleteBoard(repoId), options);
   });
 
 program
