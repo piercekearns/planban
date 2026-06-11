@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.3",
-  "pluginVersion": "0.1.3",
-  "mcpVersion": "0.1.3",
+  "version": "0.1.4",
+  "pluginVersion": "0.1.4",
+  "mcpVersion": "0.1.4",
   "storageSchemaVersion": 1,
   "minimumStorageSchemaVersion": 1,
-  "publishedAt": "2026-06-11T01:58:00.000Z",
+  "publishedAt": "2026-06-11T02:24:00.000Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.3",
-  "summary": "Adds board archive, restore, and delete controls, MCP/CLI/API board lifecycle tools, update modal polish, and quieter board action feedback.",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.4",
+  "summary": "Fixes the update modal copy flow when Codex blocks clipboard access.",
   "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen Planban in the Codex in-app browser.",
   "postUpdateRoute": "board-with-changelog",
   "showTutorialWhenUpdatingFromBefore": "0.1.2",
-  "changelogTitle": "Board lifecycle controls",
-  "changelogSummary": "Archive boards out of the active list, restore archived boards, delete boards with typed confirmation and local backup, and use a calmer update modal."
+  "changelogTitle": "Update prompt copy fallback",
+  "changelogSummary": "If clipboard access is blocked, Planban now shows the update prompt inside the modal so you can still select it or open a Codex draft."
 }

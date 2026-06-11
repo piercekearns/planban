@@ -2413,6 +2413,27 @@ h1 {
   padding: 14px 16px 0;
 }
 
+.manual-prompt-fallback {
+  width: 100%;
+  min-height: 132px;
+  max-height: 220px;
+  resize: vertical;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 10px;
+  font: 11px/16px var(--font-mono);
+  scrollbar-color: var(--panel-scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+.manual-prompt-fallback:focus {
+  outline: 2px solid color-mix(in oklab, var(--accent) 18%, transparent);
+  border-color: var(--accent);
+}
+
 .update-version-line {
   margin: 4px 0 0;
   color: var(--text-muted);

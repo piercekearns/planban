@@ -404,10 +404,33 @@ async function openCodexFeedbackThread(state: PlanbanState, feedback: string) {
   }
 }
 
+async function writeClipboardText(text: string) {
+  try {
+    await navigator.clipboard?.writeText(text);
+    return true;
+  } catch {
+    // Keep going to the textarea fallback below.
+  }
+
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
 async function copyFeedbackPrompt(state: PlanbanState, feedback: string) {
-  if (!navigator.clipboard) throw new Error("Clipboard access is unavailable");
-  const prompt = buildFeedbackPrompt(state, feedback);
-  await navigator.clipboard.writeText(prompt);
+  return await writeClipboardText(buildFeedbackPrompt(state, feedback));
 }
 
 function buildTutorialCreatePrompt(state: PlanbanState, planningContext: string) {
@@ -550,8 +573,8 @@ async function openCodexUpdateThread(state: PlanbanState, status: UpdateStatusPa
 }
 
 async function copyUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
-  if (!navigator.clipboard) throw new Error("Clipboard access is unavailable");
-  await navigator.clipboard.writeText(buildUpdatePrompt(state, status));
+  const prompt = buildUpdatePrompt(state, status);
+  return { copied: await writeClipboardText(prompt), prompt };
 }
 
 function versionLabel(version: number, currentVersion: number | null) {
@@ -1175,8 +1198,10 @@ function FeedbackModal({
     setBusy("copy");
     setStatus(null);
     try {
-      await copyFeedbackPrompt(state, feedback);
-      setStatus("Copied. Paste it into Codex to provide feedback through your agent.");
+      const copied = await copyFeedbackPrompt(state, feedback);
+      setStatus(copied
+        ? "Copied. Paste it into Codex to provide feedback through your agent."
+        : "Clipboard access was blocked. Use Open in Codex instead.");
     } catch {
       setStatus("Clipboard access was blocked. Try opening a Codex draft instead.");
     } finally {
@@ -1239,6 +1264,7 @@ function UpdateModal({
 }) {
   const [busy, setBusy] = useState<"open" | "copy" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [manualPrompt, setManualPrompt] = useState<string | null>(null);
   const latest = status?.latest ?? null;
 
   useEffect(() => {
@@ -1253,6 +1279,7 @@ function UpdateModal({
     if (!status) return;
     setBusy("open");
     setMessage(null);
+    setManualPrompt(null);
     try {
       const result = await openCodexUpdateThread(state, status);
       setMessage(result.opened ? "Opened a Codex draft thread. Hit enter there to continue." : "Copied the update prompt.");
@@ -1266,11 +1293,19 @@ function UpdateModal({
     if (!status) return;
     setBusy("copy");
     setMessage(null);
+    setManualPrompt(null);
     try {
-      await copyUpdatePrompt(state, status);
-      setMessage("Copied. Paste it into Codex to update Planban through your agent.");
+      const result = await copyUpdatePrompt(state, status);
+      if (result.copied) {
+        setMessage("Copied. Paste it into Codex to update Planban through your agent.");
+      } else {
+        setManualPrompt(result.prompt);
+        setMessage("Clipboard access was blocked. Select the prompt below, or open a Codex draft instead.");
+      }
     } catch {
-      setMessage("Clipboard access was blocked. Try opening a Codex draft instead.");
+      const prompt = buildUpdatePrompt(state, status);
+      setManualPrompt(prompt);
+      setMessage("Clipboard access was blocked. Select the prompt below, or open a Codex draft instead.");
     } finally {
       setBusy(null);
     }
@@ -1330,6 +1365,15 @@ function UpdateModal({
             <p className="update-note">Checking for updates...</p>
           )}
           {message ? <p className="feedback-status">{message}</p> : null}
+          {manualPrompt ? (
+            <textarea
+              className="manual-prompt-fallback"
+              readOnly
+              value={manualPrompt}
+              aria-label="Update prompt"
+              onFocus={(event) => event.currentTarget.select()}
+            />
+          ) : null}
         </div>
         <footer className="feedback-actions">
           <button onClick={copyPrompt} disabled={!status || busy !== null}>
