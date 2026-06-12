@@ -18,14 +18,16 @@ const storageModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "
 const registryModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/registry.ts")).href);
 const typesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/types.ts")).href);
 const demoModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/demo.ts")).href);
+const versionModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/version.ts")).href);
 
 const { getStatus, loadState, moveCard, readDoc, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { ensureDemoBoard } = demoModule;
+const { PLANBAN_MCP_VERSION } = versionModule;
 
 const SERVER_NAME = "Planban MCP";
-const SERVER_VERSION = "0.1.5";
+const SERVER_VERSION = PLANBAN_MCP_VERSION;
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -33,6 +35,10 @@ const JsonRpcError = {
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+export function planbanMcpServerVersion() {
+  return SERVER_VERSION;
 }
 
 function sendResult(id, result) {
@@ -574,24 +580,30 @@ async function handleRequest(message) {
   }
 }
 
-const lines = readline.createInterface({
-  input: process.stdin,
-  crlfDelay: Infinity,
-});
-
-let requestQueue = Promise.resolve();
-
-lines.on("line", (line) => {
-  if (!line.trim()) return;
-  let message;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    return;
-  }
-  requestQueue = requestQueue.then(() => handleRequest(message)).catch((error) => {
-    if (message.id !== undefined) {
-      sendError(message.id, JsonRpcError.INVALID_PARAMS, error instanceof Error ? error.message : String(error));
-    }
+function startMcpServer() {
+  const lines = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
   });
-});
+
+  let requestQueue = Promise.resolve();
+
+  lines.on("line", (line) => {
+    if (!line.trim()) return;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    requestQueue = requestQueue.then(() => handleRequest(message)).catch((error) => {
+      if (message.id !== undefined) {
+        sendError(message.id, JsonRpcError.INVALID_PARAMS, error instanceof Error ? error.message : String(error));
+      }
+    });
+  });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  startMcpServer();
+}

@@ -5,8 +5,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { createCard, historyPayload, initializeProject, loadState, readDoc } from "../src/core/storage.ts";
-
 const REPO_ROOT = resolve(import.meta.dirname, "..");
 const MCP_SERVER = join(REPO_ROOT, "plugins/planban/mcp/server.mjs");
 const LIVE_PLANBAN_REPO = REPO_ROOT;
@@ -48,6 +46,15 @@ function readJson(path) {
 }
 
 async function main() {
+  await import("tsx/esm");
+  const {
+    createCard,
+    historyPayload,
+    initializeProject,
+    loadState,
+    readDoc,
+  } = await import("../src/core/storage.ts");
+
   const root = mkdtempSync(join(tmpdir(), "planban-mcp-verify-"));
   const cwd = join(root, "repo");
   const planbanHome = join(root, "home");
@@ -163,6 +170,9 @@ async function main() {
     assert.deepEqual(tools, [
       "planban_status",
       "planban_list_boards",
+      "planban_archive_board",
+      "planban_restore_board",
+      "planban_delete_board",
       "planban_get_board",
       "planban_get_card",
       "planban_read_doc",

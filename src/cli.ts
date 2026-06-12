@@ -15,6 +15,8 @@ import {
   createCard,
 } from "./core/storage";
 import { PLANBAN_STATUSES, type PlanbanStatus } from "./core/types";
+import { buildUpdateCommandPlan, runPlanbanUpdate } from "./core/updateRunner";
+import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
 
@@ -78,6 +80,68 @@ program
   .option("-o, --output <format>", "output format")
   .action(async (options) => {
     print(await getStatus(cwdOption(options.cwd)), options);
+  });
+
+program
+  .command("update")
+  .description("inspect whether this local Planban install can update safely")
+  .option("--dry-run", "inspect only; do not update files")
+  .option("--execute", "run the direct local update when preflight allows it")
+  .option("--runtime-root <path>", "Planban install/runtime root")
+  .option("--current-board-url <url>", "board URL to reopen after update")
+  .option("--target-version <version>", "target Planban version")
+  .option("--target-ref <ref>", "target Git ref")
+  .option("--target-commit <sha>", "target Git commit")
+  .option("-o, --output <format>", "output format")
+  .action(async (options) => {
+    if (options.execute && options.dryRun) {
+      throw new Error("Use either --dry-run or --execute, not both.");
+    }
+    if (!options.execute) {
+      const preflight = await updatePreflight({
+        runtimeRoot: resolve(options.runtimeRoot ?? process.cwd()),
+      });
+      print({
+        ...preflight,
+        commandPlan: buildUpdateCommandPlan(preflight, {
+          schemaVersion: 1,
+          version: options.targetVersion ?? PLANBAN_VERSION,
+          pluginVersion: options.targetVersion ?? PLANBAN_VERSION,
+          mcpVersion: options.targetVersion ?? PLANBAN_VERSION,
+          storageSchemaVersion: 1,
+          minimumStorageSchemaVersion: 1,
+          publishedAt: new Date().toISOString(),
+          sourceUrl: "https://github.com/piercekearns/planban",
+          releaseNotesUrl: `https://github.com/piercekearns/planban/releases/tag/v${options.targetVersion ?? PLANBAN_VERSION}`,
+          targetRef: options.targetRef,
+          targetCommit: options.targetCommit,
+          summary: "Planban update",
+          updatePrompt: "Update Planban.",
+        }),
+      }, options);
+      return;
+    }
+    const snapshot = await runPlanbanUpdate({
+      runtimeRoot: resolve(options.runtimeRoot ?? process.cwd()),
+      currentBoardUrl: options.currentBoardUrl,
+      latest: {
+        schemaVersion: 1,
+        version: options.targetVersion ?? PLANBAN_VERSION,
+        pluginVersion: options.targetVersion ?? PLANBAN_VERSION,
+        mcpVersion: options.targetVersion ?? PLANBAN_VERSION,
+        storageSchemaVersion: 1,
+        minimumStorageSchemaVersion: 1,
+        publishedAt: new Date().toISOString(),
+        sourceUrl: "https://github.com/piercekearns/planban",
+        releaseNotesUrl: `https://github.com/piercekearns/planban/releases/tag/v${options.targetVersion ?? PLANBAN_VERSION}`,
+        targetRef: options.targetRef,
+        targetCommit: options.targetCommit,
+        summary: "Planban update",
+        updatePrompt: "Update Planban.",
+      },
+    });
+    print(snapshot, options);
+    if (snapshot.status === "failed") process.exitCode = 1;
   });
 
 program

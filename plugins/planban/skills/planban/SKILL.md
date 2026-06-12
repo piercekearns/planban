@@ -11,13 +11,17 @@ Planban is a local, Codex-native planning board. Use this skill whenever Planban
 
 When the user invokes the primary Planban skill with no extra instruction, such as selecting `Planban` from the `/planban` slash menu, treat that as a request to open the best matching Planban board.
 
-Use the same fast-open behavior as `PB`:
+Use the same fast-open behavior as `PB`, including the same in-app browser expectations and fallbacks:
 
 1. If the current workspace/repo has `.planban/project.json`, open that repo's Planban board.
 2. Else if there is exactly one registered Planban board, open it.
 3. Else open the all-boards selector.
 
-Keep the response short and prioritize opening the board in the Codex in-app browser. Do not merely report that Planban instructions are loaded unless the user asked for protocol/status context.
+Prefer the Planban MCP tool `planban_launch_board` when it is available, then open the returned URL in the Codex in-app browser. If the Browser plugin path from earlier thread context is stale after a Codex update, rediscover the current Browser runtime and retry. Do not stop at a clickable URL unless in-app browser automation has actually failed or Browser is unavailable.
+
+After navigating, verify the in-app browser state before replying: the in-app browser should be visible or shown, and a tab should be open at the resolved Planban URL. If the selected/current tab is not at that URL, navigate it or open a new in-app browser tab and verify again. Do not say the board is open until the URL check succeeds.
+
+Keep the response short. Do not merely report that Planban instructions are loaded unless the user asked for protocol/status context.
 
 ## Command-Like Skills
 
@@ -55,11 +59,25 @@ Do not create or prefer `ROADMAP.md`.
 
 ## Launching The Board
 
-If the user asks to open or view a Planban board, use the Codex in-app browser for the board URL when that browser is available. If the Browser plugin is available, first load its `browser:control-in-app-browser` skill/instructions and use that browser surface to navigate to the local Planban URL.
+If the user asks to open or view a Planban board, opening the board in the Codex in-app browser is the expected outcome, not an optional enhancement. Use the Codex in-app browser for the board URL when that browser is available. If the Browser plugin is available, first load its current `browser:control-in-app-browser` skill/instructions and use that browser surface to navigate to the local Planban URL.
 
-Do not use the OS URL handler, `open`, or an external browser when the user specifically wants the board visible beside the Codex thread. Those are only fallbacks if the in-app browser is unavailable or the user asks for an external browser.
+Codex updates can move the Browser plugin to a new versioned cache path. Do not rely on a stale Browser skill path from earlier thread context. If loading Browser instructions or `browser-client.mjs` fails because a path no longer exists, rediscover the current Browser plugin/skill/runtime and retry before falling back to a plain URL.
+
+Do not use the OS URL handler, `open`, an external browser, or a clickable URL as the first response when the user specifically wants the board visible beside the Codex thread. Those are only fallbacks if the in-app browser is unavailable, browser automation has actually failed after retrying with the current Browser runtime, or the user asks for an external browser.
+
+After navigating, verify the in-app browser state before replying:
+
+1. Confirm the in-app browser is visible or has been shown.
+2. Confirm a browser tab is open at the resolved Planban URL.
+3. If the selected/current tab is not at that URL, navigate it or open a new in-app browser tab and verify again.
+
+Do not say the board is open until the in-app browser URL check succeeds. If the URL check still fails after retrying, return the clickable URL and explain briefly that the user can open it in the Codex in-app browser.
 
 For this local plugin bundle, the helper script can start the local app from the repo checkout:
+
+If the Planban MCP tool `planban_launch_board` is available, prefer calling it with the current workspace `cwd`, then open the returned URL in the Codex in-app browser.
+
+Otherwise, run the helper script:
 
 ```bash
 node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo

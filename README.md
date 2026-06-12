@@ -9,23 +9,41 @@ It gives you a simple roadmap board, keeps your planning state local, and helps 
 Ask Codex:
 
 ```text
-Install Planban from the GitHub repo piercekearns/planban. Add it as a Codex plugin marketplace source, install the Planban plugin, verify the plugin and MCP tools are available, open the interactive Planban tutorial in the Codex in-app browser, and then ask me whether I want to set up Planban for one of my local projects.
+Install Planban from piercekearns/planban as a Git-backed Codex plugin marketplace.
+
+First check whether Node.js and npm are available. If either is missing, explain that Planban runs locally and requires Node.js, which normally includes npm. Ask me before installing Node.js. If I approve, install Node.js LTS using the safest method for this machine, then verify node --version and npm --version before continuing.
+
+Then add the Planban marketplace, locate the installed marketplace root, run npm install there, configure the Planban MCP runtime, install the Planban plugin, verify the plugin and MCP tools are available, open the interactive Planban tutorial in the Codex in-app browser, and ask me whether I want to set up Planban for one of my local projects.
 ```
 
 ## Manual Install
 
+Recommended Git-backed marketplace install:
+
 ```bash
-git clone https://github.com/piercekearns/planban.git
-cd planban
+codex plugin marketplace add piercekearns/planban
+PLANBAN_ROOT="$(codex plugin marketplace list | awk '$1 == "planban" { print $2 }')"
+cd "$PLANBAN_ROOT"
 npm install
-node scripts/configure-local-plugin.mjs
-codex plugin marketplace add "$PWD"
+node scripts/configure-local-plugin.mjs "$PWD"
 codex plugin add planban@planban
 codex plugin list --marketplace planban
 node plugins/planban/scripts/launch-planban.mjs --tutorial
 ```
 
 Then open the printed local tutorial URL. In Codex, ask your agent to open it in the in-app browser.
+
+Local clone fallback:
+
+```bash
+git clone https://github.com/piercekearns/planban.git
+cd planban
+npm install
+node scripts/configure-local-plugin.mjs "$PWD"
+codex plugin marketplace add "$PWD"
+codex plugin add planban@planban
+node plugins/planban/scripts/launch-planban.mjs --tutorial
+```
 
 ## First Run
 
@@ -70,7 +88,11 @@ https://github.com/piercekearns/planban/issues/new/choose
 
 ## Updates
 
-Planban checks public version metadata from GitHub while the local board is open. If an update is available, the board shows a small update notice. Choose `Update with Codex` to open a draft prompt that asks your agent to update Planban, verify the plugin and MCP tools, and open the right post-update surface.
+Planban checks public version metadata from GitHub while the local board is open. If an update is available, the board shows a small update notice.
+
+When Planban can prove your install is safe to update directly, choose `Update now`. Planban will show progress, refresh the local install, restart the local server, and reopen the board you were viewing.
+
+If the install shape is ambiguous, dependencies are missing, a migration is needed, or local files make direct update unsafe, choose `Update with Codex` instead. That opens a draft prompt asking your agent to inspect the install, update Planban safely, verify the plugin and MCP tools, and open the right post-update surface.
 
 For the first tutorial release, the post-update surface is the interactive tutorial in the Codex in-app browser. Future releases may open the board with a concise "what changed" modal instead.
 

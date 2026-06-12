@@ -1,5 +1,6 @@
 import express from "express";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -53,11 +54,14 @@ import {
   PLANBAN_UPDATE_MANIFEST_URL,
   type PlanbanUpdateManifest,
 } from "../core/version";
+import { updatePreflight } from "../core/updatePreflight";
+import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
 const DIST_WEB_ROOT = resolve(PACKAGE_ROOT, "dist/web");
 const UPDATE_CHECK_TIMEOUT_MS = 3500;
+const updateJobs = new Map<string, UpdateRunSnapshot>();
 
 export interface ServeOptions {
   cwd: string;
@@ -135,6 +139,8 @@ function isUpdateManifest(value: unknown): value is PlanbanUpdateManifest {
     typeof candidate.publishedAt === "string" &&
     typeof candidate.sourceUrl === "string" &&
     typeof candidate.releaseNotesUrl === "string" &&
+    (candidate.targetRef === undefined || typeof candidate.targetRef === "string") &&
+    (candidate.targetCommit === undefined || typeof candidate.targetCommit === "string") &&
     typeof candidate.summary === "string" &&
     typeof candidate.updatePrompt === "string" &&
     (postUpdateRoute === undefined || postUpdateRoute === "tutorial" || postUpdateRoute === "board" || postUpdateRoute === "board-with-changelog") &&
@@ -149,7 +155,9 @@ async function fetchLatestUpdateManifest(url: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
+    const requestUrl = new URL(url);
+    requestUrl.searchParams.set("_", Date.now().toString());
+    const response = await fetch(requestUrl, {
       headers: {
         Accept: "application/json",
         "User-Agent": "planban-update-check",
@@ -245,6 +253,7 @@ export async function startServer(options: ServeOptions) {
   const app = express();
   const server = createHttpServer(app);
   let vite: ViteDevServer | null = null;
+  let watcher: ReturnType<typeof chokidar.watch> | null = null;
   const clients = new Set<express.Response>();
   const currentBoard = await registerBoardFromCwd(cwd).catch(() => null);
 
@@ -255,6 +264,45 @@ export async function startServer(options: ServeOptions) {
       client.write(`event: ${event}\n`);
       client.write(`data: ${JSON.stringify(data)}\n\n`);
     }
+  }
+
+  async function closeServer() {
+    await watcher?.close();
+    await vite?.close();
+    await new Promise<void>((resolveClose, reject) => {
+      server.close((error) => (error ? reject(error) : resolveClose()));
+    });
+  }
+
+  function scheduleRestartHandoff() {
+    if (process.env.PLANBAN_DISABLE_AUTO_RESTART === "1") return;
+    const scriptPath = resolve(PACKAGE_ROOT, "scripts/restart-planban-after-update.mjs");
+    const args = [
+      scriptPath,
+      "--parent-pid",
+      String(process.pid),
+      "--runtime-root",
+      PACKAGE_ROOT,
+      "--cwd",
+      cwd,
+      "--port",
+      String(options.port),
+    ];
+    if (!options.useVite) args.push("--no-vite");
+
+    const child = spawn(process.execPath, args, {
+      cwd: PACKAGE_ROOT,
+      detached: true,
+      stdio: "ignore",
+      env: process.env,
+    });
+    child.unref();
+
+    setTimeout(() => {
+      void closeServer().finally(() => {
+        process.exit(0);
+      });
+    }, 250);
   }
 
   function idempotencyKey(req: express.Request) {
@@ -310,6 +358,88 @@ export async function startServer(options: ServeOptions) {
     } catch (error) {
       next(error);
     }
+  });
+
+  app.get("/api/update-preflight", async (_req, res, next) => {
+    try {
+      res.json(await updatePreflight({ runtimeRoot: PACKAGE_ROOT }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/update-run", async (req, res, next) => {
+    try {
+      const status = await updateStatus();
+      if (!status.latest || !status.updateAvailable) {
+        res.status(409).json({ error: "No Planban update is currently available." });
+        return;
+      }
+      if (!status.compatible) {
+        res.status(409).json({ error: "This update needs an agent-guided storage migration." });
+        return;
+      }
+
+      const currentBoardUrl = typeof req.body?.currentBoardUrl === "string" ? req.body.currentBoardUrl : null;
+      const id = randomUUID();
+      const startedAt = new Date().toISOString();
+      const pending: UpdateRunSnapshot = {
+        id,
+        status: "pending",
+        startedAt,
+        completedAt: null,
+        installShape: "unknown",
+        targetVersion: status.latest.version,
+        targetRef: status.latest.targetRef ?? null,
+        targetCommit: status.latest.targetCommit ?? null,
+        currentBoardUrl,
+        restartRequired: true,
+        message: "Preparing Planban update...",
+        error: null,
+        steps: [],
+      };
+      updateJobs.set(id, pending);
+
+      void runPlanbanUpdate({
+        id,
+        runtimeRoot: PACKAGE_ROOT,
+        latest: status.latest,
+        currentBoardUrl,
+        onSnapshot(snapshot) {
+          updateJobs.set(id, snapshot);
+          sendEvent("update-job", snapshot);
+        },
+      }).then((snapshot) => {
+        updateJobs.set(id, snapshot);
+        sendEvent("update-job", snapshot);
+        if (snapshot.status === "succeeded" && snapshot.restartRequired) {
+          scheduleRestartHandoff();
+        }
+      }).catch((error: unknown) => {
+        const failed: UpdateRunSnapshot = {
+          ...pending,
+          status: "failed",
+          completedAt: new Date().toISOString(),
+          message: "Planban update failed.",
+          error: error instanceof Error ? error.message : "Planban update failed.",
+        };
+        updateJobs.set(id, failed);
+        sendEvent("update-job", failed);
+      });
+
+      res.status(202).json(pending);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/update-run/:id", (req, res) => {
+    const job = updateJobs.get(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: "Update job not found." });
+      return;
+    }
+    res.json(job);
   });
 
   app.get("/api/boards", async (req, res, next) => {
@@ -993,7 +1123,6 @@ export async function startServer(options: ServeOptions) {
     });
   }
 
-  let watcher: ReturnType<typeof chokidar.watch> | null = null;
   try {
     watcher = chokidar.watch(defaultPlanbanRoot(), { ignoreInitial: true });
     watcher.on("all", (_event: string, path: string) => sendEvent("state", { path }));
@@ -1007,12 +1136,6 @@ export async function startServer(options: ServeOptions) {
 
   return {
     url: `http://localhost:${options.port}`,
-    close: async () => {
-      await watcher?.close();
-      await vite?.close();
-      await new Promise<void>((resolveClose, reject) => {
-        server.close((error) => (error ? reject(error) : resolveClose()));
-      });
-    },
+    close: closeServer,
   };
 }

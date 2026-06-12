@@ -1,17 +1,16 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.5",
-  "pluginVersion": "0.1.5",
-  "mcpVersion": "0.1.5",
+  "version": "0.1.6",
+  "pluginVersion": "0.1.6",
+  "mcpVersion": "0.1.6",
   "storageSchemaVersion": 1,
   "minimumStorageSchemaVersion": 1,
-  "publishedAt": "2026-06-11T17:34:31.000Z",
+  "publishedAt": "2026-06-12T20:33:20.000Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.5",
-  "summary": "Fixes tutorial card clicks and clarifies the step 2 to step 3 tutorial flow.",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.6",
+  "summary": "Adds a preflighted one-click local updater for safe Planban installs, with Codex fallback when direct update is not safe.",
   "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen Planban in the Codex in-app browser.",
   "postUpdateRoute": "board-with-changelog",
-  "showTutorialWhenUpdatingFromBefore": "0.1.2",
-  "changelogTitle": "Tutorial flow polish",
-  "changelogSummary": "Tutorial cards now open reliably in the inspect step, the move-to-open transition is clearer, and the board header controls stay aligned when no update is available."
+  "changelogTitle": "One-click local updater",
+  "changelogSummary": "Eligible local installs can now update directly from the Planban update modal. Planban preflights the install, applies the update, verifies the plugin and MCP versions, restarts locally, and reopens the same board. Installs that are ambiguous or unsafe still fall back to the Codex-guided update prompt."
 }

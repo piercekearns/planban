@@ -660,7 +660,9 @@ h1 {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  min-height: 28px;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
@@ -668,6 +670,7 @@ h1 {
   padding: 3px 8px;
   font-size: 11px;
   font-weight: 500;
+  line-height: 14px;
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
@@ -2457,6 +2460,10 @@ h1 {
   padding: 14px 16px 0;
 }
 
+.update-modal-body:last-child {
+  padding-bottom: 18px;
+}
+
 .manual-prompt-fallback {
   width: 100%;
   min-height: 132px;
@@ -2550,6 +2557,250 @@ h1 {
   border-color: var(--border-strong);
 }
 
+.update-links.subtle a {
+  min-height: 24px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.update-links.subtle a:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+}
+
+.update-preflight {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  padding: 10px;
+}
+
+.update-job {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  padding: 10px;
+}
+
+.update-progress-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface-subtle));
+  margin-top: 10px;
+}
+
+.update-progress-track div {
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--accent) 72%, var(--blue-600));
+  transition: width 180ms ease;
+}
+
+.update-preflight-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.update-preflight-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.update-preflight-badge.update-now {
+  border-color: color-mix(in oklab, var(--green-500) 34%, var(--border));
+  background: color-mix(in oklab, var(--green-500) 10%, transparent);
+  color: color-mix(in oklab, var(--green-500) 70%, var(--text));
+}
+
+.update-preflight-badge.succeeded {
+  border-color: color-mix(in oklab, var(--green-500) 34%, var(--border));
+  background: color-mix(in oklab, var(--green-500) 10%, transparent);
+  color: color-mix(in oklab, var(--green-500) 70%, var(--text));
+}
+
+.update-preflight-badge.setup-prerequisites {
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  color: color-mix(in oklab, var(--accent) 72%, var(--text));
+}
+
+.update-preflight-badge.failed {
+  border-color: color-mix(in oklab, var(--red-500) 34%, var(--border));
+  background: color-mix(in oklab, var(--red-500) 10%, transparent);
+  color: color-mix(in oklab, var(--red-500) 82%, var(--text));
+}
+
+.update-preflight-summary {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.update-preflight-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 5px 10px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.update-preflight-grid strong {
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+}
+
+.update-preflight-list {
+  margin: 10px 0 0;
+  padding-left: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.update-preflight-warning {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.update-preflight-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.update-preflight-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.update-preflight-actions .primary {
+  min-width: 168px;
+}
+
+.update-preflight-actions button:hover {
+  background: var(--surface-subtle);
+  border-color: var(--border-strong);
+}
+
+.update-preflight-actions button:disabled,
+.update-preflight-actions button:disabled:hover {
+  cursor: default;
+  opacity: 0.55;
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.update-job-steps {
+  display: grid;
+  gap: 4px;
+  max-height: 142px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  scrollbar-color: var(--panel-scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+.update-job-details {
+  margin-top: 10px;
+}
+
+.update-job-details summary {
+  width: max-content;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.update-job-details summary:hover {
+  color: var(--text);
+}
+
+.update-job-steps li {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  gap: 3px 8px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 5px 7px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 15px;
+  min-width: 0;
+}
+
+.update-job-steps li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.update-job-steps li.running {
+  border-color: color-mix(in oklab, var(--accent) 36%, var(--border));
+}
+
+.update-job-steps li.succeeded {
+  border-color: color-mix(in oklab, var(--green-500) 28%, var(--border));
+}
+
+.update-job-steps li.failed {
+  border-color: color-mix(in oklab, var(--red-500) 34%, var(--border));
+}
+
+.update-job-steps b {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.update-job-steps small {
+  grid-column: 1 / -1;
+  color: color-mix(in oklab, var(--red-500) 84%, var(--text));
+  font-size: 11px;
+  line-height: 15px;
+  white-space: pre-wrap;
+}
+
 .feedback-actions {
   display: flex;
   justify-content: flex-end;
@@ -2577,6 +2828,26 @@ h1 {
 
 .feedback-actions .primary {
   min-width: 132px;
+}
+
+.feedback-actions .update-now-action {
+  border-color: color-mix(in oklab, var(--accent) 38%, transparent);
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, #fff 28%, transparent);
+}
+
+.feedback-actions .update-now-action:hover {
+  border-color: color-mix(in oklab, var(--accent) 52%, transparent);
+  background: color-mix(in oklab, var(--accent) 24%, transparent);
+}
+
+.feedback-actions .update-now-action:disabled,
+.feedback-actions .update-now-action:disabled:hover {
+  opacity: 0.72;
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
 }
 
 .feedback-actions .board-action-confirm.archive {

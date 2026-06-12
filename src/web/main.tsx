@@ -121,6 +121,8 @@ interface UpdateManifest {
   publishedAt: string;
   sourceUrl: string;
   releaseNotesUrl: string;
+  targetRef?: string;
+  targetCommit?: string;
   summary: string;
   updatePrompt: string;
   postUpdateRoute?: "tutorial" | "board" | "board-with-changelog";
@@ -138,6 +140,79 @@ interface UpdateStatusPayload {
   updateAvailable: boolean;
   compatible: boolean;
   checkError: string | null;
+}
+
+interface CommandCheck {
+  command: string;
+  available: boolean;
+  version: string | null;
+  error: string | null;
+}
+
+interface UpdatePreflightPayload {
+  checkedAt: string;
+  runtimeRoot: string;
+  codexHome: string;
+  installShape: "git-marketplace" | "local-clone" | "local-dev" | "unknown";
+  directUpdateAvailable: boolean;
+  prerequisites: {
+    node: CommandCheck;
+    npm: CommandCheck;
+    git: CommandCheck;
+    codex: CommandCheck;
+  };
+  marketplace: {
+    name: "planban";
+    root: string | null;
+    sourceType: "git" | "local" | "unknown";
+    source: string | null;
+  };
+  git: {
+    isRepo: boolean;
+    root: string | null;
+    branch: string | null;
+    remote: string | null;
+    head: string | null;
+    dirtyFiles: string[];
+    generatedSafeDirtyFiles: string[];
+    blockingDirtyFiles: string[];
+  };
+  blockedReasons: string[];
+  warnings: string[];
+  recommendedAction: "update-now" | "update-with-codex" | "setup-prerequisites";
+  setupPrompt: string | null;
+  fallbackPrompt: string;
+}
+
+type UpdateStepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+type UpdateRunStatus = "pending" | "running" | "succeeded" | "failed";
+
+interface UpdateRunStepSnapshot {
+  id: string;
+  label: string;
+  status: UpdateStepStatus;
+  command: string;
+  cwd: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  exitCode: number | null;
+  error: string | null;
+}
+
+interface UpdateRunSnapshot {
+  id: string;
+  status: UpdateRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  installShape: UpdatePreflightPayload["installShape"];
+  targetVersion: string | null;
+  targetRef: string | null;
+  targetCommit: string | null;
+  currentBoardUrl: string | null;
+  restartRequired: boolean;
+  message: string;
+  error: string | null;
+  steps: UpdateRunStepSnapshot[];
 }
 
 interface DocPayload {
@@ -487,19 +562,21 @@ function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
     formatOptionalLine("Current board", boardUrl),
     "",
     "Before changing anything, inspect how Planban is installed on this machine.",
-    "The public README install flow normally creates a local clone marketplace. If that is the install shape, update the clone first, then reinstall the plugin from that local marketplace.",
-    "Only use codex plugin marketplace upgrade planban when the marketplace is actually a Git-backed marketplace snapshot.",
+    "The public README install flow normally creates a Git-backed Planban marketplace. If that is the install shape, refresh the marketplace snapshot first, then reinstall the Planban plugin.",
+    "If this machine still uses an older local clone marketplace install, update that clone first, then reinstall the Planban plugin from the local marketplace.",
     "Before any storage migration, create a timestamped backup of the affected ~/.planban state and explain how to restore it.",
     "Do not upload or expose private board contents, repo paths, logs, or local project details.",
     "",
-    "Primary local clone commands, to verify before running:",
-    "git pull",
+    "Primary Git-backed marketplace commands, to verify before running:",
+    "codex plugin marketplace upgrade planban",
     "npm install",
     "node scripts/configure-local-plugin.mjs",
     "codex plugin add planban@planban",
     "",
-    "Git-backed marketplace fallback, only if inspection confirms that install shape:",
-    "codex plugin marketplace upgrade planban",
+    "Older local clone fallback, only if inspection confirms that install shape:",
+    "git pull",
+    "npm install",
+    "node scripts/configure-local-plugin.mjs",
     "codex plugin add planban@planban",
     "",
     "After updating, verify the running Planban version, the installed plugin version, MCP tools, and board load.",
@@ -547,6 +624,18 @@ function updatePostInstallInstruction(status: UpdateStatusPayload, boardUrl: str
     return `After updating, reopen ${boardUrl} in the Codex in-app browser and show the what's-new modal${title}.${summary}`;
   }
   return `After updating, reopen ${boardUrl} in the Codex in-app browser and confirm the running version.`;
+}
+
+function postUpdateBrowserUrl(status: UpdateStatusPayload, boardUrl: string, tutorialUrl: string) {
+  const latest = status.latest;
+  if (!latest) return boardUrl;
+  if (shouldRouteToTutorial(status)) return tutorialUrl;
+  if (latest.postUpdateRoute === "board-with-changelog") {
+    const url = new URL(boardUrl);
+    url.searchParams.set("planbanUpdated", latest.version);
+    return url.toString();
+  }
+  return boardUrl;
 }
 
 async function openCodexUpdateThread(state: PlanbanState, status: UpdateStatusPayload) {
@@ -957,7 +1046,7 @@ function Column({
 
   if (collapsed) {
     return (
-      <section ref={setNodeRef} className="column collapsed">
+      <section ref={setNodeRef} className="column collapsed" data-status={status}>
         <button onClick={onToggleCollapsed} className="icon-button">
           <Minimize2 size={14} />
         </button>
@@ -970,7 +1059,7 @@ function Column({
   }
 
   return (
-    <section ref={setNodeRef} className={`column ${highlighted ? "highlighted" : ""}`}>
+    <section ref={setNodeRef} className={`column ${highlighted ? "highlighted" : ""}`} data-status={status}>
       <header className="column-header">
         <button onClick={onToggleCards} className="icon-button">
           {cardsHidden ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -1263,16 +1352,48 @@ function FeedbackModal({
 function UpdateModal({
   state,
   status,
+  postUpdateVersion,
   onClose,
 }: {
   state: PlanbanState;
   status: UpdateStatusPayload | null;
+  postUpdateVersion?: string | null;
   onClose: () => void;
 }) {
-  const [busy, setBusy] = useState<"open" | "copy" | null>(null);
+  const [busy, setBusy] = useState<"open" | "copy" | "setup" | "direct" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [manualPrompt, setManualPrompt] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<UpdatePreflightPayload | null>(null);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [updateJob, setUpdateJob] = useState<UpdateRunSnapshot | null>(null);
   const latest = status?.latest ?? null;
+  const canDirectUpdate = Boolean(status?.updateAvailable && status.compatible && preflight?.directUpdateAvailable);
+  const isPostUpdate = Boolean(postUpdateVersion && latest?.version === postUpdateVersion && !status?.updateAvailable);
+  const showAgentUpdateFallback = Boolean(
+    status?.updateAvailable &&
+    !canDirectUpdate &&
+    ((preflight && preflight.recommendedAction !== "setup-prerequisites") || preflightError),
+  );
+  const showSetupFallback = Boolean(status?.updateAvailable && !canDirectUpdate && preflight?.recommendedAction === "setup-prerequisites");
+  const showWaitingForPreflight = Boolean(status?.updateAvailable && !preflight && !preflightError && !updateJob);
+  const showUpdateJobDetails = Boolean(updateJob?.status === "failed");
+  const updateInFlight = Boolean(
+    updateJob &&
+    (updateJob.status === "pending" || updateJob.status === "running" || (updateJob.status === "succeeded" && updateJob.restartRequired)),
+  );
+  const showChangelog = Boolean(status?.updateAvailable || (postUpdateVersion && latest?.version === postUpdateVersion));
+  const completedUpdateSteps = updateJob?.steps.filter((step) => step.status === "succeeded" || step.status === "skipped").length ?? 0;
+  const totalUpdateSteps = updateJob?.steps.length ?? 0;
+  const updateProgressPercent = totalUpdateSteps > 0
+    ? Math.max(6, Math.round((completedUpdateSteps / totalUpdateSteps) * 100))
+    : updateJob
+      ? 6
+      : 0;
+  const updateVersionLine = status
+    ? status.updateAvailable && latest?.version && latest.version !== status.current.version
+      ? `${status.current.version} -> ${latest.version}`
+      : `Version ${status.current.version}`
+    : null;
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1281,6 +1402,106 @@ function UpdateModal({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreflight(null);
+    setPreflightError(null);
+
+    api<UpdatePreflightPayload>("/api/update-preflight")
+      .then((payload) => {
+        if (!cancelled) setPreflight(payload);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setPreflightError(error instanceof Error ? error.message : "Could not inspect this Planban install.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!updateJob || (updateJob.status !== "pending" && updateJob.status !== "running")) return undefined;
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      api<UpdateRunSnapshot>(`/api/update-run/${encodeURIComponent(updateJob.id)}`)
+        .then((payload) => {
+          if (!cancelled) {
+            setUpdateJob(payload);
+            if (payload.status === "succeeded" || payload.status === "failed") setBusy(null);
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setBusy(null);
+            if (updateJob.restartRequired && updateJob.targetVersion) {
+              setUpdateJob({
+                ...updateJob,
+                status: "succeeded",
+                message: "Planban is restarting locally. Waiting for the updated app...",
+              });
+            } else {
+              setMessage(error instanceof Error ? error.message : "Could not read update progress.");
+            }
+          }
+        });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [updateJob]);
+
+  useEffect(() => {
+    if (!status || !updateJob || updateJob.status !== "succeeded" || !updateJob.restartRequired || !updateJob.targetVersion) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const boardUrl = updateJob.currentBoardUrl ?? `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
+    const tutorialUrl = `${window.location.origin}/tutorial?mode=first-run`;
+    const destination = postUpdateBrowserUrl(status, boardUrl, tutorialUrl);
+
+    const timer = window.setInterval(() => {
+      api<{ version: VersionInfo }>("/api/status")
+        .then((payload) => {
+          if (cancelled) return;
+          if (compareVersionStrings(payload.version.version, updateJob.targetVersion ?? "0.0.0") >= 0) {
+            window.clearInterval(timer);
+            window.location.href = destination;
+          }
+        })
+        .catch(() => {
+          // The server may be between shutdown and restart; keep polling.
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [state.manifest.repoId, status, updateJob]);
+
+
+  async function runDirectUpdate() {
+    if (!status || !canDirectUpdate) return;
+    setBusy("direct");
+    setMessage(null);
+    setManualPrompt(null);
+    try {
+      const job = await api<UpdateRunSnapshot>("/api/update-run", {
+        method: "POST",
+        body: JSON.stringify({ currentBoardUrl: window.location.href }),
+      });
+      setUpdateJob(job);
+    } catch (error) {
+      setBusy(null);
+      setMessage(error instanceof Error ? error.message : "Could not start Planban update.");
+    }
+  }
 
   async function openInCodex() {
     if (!status) return;
@@ -1291,6 +1512,20 @@ function UpdateModal({
       const result = await openCodexUpdateThread(state, status);
       setMessage(result.opened ? "Opened a Codex draft thread. Hit enter there to continue." : "Copied the update prompt.");
       if (result.opened) onClose();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openSetupInCodex() {
+    if (!preflight?.setupPrompt) return;
+    setBusy("setup");
+    setMessage(null);
+    setManualPrompt(null);
+    try {
+      await openCodexPromptForState(state, preflight.setupPrompt);
+      setMessage("Opened a Codex setup draft. Hit enter there to continue.");
+      onClose();
     } finally {
       setBusy(null);
     }
@@ -1318,6 +1553,12 @@ function UpdateModal({
     }
   }
 
+  function copySetupPrompt() {
+    if (!preflight?.setupPrompt) return;
+    setManualPrompt(preflight.setupPrompt);
+    setMessage("Select or copy the setup prompt, then paste it into Codex.");
+  }
+
   return createPortal(
     <div className="modal-backdrop update-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
@@ -1330,13 +1571,8 @@ function UpdateModal({
         <header className="feedback-modal-header">
           <div>
             <p className="eyebrow">Planban updates</p>
-            <h2 id="update-title">{status?.updateAvailable ? "Update available" : "Planban updates"}</h2>
-            {status ? (
-              <p className="update-version-line">
-                {status.current.version}
-                {latest?.version ? ` -> ${latest.version}` : ""}
-              </p>
-            ) : null}
+            <h2 id="update-title">{status?.updateAvailable ? "Update available" : postUpdateVersion ? "Update applied" : "Planban updates"}</h2>
+            {updateVersionLine ? <p className="update-version-line">{updateVersionLine}</p> : null}
           </div>
           <TooltipButton label="Close updates" className="toolbar-icon-button" onClick={onClose}>
             <X size={14} />
@@ -1347,7 +1583,7 @@ function UpdateModal({
             <>
               {status.checkError ? (
                 <p className="update-note">Could not check for updates: {status.checkError}</p>
-              ) : status.updateAvailable ? (
+              ) : showChangelog ? (
                 <section className="update-summary">
                   <p className="eyebrow">What's changed</p>
                   {latest?.changelogTitle ? <h3>{latest.changelogTitle}</h3> : null}
@@ -1359,7 +1595,7 @@ function UpdateModal({
               {!status.compatible ? (
                 <p className="update-warning">This update may require a storage migration. Ask Codex to back up your Planban data before updating.</p>
               ) : null}
-              <div className="update-links">
+              <div className="update-links subtle">
                 {latest?.releaseNotesUrl ? (
                   <a href={latest.releaseNotesUrl} target="_blank" rel="noreferrer">
                     <ExternalLink size={13} />
@@ -1367,6 +1603,91 @@ function UpdateModal({
                   </a>
                 ) : null}
               </div>
+              {showWaitingForPreflight ? (
+                <p className="update-note">Checking whether this install can update directly...</p>
+              ) : null}
+              {showAgentUpdateFallback || showSetupFallback || preflightError ? (
+                <section className="update-preflight" aria-label="Update readiness">
+                  <div className="update-preflight-header">
+                    <p className="eyebrow">{showSetupFallback ? "Setup needed" : "Update with Codex"}</p>
+                    {preflight ? (
+                      <span className={`update-preflight-badge ${preflight.recommendedAction}`}>
+                        {preflight.recommendedAction === "update-now"
+                          ? "Eligible"
+                          : preflight.recommendedAction === "setup-prerequisites"
+                            ? "Setup needed"
+                            : "Use Codex"}
+                      </span>
+                    ) : null}
+                  </div>
+                  {preflightError ? (
+                    <p className="update-note">Could not inspect this install: {preflightError}</p>
+                  ) : preflight ? (
+                    <>
+                      <p className="update-preflight-summary">
+                        {preflight.recommendedAction === "setup-prerequisites"
+                          ? "Planban needs a local prerequisite before it can update this install."
+                          : "This install needs the agent-guided update path. Copy the update prompt into Codex, or open a Codex draft to continue."}
+                      </p>
+                      {preflight.blockedReasons.length > 0 ? (
+                        <ul className="update-preflight-list">
+                          {preflight.blockedReasons.slice(0, 3).map((reason) => (
+                            <li key={reason}>{reason}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {preflight.warnings.length > 0 ? (
+                        <p className="update-preflight-warning">{preflight.warnings[0]}</p>
+                      ) : null}
+                      {preflight.setupPrompt ? (
+                        <div className="update-preflight-actions">
+                          <button onClick={copySetupPrompt} disabled={busy !== null}>
+                            <Copy size={13} />
+                            Copy setup prompt
+                          </button>
+                          <button className="primary" onClick={openSetupInCodex} disabled={busy !== null}>
+                            {busy === "setup" ? <Loader2 size={13} className="spin" /> : <Send size={13} />}
+                            Open setup prompt in Codex
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                </section>
+              ) : null}
+              {showUpdateJobDetails && updateJob ? (
+                <section className="update-job" aria-label="Update progress">
+                  <div className="update-preflight-header">
+                    <p className="eyebrow">Update progress</p>
+                    <span className={`update-preflight-badge ${updateJob.status}`}>
+                      {updateJob.status}
+                    </span>
+                  </div>
+                  <p className="update-preflight-summary">{updateJob.message}</p>
+                  <div className="update-progress-track" aria-hidden="true">
+                    <div style={{ width: `${updateProgressPercent}%` }} />
+                  </div>
+                  {updateJob.steps.length > 0 ? (
+                    <details className="update-job-details">
+                      <summary>Show technical steps</summary>
+                      <ol className="update-job-steps">
+                        {updateJob.steps.map((step) => (
+                          <li key={step.id} className={step.status}>
+                            <span>{step.label}</span>
+                            <b>{step.status}</b>
+                            {step.error ? <small>{step.error}</small> : null}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  ) : null}
+                  {updateJob.status === "succeeded" && updateJob.restartRequired ? (
+                    <p className="update-preflight-warning">
+                      Planban is restarting locally. This board will reopen when the updated app is ready.
+                    </p>
+                  ) : null}
+                </section>
+              ) : null}
             </>
           ) : (
             <p className="update-note">Checking for updates...</p>
@@ -1382,16 +1703,26 @@ function UpdateModal({
             />
           ) : null}
         </div>
-        <footer className="feedback-actions">
-          <button onClick={copyPrompt} disabled={!status || busy !== null}>
-            {busy === "copy" ? <Loader2 size={14} className="spin" /> : <Copy size={14} />}
-            Copy prompt
-          </button>
-          <button className="primary" onClick={openInCodex} disabled={!status || busy !== null}>
-            {busy === "open" ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-            Update with Codex
-          </button>
-        </footer>
+        {!isPostUpdate && (canDirectUpdate || showAgentUpdateFallback) ? <footer className="feedback-actions">
+          {canDirectUpdate ? (
+            <button className="primary update-now-action" onClick={runDirectUpdate} disabled={busy !== null || updateInFlight}>
+              {busy === "direct" || updateInFlight ? <Loader2 size={14} className="spin" /> : <CircleArrowUp size={14} />}
+              {busy === "direct" || updateInFlight ? "Updating" : "Update now"}
+            </button>
+          ) : null}
+          {showAgentUpdateFallback ? (
+            <>
+              <button onClick={copyPrompt} disabled={!status || busy !== null || updateInFlight}>
+                {busy === "copy" ? <Loader2 size={14} className="spin" /> : <Copy size={14} />}
+                Copy update prompt
+              </button>
+              <button className="primary" onClick={openInCodex} disabled={!status || busy !== null || updateInFlight}>
+                {busy === "open" ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+                Update with Codex
+              </button>
+            </>
+          ) : null}
+        </footer> : null}
       </section>
     </div>,
     document.body,
@@ -2654,6 +2985,7 @@ function BoardView({
   const [items, setItems] = useState<RoadmapItem[]>(state.roadmap.roadmapItems);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const boardGridRef = useRef<HTMLDivElement | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [hiddenCards, setHiddenCards] = useState<Record<string, boolean>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -2663,6 +2995,10 @@ function BoardView({
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [postUpdateVersion, setPostUpdateVersion] = useState<string | null>(() => {
+    const value = new URLSearchParams(window.location.search).get("planbanUpdated");
+    return value && value.trim() ? value.trim() : null;
+  });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload | null>(null);
   const [showFirstRunPrompt, setShowFirstRunPrompt] = useState(() => readTutorialProgress() === null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -2698,6 +3034,14 @@ function BoardView({
     void loadUpdateStatus().catch(() => undefined);
   }, [boardId, loadHistory, loadUpdateStatus]);
 
+  useEffect(() => {
+    if (!postUpdateVersion || !updateStatus?.latest || updateStatus.latest.version !== postUpdateVersion) return;
+    setUpdateOpen(true);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("planbanUpdated");
+    window.history.replaceState({}, "", url.toString());
+  }, [postUpdateVersion, updateStatus]);
+
   const selectedItem = selectedId ? items.find((item) => item.id === selectedId) : null;
   const activeItem = activeId ? items.find((item) => item.id === activeId) : null;
   const grouped = useMemo(() => groupItems(items), [items]);
@@ -2707,6 +3051,21 @@ function BoardView({
   useEffect(() => {
     if (!hasArchivedCards) setShowArchived(false);
   }, [hasArchivedCards]);
+
+  useLayoutEffect(() => {
+    if (!showArchived || !hasArchivedCards) return undefined;
+
+    const frame = window.requestAnimationFrame(() => {
+      const grid = boardGridRef.current;
+      const archiveColumn = grid?.querySelector<HTMLElement>('[data-status="archived"]');
+      if (!grid || !archiveColumn) return;
+
+      const nextLeft = Math.max(0, archiveColumn.offsetLeft + archiveColumn.offsetWidth - grid.clientWidth + 12);
+      grid.scrollTo({ left: nextLeft, behavior: "smooth" });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [hasArchivedCards, showArchived]);
 
   async function refreshState() {
     const next = await api<PlanbanState>(boardPath(boardId, "/state"));
@@ -3010,7 +3369,11 @@ function BoardView({
         <UpdateModal
           state={state}
           status={updateStatus}
-          onClose={() => setUpdateOpen(false)}
+          postUpdateVersion={postUpdateVersion}
+          onClose={() => {
+            setUpdateOpen(false);
+            setPostUpdateVersion(null);
+          }}
         />
       ) : null}
 
@@ -3040,7 +3403,11 @@ function BoardView({
         onDragOver={onDragOver}
         onDragEnd={onDragEnd}
       >
-        <div className="board-grid" style={{ gridTemplateColumns: visibleStatuses.map((status) => (collapsed[status] ? "72px" : "minmax(280px, 1fr)")).join(" ") }}>
+        <div
+          ref={boardGridRef}
+          className="board-grid"
+          style={{ gridTemplateColumns: visibleStatuses.map((status) => (collapsed[status] ? "72px" : "minmax(280px, 1fr)")).join(" ") }}
+        >
           {visibleStatuses.map((status) => (
             <Column
               key={status}

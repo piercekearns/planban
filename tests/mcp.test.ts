@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createCard, historyPayload, initializeProject, loadState, readDoc } from "../src/core/storage";
+import { PLANBAN_MCP_VERSION } from "../src/core/version";
 
 const MCP_SERVER = join(process.cwd(), "plugins/planban/mcp/server.mjs");
 
@@ -70,6 +71,7 @@ test("Planban MCP server registers focused tools", () => {
   ]);
 
   assert.equal(responses[0].result.serverInfo.name, "Planban MCP");
+  assert.equal(responses[0].result.serverInfo.version, PLANBAN_MCP_VERSION);
   assert.deepEqual(
     responses[1].result.tools.map((tool: { name: string }) => tool.name),
     [

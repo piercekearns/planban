@@ -1,6 +1,6 @@
-export const PLANBAN_VERSION = "0.1.5";
-export const PLANBAN_PLUGIN_VERSION = "0.1.5";
-export const PLANBAN_MCP_VERSION = "0.1.5";
+export const PLANBAN_VERSION = "0.1.6";
+export const PLANBAN_PLUGIN_VERSION = "0.1.6";
+export const PLANBAN_MCP_VERSION = "0.1.6";
 export const PLANBAN_STORAGE_SCHEMA_VERSION = 1;
 export const PLANBAN_UPDATE_MANIFEST_URL =
   "https://raw.githubusercontent.com/piercekearns/planban/main/release/latest.json";
@@ -23,6 +23,8 @@ export interface PlanbanUpdateManifest {
   publishedAt: string;
   sourceUrl: string;
   releaseNotesUrl: string;
+  targetRef?: string;
+  targetCommit?: string;
   summary: string;
   updatePrompt: string;
   postUpdateRoute?: "tutorial" | "board" | "board-with-changelog";
