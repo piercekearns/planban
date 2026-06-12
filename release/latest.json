@@ -1,16 +1,17 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.6",
-  "pluginVersion": "0.1.6",
-  "mcpVersion": "0.1.6",
+  "version": "0.1.7",
+  "pluginVersion": "0.1.7",
+  "mcpVersion": "0.1.7",
   "storageSchemaVersion": 1,
   "minimumStorageSchemaVersion": 1,
-  "publishedAt": "2026-06-12T20:33:20.000Z",
+  "publishedAt": "2026-06-12T21:22:47.983Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.6",
-  "summary": "Adds a preflighted one-click local updater for safe Planban installs, with Codex fallback when direct update is not safe.",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.7",
+  "summary": "Hardens the installed Planban runtime, resolves the Vite/esbuild audit path, and ships the held-back archive and launch polish.",
   "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen Planban in the Codex in-app browser.",
   "postUpdateRoute": "board-with-changelog",
-  "changelogTitle": "One-click local updater",
-  "changelogSummary": "Eligible local installs can now update directly from the Planban update modal. Planban preflights the install, applies the update, verifies the plugin and MCP versions, restarts locally, and reopens the same board. Installs that are ambiguous or unsafe still fall back to the Codex-guided update prompt."
+  "changelogTitle": "Runtime and launch polish",
+  "changelogSummary": "Planban public installs now include the built web app and prefer that static runtime when launched from the plugin or MCP tools. The Vite/esbuild dependency chain has been updated and pinned to the fixed patch line, release preflight now blocks high-severity dependency audit findings, and the held-back board/launch polish is included for updater dogfooding.",
+  "targetRef": "main"
 }

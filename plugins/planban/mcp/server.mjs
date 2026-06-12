@@ -14,6 +14,7 @@ function resolveRuntimeRoot() {
 }
 
 const PLANBAN_RUNTIME_ROOT = resolveRuntimeRoot();
+const HAS_BUILT_WEB_BUNDLE = existsSync(resolve(PLANBAN_RUNTIME_ROOT, "dist/web/index.html"));
 const storageModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/storage.ts")).href);
 const registryModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/registry.ts")).href);
 const typesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/types.ts")).href);
@@ -229,7 +230,10 @@ async function launchBoard(args) {
   const cliPath = resolve(repoRoot, "bin/planban.mjs");
   if (!existsSync(cliPath)) throw new Error(`Planban CLI not found at ${cliPath}`);
 
-  const child = spawn(process.execPath, [cliPath, "serve", "--cwd", cwd, "--port", String(port)], {
+  const serveArgs = [cliPath, "serve", "--cwd", cwd, "--port", String(port)];
+  if (HAS_BUILT_WEB_BUNDLE) serveArgs.push("--no-vite");
+
+  const child = spawn(process.execPath, serveArgs, {
     cwd: repoRoot,
     detached: true,
     stdio: "ignore",

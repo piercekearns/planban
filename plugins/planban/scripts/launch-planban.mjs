@@ -22,6 +22,7 @@ function parseArgs(argv) {
     demo: false,
     tutorial: false,
     noVite: false,
+    vite: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -39,6 +40,8 @@ function parseArgs(argv) {
       options.demo = true;
     } else if (arg === "--no-vite") {
       options.noVite = true;
+    } else if (arg === "--vite") {
+      options.vite = true;
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -57,9 +60,9 @@ function printHelp() {
   process.stdout.write(`Launch the local Planban board.
 
 Usage:
-  node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo [--port 4317] [--open] [--no-vite]
-  node plugins/planban/scripts/launch-planban.mjs --demo [--port 4317] [--open] [--no-vite]
-  node plugins/planban/scripts/launch-planban.mjs --tutorial [--port 4317] [--open] [--no-vite]
+  node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo [--port 4317] [--open] [--no-vite|--vite]
+  node plugins/planban/scripts/launch-planban.mjs --demo [--port 4317] [--open] [--no-vite|--vite]
+  node plugins/planban/scripts/launch-planban.mjs --tutorial [--port 4317] [--open] [--no-vite|--vite]
 
 Options:
   --cwd <path>   Repository with .planban/project.json. Defaults to the current directory.
@@ -68,6 +71,7 @@ Options:
   --port <port>  Local port to use. Defaults to 4317.
   --open         Open the board URL with the OS URL handler after the server is ready.
   --no-vite      Serve the built web bundle instead of Vite middleware.
+  --vite         Force Vite middleware even when a built web bundle exists.
 `);
 }
 
@@ -145,6 +149,8 @@ async function main() {
   const baseUrl = `http://localhost:${options.port}`;
   const runtimeRoot = resolveRuntimeRoot();
   const cliPath = resolve(runtimeRoot, "bin/planban.mjs");
+  const hasBuiltWebBundle = existsSync(resolve(runtimeRoot, "dist/web/index.html"));
+  const shouldUseBuiltBundle = options.noVite || (!options.vite && hasBuiltWebBundle);
   if (!existsSync(cliPath)) {
     throw new Error(`Planban CLI not found at ${cliPath}`);
   }
@@ -184,7 +190,7 @@ async function main() {
   }
 
   const args = [cliPath, "serve", "--cwd", cwd, "--port", String(options.port)];
-  if (options.noVite) args.push("--no-vite");
+  if (shouldUseBuiltBundle) args.push("--no-vite");
 
   const child = spawn(process.execPath, args, {
     cwd: runtimeRoot,
