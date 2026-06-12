@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 
 function parseArgs(argv) {
@@ -48,15 +49,36 @@ function processExists(pid) {
   }
 }
 
-async function waitForParentExit(pid, timeoutMs = 20000) {
+function portIsListening(port) {
+  return new Promise((resolveCheck) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolveCheck(true);
+    });
+    socket.once("error", () => {
+      socket.destroy();
+      resolveCheck(false);
+    });
+    socket.setTimeout(500, () => {
+      socket.destroy();
+      resolveCheck(false);
+    });
+  });
+}
+
+async function waitForRestartWindow(pid, port, timeoutMs = 20000) {
   const started = Date.now();
-  while (processExists(pid) && Date.now() - started < timeoutMs) {
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  while (Date.now() - started < timeoutMs) {
+    const parentAlive = processExists(pid);
+    const portBusy = await portIsListening(port);
+    if (!parentAlive || !portBusy) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
 }
 
 const options = parseArgs(process.argv.slice(2));
-await waitForParentExit(options.parentPid);
+await waitForRestartWindow(options.parentPid, options.port);
 
 const cliPath = resolve(options.runtimeRoot, "bin/planban.mjs");
 if (!existsSync(cliPath)) {

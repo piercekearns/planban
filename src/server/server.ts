@@ -1,6 +1,7 @@
 import express from "express";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -60,6 +61,7 @@ import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
 const DIST_WEB_ROOT = resolve(PACKAGE_ROOT, "dist/web");
+const DIST_WEB_INDEX = resolve(DIST_WEB_ROOT, "index.html");
 const UPDATE_CHECK_TIMEOUT_MS = 3500;
 const updateJobs = new Map<string, UpdateRunSnapshot>();
 
@@ -267,6 +269,10 @@ export async function startServer(options: ServeOptions) {
   }
 
   async function closeServer() {
+    for (const client of clients) {
+      client.end();
+    }
+    clients.clear();
     await watcher?.close();
     await vite?.close();
     await new Promise<void>((resolveClose, reject) => {
@@ -288,7 +294,7 @@ export async function startServer(options: ServeOptions) {
       "--port",
       String(options.port),
     ];
-    if (!options.useVite) args.push("--no-vite");
+    if (!options.useVite || existsSync(DIST_WEB_INDEX)) args.push("--no-vite");
 
     const child = spawn(process.execPath, args, {
       cwd: PACKAGE_ROOT,
@@ -299,7 +305,11 @@ export async function startServer(options: ServeOptions) {
     child.unref();
 
     setTimeout(() => {
-      void closeServer().finally(() => {
+      const closeGracefully = closeServer();
+      const forceExit = new Promise<void>((resolveForce) => {
+        setTimeout(resolveForce, 2500);
+      });
+      void Promise.race([closeGracefully, forceExit]).finally(() => {
         process.exit(0);
       });
     }, 250);
