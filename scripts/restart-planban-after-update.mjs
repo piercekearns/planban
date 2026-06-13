@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -75,26 +75,60 @@ async function waitForRestartWindow(pid, port, timeoutMs = 20000) {
     if (!parentAlive || !portBusy) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
+  throw new Error(`Timed out waiting for parent ${pid} to release port ${port}`);
 }
 
-const options = parseArgs(process.argv.slice(2));
-await waitForRestartWindow(options.parentPid, options.port);
-
-const cliPath = resolve(options.runtimeRoot, "bin/planban.mjs");
-if (!existsSync(cliPath)) {
-  throw new Error(`Planban CLI not found at ${cliPath}`);
+function restartLogPath(runtimeRoot) {
+  if (process.env.PLANBAN_RESTART_LOG_FILE) return resolve(process.env.PLANBAN_RESTART_LOG_FILE);
+  return resolve(runtimeRoot, ".planban-restart.log");
 }
 
-const args = [cliPath, "serve", "--cwd", options.cwd, "--port", String(options.port)];
-if (options.noVite) args.push("--no-vite");
+async function appendRestartLog(logPath, line) {
+  await mkdir(dirname(logPath), { recursive: true });
+  await writeFile(logPath, `${new Date().toISOString()} ${line}\n`, { flag: "a" });
+}
 
-const child = spawn(process.execPath, args, {
-  cwd: options.runtimeRoot,
-  detached: true,
-  stdio: "ignore",
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const logPath = restartLogPath(options.runtimeRoot);
+  await appendRestartLog(logPath, `restart helper started parent=${options.parentPid} port=${options.port} runtimeRoot=${options.runtimeRoot} cwd=${options.cwd}`);
+  await waitForRestartWindow(options.parentPid, options.port);
+  await appendRestartLog(logPath, `restart window open for port ${options.port}`);
+
+  const cliPath = resolve(options.runtimeRoot, "bin/planban.mjs");
+  if (!existsSync(cliPath)) {
+    throw new Error(`Planban CLI not found at ${cliPath}`);
+  }
+
+  const launcherPath = resolve(options.runtimeRoot, "plugins/planban/scripts/launch-planban.mjs");
+  const useLauncher = existsSync(launcherPath);
+  const launchPath = useLauncher ? launcherPath : cliPath;
+  const args = useLauncher
+    ? [launchPath, "--cwd", options.cwd, "--port", String(options.port)]
+    : [launchPath, "serve", "--cwd", options.cwd, "--port", String(options.port)];
+  if (options.noVite) args.push("--no-vite");
+
+  const logStream = createWriteStream(logPath, { flags: "a" });
+  await appendRestartLog(logPath, `spawning ${process.execPath} ${args.join(" ")}`);
+  const child = spawn(process.execPath, args, {
+    cwd: options.runtimeRoot,
+    detached: true,
+    stdio: ["ignore", logStream, logStream],
+  });
+  if (process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
+    await mkdir(dirname(process.env.PLANBAN_RESTART_PID_FILE), { recursive: true });
+    await writeFile(process.env.PLANBAN_RESTART_PID_FILE, String(child.pid), "utf8");
+  }
+  await appendRestartLog(logPath, `spawned child pid=${child.pid ?? "unknown"}`);
+  child.unref();
+  logStream.end();
+}
+
+main().catch(async (error) => {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  const runtimeRootIndex = process.argv.indexOf("--runtime-root");
+  const runtimeRoot = runtimeRootIndex >= 0 ? resolve(process.argv[runtimeRootIndex + 1] ?? process.cwd()) : process.cwd();
+  await appendRestartLog(restartLogPath(runtimeRoot), `restart helper failed: ${message}`).catch(() => {});
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
 });
-if (process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
-  await mkdir(dirname(process.env.PLANBAN_RESTART_PID_FILE), { recursive: true });
-  await writeFile(process.env.PLANBAN_RESTART_PID_FILE, String(child.pid), "utf8");
-}
-child.unref();
