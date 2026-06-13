@@ -47,7 +47,7 @@ test("serves the built app and exposes state APIs", async () => {
     const status = await jsonFetch<{ initialized: boolean; repoId: string; version: { version: string } }>(`${server.url}/api/status`);
     assert.equal(status.initialized, true);
     assert.equal(status.repoId, repoId);
-    assert.equal(status.version.version, "0.1.10");
+    assert.equal(status.version.version, "0.1.11");
 
     const state = await jsonFetch<{ roadmap: { roadmapItems: Array<{ id: string }> } }>(`${server.url}/api/state`);
     assert.deepEqual(
@@ -67,20 +67,20 @@ test("reports update status from public version metadata", async () => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       schemaVersion: 1,
-      version: "0.1.11",
-      pluginVersion: "0.1.11",
-      mcpVersion: "0.1.11",
+      version: "0.1.12",
+      pluginVersion: "0.1.12",
+      mcpVersion: "0.1.12",
       storageSchemaVersion: 1,
       minimumStorageSchemaVersion: 1,
       publishedAt: "2026-06-10T01:30:00.000Z",
       sourceUrl: "https://github.com/piercekearns/planban",
-      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.10",
+      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.12",
       summary: "Test update",
       updatePrompt: "Update Planban.",
       postUpdateRoute: "board-with-changelog",
       changelogTitle: "Test changelog",
       changelogSummary: "A richer test update.",
-      showTutorialWhenUpdatingFromBefore: "0.1.10",
+      showTutorialWhenUpdatingFromBefore: "0.1.11",
     }));
   });
   await new Promise<void>((resolveListen) => manifestServer.listen(0, resolveListen));
@@ -97,8 +97,8 @@ test("reports update status from public version metadata", async () => {
       compatible: boolean;
       checkError: string | null;
     }>(`${server.url}/api/update-status`);
-    assert.equal(status.current.version, "0.1.10");
-    assert.equal(status.latest?.version, "0.1.11");
+    assert.equal(status.current.version, "0.1.11");
+    assert.equal(status.latest?.version, "0.1.12");
     assert.equal(status.updateAvailable, true);
     assert.equal(status.compatible, true);
     assert.equal(status.checkError, null);
@@ -119,14 +119,14 @@ test("starts update jobs and records preflight failure for blocked installs", as
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       schemaVersion: 1,
-      version: "0.1.11",
-      pluginVersion: "0.1.11",
-      mcpVersion: "0.1.11",
+      version: "0.1.12",
+      pluginVersion: "0.1.12",
+      mcpVersion: "0.1.12",
       storageSchemaVersion: 1,
       minimumStorageSchemaVersion: 1,
       publishedAt: "2026-06-12T00:00:00.000Z",
       sourceUrl: "https://github.com/piercekearns/planban",
-      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.10",
+      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.12",
       targetRef: "main",
       targetCommit: "def456",
       summary: "Test update",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -67,15 +67,18 @@ function portIsListening(port) {
   });
 }
 
-async function waitForRestartWindow(pid, port, timeoutMs = 20000) {
+async function waitForRestartWindow(pid, port, timeoutMs = 120000, logPath = null) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const parentAlive = processExists(pid);
     const portBusy = await portIsListening(port);
-    if (!parentAlive || !portBusy) return;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+    if (!portBusy) return;
+    if (!parentAlive && logPath) {
+      await appendRestartLog(logPath, `parent ${pid} has exited; waiting for port ${port} to be released`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
-  throw new Error(`Timed out waiting for parent ${pid} to release port ${port}`);
+  throw new Error(`Timed out waiting for port ${port} to be released after parent ${pid} restart handoff`);
 }
 
 function restartLogPath(runtimeRoot) {
@@ -92,7 +95,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const logPath = restartLogPath(options.runtimeRoot);
   await appendRestartLog(logPath, `restart helper started parent=${options.parentPid} port=${options.port} runtimeRoot=${options.runtimeRoot} cwd=${options.cwd}`);
-  await waitForRestartWindow(options.parentPid, options.port);
+  await waitForRestartWindow(options.parentPid, options.port, 120000, logPath);
   await appendRestartLog(logPath, `restart window open for port ${options.port}`);
 
   const cliPath = resolve(options.runtimeRoot, "bin/planban.mjs");
@@ -108,12 +111,12 @@ async function main() {
     : [launchPath, "serve", "--cwd", options.cwd, "--port", String(options.port)];
   if (options.noVite) args.push("--no-vite");
 
-  const logStream = createWriteStream(logPath, { flags: "a" });
+  const logFd = openSync(logPath, "a");
   await appendRestartLog(logPath, `spawning ${process.execPath} ${args.join(" ")}`);
   const child = spawn(process.execPath, args, {
     cwd: options.runtimeRoot,
     detached: true,
-    stdio: ["ignore", logStream, logStream],
+    stdio: ["ignore", logFd, logFd],
   });
   if (process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
     await mkdir(dirname(process.env.PLANBAN_RESTART_PID_FILE), { recursive: true });
@@ -121,7 +124,7 @@ async function main() {
   }
   await appendRestartLog(logPath, `spawned child pid=${child.pid ?? "unknown"}`);
   child.unref();
-  logStream.end();
+  closeSync(logFd);
 }
 
 main().catch(async (error) => {

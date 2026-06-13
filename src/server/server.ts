@@ -1,7 +1,7 @@
 import express from "express";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -285,7 +285,7 @@ export async function startServer(options: ServeOptions) {
     const scriptPath = resolve(PACKAGE_ROOT, "scripts/restart-planban-after-update.mjs");
     const restartLogFile = resolve(PACKAGE_ROOT, ".planban-restart.log");
     mkdirSync(dirname(restartLogFile), { recursive: true });
-    const restartLogStream = createWriteStream(restartLogFile, { flags: "a" });
+    const restartLogFd = openSync(restartLogFile, "a");
     const args = [
       scriptPath,
       "--parent-pid",
@@ -302,14 +302,14 @@ export async function startServer(options: ServeOptions) {
     const child = spawn(process.execPath, args, {
       cwd: PACKAGE_ROOT,
       detached: true,
-      stdio: ["ignore", restartLogStream, restartLogStream],
+      stdio: ["ignore", restartLogFd, restartLogFd],
       env: {
         ...process.env,
         PLANBAN_RESTART_LOG_FILE: restartLogFile,
       },
     });
     child.unref();
-    restartLogStream.end();
+    closeSync(restartLogFd);
 
     setTimeout(() => {
       const closeGracefully = closeServer();
