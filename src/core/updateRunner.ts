@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { updatePreflight, type PlanbanUpdatePreflight } from "./updatePreflight";
 import type { PlanbanUpdateManifest } from "./version";
 
@@ -27,6 +28,7 @@ export interface UpdateRunStepSnapshot {
   completedAt: string | null;
   exitCode: number | null;
   error: string | null;
+  durationMs: number | null;
 }
 
 export interface UpdateRunSnapshot {
@@ -42,7 +44,41 @@ export interface UpdateRunSnapshot {
   restartRequired: boolean;
   message: string;
   error: string | null;
+  transcriptPath: string | null;
   steps: UpdateRunStepSnapshot[];
+}
+
+interface UpdateStepTranscript extends UpdateRunStepSnapshot {
+  stdoutTail: string | null;
+  stderrTail: string | null;
+}
+
+interface UpdateRunTranscript {
+  id: string;
+  status: UpdateRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  runtimeRoot: string;
+  codexHome: string | null;
+  installShape: PlanbanUpdatePreflight["installShape"];
+  currentBoardUrl: string | null;
+  targetVersion: string | null;
+  targetRef: string | null;
+  targetCommit: string | null;
+  message: string;
+  error: string | null;
+  preflight: {
+    checkedAt: string;
+    installShape: PlanbanUpdatePreflight["installShape"];
+    runtimeRoot: string;
+    codexHome: string;
+    marketplace: PlanbanUpdatePreflight["marketplace"];
+    git: PlanbanUpdatePreflight["git"];
+    warnings: string[];
+    blockedReasons: string[];
+  };
+  steps: UpdateStepTranscript[];
 }
 
 interface UpdateRunOptions {
@@ -69,6 +105,7 @@ function publicStep(step: UpdateCommandStep): UpdateRunStepSnapshot {
     completedAt: null,
     exitCode: null,
     error: null,
+    durationMs: null,
   };
 }
 
@@ -262,6 +299,67 @@ function failureMessage(step: UpdateCommandStep, stdout: string, stderr: string)
   return detail ? `${step.label} failed:\n${detail}` : `${step.label} failed`;
 }
 
+function transcriptPath(runtimeRoot: string, id: string) {
+  return join(runtimeRoot, ".planban-update-runs", `${id}.json`);
+}
+
+function textTail(value: string, maxLength = 4000) {
+  if (!value.trim()) return null;
+  return value.length <= maxLength ? value : value.slice(value.length - maxLength);
+}
+
+async function writeTranscript(path: string, transcript: UpdateRunTranscript) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(transcript, null, 2) + "\n", "utf8");
+}
+
+function buildTranscript(
+  snapshot: UpdateRunSnapshot,
+  runtimeRoot: string,
+  codexHome: string | null,
+  preflight: PlanbanUpdatePreflight,
+  stepOutputs: Map<string, { stdout: string; stderr: string }>,
+): UpdateRunTranscript {
+  const durationMs = snapshot.completedAt
+    ? new Date(snapshot.completedAt).getTime() - new Date(snapshot.startedAt).getTime()
+    : null;
+
+  return {
+    id: snapshot.id,
+    status: snapshot.status,
+    startedAt: snapshot.startedAt,
+    completedAt: snapshot.completedAt,
+    durationMs,
+    runtimeRoot,
+    codexHome,
+    installShape: snapshot.installShape,
+    currentBoardUrl: snapshot.currentBoardUrl,
+    targetVersion: snapshot.targetVersion,
+    targetRef: snapshot.targetRef,
+    targetCommit: snapshot.targetCommit,
+    message: snapshot.message,
+    error: snapshot.error,
+    preflight: {
+      checkedAt: preflight.checkedAt,
+      installShape: preflight.installShape,
+      runtimeRoot: preflight.runtimeRoot,
+      codexHome: preflight.codexHome,
+      marketplace: preflight.marketplace,
+      git: preflight.git,
+      warnings: preflight.warnings,
+      blockedReasons: preflight.blockedReasons,
+    },
+    steps: snapshot.steps.map((step) => {
+      const output = stepOutputs.get(step.id);
+      return {
+        ...step,
+        stdoutTail: output ? textTail(output.stdout) : null,
+        stderrTail: output ? textTail(output.stderr) : null,
+      };
+    }),
+  };
+}
+
 export async function runPlanbanUpdate(options: UpdateRunOptions): Promise<UpdateRunSnapshot> {
   const preflightOptions = {
     runtimeRoot: options.runtimeRoot,
@@ -274,9 +372,12 @@ export async function runPlanbanUpdate(options: UpdateRunOptions): Promise<Updat
 
   const steps = buildUpdateCommandPlan(preflight, options.latest);
   if (steps.length === 0) throw new Error("No direct update command plan is available for this install.");
+  const id = options.id ?? randomUUID();
+  const updateTranscriptPath = transcriptPath(options.runtimeRoot, id);
+  const stepOutputs = new Map<string, { stdout: string; stderr: string }>();
 
   const snapshot: UpdateRunSnapshot = {
-    id: options.id ?? randomUUID(),
+    id,
     status: "running",
     startedAt: isoNow(),
     completedAt: null,
@@ -288,11 +389,18 @@ export async function runPlanbanUpdate(options: UpdateRunOptions): Promise<Updat
     restartRequired: true,
     message: "Preparing Planban update...",
     error: null,
+    transcriptPath: updateTranscriptPath,
     steps: steps.map(publicStep),
   };
 
-  const emit = () => options.onSnapshot?.({ ...snapshot, steps: snapshot.steps.map((step) => ({ ...step })) });
-  emit();
+  const emit = async () => {
+    await writeTranscript(
+      updateTranscriptPath,
+      buildTranscript(snapshot, options.runtimeRoot, options.codexHome ?? null, preflight, stepOutputs),
+    );
+    options.onSnapshot?.({ ...snapshot, steps: snapshot.steps.map((step) => ({ ...step })) });
+  };
+  await emit();
 
   for (const step of steps) {
     const stepSnapshot = snapshot.steps.find((candidate) => candidate.id === step.id);
@@ -300,12 +408,14 @@ export async function runPlanbanUpdate(options: UpdateRunOptions): Promise<Updat
     stepSnapshot.status = "running";
     stepSnapshot.startedAt = isoNow();
     snapshot.message = step.label;
-    emit();
+    await emit();
 
     try {
       const result = await runStep(step);
+      stepOutputs.set(step.id, { stdout: result.stdout, stderr: result.stderr });
       stepSnapshot.exitCode = result.exitCode;
       stepSnapshot.completedAt = isoNow();
+      stepSnapshot.durationMs = new Date(stepSnapshot.completedAt).getTime() - new Date(stepSnapshot.startedAt).getTime();
       if (result.exitCode !== 0) {
         stepSnapshot.status = "failed";
         stepSnapshot.error = failureMessage(step, result.stdout, result.stderr);
@@ -313,21 +423,24 @@ export async function runPlanbanUpdate(options: UpdateRunOptions): Promise<Updat
         snapshot.completedAt = isoNow();
         snapshot.error = stepSnapshot.error;
         snapshot.message = "Planban update failed.";
-        emit();
+        await emit();
         return snapshot;
       }
       stepSnapshot.status = "succeeded";
       snapshot.message = `${step.label} complete`;
-      emit();
+      await emit();
     } catch (error) {
       stepSnapshot.status = "failed";
       stepSnapshot.completedAt = isoNow();
+      stepSnapshot.durationMs = stepSnapshot.startedAt
+        ? new Date(stepSnapshot.completedAt).getTime() - new Date(stepSnapshot.startedAt).getTime()
+        : null;
       stepSnapshot.error = error instanceof Error ? error.message : `${step.label} failed`;
       snapshot.status = "failed";
       snapshot.completedAt = isoNow();
       snapshot.error = stepSnapshot.error;
       snapshot.message = "Planban update failed.";
-      emit();
+      await emit();
       return snapshot;
     }
   }
@@ -335,6 +448,6 @@ export async function runPlanbanUpdate(options: UpdateRunOptions): Promise<Updat
   snapshot.status = "succeeded";
   snapshot.completedAt = isoNow();
   snapshot.message = "Planban update installed. Restart Planban, then reopen this board to load the updated app.";
-  emit();
+  await emit();
   return snapshot;
 }

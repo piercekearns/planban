@@ -413,6 +413,7 @@ export async function startServer(options: ServeOptions) {
         restartRequired: true,
         message: "Preparing Planban update...",
         error: null,
+        transcriptPath: null,
         steps: [],
       };
       updateJobs.set(id, pending);
