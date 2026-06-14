@@ -7,6 +7,11 @@ description: Fast Planban opener. Use when the user invokes pb, /pb, asks to qui
 
 Open Planban quickly with minimal explanation.
 
+`/pb` and `/planban` are two entry points for the same primary outcome: surface the
+best matching Planban board in the Codex in-app browser, or the best fallback surface
+when a specific board cannot be selected safely. `/pb` is the faster-to-type power-user
+command; `/planban` is the memorable full-name command.
+
 ## Behavior
 
 Resolve the board in this order:

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -103,6 +104,21 @@ async function waitForStatus(baseUrl, timeoutMs = 15000) {
   throw lastError ?? new Error("Timed out waiting for Planban");
 }
 
+async function isPortOpen(port, timeoutMs = 750) {
+  return await new Promise((resolveProbe) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const finish = (open) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolveProbe(open);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
 function repoIdFromCwd(cwd) {
   try {
     const manifest = JSON.parse(readFileSync(resolve(cwd, ".planban/project.json"), "utf8"));
@@ -115,18 +131,26 @@ function repoIdFromCwd(cwd) {
 async function boardUrl(baseUrl, status, cwd) {
   const targetRepoId = repoIdFromCwd(cwd);
   const statusRepoId = status.currentRepoId ?? status.repoId;
-  if (targetRepoId && statusRepoId && targetRepoId !== statusRepoId) {
-    const boards = await boardsFor(baseUrl).catch(() => null);
-    const hasTargetBoard = Array.isArray(boards?.boards) && boards.boards.some((board) => board.repoId === targetRepoId);
-    if (!hasTargetBoard) {
-      throw new Error(
-        `Planban is already running on ${baseUrl}, but it is not serving repo "${targetRepoId}". ` +
-        "Use --port to start this board on another port.",
-      );
-    }
+
+  if (targetRepoId && statusRepoId === targetRepoId) {
+    return `${baseUrl}/boards/${encodeURIComponent(targetRepoId)}`;
   }
-  const repoId = targetRepoId ?? statusRepoId;
-  return repoId ? `${baseUrl}/boards/${encodeURIComponent(repoId)}` : baseUrl;
+
+  const boards = await boardsFor(baseUrl).catch(() => null);
+  const boardList = Array.isArray(boards?.boards) ? boards.boards : null;
+
+  if (targetRepoId) {
+    const hasTargetBoard = boardList?.some((board) => board.repoId === targetRepoId) ?? statusRepoId === targetRepoId;
+    return hasTargetBoard ? `${baseUrl}/boards/${encodeURIComponent(targetRepoId)}` : `${baseUrl}/boards`;
+  }
+
+  if (boardList?.length === 1 && typeof boardList[0]?.repoId === "string") {
+    return `${baseUrl}/boards/${encodeURIComponent(boardList[0].repoId)}`;
+  }
+
+  if (boardList && boardList.length !== 1) return `${baseUrl}/boards`;
+
+  return statusRepoId ? `${baseUrl}/boards/${encodeURIComponent(statusRepoId)}` : `${baseUrl}/boards`;
 }
 
 function tutorialUrl(baseUrl) {
@@ -187,6 +211,10 @@ async function main() {
     if (options.open) openUrl(url);
     process.stdout.write(`Planban already running at ${url}\n`);
     return;
+  }
+
+  if (await isPortOpen(options.port)) {
+    throw new Error(`Port ${options.port} is already in use by another service. Stop that process or choose a different Planban port.`);
   }
 
   const args = [cliPath, "serve", "--cwd", cwd, "--port", String(options.port)];

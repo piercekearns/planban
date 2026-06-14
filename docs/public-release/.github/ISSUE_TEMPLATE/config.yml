@@ -1,5 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: Use Codex to draft feedback
-    url: https://github.com/piercekearns/planban#feedback-with-codex
-    about: Ask Codex to turn rough feedback into a clean GitHub issue before filing.

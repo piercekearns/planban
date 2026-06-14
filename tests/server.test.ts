@@ -4,6 +4,7 @@ import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { createCard, initializeProject, readDoc, saveRoadmap, setCardStatus } from "../src/core/storage";
+import { PLANBAN_VERSION } from "../src/core/version";
 import { startServer } from "../src/server/server";
 
 const repoId = "planban-server-test";
@@ -13,6 +14,11 @@ const otherCwd = "/tmp/planban-server-test-other";
 const planbanHome = "/tmp/planban-server-home";
 const planningRoot = join(planbanHome, "repos", repoId);
 const otherPlanningRoot = join(planbanHome, "repos", otherRepoId);
+
+function nextPatchVersion(version: string) {
+  const [major = 0, minor = 0, patch = 0] = version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  return `${major}.${minor}.${patch + 1}`;
+}
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -59,7 +65,7 @@ test("serves the built app and exposes state APIs", async () => {
     const status = await jsonFetch<{ initialized: boolean; repoId: string; version: { version: string } }>(`${server.url}/api/status`);
     assert.equal(status.initialized, true);
     assert.equal(status.repoId, repoId);
-    assert.equal(status.version.version, "0.1.13");
+    assert.equal(status.version.version, PLANBAN_VERSION);
 
     const state = await jsonFetch<{ roadmap: { roadmapItems: Array<{ id: string }> } }>(`${server.url}/api/state`);
     assert.deepEqual(
@@ -73,26 +79,27 @@ test("serves the built app and exposes state APIs", async () => {
 
 test("reports update status from public version metadata", async () => {
   await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const latestVersion = nextPatchVersion(PLANBAN_VERSION);
   let manifestRequestUrl: string | undefined;
   const manifestServer = createHttpServer((req, res) => {
     manifestRequestUrl = req.url;
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       schemaVersion: 1,
-      version: "0.1.14",
-      pluginVersion: "0.1.14",
-      mcpVersion: "0.1.14",
+      version: latestVersion,
+      pluginVersion: latestVersion,
+      mcpVersion: latestVersion,
       storageSchemaVersion: 1,
       minimumStorageSchemaVersion: 1,
       publishedAt: "2026-06-10T01:30:00.000Z",
       sourceUrl: "https://github.com/piercekearns/planban",
-      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.14",
+      releaseNotesUrl: `https://github.com/piercekearns/planban/releases/tag/v${latestVersion}`,
       summary: "Test update",
       updatePrompt: "Update Planban.",
       postUpdateRoute: "board-with-changelog",
       changelogTitle: "Test changelog",
       changelogSummary: "A richer test update.",
-      showTutorialWhenUpdatingFromBefore: "0.1.13",
+      showTutorialWhenUpdatingFromBefore: PLANBAN_VERSION,
     }));
   });
   await new Promise<void>((resolveListen) => manifestServer.listen(0, resolveListen));
@@ -109,8 +116,8 @@ test("reports update status from public version metadata", async () => {
       compatible: boolean;
       checkError: string | null;
     }>(`${server.url}/api/update-status`);
-    assert.equal(status.current.version, "0.1.13");
-    assert.equal(status.latest?.version, "0.1.14");
+    assert.equal(status.current.version, PLANBAN_VERSION);
+    assert.equal(status.latest?.version, latestVersion);
     assert.equal(status.updateAvailable, true);
     assert.equal(status.compatible, true);
     assert.equal(status.checkError, null);
@@ -127,18 +134,19 @@ test("reports update status from public version metadata", async () => {
 
 test("starts update jobs and records preflight failure for blocked installs", async () => {
   await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const latestVersion = nextPatchVersion(PLANBAN_VERSION);
   const manifestServer = createHttpServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       schemaVersion: 1,
-      version: "0.1.14",
-      pluginVersion: "0.1.14",
-      mcpVersion: "0.1.14",
+      version: latestVersion,
+      pluginVersion: latestVersion,
+      mcpVersion: latestVersion,
       storageSchemaVersion: 1,
       minimumStorageSchemaVersion: 1,
       publishedAt: "2026-06-12T00:00:00.000Z",
       sourceUrl: "https://github.com/piercekearns/planban",
-      releaseNotesUrl: "https://github.com/piercekearns/planban/releases/tag/v0.1.14",
+      releaseNotesUrl: `https://github.com/piercekearns/planban/releases/tag/v${latestVersion}`,
       targetRef: "main",
       targetCommit: "def456",
       summary: "Test update",

@@ -16,7 +16,7 @@ Install Planban from piercekearns/planban. Follow the Install With Codex details
 
 Planban installs as a Git-backed Codex plugin marketplace. Codex should:
 
-1. Check whether Node.js and npm are available. If either is missing, explain that Planban runs locally and requires Node.js, which normally includes npm. Ask before installing Node.js. If approved, install Node.js LTS using the safest method for the machine, then verify `node --version` and `npm --version` before continuing.
+1. Check whether Node.js and npm are available. Planban requires Node.js `>=22.12.0` so its local runtime and build tooling stay inside supported dependency ranges. If Node.js or npm is missing or too old, explain that Planban runs locally and requires a modern Node.js LTS release. Ask before installing or upgrading Node.js. If approved, install Node.js LTS using the safest method for the machine, then verify `node --version` and `npm --version` before continuing.
 2. Add the Planban marketplace.
 3. Locate the installed marketplace root.
 4. Run `npm install` there.
