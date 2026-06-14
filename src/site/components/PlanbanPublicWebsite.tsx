@@ -471,7 +471,7 @@ export const PlanbanPublicWebsite = () => {
                 <span className="pb-button-icon"><CodexInstallIcon /></span>
                 Install with Codex
               </button>
-              <span className="pb-install-mobile-note">Desktop only</span>
+              <span className="pb-install-mobile-note">DESKTOP ONLY</span>
             </div>
           </div>
 
@@ -500,7 +500,7 @@ export const PlanbanPublicWebsite = () => {
               <span className="pb-button-icon"><CodexInstallIcon /></span>
               Install with Codex
             </button>
-            <span className="pb-install-mobile-note">Desktop only</span>
+            <span className="pb-install-mobile-note">DESKTOP ONLY</span>
           </div>
 
           <div className="pb-or-divider"><span>or</span></div>

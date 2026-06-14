@@ -1826,6 +1826,10 @@ body {
       color: color-mix(in oklab, var(--pb-codex-bright) 54%, var(--pb-muted));
     }
 
+    .pb-install-copy .pb-install-mobile-note {
+      margin-top: 8px;
+    }
+
     .pb-section-heading h2,
     .pb-docs h2,
     .pb-future-heading h2 {
