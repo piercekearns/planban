@@ -44,6 +44,7 @@ body {
     min-height: 100vh;
     overflow-x: clip;
     overflow-y: visible;
+    color-scheme: light;
     background:
       radial-gradient(circle at var(--spot-x) var(--spot-y), rgba(1, 105, 204, 0.06), transparent 34rem),
       linear-gradient(180deg, var(--pb-bg), var(--pb-bg-2) 38%, var(--pb-bg));
@@ -77,6 +78,7 @@ body {
     --pb-codex-soft: rgba(1, 105, 204, 0.18);
     --pb-shadow: 0 14px 38px rgba(0, 0, 0, 0.28);
     --pb-shadow-heavy: 0 30px 86px rgba(0, 0, 0, 0.46);
+    color-scheme: dark;
     background:
       radial-gradient(circle at var(--spot-x) var(--spot-y), rgba(1, 105, 204, 0.12), transparent 36rem),
       radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.045), transparent 26rem),
@@ -1784,6 +1786,18 @@ body {
     .pb-actions {
       margin-top: 34px;
       gap: 12px;
+    }
+
+    .pb-hero .pb-actions {
+      width: auto;
+      align-items: flex-start;
+    }
+
+    .pb-install-with-codex {
+      width: auto;
+      min-width: 184px;
+      padding-left: 18px;
+      padding-right: 18px;
     }
 
     .pb-section-heading h2,

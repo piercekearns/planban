@@ -31,6 +31,7 @@ const planbanSignupEndpoint = import.meta.env.VITE_PLANBAN_SIGNUP_ENDPOINT as st
 const planbanXUrl = (import.meta.env.VITE_PLANBAN_X_URL as string | undefined) || "https://x.com/planbanai";
 const planbanYouTubeUrl = import.meta.env.VITE_PLANBAN_YOUTUBE_URL as string | undefined;
 const installPrompt = "Install Planban from piercekearns/planban. Follow the Install With Codex details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the Codex in-app browser, then ask whether I want to set up Planban for a local project.";
+const codexInstallUrl = `codex://new?prompt=${encodeURIComponent(installPrompt)}&originUrl=${encodeURIComponent("https://github.com/piercekearns/planban")}`;
 const installTabs = [{
   id: "codex",
   label: "Codex prompt",
@@ -313,8 +314,12 @@ export const PlanbanPublicWebsite = () => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const updateSystemTheme = () => setSystemTheme(media.matches ? "dark" : "light");
     updateSystemTheme();
-    media.addEventListener?.("change", updateSystemTheme);
-    return () => media.removeEventListener?.("change", updateSystemTheme);
+    if (media.addEventListener) {
+      media.addEventListener("change", updateSystemTheme);
+      return () => media.removeEventListener("change", updateSystemTheme);
+    }
+    media.addListener?.(updateSystemTheme);
+    return () => media.removeListener?.(updateSystemTheme);
   }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -455,7 +460,7 @@ export const PlanbanPublicWebsite = () => {
               Agent-native Kanban board that lives in your Codex in-app browser. A second brain, a readable roadmap, card-level specs and plans kept in sync between you and your agent.
             </p>
             <div className="pb-actions">
-              <a className="pb-button primary" href="#install">
+              <a className="pb-button primary pb-install-with-codex" href={codexInstallUrl}>
                 <span className="pb-button-icon"><CodexInstallIcon /></span>
                 Install with Codex
               </a>
@@ -479,10 +484,10 @@ export const PlanbanPublicWebsite = () => {
             <p className="pb-kicker">Install</p>
             <h2>Quick Start</h2>
             <p>One-prompt install, one-click updates.</p>
-            <button type="button" className="pb-button primary" onClick={() => setActiveTab("codex")}>
+            <a className="pb-button primary pb-install-with-codex" href={codexInstallUrl} onClick={() => setActiveTab("codex")}>
               <span className="pb-button-icon"><CodexInstallIcon /></span>
               Install with Codex
-            </button>
+            </a>
           </div>
 
           <div className="pb-or-divider"><span>or</span></div>
