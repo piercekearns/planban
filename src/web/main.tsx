@@ -43,16 +43,21 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
-  arrayMove,
   SortableContext,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import {
+  groupItems,
+  groupItemsInCurrentOrder,
+  previewDragOver,
+  reorderItemsForDrop,
+  statusForDropTarget,
+  statuses,
+  type Status,
+} from "./boardOrdering";
 import "./styles.css";
-
-const statuses = ["in-progress", "up-next", "pending", "complete", "archived"] as const;
-type Status = (typeof statuses)[number];
 type DocKind = "spec" | "plan";
 
 interface RoadmapItem {
@@ -688,6 +693,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = {
     "Content-Type": "application/json",
+    "X-Planban-Client": "web",
     ...(init?.headers ?? {}),
   } as Record<string, string>;
   if (method !== "GET" && method !== "HEAD" && !headers["Idempotency-Key"]) {
@@ -720,33 +726,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (payload === null) throw new Error(`Empty response from ${path}`);
   return payload as T;
-}
-
-function groupItems(items: RoadmapItem[]) {
-  const grouped: Record<Status, RoadmapItem[]> = {
-    "in-progress": [],
-    "up-next": [],
-    pending: [],
-    complete: [],
-    archived: [],
-  };
-  for (const item of items) grouped[item.status].push(item);
-  for (const status of statuses) {
-    grouped[status].sort((a, b) => (a.priority ?? 9999) - (b.priority ?? 9999));
-  }
-  return grouped;
-}
-
-function groupItemsInCurrentOrder(items: RoadmapItem[]) {
-  const grouped: Record<Status, RoadmapItem[]> = {
-    "in-progress": [],
-    "up-next": [],
-    pending: [],
-    complete: [],
-    archived: [],
-  };
-  for (const item of items) grouped[item.status].push(item);
-  return grouped;
 }
 
 function stripFrontmatter(markdown: string) {
@@ -1888,29 +1867,7 @@ function TutorialMiniBoard({
   }
 
   function findStatus(id: string, currentItems = displayItems): Status | null {
-    if (statuses.includes(id as Status)) return id as Status;
-    return currentItems.find((item) => item.id === id)?.status ?? null;
-  }
-
-  function moveIntoStatus(currentItems: RoadmapItem[], id: string, status: Status, beforeId: string | null) {
-    const active = currentItems.find((item) => item.id === id);
-    if (!active) return currentItems;
-    const remaining = currentItems.filter((item) => item.id !== id);
-    const moved = { ...active, status };
-    const insertAt = beforeId
-      ? remaining.findIndex((item) => item.id === beforeId)
-      : remaining.map((item) => item.status).lastIndexOf(status) + 1;
-    const safeInsertAt = insertAt >= 0 ? insertAt : remaining.length;
-    return [...remaining.slice(0, safeInsertAt), moved, ...remaining.slice(safeInsertAt)];
-  }
-
-  function moveWithinStatus(currentItems: RoadmapItem[], id: string, overId: string, status: Status) {
-    const statusItems = groupItemsInCurrentOrder(currentItems)[status];
-    const from = statusItems.findIndex((item) => item.id === id);
-    const to = statusItems.findIndex((item) => item.id === overId);
-    if (from < 0 || to < 0 || from === to) return currentItems;
-    const movedStatusItems = arrayMove(statusItems, from, to);
-    return statuses.flatMap((entryStatus) => (entryStatus === status ? movedStatusItems : groupItemsInCurrentOrder(currentItems)[entryStatus]));
+    return statusForDropTarget(currentItems, id);
   }
 
   function handleDragStart(event: DragStartEvent) {
@@ -1930,14 +1887,7 @@ function TutorialMiniBoard({
     const target = findStatus(overId, currentItems);
     setDragOverStatus(target);
     if (!target) return;
-    const active = currentItems.find((item) => item.id === draggingId);
-    if (!active) return;
-    const overItem = currentItems.find((item) => item.id === overId);
-    const nextItems = overItem && overItem.id !== draggingId && overItem.status === active.status
-      ? moveWithinStatus(currentItems, draggingId, overId, active.status)
-      : active.status === target
-        ? currentItems
-        : moveIntoStatus(currentItems, draggingId, target, overItem?.id ?? null);
+    const nextItems = previewDragOver(currentItems, draggingId, overId);
     if (nextItems !== currentItems) updateDraftItems(nextItems);
   }
 
@@ -1951,13 +1901,9 @@ function TutorialMiniBoard({
     updateDraftItems(null);
     if (!overId) return;
 
-    const active = currentItems.find((item) => item.id === id);
     const target = findStatus(overId, currentItems);
-    if (!active || !target) return;
-    const overItem = currentItems.find((item) => item.id === overId);
-    const nextItems = overItem && overItem.status === active.status
-      ? moveWithinStatus(currentItems, id, overId, active.status)
-      : moveIntoStatus(currentItems, id, target, overItem?.id ?? null);
+    if (!target) return;
+    const nextItems = reorderItemsForDrop(currentItems, id, overId);
     onItemsChange?.(nextItems, id);
   }
 
@@ -2123,8 +2069,7 @@ function TutorialLiveBoard({
   }
 
   function findStatus(id: string): Status | null {
-    if (statuses.includes(id as Status)) return id as Status;
-    return items.find((item) => item.id === id)?.status ?? null;
+    return statusForDropTarget(items, id);
   }
 
   function onDragStart(event: DragStartEvent) {
@@ -2144,9 +2089,7 @@ function TutorialLiveBoard({
     setDragOver(target);
     if (!target) return;
     setItems((previous) => {
-      const active = previous.find((item) => item.id === draggingId);
-      if (!active || active.status === target) return previous;
-      return previous.map((item) => (item.id === draggingId ? { ...item, status: target } : item));
+      return previewDragOver(previous, draggingId, String(event.over?.id));
     });
   }
 
@@ -2162,28 +2105,10 @@ function TutorialLiveBoard({
       return;
     }
 
-    const active = items.find((item) => item.id === id);
     const targetStatus = findStatus(overId);
-    if (!active || !targetStatus) return;
+    if (!targetStatus) return;
 
-    let nextItems = items;
-    const overItem = items.find((item) => item.id === overId);
-    if (overItem && overItem.status === active.status) {
-      const columnItems = grouped[active.status];
-      const from = columnItems.findIndex((item) => item.id === id);
-      const to = columnItems.findIndex((item) => item.id === overId);
-      const movedColumn = arrayMove(columnItems, from, to);
-      nextItems = statuses.flatMap((status) => (status === active.status ? movedColumn : grouped[status]));
-    } else {
-      const remaining = items.filter((item) => item.id !== id);
-      const moved = { ...active, status: targetStatus };
-      const insertAt = overItem
-        ? remaining.findIndex((item) => item.id === overItem.id)
-        : remaining.map((item) => item.status).lastIndexOf(targetStatus) + 1;
-      const safeInsertAt = insertAt >= 0 ? insertAt : remaining.length;
-      nextItems = [...remaining.slice(0, safeInsertAt), moved, ...remaining.slice(safeInsertAt)];
-    }
-
+    const nextItems = reorderItemsForDrop(items, id, overId);
     setItems(nextItems);
     onItemsChange?.(nextItems, id);
     onSelect(id);
@@ -3078,6 +3003,8 @@ function BoardView({
     const pendingItems = state.roadmap.roadmapItems.filter(hasPendingCodexThread);
     if (pendingItems.length === 0) return undefined;
     let cancelled = false;
+    let timeoutId: number | null = null;
+    let nextDelayMs = 3000;
 
     async function syncPendingCodexThreads() {
       for (const item of pendingItems) {
@@ -3089,19 +3016,26 @@ function BoardView({
           if (!cancelled && result.linked && result.state) {
             onStateChange(result.state);
             await loadHistory().catch(() => undefined);
-            return;
+            return true;
           }
         } catch {
           // Keep the board usable if Codex session discovery is temporarily unavailable.
         }
       }
+      return false;
     }
 
-    void syncPendingCodexThreads();
-    const interval = window.setInterval(() => void syncPendingCodexThreads(), 3000);
+    async function scheduleSync() {
+      const linked = await syncPendingCodexThreads();
+      if (cancelled || linked) return;
+      nextDelayMs = Math.min(Math.round(nextDelayMs * 1.5), 15000);
+      timeoutId = window.setTimeout(() => void scheduleSync(), nextDelayMs);
+    }
+
+    void scheduleSync();
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
   }, [boardId, isPreviewing, loadHistory, onStateChange, state.roadmap.revision, state.roadmap.roadmapItems]);
 
@@ -3201,8 +3135,7 @@ function BoardView({
   }
 
   function findStatus(id: string): Status | null {
-    if (statuses.includes(id as Status)) return id as Status;
-    return items.find((item) => item.id === id)?.status ?? null;
+    return statusForDropTarget(items, id);
   }
 
   function onDragStart(event: DragStartEvent) {
@@ -3220,9 +3153,7 @@ function BoardView({
     setDragOver(target);
     if (!target) return;
     setItems((previous) => {
-      const active = previous.find((item) => item.id === draggingId);
-      if (!active || active.status === target) return previous;
-      return previous.map((item) => (item.id === draggingId ? { ...item, status: target } : item));
+      return previewDragOver(previous, draggingId, String(event.over?.id));
     });
   }
 
@@ -3238,28 +3169,10 @@ function BoardView({
       return;
     }
 
-    const active = items.find((item) => item.id === id);
     const targetStatus = findStatus(overId);
-    if (!active || !targetStatus) return;
+    if (!targetStatus) return;
 
-    let nextItems = items;
-    const overItem = items.find((item) => item.id === overId);
-    if (overItem && overItem.status === active.status) {
-      const columnItems = grouped[active.status];
-      const from = columnItems.findIndex((item) => item.id === id);
-      const to = columnItems.findIndex((item) => item.id === overId);
-      const movedColumn = arrayMove(columnItems, from, to);
-      nextItems = statuses.flatMap((status) => (status === active.status ? movedColumn : grouped[status]));
-    } else {
-      const remaining = items.filter((item) => item.id !== id);
-      const moved = { ...active, status: targetStatus };
-      const insertAt = overItem
-        ? remaining.findIndex((item) => item.id === overItem.id)
-        : remaining.map((item) => item.status).lastIndexOf(targetStatus) + 1;
-      const safeInsertAt = insertAt >= 0 ? insertAt : remaining.length;
-      nextItems = [...remaining.slice(0, safeInsertAt), moved, ...remaining.slice(safeInsertAt)];
-    }
-
+    const nextItems = reorderItemsForDrop(items, id, overId);
     setItems(nextItems);
 
     try {

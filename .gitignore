@@ -6,4 +6,5 @@ node_modules/
 .planban-update-runs/
 tmp/
 coverage/
+dist/site/
 *.log

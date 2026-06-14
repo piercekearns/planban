@@ -82,6 +82,7 @@ test("Planban MCP server registers focused tools", () => {
       "planban_delete_board",
       "planban_get_board",
       "planban_get_card",
+      "planban_create_card",
       "planban_read_doc",
       "planban_move_card",
       "planban_update_card",
@@ -89,6 +90,51 @@ test("Planban MCP server registers focused tools", () => {
       "planban_launch_board",
     ],
   );
+});
+
+test("Planban MCP creates structured cards with docs and agent history", async () => {
+  await withPlanbanProject(async ({ cwd, planbanHome }) => {
+    const responses = runMcpServer([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "planban_create_card",
+          arguments: {
+            cwd,
+            title: "MCP Structured",
+            status: "pending",
+            position: "top",
+            tags: ["mcp", "agent"],
+            metadata: { source: "mcp-test" },
+            specMarkdown: "# MCP Spec\n",
+            planMarkdown: "# MCP Plan\n",
+          },
+        },
+      },
+    ], { PLANBAN_HOME: planbanHome });
+
+    const card = responses[1].result.structuredContent.card;
+    assert.equal(card.id, "mcp-structured");
+    assert.equal(card.priority, 1);
+    assert.deepEqual(card.tags, ["mcp", "agent"]);
+    assert.deepEqual(card.metadata, { source: "mcp-test" });
+
+    const spec = await readDoc({ cwd, cardId: "mcp-structured", kind: "spec" });
+    const plan = await readDoc({ cwd, cardId: "mcp-structured", kind: "plan" });
+    assert.equal(spec.markdown, "# MCP Spec\n");
+    assert.equal(plan.markdown, "# MCP Plan\n");
+
+    const history = await historyPayload(cwd);
+    assert.equal(history.entries[0]?.actor, "agent");
+    assert.equal(history.entries[0]?.operation, "card.create");
+    assert.deepEqual(
+      history.entries[0]?.affectedDocs.map((doc) => doc.kind),
+      ["spec", "plan"],
+    );
+  });
 });
 
 test("Planban MCP board lifecycle tools require deliberate delete confirmation", async () => {

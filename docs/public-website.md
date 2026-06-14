@@ -6,10 +6,15 @@ The public website lives in `src/site` and builds as a static Vite site.
 
 ```sh
 npm run site:build
+npm run site:preflight
 npm run site:preview -- --host 127.0.0.1 --port 4320
 ```
 
 The production artifact is `dist/site`.
+
+Run `npm run site:preflight` before any public website deploy. It builds the site and
+audits the source, Pages Function, and generated `dist/site` artifact for private
+paths, tokens, private feedback transcript terms, and other public-content leaks.
 
 ## Hosting
 
@@ -46,8 +51,7 @@ Important: create the project through **Pages > Connect to Git** first. Do not c
 Manual deploy fallback after the Git-connected Pages project exists:
 
 ```sh
-npm run site:build
-npx wrangler pages deploy dist/site --project-name planban-public-website
+npm run site:deploy
 ```
 
 The site can still move to Vercel, Netlify, or GitHub Pages. If it moves to GitHub Pages, email capture needs a separate backend endpoint because GitHub Pages cannot run the `/api/subscribe` function.

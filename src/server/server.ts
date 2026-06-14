@@ -1,15 +1,15 @@
 import express from "express";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync } from "node:fs";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import chokidar from "chokidar";
 import type { ViteDevServer } from "vite";
-import { defaultPlanbanRoot } from "../core/paths";
+import { defaultPlanbanRoot, PlanbanPathError } from "../core/paths";
 import { ensureDemoBoard } from "../core/demo";
 import {
   idempotencyFingerprint,
@@ -63,7 +63,14 @@ const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
 const DIST_WEB_ROOT = resolve(PACKAGE_ROOT, "dist/web");
 const DIST_WEB_INDEX = resolve(DIST_WEB_ROOT, "index.html");
 const UPDATE_CHECK_TIMEOUT_MS = 3500;
+const CODEX_SESSION_FILE_LIMIT = 250;
+const CODEX_SESSION_SCAN_BYTES = 2 * 1024 * 1024;
+const CODEX_THREAD_LOOKUP_CACHE_TTL_MS = 10000;
 const updateJobs = new Map<string, UpdateRunSnapshot>();
+const codexThreadLookupCache = new Map<string, {
+  expiresAt: number;
+  result: { threadId: string; threadUrl: string; sessionPath: string } | null;
+}>();
 
 export interface ServeOptions {
   cwd: string;
@@ -75,8 +82,50 @@ function isStatus(value: string): value is PlanbanStatus {
   return PLANBAN_STATUSES.includes(value as PlanbanStatus);
 }
 
+function mutationOriginError(req: express.Request): string | null {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method.toUpperCase())) return null;
+
+  const secFetchSite = req.header("Sec-Fetch-Site")?.trim().toLowerCase();
+  if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "none") {
+    return "Mutating Planban API requests must come from the local Planban origin.";
+  }
+
+  const origin = req.header("Origin")?.trim();
+  if (!origin) return null;
+
+  try {
+    const parsedOrigin = new URL(origin);
+    const requestHost = req.header("Host")?.trim().toLowerCase();
+    if (!requestHost || parsedOrigin.host.toLowerCase() !== requestHost) {
+      return "Mutating Planban API requests must come from the local Planban origin.";
+    }
+    if (parsedOrigin.protocol !== "http:" && parsedOrigin.protocol !== "https:") {
+      return "Mutating Planban API requests must use an HTTP origin.";
+    }
+  } catch {
+    return "Mutating Planban API requests must include a valid Origin header.";
+  }
+
+  return null;
+}
+
 function parseActor(value: unknown): PlanbanHistoryActor {
   return value === "agent" || value === "import" || value === "system" ? value : "user";
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) return undefined;
+  return value;
+}
+
+function optionalMetadata(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function optionalCreatePosition(value: unknown) {
+  return value === "top" || value === "bottom" ? value : undefined;
 }
 
 function openExternalUrl(url: string) {
@@ -206,7 +255,7 @@ async function updateStatus() {
 }
 
 async function recentCodexSessionFiles(root = codexSessionsRoot()) {
-  const files: Array<{ path: string; mtimeMs: number }> = [];
+  const files: Array<{ path: string; mtimeMs: number; size: number }> = [];
   const cutoffMs = Date.now() - 1000 * 60 * 60 * 24 * 14;
 
   async function visit(directory: string) {
@@ -220,33 +269,83 @@ async function recentCodexSessionFiles(root = codexSessionsRoot()) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) return;
       const info = await stat(path).catch(() => null);
       if (!info || info.mtimeMs < cutoffMs) return;
-      files.push({ path, mtimeMs: info.mtimeMs });
+      files.push({ path, mtimeMs: info.mtimeMs, size: info.size });
     }));
   }
 
   await visit(root);
-  return files.sort((left, right) => right.mtimeMs - left.mtimeMs).slice(0, 500);
+  return files.sort((left, right) => right.mtimeMs - left.mtimeMs).slice(0, CODEX_SESSION_FILE_LIMIT);
 }
 
 function threadIdFromSessionPath(path: string) {
   return path.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1] ?? null;
 }
 
+function cacheCodexThreadLookup(
+  key: string,
+  result: { threadId: string; threadUrl: string; sessionPath: string } | null,
+) {
+  codexThreadLookupCache.set(key, {
+    expiresAt: Date.now() + CODEX_THREAD_LOOKUP_CACHE_TTL_MS,
+    result,
+  });
+  if (codexThreadLookupCache.size > 100) {
+    const oldestKey = codexThreadLookupCache.keys().next().value;
+    if (oldestKey) codexThreadLookupCache.delete(oldestKey);
+  }
+}
+
+async function fileContainsLaunchToken(file: { path: string; size: number }, token: string) {
+  if (file.size > CODEX_SESSION_SCAN_BYTES) {
+    const handle = await open(file.path, "r").catch(() => null);
+    if (!handle) return false;
+    try {
+      const bytesToRead = Math.min(file.size, CODEX_SESSION_SCAN_BYTES);
+      const buffer = Buffer.alloc(bytesToRead);
+      await handle.read(buffer, 0, bytesToRead, Math.max(0, file.size - bytesToRead));
+      return buffer.toString("utf8").includes(token);
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  let scannedBytes = 0;
+  let tail = "";
+  const stream = createReadStream(file.path, { encoding: "utf8" });
+  for await (const chunk of stream) {
+    scannedBytes += Buffer.byteLength(chunk);
+    if (`${tail}${chunk}`.includes(token)) return true;
+    tail = chunk.slice(Math.max(0, chunk.length - token.length + 1));
+    if (scannedBytes > CODEX_SESSION_SCAN_BYTES) {
+      stream.destroy();
+      return false;
+    }
+  }
+  return false;
+}
+
 async function findCodexThreadByLaunchToken(token: string) {
-  if (!token.trim()) return null;
+  const launchToken = token.trim();
+  if (!launchToken) return null;
+  const cacheKey = `${codexSessionsRoot()}:${launchToken}`;
+  const cached = codexThreadLookupCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
   const files = await recentCodexSessionFiles();
   for (const file of files) {
     const threadId = threadIdFromSessionPath(file.path);
     if (!threadId) continue;
-    const content = await readFile(file.path, "utf8").catch(() => "");
-    if (content.includes(token)) {
-      return {
+    if (await fileContainsLaunchToken(file, launchToken)) {
+      const result = {
         threadId,
         threadUrl: codexThreadUrl(threadId),
         sessionPath: file.path,
       };
+      cacheCodexThreadLookup(cacheKey, result);
+      return result;
     }
   }
+  cacheCodexThreadLookup(cacheKey, null);
   return null;
 }
 
@@ -261,6 +360,15 @@ export async function startServer(options: ServeOptions) {
 
   app.use(express.json({ limit: "4mb" }));
 
+  app.use("/api", (req, res, next) => {
+    const error = mutationOriginError(req);
+    if (error) {
+      res.status(403).json({ error });
+      return;
+    }
+    next();
+  });
+
   function sendEvent(event: string, data: unknown) {
     for (const client of clients) {
       client.write(`event: ${event}\n`);
@@ -273,11 +381,24 @@ export async function startServer(options: ServeOptions) {
       client.end();
     }
     clients.clear();
-    await watcher?.close();
+    await Promise.race([
+      new Promise<void>((resolveClose, reject) => {
+        server.close((error) => (error ? reject(error) : resolveClose()));
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+      }),
+      new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 1000)),
+    ]);
+    server.closeIdleConnections?.();
+    server.closeAllConnections?.();
+    if (watcher) {
+      const closeWatcher = watcher.close();
+      await Promise.race([
+        closeWatcher,
+        new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 1000)),
+      ]);
+    }
     await vite?.close();
-    await new Promise<void>((resolveClose, reject) => {
-      server.close((error) => (error ? reject(error) : resolveClose()));
-    });
   }
 
   function scheduleRestartHandoff() {
@@ -693,6 +814,12 @@ export async function startServer(options: ServeOptions) {
         status,
         summary: typeof req.body?.summary === "string" ? req.body.summary : undefined,
         nextAction: typeof req.body?.nextAction === "string" ? req.body.nextAction : undefined,
+        tags: optionalStringArray(req.body?.tags),
+        metadata: optionalMetadata(req.body?.metadata),
+        specMarkdown: typeof req.body?.specMarkdown === "string" ? req.body.specMarkdown : undefined,
+        planMarkdown: typeof req.body?.planMarkdown === "string" ? req.body.planMarkdown : undefined,
+        position: optionalCreatePosition(req.body?.position),
+        afterId: typeof req.body?.afterId === "string" ? req.body.afterId : undefined,
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -976,6 +1103,12 @@ export async function startServer(options: ServeOptions) {
         status,
         summary: typeof req.body?.summary === "string" ? req.body.summary : undefined,
         nextAction: typeof req.body?.nextAction === "string" ? req.body.nextAction : undefined,
+        tags: optionalStringArray(req.body?.tags),
+        metadata: optionalMetadata(req.body?.metadata),
+        specMarkdown: typeof req.body?.specMarkdown === "string" ? req.body.specMarkdown : undefined,
+        planMarkdown: typeof req.body?.planMarkdown === "string" ? req.body.planMarkdown : undefined,
+        position: optionalCreatePosition(req.body?.position),
+        afterId: typeof req.body?.afterId === "string" ? req.body.afterId : undefined,
       }));
       sendEvent("state", { revision: state.roadmap.revision });
       res.json(state);
@@ -1122,7 +1255,9 @@ export async function startServer(options: ServeOptions) {
       ? statusCode as number
       : error instanceof PlanbanConflictError || error instanceof PlanbanIdempotencyConflictError
         ? 409
-        : 500;
+        : error instanceof PlanbanPathError
+          ? 422
+          : 500;
     res.status(responseStatus).json({ error: message });
   });
 
@@ -1142,7 +1277,7 @@ export async function startServer(options: ServeOptions) {
   }
 
   try {
-    watcher = chokidar.watch(defaultPlanbanRoot(), { ignoreInitial: true });
+    watcher = chokidar.watch(defaultPlanbanRoot(), { ignoreInitial: true, persistent: false });
     watcher.on("all", (_event: string, path: string) => sendEvent("state", { path }));
   } catch {
     // Uninitialized projects can still be served so the UI can show onboarding.

@@ -1,11 +1,13 @@
 import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import {
   historyDocPath,
   historyIndexPath,
   historyRoadmapPath,
   historyRoot,
   historyVersionRoot,
+  PlanbanPathError,
+  resolveInsideRoot,
 } from "./paths";
 import { atomicWriteFile, withBoardWriteLock } from "./persistence";
 import { roadmapSchema } from "./schema";
@@ -113,7 +115,13 @@ function docRefsForRoadmap(roadmap: PlanbanRoadmap): PlanbanHistoryDocRef[] {
 
 async function copyHistoryDoc(state: PlanbanResolvedState, version: number, doc: PlanbanHistoryDocRef) {
   if (!doc.path) return;
-  const source = resolve(state.planningRoot, doc.path);
+  let source: string;
+  try {
+    source = resolveInsideRoot(state.planningRoot, doc.path, `${doc.kind} history document path for ${doc.cardId}`);
+  } catch (error) {
+    if (error instanceof PlanbanPathError) return;
+    throw error;
+  }
   if (!(await pathExists(source))) return;
   const target = historyDocPath(state.planningRoot, version, doc.cardId, doc.kind);
   await mkdir(dirname(target), { recursive: true });
@@ -237,11 +245,11 @@ export async function resolveHistoryDoc(
   const history = await listHistory(state);
   const candidates = history.entries
     .filter((entry) => entry.version <= version)
+    .filter((entry) => entry.affectedDocs.some((doc) => doc.cardId === cardId && doc.kind === kind))
     .sort((a, b) => b.version - a.version)
     .slice(0, history.retention.documentVersions);
 
   for (const entry of candidates) {
-    if (!entry.affectedDocs.some((doc) => doc.cardId === cardId && doc.kind === kind)) continue;
     const path = historyDocPath(state.planningRoot, entry.version, cardId, kind);
     if (!(await pathExists(path))) continue;
     const stats = await stat(path);

@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { defaultPlanningRoot, manifestPath, roadmapPath } from "./paths";
+import { defaultPlanningRoot, isPathInsideRoot, roadmapPath, resolveInsideRoot } from "./paths";
 import { registerBoardFromState } from "./registry";
 import { initializeProject, pathExists, saveRoadmap } from "./storage";
 import type { PlanbanRoadmap, PlanbanRoadmapItem, PlanbanStatus } from "./types";
@@ -131,10 +131,25 @@ async function materializeDoc(input: {
   if (!input.sourceRelative) return null;
 
   const destinationRelative = `items/${input.item.id}/${input.kind}.md`;
-  const destination = resolve(input.destinationRoot, destinationRelative);
+  const destination = resolveInsideRoot(input.destinationRoot, destinationRelative, `${input.kind} destination document path`);
   const candidates = isAbsolute(input.sourceRelative)
-    ? [input.sourceRelative]
-    : [resolve(input.sourcePlanningRoot, input.sourceRelative), resolve(input.sourceRepo, input.sourceRelative)];
+    ? [resolve(input.sourceRelative)].filter(
+        (candidate) => isPathInsideRoot(input.sourcePlanningRoot, candidate) || isPathInsideRoot(input.sourceRepo, candidate),
+      )
+    : [input.sourcePlanningRoot, input.sourceRepo].flatMap((root) => {
+        try {
+          return [resolveInsideRoot(root, input.sourceRelative ?? "", `${input.kind} source document path`)];
+        } catch {
+          return [];
+        }
+      });
+
+  if (candidates.length === 0) {
+    input.warnings.push(
+      `Card ${input.item.id} referenced unsafe ${input.kind} doc "${input.sourceRelative}"; no Planban ${input.kind} doc was created.`,
+    );
+    return null;
+  }
   let source: string | null = null;
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {

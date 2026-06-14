@@ -16,6 +16,7 @@ import {
   expandHome,
   itemRoot,
   manifestPath,
+  resolveInsideRoot,
   protocolDir,
   roadmapPath,
 } from "./paths";
@@ -330,6 +331,55 @@ function normalizeColumnPriorities(items: PlanbanRoadmapItem[]): PlanbanRoadmapI
   );
 }
 
+function assignColumnPriorities(items: PlanbanRoadmapItem[]): PlanbanRoadmapItem[] {
+  const counts = new Map<PlanbanStatus, number>();
+  return items.map((item) => {
+    const priority = (counts.get(item.status) ?? 0) + 1;
+    counts.set(item.status, priority);
+    return { ...item, priority };
+  });
+}
+
+export type PlanbanCreateCardPosition = "top" | "bottom";
+
+function defaultSpecMarkdown(input: { title: string; summary?: string | undefined; nextAction?: string | undefined }) {
+  return `# ${input.title} Spec\n\n## Goal\n\n${input.summary?.trim() || "Describe the intended outcome."}\n\n## Next Action\n\n${input.nextAction?.trim() || "Define the next concrete step."}\n`;
+}
+
+function insertCreatedCard(
+  items: PlanbanRoadmapItem[],
+  item: PlanbanRoadmapItem,
+  input: { position?: PlanbanCreateCardPosition | undefined; afterId?: string | undefined },
+) {
+  if (input.position !== undefined && input.position !== "top" && input.position !== "bottom") {
+    throw new Error("position must be top or bottom");
+  }
+
+  if (input.afterId) {
+    const afterIndex = items.findIndex((entry) => entry.id === input.afterId);
+    if (afterIndex < 0) throw new Error(`afterId not found: ${input.afterId}`);
+    if (items[afterIndex]?.status !== item.status) {
+      throw new Error(`afterId must refer to a card in ${STATUS_LABELS[item.status]}`);
+    }
+    const result = [...items];
+    result.splice(afterIndex + 1, 0, item);
+    return result;
+  }
+
+  const result = [...items];
+  if (input.position === "top") {
+    const firstTargetIndex = result.findIndex((entry) => entry.status === item.status);
+    if (firstTargetIndex >= 0) result.splice(firstTargetIndex, 0, item);
+    else result.push(item);
+    return result;
+  }
+
+  const lastTargetIndex = result.map((entry) => entry.status).lastIndexOf(item.status);
+  if (lastTargetIndex >= 0) result.splice(lastTargetIndex + 1, 0, item);
+  else result.push(item);
+  return result;
+}
+
 export async function moveCard(input: {
   cwd: string;
   cardId: string;
@@ -498,10 +548,18 @@ export async function createCard(input: {
   status?: PlanbanStatus | undefined;
   summary?: string | undefined;
   nextAction?: string | undefined;
+  tags?: string[] | undefined;
   metadata?: Record<string, unknown> | undefined;
-}): Promise<PlanbanResolvedState> {
+  specMarkdown?: string | undefined;
+  planMarkdown?: string | undefined;
+  position?: PlanbanCreateCardPosition | undefined;
+  afterId?: string | undefined;
+  actor?: PlanbanHistoryActor | undefined;
+}): Promise<PlanbanResolvedState & { createdCard: PlanbanRoadmapItem }> {
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
+  const title = input.title.trim();
+  if (!title) throw new Error("title is required");
   const baseId = input.title
     .trim()
     .toLowerCase()
@@ -522,33 +580,31 @@ export async function createCard(input: {
   const timestamp = nowIso();
   const item: PlanbanRoadmapItem = {
     id,
-    title: input.title.trim(),
+    title,
     status,
     priority,
     summary: input.summary?.trim() || null,
     nextAction: input.nextAction?.trim() || null,
-    tags: [],
+    tags: input.tags?.map((tag) => tag.trim()).filter(Boolean) ?? [],
     icon: null,
     blockedBy: null,
     specDoc: `items/${id}/spec.md`,
-    planDoc: null,
+    planDoc: input.planMarkdown !== undefined ? `items/${id}/plan.md` : null,
     completedAt: null,
     updatedAt: timestamp,
     ...(input.metadata ? { metadata: input.metadata } : {}),
   };
+  const roadmapItems = assignColumnPriorities(insertCreatedCard(state.roadmap.roadmapItems, item, input));
 
   const roadmap = await saveRoadmap(state, {
     ...state.roadmap,
-    roadmapItems: [...state.roadmap.roadmapItems, item],
+    roadmapItems,
   }, false);
 
   await mkdir(itemRoot(state.planningRoot, id), { recursive: true });
-  const specPath = resolve(state.planningRoot, item.specDoc ?? `items/${id}/spec.md`);
+  const specPath = resolveInsideRoot(state.planningRoot, item.specDoc ?? `items/${id}/spec.md`, `spec document path for ${id}`);
   await mkdir(dirname(specPath), { recursive: true });
-  await atomicWriteFile(
-    specPath,
-    `# ${input.title.trim()} Spec\n\n## Goal\n\n${input.summary?.trim() || "Describe the intended outcome."}\n\n## Next Action\n\n${input.nextAction?.trim() || "Define the next concrete step."}\n`,
-  );
+  await atomicWriteFile(specPath, input.specMarkdown ?? defaultSpecMarkdown({ title, summary: input.summary, nextAction: input.nextAction }));
   await appendEvent(state.planningRoot, {
     type: "doc.written",
     at: nowIso(),
@@ -556,22 +612,39 @@ export async function createCard(input: {
     kind: "spec",
     path: specPath,
   });
+  const affectedDocs: PlanbanHistoryMeta["affectedDocs"] = [{ cardId: item.id, kind: "spec", path: item.specDoc }];
+
+  if (item.planDoc !== null && input.planMarkdown !== undefined) {
+    const planPath = resolveInsideRoot(state.planningRoot, item.planDoc, `plan document path for ${id}`);
+    await mkdir(dirname(planPath), { recursive: true });
+    await atomicWriteFile(planPath, input.planMarkdown);
+    await appendEvent(state.planningRoot, {
+      type: "doc.written",
+      at: nowIso(),
+      cardId: id,
+      kind: "plan",
+      path: planPath,
+    });
+    affectedDocs.push({ cardId: item.id, kind: "plan", path: item.planDoc });
+  }
+
   await recordHistoryVersion({ ...state, roadmap }, roadmap, {
-    actor: "user",
+    actor: input.actor ?? "user",
     operation: "card.create",
     summary: `Created ${item.title}`,
     affectedCards: [item.id],
-    affectedDocs: [{ cardId: item.id, kind: "spec", path: item.specDoc }],
+    affectedDocs,
   });
 
-  return { ...state, roadmap };
+  const createdCard = roadmap.roadmapItems.find((entry) => entry.id === id) ?? item;
+  return { ...state, roadmap, createdCard };
   });
 }
 
 export function docPathForItem(state: PlanbanResolvedState, item: PlanbanRoadmapItem, kind: "spec" | "plan") {
   const configured = kind === "spec" ? item.specDoc : item.planDoc;
   if (!configured) return null;
-  return resolve(state.planningRoot, configured);
+  return resolveInsideRoot(state.planningRoot, configured, `${kind} document path for ${item.id}`);
 }
 
 export async function readDoc(input: {
@@ -625,7 +698,7 @@ export async function writeDoc(input: {
     await saveRoadmap(state, { ...state.roadmap, roadmapItems: updatedItems }, false);
   }
 
-  const path = resolve(state.planningRoot, relativePath);
+  const path = resolveInsideRoot(state.planningRoot, relativePath, `${input.kind} document path for ${item.id}`);
   const existsBeforeWrite = await pathExists(path);
   if (input.expectedMtimeMs !== undefined) {
     if (existsBeforeWrite) {

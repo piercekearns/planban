@@ -42,6 +42,12 @@ For a simple card:
 npm run planban -- create-card "Title" --summary "..." --next-action "..." --cwd /path/to/repo -o json
 ```
 
+For a structured card with placement and docs:
+
+```bash
+npm run planban -- create-card "Title" --status pending --position top --tag audit --metadata-json '{"source":"notes"}' --spec-file ./spec.md --plan-file ./plan.md --cwd /path/to/repo -o json
+```
+
 For board setup:
 
 ```bash

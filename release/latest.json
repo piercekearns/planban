@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.12",
-  "pluginVersion": "0.1.12",
-  "mcpVersion": "0.1.12",
+  "version": "0.1.13",
+  "pluginVersion": "0.1.13",
+  "mcpVersion": "0.1.13",
   "storageSchemaVersion": 2,
   "minimumStorageSchemaVersion": 2,
-  "publishedAt": "2026-06-13T01:23:50.522Z",
+  "publishedAt": "2026-06-13T22:03:28.000Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.12",
-  "summary": "Adds a local update transcript so one-click updater runs leave behind a small diagnostic record of each step, timing, and restart context.",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.13",
+  "summary": "Improves local safety checks, update reliability, and structured roadmap creation for agent workflows.",
   "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen Planban in the Codex in-app browser.",
   "postUpdateRoute": "board-with-changelog",
-  "changelogTitle": "Update diagnostics transcript",
-  "changelogSummary": "One-click updates now write a local transcript with step timings and restart context, making failed or suspicious updates easier to inspect without exposing board contents.",
+  "changelogTitle": "Local reliability and agent workflow improvements",
+  "changelogSummary": "This release tightens local file and update handling, improves agent-created card workflows, and expands regression coverage for board history, ordering, and release rehearsals.",
   "targetRef": "main",
-  "directUpdateSupportedFrom": "0.1.11"
+  "directUpdateSupportedFrom": "0.1.12"
 }

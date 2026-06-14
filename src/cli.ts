@@ -40,6 +40,25 @@ function requireStatus(value: string): PlanbanStatus {
   return value as PlanbanStatus;
 }
 
+function requireCreatePosition(value: string): "top" | "bottom" {
+  if (value !== "top" && value !== "bottom") {
+    throw new Error('Invalid position. Expected "top" or "bottom".');
+  }
+  return value;
+}
+
+function collectOption(value: string, previous: string[] = []) {
+  return [...previous, value];
+}
+
+function parseMetadataJson(value: string): Record<string, unknown> {
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("--metadata-json must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 async function readStdin(): Promise<string> {
   return new Promise((resolveRead, reject) => {
     let data = "";
@@ -254,6 +273,12 @@ program
   .option("--status <status>", "initial status")
   .option("--summary <summary>", "card summary")
   .option("--next-action <nextAction>", "next action")
+  .option("--tag <tag>", "tag to attach; repeat for multiple tags", collectOption, [])
+  .option("--metadata-json <json>", "metadata object as JSON")
+  .option("--spec-file <path>", "read initial spec markdown from a file")
+  .option("--plan-file <path>", "read initial plan markdown from a file and attach a plan doc")
+  .option("--position <position>", "insert at top or bottom of the target status column")
+  .option("--after <cardId>", "insert after another card in the target status column")
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (title, options) => {
@@ -264,6 +289,12 @@ program
         status: options.status ? requireStatus(options.status) : undefined,
         summary: options.summary,
         nextAction: options.nextAction,
+        tags: options.tag,
+        metadata: options.metadataJson ? parseMetadataJson(options.metadataJson) : undefined,
+        specMarkdown: options.specFile ? readFileSync(resolve(options.specFile), "utf8") : undefined,
+        planMarkdown: options.planFile ? readFileSync(resolve(options.planFile), "utf8") : undefined,
+        position: options.position ? requireCreatePosition(options.position) : undefined,
+        afterId: options.after,
       }),
       options,
     );

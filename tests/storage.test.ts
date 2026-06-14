@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -15,10 +15,12 @@ import {
   loadHistoryState,
   PlanbanConflictError,
   readDoc,
+  readHistoryDoc,
   reorderCards,
   restoreBoardVersion,
   restoreCardVersion,
   restoreDocVersion,
+  saveRoadmap,
   setCardStatus,
   writeDoc,
 } from "../src/core/storage";
@@ -140,6 +142,132 @@ test("creates cards with linked docs and persists exact reorder", async () => {
   assert.equal(plan.path, null);
 });
 
+test("creates structured cards with placement, metadata, tags, and plan docs", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+  await createCard({ cwd, title: "Beta", status: "pending" });
+
+  const structured = await createCard({
+    cwd,
+    title: "Structured",
+    status: "pending",
+    position: "top",
+    tags: [" audit ", "", "release"],
+    metadata: { source: "storage-test" },
+    specMarkdown: "# Structured Spec\n",
+    planMarkdown: "# Structured Plan\n",
+  });
+
+  assert.deepEqual(
+    structured.roadmap.roadmapItems.map((item) => [item.id, item.priority]),
+    [
+      ["structured", 1],
+      ["alpha", 2],
+      ["beta", 3],
+    ],
+  );
+  assert.equal(structured.createdCard.id, "structured");
+  assert.deepEqual(structured.createdCard.tags, ["audit", "release"]);
+  assert.deepEqual(structured.createdCard.metadata, { source: "storage-test" });
+
+  const spec = await readDoc({ cwd, cardId: "structured", kind: "spec" });
+  assert.equal(spec.markdown, "# Structured Spec\n");
+  const plan = await readDoc({ cwd, cardId: "structured", kind: "plan" });
+  assert.equal(plan.markdown, "# Structured Plan\n");
+
+  const history = await historyPayload(cwd);
+  assert.equal(history.entries[0]?.operation, "card.create");
+  assert.deepEqual(
+    history.entries[0]?.affectedDocs.map((doc) => doc.kind),
+    ["spec", "plan"],
+  );
+});
+
+test("CLI creates structured cards with tags, metadata, placement, and doc files", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+  const specFile = join(cwd, "cli-spec.md");
+  const planFile = join(cwd, "cli-plan.md");
+  await writeFile(specFile, "# CLI Spec\n", "utf8");
+  await writeFile(planFile, "# CLI Plan\n", "utf8");
+
+  const result = await execFileAsync(
+    process.execPath,
+    [
+      "--import",
+      "tsx/esm",
+      "src/cli.ts",
+      "create-card",
+      "CLI Structured",
+      "--cwd",
+      cwd,
+      "--status",
+      "pending",
+      "--after",
+      "alpha",
+      "--tag",
+      "cli",
+      "--metadata-json",
+      '{"source":"cli"}',
+      "--spec-file",
+      specFile,
+      "--plan-file",
+      planFile,
+      "--output",
+      "json",
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, PLANBAN_HOME: planbanHome },
+    },
+  );
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.createdCard.id, "cli-structured");
+  assert.deepEqual(payload.createdCard.tags, ["cli"]);
+  assert.deepEqual(payload.createdCard.metadata, { source: "cli" });
+  assert.deepEqual(
+    payload.roadmap.roadmapItems.map((item: { id: string }) => item.id),
+    ["alpha", "cli-structured"],
+  );
+
+  assert.equal((await readDoc({ cwd, cardId: "cli-structured", kind: "spec" })).markdown, "# CLI Spec\n");
+  assert.equal((await readDoc({ cwd, cardId: "cli-structured", kind: "plan" })).markdown, "# CLI Plan\n");
+});
+
+test("rejects card document paths outside the planning root", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  const created = await createCard({ cwd, title: "Alpha", status: "pending" });
+  const alpha = created.roadmap.roadmapItems.find((item) => item.id === "alpha");
+  assert.ok(alpha);
+  const absoluteEscapePath = join(planbanHome, "planban-storage-escape.md");
+
+  await saveRoadmap(created, {
+    ...created.roadmap,
+    roadmapItems: [
+      {
+        ...alpha,
+        specDoc: "../outside.md",
+        planDoc: absoluteEscapePath,
+      },
+    ],
+  }, false);
+
+  await assert.rejects(
+    readDoc({ cwd, cardId: "alpha", kind: "spec" }),
+    /inside the planning root/u,
+  );
+  await assert.rejects(
+    writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Outside\n" }),
+    /inside the planning root/u,
+  );
+  await assert.rejects(
+    writeDoc({ cwd, cardId: "alpha", kind: "plan", markdown: "# Absolute\n" }),
+    /inside the planning root/u,
+  );
+  await assert.rejects(stat(join(planbanHome, "repos", "outside.md")));
+  await assert.rejects(stat(absoluteEscapePath));
+});
+
 test("serializes concurrent CLI create-card writes across processes", async () => {
   await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
 
@@ -234,6 +362,34 @@ test("restores one card or document from history as a new version", async () => 
 
   const history = await historyPayload(cwd);
   assert.equal(history.entries[0]?.operation, "history.restore.doc");
+});
+
+test("finds historical docs after many unrelated board-only document versions", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+  await writeDoc({
+    cwd,
+    cardId: "alpha",
+    kind: "spec",
+    markdown: "# Alpha Spec\n\nOriginal retained doc.\n",
+  });
+  const originalVersion = (await historyPayload(cwd)).currentVersion;
+
+  for (let index = 0; index < 30; index += 1) {
+    await createCard({ cwd, title: `Unrelated ${index + 1}`, status: "pending" });
+  }
+
+  const history = await historyPayload(cwd);
+  assert.equal(history.currentVersion > originalVersion + 25, true);
+
+  const historicalDoc = await readHistoryDoc({
+    cwd,
+    version: history.currentVersion,
+    cardId: "alpha",
+    kind: "spec",
+  });
+  assert.equal(historicalDoc.exists, true);
+  assert.match(historicalDoc.markdown, /Original retained doc/);
 });
 
 test("rejects stale roadmap and markdown saves", async () => {

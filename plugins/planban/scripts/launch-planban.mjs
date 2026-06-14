@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -197,6 +197,10 @@ async function main() {
     detached: true,
     stdio: "ignore",
   });
+  if (process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
+    mkdirSync(dirname(process.env.PLANBAN_RESTART_PID_FILE), { recursive: true });
+    writeFileSync(process.env.PLANBAN_RESTART_PID_FILE, String(child.pid), "utf8");
+  }
   child.unref();
 
   const status = await waitForStatus(baseUrl);

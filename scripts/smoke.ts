@@ -1,11 +1,13 @@
+import { spawn } from "node:child_process";
 import { appendFile, mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { assertPortClosed, terminateChild } from "./process-cleanup.mjs";
 import { createCard, initializeProject, readDoc } from "../src/core/storage";
-import { startServer } from "../src/server/server";
 
 const cwd = "/tmp/planban-http-smoke";
 const repoId = "planban-http-smoke";
+const port = 4321;
 const planningRoot = join(homedir(), ".planban", "repos", repoId);
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -25,15 +27,37 @@ await createCard({ cwd, title: "Alpha", status: "pending" });
 await createCard({ cwd, title: "Beta", status: "pending" });
 await createCard({ cwd, title: "Gamma", status: "up-next" });
 
-const server = await startServer({ cwd, port: 4321, useVite: false });
+const server = spawn(process.execPath, ["bin/planban.mjs", "serve", "--cwd", cwd, "--port", String(port), "--no-vite"], {
+  cwd: process.cwd(),
+  env: process.env,
+  stdio: ["ignore", "pipe", "pipe"],
+});
+server.stdout?.setEncoding("utf8");
+server.stderr?.setEncoding("utf8");
+let serverOutput = "";
+server.stdout?.on("data", (chunk) => {
+  serverOutput += chunk;
+});
+server.stderr?.on("data", (chunk) => {
+  serverOutput += chunk;
+});
+
+const serverUrl = `http://localhost:${port}`;
+for (let attempt = 0; attempt < 80; attempt += 1) {
+  const response = await fetch(`${serverUrl}/api/status`).catch(() => null);
+  if (response?.ok) break;
+  await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  if (attempt === 79) throw new Error(`Smoke server did not start:\n${serverOutput}`);
+}
+let smokePassed = false;
 
 try {
-  const htmlResponse = await fetch(server.url);
+  const htmlResponse = await fetch(serverUrl);
   if (!htmlResponse.ok) throw new Error(`Static app failed with ${htmlResponse.status}`);
 
   const initial = await jsonFetch<{
     roadmap: { revision: number; roadmapItems: Array<{ id: string; status: string }> };
-  }>(`${server.url}/api/state`);
+  }>(`${serverUrl}/api/state`);
 
   const ordered = [...initial.roadmap.roadmapItems]
     .reverse()
@@ -41,13 +65,13 @@ try {
 
   const reordered = await jsonFetch<{
     roadmap: { revision: number; roadmapItems: Array<{ id: string }> };
-  }>(`${server.url}/api/cards/reorder`, {
+  }>(`${serverUrl}/api/cards/reorder`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ baseRevision: initial.roadmap.revision, items: ordered }),
   });
 
-  const staleReorder = await fetch(`${server.url}/api/cards/reorder`, {
+  const staleReorder = await fetch(`${serverUrl}/api/cards/reorder`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ baseRevision: initial.roadmap.revision, items: ordered }),
@@ -56,9 +80,9 @@ try {
     throw new Error(`Expected stale reorder 409, got ${staleReorder.status}`);
   }
 
-  const docBefore = await jsonFetch<{ mtimeMs: number }>(`${server.url}/api/cards/alpha/docs/spec`);
+  const docBefore = await jsonFetch<{ mtimeMs: number }>(`${serverUrl}/api/cards/alpha/docs/spec`);
   const saved = await jsonFetch<{ path: string; markdown: string; mtimeMs: number }>(
-    `${server.url}/api/cards/alpha/docs/spec`,
+    `${serverUrl}/api/cards/alpha/docs/spec`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -71,7 +95,7 @@ try {
 
   await appendFile(saved.path, "\nExternal edit.\n");
 
-  const staleDoc = await fetch(`${server.url}/api/cards/alpha/docs/spec`, {
+  const staleDoc = await fetch(`${serverUrl}/api/cards/alpha/docs/spec`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -92,7 +116,7 @@ try {
     JSON.stringify(
       {
         ok: true,
-        server: server.url,
+        server: serverUrl,
         htmlStatus: htmlResponse.status,
         initialRevision: initial.roadmap.revision,
         reorderedRevision: reordered.roadmap.revision,
@@ -106,6 +130,10 @@ try {
       2,
     ),
   );
+  smokePassed = true;
 } finally {
-  await server.close();
+  await terminateChild(server, "smoke Planban server");
+  await assertPortClosed(port);
 }
+
+if (smokePassed) process.exit(0);

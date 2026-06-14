@@ -94,9 +94,9 @@ const sourceApps = [{
   src: "https://cdn.simpleicons.org/googledocs/4285F4",
   position: "bottom-3"
 }, {
-  name: "WhatsApp",
+  name: "Slack",
   kind: "image",
-  src: "https://cdn.simpleicons.org/whatsapp/25D366",
+  src: "https://cdn.simpleicons.org/slack/4A154B",
   position: "bottom-4"
 }] as const;
 const underHoodItems = [{
@@ -324,7 +324,7 @@ export const PlanbanPublicWebsite = () => {
   }, [themeMode]);
   useEffect(() => {
     if (typeof document === "undefined" || !mobileMenuOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
+    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
       if (event.target instanceof Node && headerRef.current?.contains(event.target)) return;
       setMobileMenuOpen(false);
     };

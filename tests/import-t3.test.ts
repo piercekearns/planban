@@ -201,3 +201,39 @@ test("cards without source docs do not get generated placeholder docs", async ()
     else process.env.T3PLAN_ROOT = oldRoot;
   }
 });
+
+test("unsafe T3 doc references are skipped instead of copied", async () => {
+  await writeFile(join(t3Root, "outside.md"), "# Outside\n", "utf8");
+  await writeRoadmap([
+    {
+      id: "alpha",
+      title: "Alpha",
+      status: "up-next",
+      priority: 1,
+      summary: "Alpha summary",
+      nextAction: "Ship alpha",
+      tags: ["first"],
+      specDoc: "../outside.md",
+      planDoc: join(t3Root, "outside.md"),
+    },
+  ]);
+
+  const oldRoot = process.env.T3PLAN_ROOT;
+  process.env.T3PLAN_ROOT = t3Root;
+
+  try {
+    const report = await importT3({ from: sourceRepo, dryRun: false, updateAgents: false });
+    assert.equal(report.specs, 0);
+    assert.equal(report.plans, 0);
+    assert.equal(report.warnings.filter((warning) => /unsafe/u.test(warning)).length, 2);
+
+    const roadmap = JSON.parse(await readFile(join(planbanRoot, "roadmap.json"), "utf8"));
+    assert.equal(roadmap.roadmapItems[0].specDoc, null);
+    assert.equal(roadmap.roadmapItems[0].planDoc, null);
+    await assert.rejects(readFile(join(planbanRoot, "items", "alpha", "spec.md"), "utf8"));
+    await assert.rejects(readFile(join(planbanRoot, "items", "alpha", "plan.md"), "utf8"));
+  } finally {
+    if (oldRoot === undefined) delete process.env.T3PLAN_ROOT;
+    else process.env.T3PLAN_ROOT = oldRoot;
+  }
+});

@@ -1,6 +1,6 @@
 {
   "name": "planban",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "type": "module",
   "bin": {
@@ -9,16 +9,20 @@
   "scripts": {
     "dev": "tsx src/cli.ts serve",
     "planban": "tsx src/cli.ts",
+    "check": "npm run typecheck && npm test && npm audit --audit-level=high && npm run build",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx/esm --test tests/*.test.ts",
     "build": "vite build",
+    "site:build": "vite build --config vite.site.config.ts",
+    "site:audit": "node scripts/audit-public-site.mjs",
+    "site:preflight": "npm run site:build && npm run site:audit",
+    "site:preview": "vite preview --config vite.site.config.ts",
+    "site:deploy": "npm run site:preflight && wrangler pages deploy dist/site --project-name planban-public-website",
     "preview": "tsx src/cli.ts serve --no-vite",
     "smoke": "npm run build && tsx scripts/smoke.ts",
-    "plugin:configure": "node scripts/configure-local-plugin.mjs",
-    "planban:demo": "node --import tsx/esm src/cli.ts demo",
-    "site:build": "vite build --config vite.site.config.ts",
-    "site:preview": "vite preview --config vite.site.config.ts",
-    "site:deploy": "npm run site:build && wrangler pages deploy dist/site --project-name planban-public-website"
+    "release:build": "node scripts/build-public-release.mjs",
+    "release:audit": "node scripts/audit-public-release.mjs",
+    "release:preflight": "node scripts/preflight-public-release.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

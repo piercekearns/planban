@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 export const PROTOCOL_DIR = ".planban";
 export const MANIFEST_FILE = "project.json";
@@ -35,6 +35,34 @@ export function slugify(input: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || "project";
+}
+
+export class PlanbanPathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanbanPathError";
+  }
+}
+
+export function isPathInsideRoot(root: string, target: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(target);
+  const relativeTarget = relative(resolvedRoot, resolvedTarget);
+  return relativeTarget === "" || (!relativeTarget.startsWith("..") && !isAbsolute(relativeTarget));
+}
+
+export function resolveInsideRoot(root: string, childPath: string, label = "path"): string {
+  if (!childPath.trim()) throw new PlanbanPathError(`${label} must not be empty.`);
+  if (isAbsolute(childPath)) {
+    throw new PlanbanPathError(`${label} must be relative and stay inside the planning root.`);
+  }
+
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(resolvedRoot, childPath);
+  if (!isPathInsideRoot(resolvedRoot, resolvedTarget) || resolvedTarget === resolvedRoot) {
+    throw new PlanbanPathError(`${label} must stay inside the planning root.`);
+  }
+  return resolvedTarget;
 }
 
 export function defaultRepoId(cwd: string): string {

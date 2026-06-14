@@ -21,7 +21,7 @@ const typesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "sr
 const demoModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/demo.ts")).href);
 const versionModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/version.ts")).href);
 
-const { getStatus, loadState, moveCard, readDoc, updateCard, writeDoc } = storageModule;
+const { createCard, getStatus, loadState, moveCard, readDoc, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { ensureDemoBoard } = demoModule;
@@ -130,6 +130,18 @@ function requireStatus(value) {
     throw new Error(`status must be one of: ${PLANBAN_STATUSES.join(", ")}.`);
   }
   return status;
+}
+
+function optionalStatus(value, name) {
+  if (value === undefined || value === null) return undefined;
+  return requireStatus(value, name);
+}
+
+function optionalCreatePosition(value, name) {
+  if (value === undefined || value === null) return undefined;
+  const position = requireString(value, name);
+  if (position !== "top" && position !== "bottom") throw new Error(`${name} must be top or bottom.`);
+  return position;
 }
 
 async function cwdFromArgs(args) {
@@ -336,6 +348,25 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: "planban_create_card",
+    title: "Create Planban Card",
+    description: "Create a Planban roadmap card with optional placement, tags, metadata, and initial spec or plan markdown.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      title: { type: "string", description: "Card title." },
+      status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Initial status. Defaults to pending." },
+      summary: { type: "string", description: "Optional card summary." },
+      nextAction: { type: "string", description: "Optional next action." },
+      tags: { type: "array", items: { type: "string" }, description: "Tags to attach." },
+      metadata: { type: ["object", "null"], description: "Optional metadata object." },
+      specMarkdown: { type: "string", description: "Optional initial spec markdown. A default spec is generated when omitted." },
+      planMarkdown: { type: "string", description: "Optional initial plan markdown. Creates a plan document when supplied." },
+      position: { type: "string", enum: ["top", "bottom"], description: "Insert at top or bottom of the target status column." },
+      afterId: { type: "string", description: "Optional card id to insert after in the target status column." },
+    }, ["title"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "planban_read_doc",
     title: "Read Planban Document",
     description: "Read a card spec or plan document.",
@@ -476,6 +507,28 @@ async function callTool(name, rawArgs) {
       payload.exists ? `Read ${payload.kind} document for ${payload.cardId}.` : `No ${payload.kind} document exists for ${payload.cardId}.`,
       payload,
     );
+  }
+
+  if (name === "planban_create_card") {
+    const metadata = optionalMetadata(args.metadata, "metadata");
+    const state = await createCard({
+      cwd: await cwdFromArgs(args),
+      title: requireString(args.title, "title"),
+      status: optionalStatus(args.status, "status"),
+      summary: optionalString(args.summary, "summary"),
+      nextAction: optionalString(args.nextAction, "nextAction"),
+      tags: optionalStringArray(args.tags, "tags"),
+      metadata: metadata === null ? undefined : metadata,
+      specMarkdown: args.specMarkdown === undefined ? undefined : requireText(args.specMarkdown, "specMarkdown"),
+      planMarkdown: args.planMarkdown === undefined ? undefined : requireText(args.planMarkdown, "planMarkdown"),
+      position: optionalCreatePosition(args.position, "position"),
+      afterId: optionalString(args.afterId, "afterId"),
+      actor: "agent",
+    });
+    return textResult(`Created Planban card ${state.createdCard.id}.`, {
+      ...summarizeBoard(state),
+      card: state.createdCard,
+    });
   }
 
   if (name === "planban_move_card") {
