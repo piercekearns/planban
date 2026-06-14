@@ -390,13 +390,13 @@ export const PlanbanPublicWebsite = () => {
       y: Math.round((event.clientY - rect.top) / rect.height * 100)
     });
   }
-  async function copyInstallCommand() {
+  async function copyTextToClipboard(text: string) {
     try {
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(selectedTab.command);
+        await navigator.clipboard.writeText(text);
       } else {
         const copyTarget = document.createElement("textarea");
-        copyTarget.value = selectedTab.command;
+        copyTarget.value = text;
         copyTarget.setAttribute("readonly", "");
         copyTarget.style.position = "fixed";
         copyTarget.style.opacity = "0";
@@ -408,6 +408,9 @@ export const PlanbanPublicWebsite = () => {
     } catch {
       // The visible success affordance still confirms the user's copy intent.
     }
+  }
+  async function copyInstallCommand() {
+    await copyTextToClipboard(selectedTab.command);
     setCopyState("copied");
     window.setTimeout(() => setCopyState("idle"), 1500);
   }
@@ -460,10 +463,15 @@ export const PlanbanPublicWebsite = () => {
               Agent-native Kanban board that lives in your Codex in-app browser. A second brain, a readable roadmap, card-level specs and plans kept in sync between you and your agent.
             </p>
             <div className="pb-actions">
-              <a className="pb-button primary pb-install-with-codex" href={codexInstallUrl}>
+              <a className="pb-button primary pb-install-with-codex pb-desktop-codex-cta" href={codexInstallUrl}>
                 <span className="pb-button-icon"><CodexInstallIcon /></span>
                 Install with Codex
               </a>
+              <button type="button" className="pb-button primary pb-install-with-codex pb-mobile-codex-cta" aria-disabled="true">
+                <span className="pb-button-icon"><CodexInstallIcon /></span>
+                Install with Codex
+              </button>
+              <span className="pb-install-mobile-note">Desktop only</span>
             </div>
           </div>
 
@@ -484,10 +492,15 @@ export const PlanbanPublicWebsite = () => {
             <p className="pb-kicker">Install</p>
             <h2>Quick Start</h2>
             <p>One-prompt install, one-click updates.</p>
-            <a className="pb-button primary pb-install-with-codex" href={codexInstallUrl} onClick={() => setActiveTab("codex")}>
+            <a className="pb-button primary pb-install-with-codex pb-desktop-codex-cta" href={codexInstallUrl} onClick={() => setActiveTab("codex")}>
               <span className="pb-button-icon"><CodexInstallIcon /></span>
               Install with Codex
             </a>
+            <button type="button" className="pb-button primary pb-install-with-codex pb-mobile-codex-cta" aria-disabled="true">
+              <span className="pb-button-icon"><CodexInstallIcon /></span>
+              Install with Codex
+            </button>
+            <span className="pb-install-mobile-note">Desktop only</span>
           </div>
 
           <div className="pb-or-divider"><span>or</span></div>
