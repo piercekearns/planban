@@ -37,6 +37,7 @@ export async function onRequestPost(context: PagesFunctionContext) {
     return jsonResponse({ error: "Enter a valid email address." }, { status: 400 });
   }
 
+  const segments = context.env.RESEND_SEGMENT_ID ? [{ id: context.env.RESEND_SEGMENT_ID }] : undefined;
   const contactResponse = await fetch("https://api.resend.com/contacts", {
     method: "POST",
     headers: {
@@ -46,25 +47,15 @@ export async function onRequestPost(context: PagesFunctionContext) {
     body: JSON.stringify({
       email,
       unsubscribed: false,
-      properties: {
-        source: typeof payload.source === "string" ? payload.source : "planban-public-website",
-        submitted_at: new Date().toISOString(),
-      },
+      ...(segments ? { segments } : {}),
     }),
   });
 
   if (!contactResponse.ok && contactResponse.status !== 409) {
-    let details: unknown = null;
-    try {
-      details = await contactResponse.json();
-    } catch {
-      details = await contactResponse.text();
-    }
-
-    return jsonResponse({ error: "Unable to subscribe.", details }, { status: 502 });
+    return jsonResponse({ error: "Unable to subscribe." }, { status: 502 });
   }
 
-  if (!context.env.RESEND_SEGMENT_ID) {
+  if (!context.env.RESEND_SEGMENT_ID || contactResponse.ok) {
     return jsonResponse({ ok: true });
   }
 
