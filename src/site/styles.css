@@ -1835,20 +1835,20 @@ body {
     .pb-mobile-theme-toggle {
       width: auto;
       gap: 1px;
-      padding: 2px;
-      border-radius: 8px;
+      padding: 3px;
+      border-radius: 9px;
       justify-self: end;
     }
 
     .pb-mobile-theme-toggle button {
-      width: 19px;
-      height: 19px;
-      border-radius: 5px;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
     }
 
     .pb-mobile-theme-toggle svg {
-      width: 17px;
-      height: 17px;
+      width: 19px;
+      height: 19px;
     }
 
     .pb-hero,
