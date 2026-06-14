@@ -1087,8 +1087,8 @@ body {
   }
 
   .pb-context-core .pb-mark {
-    width: 38px;
-    height: 32px;
+    width: 32px;
+    height: 27px;
   }
 
   .pb-context-codex {
@@ -1527,6 +1527,15 @@ body {
       justify-self: start;
     }
 
+    .pb-header-wrap .pb-brand {
+      margin-left: 4px;
+    }
+
+    .pb-header-wrap .pb-brand .pb-mark {
+      width: 31px;
+      height: 26px;
+    }
+
     .pb-header-wrap .pb-brand span:not(.pb-mark) {
       display: none;
     }
@@ -1732,8 +1741,8 @@ body {
     }
 
     .pb-context-core .pb-mark {
-      width: 32px;
-      height: 28px;
+      width: 29px;
+      height: 24px;
     }
 
     .pb-context-codex svg {
@@ -1826,8 +1835,12 @@ body {
     }
 
     .pb-mark {
-      width: 31px;
-      height: 26px;
+      width: 28px;
+      height: 24px;
+    }
+
+    .pb-header-wrap .pb-brand {
+      margin-left: 5px;
     }
 
     .pb-nav.glass {
