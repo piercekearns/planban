@@ -1,4 +1,8 @@
 import { type CSSProperties, type FormEvent, type PointerEvent, useEffect, useRef, useState } from "react";
+const planbanLogoImages = {
+  light: "/assets/card-stack-black.svg",
+  dark: "/assets/card-stack-white.svg"
+} as const;
 const cardDetailSanitizedDarkImage = "/assets/planban-card-detail-dark.png";
 const cardDetailSanitizedLightImage = "/assets/planban-card-detail-light.png";
 const boardDarkNoTourImage = "/assets/planban-board-dark.png";
@@ -136,6 +140,13 @@ const futurePlatforms = [{
   copy: "Share a browser workspace for teams, collaborators, and clients who need visibility without local setup.",
   icon: <GlobeIcon />
 }] as const;
+const PlanbanMark = ({
+  theme
+}: {
+  theme: "light" | "dark";
+}) => <span className="pb-mark" aria-hidden="true">
+    <img src={planbanLogoImages[theme]} alt="" />
+  </span>;
 const CopyIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
     <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
@@ -149,10 +160,14 @@ const SunIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true">
 const MoonIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M20.27 14.6a.75.75 0 0 1 .61.88A8.85 8.85 0 0 1 12.18 22 9.18 9.18 0 0 1 3 12.82a8.85 8.85 0 0 1 6.52-8.7.75.75 0 0 1 .86.98 7.42 7.42 0 0 0-.46 2.56 6.42 6.42 0 0 0 6.42 6.42c.88 0 1.74-.16 2.56-.46a.75.75 0 0 1 .37-.02Zm-1.2.85a7.89 7.89 0 0 1-2.73.13 7.92 7.92 0 0 1-7.92-7.92c0-.93.16-1.84.47-2.72A7.35 7.35 0 0 0 4.5 12.82a7.68 7.68 0 0 0 7.68 7.68 7.35 7.35 0 0 0 6.9-5.05Z" fill="currentColor" />
   </svg>;
-const SlashCommandMockup = () => <div className="pb-command-mockup">
+const SlashCommandMockup = ({
+  theme
+}: {
+  theme: "light" | "dark";
+}) => <div className="pb-command-mockup">
     <div className="pb-command-menu glass">
       {["Planban", "Planban Help", "Planban Create", "Planban Feedback", "Planban Tutorial"].map((label, index) => <div className={`pb-command-row ${index === 0 ? "active" : ""}`} key={label}>
-          <span className="pb-mini-mark">Pb</span>
+          <span className="pb-mini-mark"><img src={planbanLogoImages[theme]} alt="" /></span>
           <strong>{label}</strong>
           <span>{["Open Planban board in Codex", "Show Planban actions and reopen tutorial/help", "Create boards or roadmap items from rough notes", "Package Planban bug reports and product feedback", "Open the interactive Planban tutorial"][index]}</span>
           <small>Personal</small>
@@ -180,7 +195,7 @@ const BringPlansVisual = ({
         </span>)}
     </div>
     <div className="pb-context-hub">
-      <span className="pb-context-core pb-context-planban"><span className="pb-mark">Pb</span></span>
+      <span className="pb-context-core pb-context-planban"><PlanbanMark theme={theme} /></span>
       <span className="pb-exchange-wires" aria-hidden="true">
         <svg viewBox="0 0 96 42">
           <path d="M4 8 C28 8 34 21 48 21 C62 21 68 34 92 34" />
@@ -305,7 +320,7 @@ export const PlanbanPublicWebsite = () => {
       <header className={`pb-header-wrap ${headerVisible ? "is-visible" : "is-hidden"} ${headerCompact ? "is-compact" : "is-top"}`}>
         <div className="pb-topbar">
           <a className="pb-brand" href="#top" aria-label="Planban home">
-            <span className="pb-mark">Pb</span>
+            <PlanbanMark theme={resolvedTheme} />
             <span>Planban</span>
           </a>
           <nav className="pb-nav glass" aria-label="Primary">
@@ -410,7 +425,7 @@ export const PlanbanPublicWebsite = () => {
           </div>
           <div className="pb-demo-grid">
             <div className="pb-screen-shell large">
-              {"visual" in selectedShot ? <SlashCommandMockup /> : <img src={images[selectedShot.imageKey]} alt={selectedShot.title} />}
+              {"visual" in selectedShot ? <SlashCommandMockup theme={resolvedTheme} /> : <img src={images[selectedShot.imageKey]} alt={selectedShot.title} />}
             </div>
             <div className="pb-demo-cards">
               {demoShots.map((shot, index) => <button key={shot.title} type="button" onClick={() => setActiveShot(index)} className={`pb-info-card glass ${activeShot === index ? "active" : ""}`}>
@@ -486,7 +501,7 @@ export const PlanbanPublicWebsite = () => {
       <footer className="pb-footer">
         <div className="pb-footer-brand">
           <a className="pb-brand" href="#top" aria-label="Planban home">
-            <span className="pb-mark">Pb</span>
+            <PlanbanMark theme={resolvedTheme} />
             <span>Planban</span>
           </a>
           <p>

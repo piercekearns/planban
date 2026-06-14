@@ -161,18 +161,19 @@ body {
   }
 
   .pb-mark {
-    display: grid;
-    width: 32px;
-    height: 32px;
-    place-items: center;
-    border-radius: 9px;
-    color: #fff;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent),
-      #111;
-    border: 1px solid rgba(255, 255, 255, 0.13);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 8px 24px rgba(0, 0, 0, 0.18);
-    font-size: 13px;
+    display: inline-flex;
+    width: 34px;
+    height: 28px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+  }
+
+  .pb-mark img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
   }
 
   .pb-nav {
@@ -874,6 +875,10 @@ body {
     white-space: nowrap;
   }
 
+  .pb-command-row .pb-mini-mark {
+    overflow: visible;
+  }
+
   .pb-command-row small,
   .pb-composer small {
     color: var(--pb-faint);
@@ -881,15 +886,18 @@ body {
   }
 
   .pb-mini-mark {
-    display: grid;
+    display: inline-flex;
     width: 18px;
     height: 18px;
-    place-items: center;
-    border: 1px solid var(--pb-line);
-    border-radius: 5px;
-    color: var(--pb-ink);
-    font-size: 9px;
-    font-weight: 720;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .pb-mini-mark img {
+    display: block;
+    width: 18px;
+    height: 15px;
+    object-fit: contain;
   }
 
   .pb-composer {
@@ -1079,8 +1087,8 @@ body {
   }
 
   .pb-context-core .pb-mark {
-    width: 36px;
-    height: 36px;
+    width: 38px;
+    height: 32px;
   }
 
   .pb-context-codex {
@@ -1724,8 +1732,8 @@ body {
     }
 
     .pb-context-core .pb-mark {
-      width: 31px;
-      height: 31px;
+      width: 32px;
+      height: 28px;
     }
 
     .pb-context-codex svg {
@@ -1818,10 +1826,8 @@ body {
     }
 
     .pb-mark {
-      width: 30px;
-      height: 30px;
-      border-radius: 8px;
-      font-size: 12px;
+      width: 31px;
+      height: 26px;
     }
 
     .pb-nav.glass {
