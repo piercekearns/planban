@@ -1,4 +1,5 @@
 import { type CSSProperties, type FormEvent, type PointerEvent, useEffect, useRef, useState } from "react";
+import { ArrowUp, Menu } from "lucide-react";
 const planbanLogoImages = {
   light: "/assets/card-stack-black.svg",
   dark: "/assets/card-stack-white.svg"
@@ -298,6 +299,7 @@ export const PlanbanPublicWebsite = () => {
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [headerVisible, setHeaderVisible] = useState(true);
   const [headerCompact, setHeaderCompact] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const lastScrollY = useRef(0);
   const [pointer, setPointer] = useState({
     x: 58,
@@ -450,6 +452,22 @@ export const PlanbanPublicWebsite = () => {
               <GitHubIcon />
               <span>GitHub</span>
             </a>
+          </div>
+          <button type="button" className="pb-mobile-menu-button" aria-expanded={mobileMenuOpen} aria-controls="mobile-menu" aria-label="Open menu" onClick={() => setMobileMenuOpen(open => !open)}>
+            <Menu aria-hidden="true" strokeWidth={2} />
+          </button>
+          <div id="mobile-menu" className={`pb-mobile-menu-card ${mobileMenuOpen ? "open" : ""}`}>
+            <p className="pb-kicker">Menu</p>
+            <a href="#install" onClick={() => setMobileMenuOpen(false)}>Install</a>
+            <a href="#features" onClick={() => setMobileMenuOpen(false)}>Features</a>
+            <a href="#future" onClick={() => setMobileMenuOpen(false)}>Future</a>
+            <span className="pb-menu-divider" aria-hidden="true" />
+            <a href="#updates" onClick={() => setMobileMenuOpen(false)}>Keep up to date</a>
+            <span className="pb-menu-divider" aria-hidden="true" />
+            <div className="pb-mobile-menu-socials" aria-label="Social links">
+              <a href="https://github.com/piercekearns/planban" aria-label="Open Planban on GitHub" onClick={() => setMobileMenuOpen(false)}><GitHubIcon /></a>
+              {planbanXUrl ? <a href={planbanXUrl} aria-label="Follow Planban on X" onClick={() => setMobileMenuOpen(false)}><XIcon /></a> : null}
+            </div>
           </div>
         </div>
       </header>
@@ -608,7 +626,7 @@ export const PlanbanPublicWebsite = () => {
         </section>
       </main>
 
-      <footer className="pb-footer">
+      <footer id="updates" className="pb-footer">
         <div className="pb-footer-brand">
           <a className="pb-brand" href="#top" aria-label="Planban home">
             <PlanbanMark theme={resolvedTheme} />
@@ -636,7 +654,9 @@ export const PlanbanPublicWebsite = () => {
             setEmail(event.target.value);
             setSignupState("idle");
           }} placeholder="you@example.com" aria-label="Email address" />
-            <button type="submit" className="pb-button primary small" disabled={signupState === "submitting"}>{signupState === "submitting" ? "Joining" : "Join"}</button>
+            <button type="submit" className="pb-signup-submit" disabled={signupState === "submitting"} aria-label={signupState === "submitting" ? "Joining update list" : "Join update list"}>
+              <ArrowUp aria-hidden="true" strokeWidth={2.25} />
+            </button>
           </div>
           {signupState === "success" ? <p className="pb-form-state success">Thanks, you are on the update list.</p> : null}
           {signupState === "error" ? <p className="pb-form-state error">Enter a valid email address or try again.</p> : null}
