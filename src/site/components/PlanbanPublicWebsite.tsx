@@ -464,9 +464,22 @@ export const PlanbanPublicWebsite = () => {
             <span className="pb-menu-divider" aria-hidden="true" />
             <a href="#updates" onClick={() => setMobileMenuOpen(false)}>Keep up to date</a>
             <span className="pb-menu-divider" aria-hidden="true" />
-            <div className="pb-mobile-menu-socials" aria-label="Social links">
-              <a href="https://github.com/piercekearns/planban" aria-label="Open Planban on GitHub" onClick={() => setMobileMenuOpen(false)}><GitHubIcon /></a>
-              {planbanXUrl ? <a href={planbanXUrl} aria-label="Follow Planban on X" onClick={() => setMobileMenuOpen(false)}><XIcon /></a> : null}
+            <div className="pb-mobile-menu-bottom">
+              <div className="pb-mobile-menu-socials" aria-label="Social links">
+                <a href="https://github.com/piercekearns/planban" aria-label="Open Planban on GitHub" onClick={() => setMobileMenuOpen(false)}><GitHubIcon /></a>
+                {planbanXUrl ? <a href={planbanXUrl} aria-label="Follow Planban on X" onClick={() => setMobileMenuOpen(false)}><XIcon /></a> : null}
+              </div>
+              <div className="pb-theme-toggle pb-mobile-theme-toggle" role="group" aria-label="Theme">
+                <button type="button" className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")} aria-label="Use system theme" title="System">
+                  <SystemIcon />
+                </button>
+                <button type="button" className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")} aria-label="Use light theme" title="Light">
+                  <SunIcon />
+                </button>
+                <button type="button" className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")} aria-label="Use dark theme" title="Dark">
+                  <MoonIcon />
+                </button>
+              </div>
             </div>
           </div>
         </div>
