@@ -489,9 +489,9 @@ export const PlanbanPublicWebsite = () => {
         <section className="pb-hero">
           <div className="pb-hero-copy">
             <p className="pb-kicker">Agent-native Kanban board</p>
-            <h1>Planban</h1>
+            <h1>Agent-native Kanban board that lives in your Codex browser.</h1>
             <p className="pb-lede">
-              Agent-native Kanban board that lives in your Codex in-app browser. A second brain, a readable roadmap, card-level specs and plans kept in sync between you and your agent.
+              A second brain, a readable roadmap, card-level specs and plans kept in sync between you and your agent.
             </p>
             <div className="pb-actions">
               <a className="pb-button primary pb-install-with-codex pb-desktop-codex-cta" href={codexInstallUrl}>
@@ -560,7 +560,7 @@ export const PlanbanPublicWebsite = () => {
           <div className="pb-section-heading compact stacked">
             <div>
               <p className="pb-kicker">Features</p>
-              <h2>Agent-native and ever-present.<br />A superpowered Kanban for every project.</h2>
+              <h2>For every project, from any thread.</h2>
             </div>
             <p>Planban turns conversation into durable planning states: roadmap items, visual priorities, statuses, specs, and plans created and revised by both you and your agent.</p>
           </div>
