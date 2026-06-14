@@ -268,7 +268,7 @@ const PrivacyPolicyPage = ({
         <div className="pb-privacy-content">
           <section>
             <h2>What Planban Collects</h2>
-            <p>The public website collects email addresses submitted through the update form. Planban uses Resend to store those addresses and send product notes, tutorial drops, and platform updates.</p>
+            <p>The public website collects email addresses submitted through the update form so Planban can send product notes, tutorial drops, and platform updates.</p>
           </section>
           <section>
             <h2>How Email Is Used</h2>
@@ -276,7 +276,7 @@ const PrivacyPolicyPage = ({
           </section>
           <section>
             <h2>Website Hosting</h2>
-            <p>The website is hosted on Cloudflare Pages. Cloudflare may process standard request metadata needed to serve, cache, route, and protect the site, such as IP address, user agent, request path, and timing information.</p>
+            <p>Like most websites, Planban's public site may process standard request metadata needed to serve, cache, route, and protect the site, such as IP address, user agent, request path, and timing information.</p>
           </section>
           <section>
             <h2>Local Product Data</h2>
@@ -306,6 +306,7 @@ export const PlanbanPublicWebsite = () => {
   const [headerVisible, setHeaderVisible] = useState(true);
   const [headerCompact, setHeaderCompact] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const headerRef = useRef<HTMLElement | null>(null);
   const lastScrollY = useRef(0);
   const [pointer, setPointer] = useState({
     x: 58,
@@ -321,6 +322,22 @@ export const PlanbanPublicWebsite = () => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(themeStorageKey, themeMode);
   }, [themeMode]);
+  useEffect(() => {
+    if (typeof document === "undefined" || !mobileMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && headerRef.current?.contains(event.target)) return;
+      setMobileMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [mobileMenuOpen]);
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -435,7 +452,7 @@ export const PlanbanPublicWebsite = () => {
   } as CSSProperties} onPointerMove={updatePointer}>
       
       <div className="pb-ambient" aria-hidden="true" />
-      <header className={`pb-header-wrap ${headerVisible ? "is-visible" : "is-hidden"} ${headerCompact ? "is-compact" : "is-top"}`}>
+      <header ref={headerRef} className={`pb-header-wrap ${headerVisible ? "is-visible" : "is-hidden"} ${headerCompact ? "is-compact" : "is-top"}`}>
         <div className="pb-topbar">
           <a className="pb-brand" href="#top" aria-label="Planban home">
             <PlanbanMark theme={resolvedTheme} />
