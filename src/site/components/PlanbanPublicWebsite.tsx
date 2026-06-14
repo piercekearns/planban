@@ -246,7 +246,7 @@ const PrivacyPolicyPage = ({
         <div className="pb-privacy-content">
           <section>
             <h2>What Planban Collects</h2>
-            <p>The public website collects email addresses submitted through the update form. Those addresses are stored in Resend so Planban can send product notes, tutorial drops, and platform updates.</p>
+            <p>The public website collects email addresses submitted through the update form. Planban uses Resend to store those addresses and send product notes, tutorial drops, and platform updates.</p>
           </section>
           <section>
             <h2>How Email Is Used</h2>
@@ -254,7 +254,7 @@ const PrivacyPolicyPage = ({
           </section>
           <section>
             <h2>Website Hosting</h2>
-            <p>The website is hosted on Cloudflare Pages. Cloudflare may process standard request metadata needed to serve and protect the site, such as IP address, user agent, request path, and timing information.</p>
+            <p>The website is hosted on Cloudflare Pages. Cloudflare may process standard request metadata needed to serve, cache, route, and protect the site, such as IP address, user agent, request path, and timing information.</p>
           </section>
           <section>
             <h2>Local Product Data</h2>
