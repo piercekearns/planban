@@ -31,6 +31,8 @@ const productImages = {
 const planbanSignupEndpoint = import.meta.env.VITE_PLANBAN_SIGNUP_ENDPOINT as string | undefined;
 const planbanXUrl = (import.meta.env.VITE_PLANBAN_X_URL as string | undefined) || "https://x.com/planbanai";
 const planbanYouTubeUrl = import.meta.env.VITE_PLANBAN_YOUTUBE_URL as string | undefined;
+const themeStorageKey = "planban-public-theme";
+const isThemeMode = (value: unknown): value is "system" | "light" | "dark" => value === "system" || value === "light" || value === "dark";
 const installPrompt = "Install Planban from piercekearns/planban. Follow the Install With Codex details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the Codex in-app browser, then ask whether I want to set up Planban for a local project.";
 const codexInstallUrl = `codex://new?prompt=${encodeURIComponent(installPrompt)}&originUrl=${encodeURIComponent("https://github.com/piercekearns/planban")}`;
 const installTabs = [{
@@ -290,7 +292,11 @@ const PrivacyPolicyPage = ({
   </div>;
 
 export const PlanbanPublicWebsite = () => {
-  const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">("system");
+  const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">(() => {
+    if (typeof window === "undefined") return "system";
+    const savedTheme = window.localStorage.getItem(themeStorageKey);
+    return isThemeMode(savedTheme) ? savedTheme : "system";
+  });
   const [systemTheme, setSystemTheme] = useState<"light" | "dark">(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   const [activeTab, setActiveTab] = useState<(typeof installTabs)[number]["id"]>("codex");
   const [activeShot, setActiveShot] = useState(0);
@@ -311,6 +317,10 @@ export const PlanbanPublicWebsite = () => {
   const selectedShot = demoShots[activeShot] ?? demoShots[0];
   const selectedTabPreview = selectedTab.command.split("\n")[0] ?? selectedTab.command;
   const isPrivacyPage = typeof window !== "undefined" && window.location.pathname === "/privacy";
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(themeStorageKey, themeMode);
+  }, [themeMode]);
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
