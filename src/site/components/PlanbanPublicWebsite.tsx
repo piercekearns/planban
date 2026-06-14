@@ -3,6 +3,12 @@ const planbanLogoImages = {
   light: "/assets/card-stack-black.svg",
   dark: "/assets/card-stack-white.svg"
 } as const;
+const agentLogoImages = {
+  codex: "/assets/codex-logo.svg",
+  codexMark: "/assets/codex-mark.svg",
+  claude: "/assets/claude-logo.svg",
+  cursor: "/assets/cursor-app-icon.png"
+} as const;
 const cardDetailSanitizedDarkImage = "/assets/planban-card-detail-dark.png";
 const cardDetailSanitizedLightImage = "/assets/planban-card-detail-light.png";
 const boardDarkNoTourImage = "/assets/planban-board-dark.png";
@@ -121,8 +127,18 @@ const CursorIcon = () => <svg viewBox="0 0 100 100" aria-hidden="true">
     <path d="M84.0704 28.9353L51.9066 10.4454C50.8738 9.85153 49.5994 9.85153 48.5666 10.4454L16.4043 28.9353C15.536 29.4345 15 30.3576 15 31.3575V68.6425C15 69.6424 15.536 70.5655 16.4043 71.0647L48.5681 89.5546C49.6009 90.1485 50.8753 90.1485 51.9081 89.5546L84.0719 71.0647C84.9402 70.5655 85.4762 69.6424 85.4762 68.6425V31.3575C85.4762 30.3576 84.9402 29.4345 84.0719 28.9353H84.0704ZM82.0501 32.8519L51.0006 86.4003C50.7907 86.7611 50.2366 86.6138 50.2366 86.1958V51.1329C50.2366 50.4322 49.8606 49.7842 49.2506 49.4324L18.7553 31.9017C18.3929 31.6927 18.5409 31.141 18.9606 31.141H81.0595C81.9414 31.141 82.4925 32.0927 82.0516 32.8534H82.0501V32.8519Z" fill="currentColor" />
   
   </svg>;
-const GlobeIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 9h-3.18a15.2 15.2 0 0 0-1.15-5.08A8.03 8.03 0 0 1 18.9 11ZM12 4.05c.72 1.04 1.46 3.3 1.68 6.95h-3.36C10.54 7.35 11.28 5.09 12 4.05ZM4.1 13h3.18c.16 2.02.56 3.82 1.15 5.08A8.03 8.03 0 0 1 4.1 13Zm3.18-2H4.1a8.03 8.03 0 0 1 4.33-5.08A15.2 15.2 0 0 0 7.28 11ZM12 19.95c-.72-1.04-1.46-3.3-1.68-6.95h3.36c-.22 3.65-.96 5.91-1.68 6.95Zm3.57-1.87c.59-1.26.99-3.06 1.15-5.08h3.18a8.03 8.03 0 0 1-4.33 5.08Z" fill="currentColor" />
+const AgentLogo = ({
+  src,
+  label
+}: {
+  src: string;
+  label: string;
+}) => <img src={src} alt="" aria-hidden="true" className="pb-agent-logo" data-agent={label} />;
+const CodexInstallIcon = () => <AgentLogo src={agentLogoImages.codex} label="codex" />;
+const GlobeIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+    <path d="M2 12h20" />
   </svg>;
 const ChevronIcon = () => <svg className="pb-chevron" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M6.47 9.47a.75.75 0 0 1 1.06 0L12 13.94l4.47-4.47a.75.75 0 1 1 1.06 1.06l-5 5a.75.75 0 0 1-1.06 0l-5-5a.75.75 0 0 1 0-1.06Z" fill="currentColor" />
@@ -130,11 +146,11 @@ const ChevronIcon = () => <svg className="pb-chevron" viewBox="0 0 24 24" aria-h
 const futurePlatforms = [{
   title: "Claude Code",
   copy: "Bring the same human-agent roadmap, specs, plans, and handoff context into Claude-native software workflows.",
-  icon: <ClaudeIcon />
+  icon: <AgentLogo src={agentLogoImages.claude} label="claude" />
 }, {
   title: "Cursor",
   copy: "Keep card context and implementation plans close to the editor when the work moves into Cursor.",
-  icon: <CursorIcon />
+  icon: <AgentLogo src={agentLogoImages.cursor} label="cursor" />
 }, {
   title: "Hosted web",
   copy: "Share a browser workspace for teams, collaborators, and clients who need visibility without local setup.",
@@ -150,6 +166,9 @@ const PlanbanMark = ({
 const CopyIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
     <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </svg>;
+const CheckIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m5 12 4.5 4.5L19 7" />
   </svg>;
 const SystemIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M4.75 5A2.75 2.75 0 0 0 2 7.75v7.5A2.75 2.75 0 0 0 4.75 18h5.75v1.5H8a.75.75 0 0 0 0 1.5h8a.75.75 0 0 0 0-1.5h-2.5V18h5.75A2.75 2.75 0 0 0 22 15.25v-7.5A2.75 2.75 0 0 0 19.25 5H4.75Zm0 1.5h14.5c.69 0 1.25.56 1.25 1.25v7.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-7.5c0-.69.56-1.25 1.25-1.25Z" fill="currentColor" />
@@ -202,7 +221,7 @@ const BringPlansVisual = ({
           <path d="M4 34 C28 34 34 21 48 21 C62 21 68 8 92 8" />
         </svg>
       </span>
-      <span className="pb-context-core pb-context-codex"><CodexIcon /></span>
+      <span className="pb-context-core pb-context-codex"><AgentLogo src={agentLogoImages.codexMark} label="codex" /></span>
     </div>
     <div className="pb-source-row bottom">
       {sourceApps.slice(4).map(source => <span key={source.name} className="pb-source-icon" aria-label={source.name}>
@@ -225,8 +244,7 @@ const PrivacyPolicyPage = ({
         </a>
         <nav className="pb-nav glass" aria-label="Primary">
           <a href="/#install">Install</a>
-          <a href="/#demo">Workflow</a>
-          <a href="/#context">Context</a>
+          <a href="/#features">Features</a>
           <a href="/#future">Future</a>
         </nav>
         <div className="pb-header-actions">
@@ -288,6 +306,7 @@ export const PlanbanPublicWebsite = () => {
   const resolvedTheme = themeMode === "system" ? systemTheme : themeMode;
   const images = productImages[resolvedTheme];
   const selectedShot = demoShots[activeShot] ?? demoShots[0];
+  const selectedTabPreview = selectedTab.command.split("\n")[0] ?? selectedTab.command;
   const isPrivacyPage = typeof window !== "undefined" && window.location.pathname === "/privacy";
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -367,7 +386,23 @@ export const PlanbanPublicWebsite = () => {
     });
   }
   async function copyInstallCommand() {
-    await navigator.clipboard?.writeText(selectedTab.command);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(selectedTab.command);
+      } else {
+        const copyTarget = document.createElement("textarea");
+        copyTarget.value = selectedTab.command;
+        copyTarget.setAttribute("readonly", "");
+        copyTarget.style.position = "fixed";
+        copyTarget.style.opacity = "0";
+        document.body.appendChild(copyTarget);
+        copyTarget.select();
+        document.execCommand("copy");
+        document.body.removeChild(copyTarget);
+      }
+    } catch {
+      // The visible success affordance still confirms the user's copy intent.
+    }
     setCopyState("copied");
     window.setTimeout(() => setCopyState("idle"), 1500);
   }
@@ -388,8 +423,7 @@ export const PlanbanPublicWebsite = () => {
           </a>
           <nav className="pb-nav glass" aria-label="Primary">
             <a href="#install">Install</a>
-            <a href="#demo">Workflow</a>
-            <a href="#context">Context</a>
+            <a href="#features">Features</a>
             <a href="#future">Future</a>
           </nav>
           <div className="pb-header-actions">
@@ -422,12 +456,8 @@ export const PlanbanPublicWebsite = () => {
             </p>
             <div className="pb-actions">
               <a className="pb-button primary" href="#install">
-                <span className="pb-button-icon"><CodexIcon /></span>
+                <span className="pb-button-icon"><CodexInstallIcon /></span>
                 Install with Codex
-              </a>
-              <a className="pb-button secondary" href="https://github.com/piercekearns/planban">
-                <span className="pb-button-icon"><GitHubIcon /></span>
-                View repository
               </a>
             </div>
           </div>
@@ -450,7 +480,7 @@ export const PlanbanPublicWebsite = () => {
             <h2>Quick Start</h2>
             <p>One-prompt install, one-click updates.</p>
             <button type="button" className="pb-button primary" onClick={() => setActiveTab("codex")}>
-              <span className="pb-button-icon"><CodexIcon /></span>
+              <span className="pb-button-icon"><CodexInstallIcon /></span>
               Install with Codex
             </button>
           </div>
@@ -468,20 +498,19 @@ export const PlanbanPublicWebsite = () => {
                 </button>)}
             </div>
             <div className="pb-code-box">
-              <pre>{selectedTab.command}</pre>
+              <pre><span className="pb-command-full">{selectedTab.command}</span><span className="pb-command-preview" aria-hidden="true">{selectedTabPreview}</span></pre>
               <button type="button" className={`pb-copy-icon ${copyState === "copied" ? "copied" : ""}`} onClick={copyInstallCommand} aria-label={`${copyState === "copied" ? "Copied" : "Copy"} ${selectedTab.label}`}>
-                <CopyIcon />
+                {copyState === "copied" ? <CheckIcon /> : <CopyIcon />}
                 <span>{copyState === "copied" ? "Copied" : "Copy"}</span>
               </button>
-              {copyState === "copied" ? <span className="pb-copy-status" role="status">Copied</span> : null}
             </div>
           </div>
         </section>
 
-        <section id="demo" className="pb-demo pb-section-full">
+        <section id="features" className="pb-demo pb-section-full">
           <div className="pb-section-heading compact stacked">
             <div>
-              <p className="pb-kicker">Workflow</p>
+              <p className="pb-kicker">Features</p>
               <h2>Agent-native and ever-present.<br />A superpowered Kanban for every project.</h2>
             </div>
             <p>Planban turns conversation into durable planning states: roadmap items, visual priorities, statuses, specs, and plans created and revised by both you and your agent.</p>
@@ -575,8 +604,7 @@ export const PlanbanPublicWebsite = () => {
         </div>
         <div className="pb-footer-links">
           <a href="#install">Install</a>
-          <a href="#demo">Workflow</a>
-          <a href="#context">Context</a>
+          <a href="#features">Features</a>
           <a href="#future">Future</a>
           <a href="/privacy">Privacy</a>
         </div>
