@@ -1801,10 +1801,10 @@ body {
     }
 
     .pb-mobile-menu-bottom {
+      position: relative;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      min-height: 19px;
       padding-top: 8px;
     }
 
@@ -1833,11 +1833,15 @@ body {
     }
 
     .pb-mobile-theme-toggle {
+      position: absolute;
+      top: calc(50% + 4px);
+      right: 0;
       width: auto;
       gap: 1px;
       padding: 3px;
       border-radius: 9px;
       justify-self: end;
+      transform: translateY(-50%);
     }
 
     .pb-mobile-theme-toggle button {
