@@ -63,6 +63,24 @@ After navigating, verify the in-app browser state before replying:
 3. If the selected/current tab is not at that URL, navigate it or open a new in-app
    browser tab and verify again.
 
+Use the Browser runtime's visibility capability explicitly when the user expects the board
+to appear beside the Codex thread:
+
+```js
+await (await browser.capabilities.get("visibility")).set(true);
+```
+
+When working with Browser tab snapshots, rehydrate the tab before navigating:
+
+```js
+const tab = await browser.tabs.get(snapshot.id);
+await tab.goto(resolvedUrl);
+```
+
+Some Browser APIs expose tab snapshots from `tabs.list()` and full tab handles from
+`tabs.get(id)`. Do not assume a listed tab has navigation methods. Prefer `tab.goto()`
+on a full tab handle, then verify `await tab.url()` matches the resolved Planban URL.
+
 Do not say the board is open until the URL check succeeds. If URL verification still
 fails after retrying, return the clickable URL and say briefly that the user can open
 it in the Codex in-app browser.

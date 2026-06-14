@@ -15,6 +15,24 @@ Codex updates can move the Browser plugin to a new versioned cache path. Do not 
 
 After navigating, verify the in-app browser state before replying: the in-app browser should be visible or shown, and a tab should be open at the tutorial URL. If the selected/current tab is not at that URL, navigate it or open a new in-app browser tab and verify again.
 
+Use the Browser runtime's visibility capability explicitly when the user expects the
+tutorial to appear beside the Codex thread:
+
+```js
+await (await browser.capabilities.get("visibility")).set(true);
+```
+
+When working with Browser tab snapshots, rehydrate the tab before navigating:
+
+```js
+const tab = await browser.tabs.get(snapshot.id);
+await tab.goto(tutorialUrl);
+```
+
+Some Browser APIs expose tab snapshots from `tabs.list()` and full tab handles from
+`tabs.get(id)`. Do not assume a listed tab has navigation methods. Prefer `tab.goto()`
+on a full tab handle, then verify `await tab.url()` matches the tutorial URL.
+
 Prefer the helper script:
 
 ```bash

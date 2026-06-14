@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.14",
-  "pluginVersion": "0.1.14",
-  "mcpVersion": "0.1.14",
+  "version": "0.1.15",
+  "pluginVersion": "0.1.15",
+  "mcpVersion": "0.1.15",
   "storageSchemaVersion": 2,
   "minimumStorageSchemaVersion": 2,
-  "publishedAt": "2026-06-14T17:56:00.000Z",
+  "publishedAt": "2026-06-14T22:40:08.000Z",
   "sourceUrl": "https://github.com/piercekearns/planban",
-  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.14",
-  "summary": "Improves Planban board opening when the right board is ambiguous or the local port is already in use.",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v0.1.15",
+  "summary": "Improves how Planban opens boards in the Codex in-app browser.",
   "updatePrompt": "Update Planban from piercekearns/planban, verify the plugin and MCP tools are available, then reopen Planban in the Codex in-app browser.",
   "postUpdateRoute": "board-with-changelog",
-  "changelogTitle": "More reliable board opening",
-  "changelogSummary": "This release helps /pb and /planban open the right Planban surface more consistently. When Planban cannot safely choose one board, it opens the board selector instead of guessing, and local port conflicts now fail with a clearer message.",
+  "changelogTitle": "Better Codex browser opening",
+  "changelogSummary": "This release helps /pb and /planban put the selected Planban board in front of you more consistently inside Codex.",
   "targetRef": "main",
-  "directUpdateSupportedFrom": "0.1.13"
+  "directUpdateSupportedFrom": "0.1.14"
 }
