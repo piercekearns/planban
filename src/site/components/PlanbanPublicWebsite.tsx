@@ -210,6 +210,65 @@ const BringPlansVisual = ({
         </span>)}
     </div>
   </div>;
+
+const PrivacyPolicyPage = ({
+  theme
+}: {
+  theme: "light" | "dark";
+}) => <div className={`pb-site ${theme}`}>
+    <div className="pb-ambient" aria-hidden="true" />
+    <header className="pb-header-wrap is-visible is-top">
+      <div className="pb-topbar">
+        <a className="pb-brand" href="/" aria-label="Planban home">
+          <PlanbanMark theme={theme} />
+          <span>Planban</span>
+        </a>
+        <nav className="pb-nav glass" aria-label="Primary">
+          <a href="/#install">Install</a>
+          <a href="/#demo">Workflow</a>
+          <a href="/#context">Context</a>
+          <a href="/#future">Future</a>
+        </nav>
+        <div className="pb-header-actions">
+          <a className="pb-icon-button" href="https://github.com/piercekearns/planban" aria-label="Open Planban on GitHub">
+            <GitHubIcon />
+            <span>GitHub</span>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main className="pb-privacy-page">
+      <section className="pb-privacy-shell glass">
+        <p className="pb-kicker">Privacy</p>
+        <h1>Privacy Policy</h1>
+        <p className="pb-privacy-updated">Last updated: June 14, 2026</p>
+        <div className="pb-privacy-content">
+          <section>
+            <h2>What Planban Collects</h2>
+            <p>The public website collects email addresses submitted through the update form. Those addresses are stored in Resend so Planban can send product notes, tutorial drops, and platform updates.</p>
+          </section>
+          <section>
+            <h2>How Email Is Used</h2>
+            <p>Signup emails are used only for Planban updates. They are not sold or shared for advertising. You can unsubscribe from future broadcasts when an unsubscribe link is provided, or ask for removal directly.</p>
+          </section>
+          <section>
+            <h2>Website Hosting</h2>
+            <p>The website is hosted on Cloudflare Pages. Cloudflare may process standard request metadata needed to serve and protect the site, such as IP address, user agent, request path, and timing information.</p>
+          </section>
+          <section>
+            <h2>Local Product Data</h2>
+            <p>Planban itself is designed around local planning state. The public website email form does not receive your boards, cards, specs, plans, repository paths, or local project contents.</p>
+          </section>
+          <section>
+            <h2>Contact</h2>
+            <p>For privacy questions or removal requests, email <a href="mailto:hello@planban.ai">hello@planban.ai</a>.</p>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>;
+
 export const PlanbanPublicWebsite = () => {
   const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">("system");
   const [systemTheme, setSystemTheme] = useState<"light" | "dark">(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
@@ -229,6 +288,7 @@ export const PlanbanPublicWebsite = () => {
   const resolvedTheme = themeMode === "system" ? systemTheme : themeMode;
   const images = productImages[resolvedTheme];
   const selectedShot = demoShots[activeShot] ?? demoShots[0];
+  const isPrivacyPage = typeof window !== "undefined" && window.location.pathname === "/privacy";
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -310,6 +370,9 @@ export const PlanbanPublicWebsite = () => {
     await navigator.clipboard?.writeText(selectedTab.command);
     setCopyState("copied");
     window.setTimeout(() => setCopyState("idle"), 1500);
+  }
+  if (isPrivacyPage) {
+    return <PrivacyPolicyPage theme={resolvedTheme} />;
   }
   return <div className={`pb-site ${resolvedTheme}`} style={{
     "--spot-x": `${pointer.x}%`,
@@ -515,6 +578,7 @@ export const PlanbanPublicWebsite = () => {
           <a href="#demo">Workflow</a>
           <a href="#context">Context</a>
           <a href="#future">Future</a>
+          <a href="/privacy">Privacy</a>
         </div>
         <form onSubmit={submitSignup} className="pb-footer-signup glass">
           <div>
@@ -531,6 +595,7 @@ export const PlanbanPublicWebsite = () => {
           {signupState === "success" ? <p className="pb-form-state success">Thanks, you are on the update list.</p> : null}
           {signupState === "error" ? <p className="pb-form-state error">Enter a valid email address or try again.</p> : null}
           {signupState === "unconfigured" ? <p className="pb-form-state neutral">Email capture is not connected in this preview. Follow GitHub for now.</p> : null}
+          <p className="pb-form-note">Product updates only. Unsubscribe anytime.</p>
           <div className="pb-socials" aria-label="Social links">
             <a href="https://github.com/piercekearns/planban" aria-label="Open Planban on GitHub"><GitHubIcon /></a>
             {planbanXUrl ? <a href={planbanXUrl} aria-label="Follow Planban on X"><XIcon /></a> : null}

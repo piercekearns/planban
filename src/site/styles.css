@@ -1067,10 +1067,10 @@ body {
     transform: translate(-50%, -50%);
     border: 1px solid color-mix(in oklab, var(--pb-codex) 28%, var(--pb-line));
     border-radius: 16px;
-    background: color-mix(in oklab, var(--pb-glass-strong) 78%, transparent);
+    background: color-mix(in oklab, var(--pb-bg-2) 88%, var(--pb-glass-strong));
     box-shadow: 0 12px 28px rgba(1, 105, 204, 0.08);
     padding: 9px;
-    backdrop-filter: blur(22px) saturate(1.16);
+    backdrop-filter: none;
     z-index: 2;
   }
 
@@ -1081,7 +1081,7 @@ body {
     place-items: center;
     border: 1px solid var(--pb-line);
     border-radius: 14px;
-    background: var(--pb-raised);
+    background: color-mix(in oklab, var(--pb-bg-2) 90%, var(--pb-raised));
     position: relative;
     z-index: 3;
   }
@@ -1434,6 +1434,68 @@ body {
 
   .pb-footer-signup .pb-form-state {
     margin: 0;
+  }
+
+  .pb-footer-signup .pb-form-note {
+    margin: -2px 0 0;
+    color: var(--pb-faint);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .pb-privacy-page {
+    min-height: 100vh;
+    padding: 150px clamp(24px, 5vw, 72px) 72px;
+  }
+
+  .pb-privacy-shell {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: clamp(28px, 5vw, 56px);
+  }
+
+  .pb-privacy-shell h1 {
+    margin: 10px 0 0;
+    font-size: clamp(42px, 6vw, 72px);
+    line-height: 0.96;
+    letter-spacing: 0;
+  }
+
+  .pb-privacy-updated {
+    margin: 12px 0 0;
+    color: var(--pb-faint);
+  }
+
+  .pb-privacy-content {
+    display: grid;
+    gap: 28px;
+    margin-top: 42px;
+  }
+
+  .pb-privacy-content section {
+    border-top: 1px solid var(--pb-divider-line);
+    padding-top: 24px;
+  }
+
+  .pb-privacy-content h2 {
+    margin: 0 0 10px;
+    font-size: 18px;
+    line-height: 1.2;
+  }
+
+  .pb-privacy-content p {
+    margin: 0;
+    color: var(--pb-muted);
+    line-height: 1.7;
+  }
+
+  .pb-privacy-content a {
+    color: var(--pb-codex-bright);
+    text-decoration: none;
+  }
+
+  .pb-privacy-content a:hover {
+    text-decoration: underline;
   }
 
   .pb-socials {
