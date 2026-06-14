@@ -1685,7 +1685,7 @@ body {
     }
 
     .pb-topbar {
-      min-height: 60px;
+      min-height: 68px;
       display: grid;
       grid-template-columns: auto auto;
       align-items: center;
