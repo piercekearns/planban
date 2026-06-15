@@ -18,7 +18,10 @@
     "preview": "tsx src/cli.ts serve --no-vite",
     "smoke": "npm run build && tsx scripts/smoke.ts",
     "plugin:configure": "node scripts/configure-local-plugin.mjs",
-    "planban:demo": "node --import tsx/esm src/cli.ts demo"
+    "planban:demo": "node --import tsx/esm src/cli.ts demo",
+    "site:build": "vite build --config vite.site.config.ts",
+    "site:preview": "vite preview --config vite.site.config.ts",
+    "site:deploy": "npm run site:build && wrangler pages deploy dist/site --project-name planban-public-website"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
