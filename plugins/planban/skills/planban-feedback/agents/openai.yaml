@@ -1,0 +1,7 @@
+interface:
+  display_name: "Planban Feedback"
+  short_description: "Package Planban bug reports and product feedback"
+  brand_color: "#2563EB"
+  default_prompt: "Send Planban feedback from this note."
+policy:
+  allow_implicit_invocation: false

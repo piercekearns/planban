@@ -1,0 +1,7 @@
+interface:
+  display_name: "PB"
+  short_description: "Open the relevant Planban board quickly"
+  brand_color: "#2563EB"
+  default_prompt: "Open my Planban board."
+policy:
+  allow_implicit_invocation: false

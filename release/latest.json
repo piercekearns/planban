@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "pluginVersion": "1.0.0",
+  "mcpVersion": "1.0.0",
+  "storageSchemaVersion": 2,
+  "minimumStorageSchemaVersion": 2,
+  "publishedAt": "2026-06-17T16:00:00.000Z",
+  "sourceUrl": "https://github.com/piercekearns/planban",
+  "releaseNotesUrl": "https://github.com/piercekearns/planban/releases/tag/v1.0.0",
+  "summary": "First public Planban release: a local Codex-native board for agent-led planning, installable as a Git-backed Codex plugin marketplace.",
+  "updatePrompt": "Install or update Planban from piercekearns/planban, follow the public GitHub README, verify the plugin and MCP tools are available, then open Planban in the Codex in-app browser.",
+  "postUpdateRoute": "board-with-changelog",
+  "changelogTitle": "Planban v1.0.0",
+  "changelogSummary": "Planban is now available as a clean public release: install it with Codex, open boards with /pb or /planban, keep planning state local, duplicate boards, and use CLI/API/MCP surfaces for agent-native workflows.",
+  "targetRef": "main"
+}

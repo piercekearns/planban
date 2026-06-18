@@ -1,0 +1,7 @@
+interface:
+  display_name: "Planban Tutorial"
+  short_description: "Open the interactive Planban tutorial"
+  brand_color: "#2563EB"
+  default_prompt: "Open the Planban tutorial."
+policy:
+  allow_implicit_invocation: false
