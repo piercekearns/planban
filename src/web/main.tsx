@@ -413,46 +413,37 @@ function buildCodexDraftPrompt(state: PlanbanState, item: RoadmapItem, launchTok
 
   if (item.metadata?.demoCodexPrompt === true) {
     return [
-      "Hit enter to test out this prompt.",
+      "Test this Planban tutorial prompt.",
       "",
-      `I am testing the Planban roadmap item "${item.title}".`,
-      "",
-      formatOptionalLine("Repository", state.cwd),
-      formatOptionalLine("Planban board", boardUrl),
+      "Use the Planban plugin/protocol if available.",
+      formatOptionalLine("Repo", state.cwd),
+      formatOptionalLine("Board", boardUrl),
       formatOptionalLine("Card id", item.id),
       formatOptionalLine("Status", labels[item.status]),
-      formatOptionalLine("Spec doc", specPath),
+      formatOptionalLine("Spec", specPath),
       formatOptionalLine("Launch token", launchToken),
       "",
-      "Use the Planban plugin or skill if it is available.",
-      "Open the Planban board in the Codex in-app browser so the demo board is visible beside this thread.",
-      "Move this roadmap item to In Progress.",
-      "Update this roadmap item's summary to: New thread created successfully.",
-      "Update this roadmap item's next action to: Check the In Progress column in your Planban Demo board.",
+      `Open the board beside this thread, move "${item.title}" to In Progress, update its summary/next action for the tutorial, then reply: ${demoSuccessMessage}`,
       "",
-      demoSuccessMessage,
+      "User prompt:",
     ].join("\n");
   }
 
   return [
-    `I am starting work on the Planban roadmap item "${item.title}".`,
+    `Start this Planban roadmap item: "${item.title}".`,
     "",
-    formatOptionalLine("Repository", state.cwd),
-    formatOptionalLine("Planban board", boardUrl),
+    "Use the Planban plugin/protocol if available.",
+    formatOptionalLine("Repo", state.cwd),
+    formatOptionalLine("Board", boardUrl),
     formatOptionalLine("Card id", item.id),
     formatOptionalLine("Status", labels[item.status]),
-    formatOptionalLine("Spec doc", specPath),
-    formatOptionalLine("Plan doc", planPath),
+    formatOptionalLine("Spec", specPath),
+    formatOptionalLine("Plan", planPath),
     formatOptionalLine("Launch token", launchToken),
     "",
-    "First, open the Planban board in the Codex in-app browser so the roadmap is visible beside this thread.",
-    "Use the Planban plugin or skill if it is available.",
-    "Read .planban/project.json, .planban/agent-context.md, and the linked docs before changing roadmap state.",
-    "If you start implementation work on this item, move it to In Progress if it is not already there.",
-    "When your implementation and verification are done, leave the item In Progress with a next action for user review/testing.",
-    "Move the item to Complete only if I explicitly ask you to, manually confirm completion after testing/review, or clearly waive user-side verification.",
+    "Open the board beside this thread, read the linked card docs, then begin from the card's next action. If implementation starts, move it to In Progress; leave completion user-controlled.",
     "",
-    "I want to:",
+    "User prompt:",
   ].join("\n");
 }
 
@@ -491,24 +482,20 @@ async function openCodexDraftThread(state: PlanbanState, item: RoadmapItem) {
 function buildFeedbackPrompt(state: PlanbanState, feedback: string) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
   return [
-    "Hit enter to provide feedback via your agent.",
+    "Use Planban Feedback to package this for piercekearns/planban.",
     "",
-    "Use the Planban plugin or skill if it is available.",
-    "I want to give feedback on Planban. Please turn the feedback below into a concise GitHub issue for piercekearns/planban.",
+    "Draft only. Do not file or post publicly without my explicit approval of the exact destination and text.",
+    "Route as a bug issue, feature request, general feedback, PR idea, or private security report. Ask only for missing details that would make the draft maintainer-useful.",
     "",
-    "Choose the right issue type: bug, feature request, or general product feedback.",
-    "Ask me one clarifying question if needed.",
-    "Before filing anything, show me the issue title and body and ask me to confirm.",
-    "Do not include private repo paths, board contents, logs, screenshots, local URLs, or personal project details in the public issue unless I explicitly approve them.",
-    "If GitHub access is available, use the repository's issue forms or gh issue create after I confirm. Otherwise, give me the finished issue draft and the GitHub issue chooser link.",
-    "",
-    "Local context for orientation only. Do not include this in the public issue unless I approve it:",
+    "Private orientation context; do not include publicly unless approved:",
     formatOptionalLine("Board", state.roadmap.project.title),
     formatOptionalLine("Repo id", state.manifest.repoId),
     formatOptionalLine("Board URL", boardUrl),
     "",
     "Feedback:",
     feedback.trim(),
+    "",
+    "User prompt:",
   ].join("\n");
 }
 
@@ -567,20 +554,17 @@ async function copyFeedbackPrompt(state: PlanbanState, feedback: string) {
 function buildTutorialCreatePrompt(state: PlanbanState, planningContext: string) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
   return [
-    "Hit enter to create Planban roadmap items with your agent.",
+    "Use Planban Create to turn this rough planning context into reviewable Planban roadmap items.",
     "",
-    "Use the Planban plugin or skill if it is available.",
-    "I want to turn rough project context into Planban roadmap items.",
+    "Ask which project/repo to plan if unclear. If no Planban board exists for that project, ask before initializing one.",
+    "Use repo docs, issues, notes, connected context, or the text below. Do not invent private project facts.",
     "",
-    "Use this demo board as orientation only:",
-    formatOptionalLine("Demo board", boardUrl),
+    formatOptionalLine("Current demo board for orientation only", boardUrl),
     "",
-    "Ask me what project or repo I want to plan, then inspect the context I provide from repo docs, GitHub Issues, Notion, Linear, Jira, plain notes, or a short spoken/written project update.",
-    "If there is no Planban board for that project yet, ask before initializing one. Then create a small set of reviewable Planban roadmap items with clear titles, summaries, statuses, next actions, and specs.",
-    "Do not invent private project facts. Ask one concise clarifying question if the input is too thin.",
-    "",
-    "User-provided planning context:",
+    "Planning context:",
     planningContext.trim() || "(The user has not added context yet. Ask one short question to get started.)",
+    "",
+    "User prompt:",
   ].join("\n");
 }
 
@@ -637,6 +621,8 @@ function buildUpdatePrompt(state: PlanbanState, status: UpdateStatusPayload) {
     "",
     "After updating, verify the running Planban version, the installed plugin version, MCP tools, and board load.",
     postUpdateInstruction,
+    "",
+    "User prompt:",
   ].join("\n");
 }
 
@@ -955,12 +941,9 @@ function SortableCard({
     opacity: isDragging ? 0.45 : 1,
   };
   const codexThreadId = getCodexThreadId(item);
-  const codexPending = hasPendingCodexThread(item);
   const codexLabel = codexThreadId
     ? "Open Codex thread"
-    : codexPending
-      ? "Codex draft opened"
-      : "Start in Codex";
+    : "Start in Codex";
 
   return (
     <article
@@ -985,13 +968,13 @@ function SortableCard({
           <div className="card-action-group">
             <TooltipButton
               label={codexLabel}
-              className={`${codexThreadId ? "codex-linked" : ""} ${codexPending ? "codex-pending" : ""}`}
+              className={codexThreadId ? "codex-linked" : ""}
               onClick={(event) => {
                 event.stopPropagation();
                 onStartCodex(item);
               }}
             >
-              {codexPending ? <Loader2 size={14} /> : <SquarePen size={14} />}
+              <SquarePen size={14} />
             </TooltipButton>
           </div>
           <div className="card-action-group">
@@ -2374,8 +2357,8 @@ function TutorialFeedbackPreview() {
         <p className="eyebrow">Feedback button</p>
         <h3>Send rough feedback through your agent</h3>
         <p>
-          Type the bug, request, or reaction. Planban turns it into a Codex-ready prompt, then your
-          agent helps prepare a GitHub issue before anything is public.
+          Type the bug, request, fix idea, or reaction. Planban turns it into a Codex-ready prompt,
+          then your agent helps prepare the right GitHub draft before anything is public.
         </p>
       </div>
     </section>
@@ -2405,7 +2388,7 @@ const tutorialSteps = [
   },
   {
     title: "Feedback is agent-native too",
-    copy: "Use the feedback icon on your board or the /planban feedback command in your agent. Your agent packages the issue before anything is sent to us.",
+    copy: "Use the feedback icon on your board or the /planban feedback command in your agent. Your agent packages the right GitHub draft before anything is sent to us.",
   },
 ] as const;
 

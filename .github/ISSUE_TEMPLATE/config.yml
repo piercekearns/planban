@@ -3,3 +3,6 @@ contact_links:
   - name: Use Codex to draft feedback
     url: https://github.com/piercekearns/planban#feedback-with-codex
     about: Ask Codex to turn rough feedback into a clean GitHub issue before filing.
+  - name: Report a security issue
+    url: https://github.com/piercekearns/planban/security/policy
+    about: Please do not post vulnerabilities or sensitive local context publicly.

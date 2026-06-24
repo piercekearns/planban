@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -147,6 +147,16 @@ async function boardsFor(baseUrl) {
   return await fetchJson(`${baseUrl}/api/boards`);
 }
 
+async function webSurfaceHealthy(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return false;
+    return (await response.text()).includes('<div id="root"></div>');
+  } catch {
+    return false;
+  }
+}
+
 async function waitForStatus(baseUrl, timeoutMs = 15000) {
   const started = Date.now();
   let lastError = null;
@@ -174,6 +184,51 @@ async function isPortOpen(port, timeoutMs = 750) {
     socket.once("timeout", () => finish(false));
     socket.once("error", () => finish(false));
   });
+}
+
+function listenerPids(port) {
+  if (process.platform === "win32") return [];
+  const result = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0 && !result.stdout.trim()) return [];
+  return result.stdout
+    .split(/\s+/u)
+    .map((entry) => Number.parseInt(entry, 10))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+async function terminatePortListeners(port) {
+  const pids = listenerPids(port);
+  if (pids.length === 0) return false;
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // The process may already be gone.
+    }
+  }
+
+  const started = Date.now();
+  while (Date.now() - started < 3000) {
+    if (!await isPortOpen(port, 100)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // The process may already be gone.
+    }
+  }
+
+  const killStarted = Date.now();
+  while (Date.now() - killStarted < 1000) {
+    if (!await isPortOpen(port, 100)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  return false;
 }
 
 function repoIdFromCwd(cwd) {
@@ -266,9 +321,19 @@ async function main() {
   const existingStatus = await statusFor(baseUrl).catch(() => null);
   if (existingStatus) {
     const url = options.tutorial ? tutorialUrl(baseUrl) : await boardUrl(baseUrl, existingStatus, cwd);
-    if (options.open) openUrl(url);
-    process.stdout.write(`Planban already running at ${url}\n`);
-    return;
+    if (await webSurfaceHealthy(url)) {
+      if (options.open) openUrl(url);
+      process.stdout.write(`Planban already running at ${url}\n`);
+      return;
+    }
+
+    const restarted = await terminatePortListeners(options.port);
+    if (!restarted) {
+      throw new Error(
+        `Planban is responding on ${baseUrl}, but its web bundle is unavailable. ` +
+        `Stop the stale process on port ${options.port} or choose another Planban port.`,
+      );
+    }
   }
 
   if (await isPortOpen(options.port)) {

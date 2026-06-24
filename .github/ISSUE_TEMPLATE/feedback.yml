@@ -1,7 +1,7 @@
 name: Product feedback
 description: Share a reaction, rough edge, question, or experience report.
 title: "[Feedback]: "
-labels: ["feedback"]
+labels: ["feedback", "needs-triage"]
 body:
   - type: textarea
     id: feedback

@@ -1,6 +1,6 @@
 # Planban
 
-Planban is a local, Codex-native Kanban-style planning board for agent-led software work.
+Planban is a local, Codex-native Kanban board for agent-led planning.
 
 It gives you a simple roadmap board, keeps your planning state local, and helps Codex start work from the right card, spec, and project context.
 
@@ -108,6 +108,17 @@ Codex can then help you review the issue draft and file it through GitHub. You c
 
 https://github.com/piercekearns/planban/issues/new/choose
 
+## Contributing
+
+Planban is early. Small focused bug fixes, docs improvements, and reliability
+fixes are welcome. For larger feature, architecture, install, update, API, MCP, or
+CLI contract changes, please open an issue first.
+
+By submitting a pull request, you agree that your contribution is licensed under
+the MIT License.
+
+See `CONTRIBUTING.md`, `SUPPORT.md`, and `SECURITY.md`.
+
 ## Updates
 
 Planban checks public version metadata from GitHub while the local board is open. If an update is available, the board shows a small update notice.
@@ -132,4 +143,7 @@ Do not commit `~/.planban` state to your project repo.
 
 ## License
 
-Planban is source-available for local evaluation. It is not open source. See `LICENSE.md`.
+Planban's local core is open source under the MIT License. See `LICENSE`.
+
+The Planban name, logo, wordmark, domain, social handles, and official release
+channels are not granted under the code license. See `TRADEMARKS.md`.

@@ -48,33 +48,47 @@ Opening a board is the same primary service for `/pb` and `/planban`:
 2. Else if there is exactly one registered Planban board, open it.
 3. Else open the all-boards selector.
 
-In Codex Desktop, prefer the Planban fast opener module when Node REPL and the module
-are available. It keeps the launch, in-app browser visibility, fresh-tab navigation,
-and URL verification in one tool call:
+In Codex Desktop, prefer the Planban MCP tool for server lifecycle and board URL
+resolution, then use the Planban browser opener module only for in-app browser
+visibility, fresh-tab navigation, and URL verification. The Node REPL runtime can be
+sandboxed away from localhost networking, so it should not be the primary place where
+server health or cold launch is decided.
 
 ```js
 const mod = await import("/absolute/path/to/codex-fast-open-planban.mjs");
-const result = await mod.openPlanbanBoardInCodexBrowser({ cwd: "/path/to/repo" });
+const result = await mod.openUrlInCodexBrowser({ url: "URL_FROM_PLANBAN_LAUNCH_BOARD" });
 nodeRepl.write(JSON.stringify(result));
 ```
 
-Resolve the module path from the active Planban plugin root, usually
-`scripts/codex-fast-open-planban.mjs` in an installed plugin cache or
-`plugins/planban/scripts/codex-fast-open-planban.mjs` in the source repo. Do not call
+Resolve the module path from the active Planban plugin root, preferably by scanning
+`$CODEX_HOME/plugins/cache/planban/planban/*/scripts/codex-fast-open-planban.mjs`
+and selecting the newest version. In source checkouts, use
+`plugins/planban/scripts/codex-fast-open-planban.mjs`. Do not call
 `browser.documentation()` before this fast
 opener. Large Browser documentation payloads belong on the fallback/warm-up path, not
 on the critical path for making the board visible.
 
-Only the Node REPL `js` execution tool can run this fast opener. If Node REPL is not
+Only the Node REPL `js` execution tool can run this browser opener. If Node REPL is not
 callable yet, make at most one tool-discovery attempt for `node_repl js execute
 JavaScript`. Do not call `js_reset`, `js_add_node_module_dir`, or any reset/setup-only
 Node REPL tool for a plain open-board command. If `js` is still not callable after
 that one discovery attempt, skip the Node REPL path and use the fallback route
 immediately.
 
-If the fast opener fails or is unavailable, prefer the Planban MCP tool
-`planban_launch_board` when it is available, then open the returned URL in the Codex
-in-app browser through the official Browser plugin path. Otherwise, run:
+If the `node_repl` `js` call fails at the tool/runtime layer before JavaScript runs
+(for example a missing sandbox metadata field, disabled Node REPL, permission bridge
+failure, or MCP argument validation failure), classify this as "Codex browser bridge
+unavailable". Do not spend more time on local Node invocations, Browser documentation,
+Computer Use, Codex app UI automation, or repeated opener variations. Keep the board
+launch result, return the verified URL, and say that the board is running but the
+Codex browser bridge failed before the opener code could execute.
+
+Use `planban_launch_board` when it is available, then open the returned URL in the
+Codex in-app browser through the current official Browser plugin/runtime. Do not
+reuse a browser helper path copied from an older thread or older Codex app build.
+If the Planban MCP tool is unavailable and Node REPL `js` is available, use
+`openPlanbanBoardInCodexBrowser({ cwd, statusTimeoutMs: 800, launchTimeoutMs: 3500 })`
+as a bounded fallback. Otherwise, run:
 
 ```bash
 node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo

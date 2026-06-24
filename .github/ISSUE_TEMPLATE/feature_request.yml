@@ -1,7 +1,7 @@
 name: Feature request
 description: Suggest a new capability or improvement.
 title: "[Feature]: "
-labels: ["enhancement"]
+labels: ["enhancement", "needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -37,4 +37,11 @@ body:
         - Roadmap/card workflow
         - Installation/onboarding
         - Documentation
+        - Host support beyond Codex
         - Other
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Contribution scope
+      options:
+        - label: I understand non-trivial feature work should start as an issue before a pull request.

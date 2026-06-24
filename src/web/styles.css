@@ -1941,15 +1941,6 @@ h1 {
   background: color-mix(in oklab, var(--accent) 88%, #000 12%);
 }
 
-.card-actions button.codex-pending {
-  color: var(--accent);
-  border-color: color-mix(in oklab, var(--accent) 42%, transparent);
-}
-
-.card-actions button.codex-pending svg {
-  animation: spin 0.9s linear infinite;
-}
-
 @keyframes spin {
   to {
     transform: rotate(360deg);

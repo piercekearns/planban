@@ -133,6 +133,69 @@ function extractFirstUrl(stdout) {
   return match?.[0] ?? null;
 }
 
+async function fetchJson(url, timeoutMs = 1200) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function statusFor(baseUrl, timeoutMs) {
+  return await fetchJson(`${baseUrl}/api/status`, timeoutMs);
+}
+
+async function boardsFor(baseUrl, timeoutMs) {
+  return await fetchJson(`${baseUrl}/api/boards`, timeoutMs);
+}
+
+function repoIdFromCwd(cwd) {
+  try {
+    const manifest = JSON.parse(readFileSync(resolve(cwd, ".planban/project.json"), "utf8"));
+    return typeof manifest.repoId === "string" && manifest.repoId.trim() ? manifest.repoId.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function boardUrl(baseUrl, status, cwd, timeoutMs) {
+  const targetRepoId = repoIdFromCwd(cwd);
+  const statusRepoId = status.currentRepoId ?? status.repoId;
+
+  if (targetRepoId && statusRepoId === targetRepoId) {
+    return `${baseUrl}/boards/${encodeURIComponent(targetRepoId)}`;
+  }
+
+  const boards = await boardsFor(baseUrl, timeoutMs).catch(() => null);
+  const boardList = Array.isArray(boards?.boards) ? boards.boards : null;
+
+  if (targetRepoId) {
+    const hasTargetBoard = boardList?.some((board) => board.repoId === targetRepoId) ?? statusRepoId === targetRepoId;
+    return hasTargetBoard ? `${baseUrl}/boards/${encodeURIComponent(targetRepoId)}` : `${baseUrl}/boards`;
+  }
+
+  if (boardList?.length === 1 && typeof boardList[0]?.repoId === "string") {
+    return `${baseUrl}/boards/${encodeURIComponent(boardList[0].repoId)}`;
+  }
+
+  if (boardList && boardList.length !== 1) return `${baseUrl}/boards`;
+
+  return statusRepoId ? `${baseUrl}/boards/${encodeURIComponent(statusRepoId)}` : `${baseUrl}/boards`;
+}
+
+async function runningPlanbanUrl({ cwd, port = 4317, tutorial = false, demo = false, statusTimeoutMs = 1200 }) {
+  if (demo) return null;
+  const resolvedCwd = resolve(cwd ?? processEnv().PWD ?? ".");
+  const baseUrl = `http://localhost:${port}`;
+  const status = await statusFor(baseUrl, statusTimeoutMs).catch(() => null);
+  if (!status) return null;
+  return tutorial ? `${baseUrl}/tutorial?mode=first-run` : await boardUrl(baseUrl, status, resolvedCwd, statusTimeoutMs);
+}
+
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms));
 }
@@ -151,6 +214,26 @@ async function setupBrowserRuntimeWithRetry(setupBrowserRuntime, globals) {
   throw lastError;
 }
 
+async function findMatchingFiles(root, matcher, maxDepth = 6) {
+  const matches = [];
+
+  async function visit(directory, depth) {
+    if (depth > maxDepth) return;
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    await Promise.all(entries.map(async (entry) => {
+      const candidate = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(candidate, depth + 1);
+        return;
+      }
+      if (entry.isFile() && matcher(candidate)) matches.push(candidate);
+    }));
+  }
+
+  await visit(root, 0);
+  return matches.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+}
+
 async function findBrowserClientPath() {
   const browserCacheRoot = join(codexHome(), "plugins/cache/openai-bundled/browser");
   const versions = await readdir(browserCacheRoot).catch(() => []);
@@ -159,10 +242,44 @@ async function findBrowserClientPath() {
     .filter((candidate) => existsSync(candidate))
     .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
   if (candidates[0]) return candidates[0];
-  throw new Error(`Could not find browser-client.mjs under ${browserCacheRoot}`);
+
+  const pluginCacheRoot = join(codexHome(), "plugins/cache");
+  const fallbackCandidates = await findMatchingFiles(
+    pluginCacheRoot,
+    (candidate) => candidate.endsWith("/scripts/browser-client.mjs"),
+  );
+  if (fallbackCandidates[0]) return fallbackCandidates[0];
+
+  throw new Error(`Could not find browser-client.mjs under ${browserCacheRoot} or ${pluginCacheRoot}`);
 }
 
-async function launchPlanban({ cwd, port, noVite = false, tutorial = false, demo = false, nodePath = null }) {
+async function launchPlanban({
+  cwd,
+  port = 4317,
+  noVite = false,
+  tutorial = false,
+  demo = false,
+  nodePath = null,
+  statusTimeoutMs = 1200,
+  launchTimeoutMs = 15000,
+}) {
+  const started = performance.now();
+  const existingUrl = await runningPlanbanUrl({ cwd, port, tutorial, demo, statusTimeoutMs });
+  if (existingUrl) {
+    return {
+      launch: {
+        ok: true,
+        reused: true,
+        exitCode: 0,
+        error: null,
+        stdout: `Planban already running at ${existingUrl}\n`,
+        stderr: "",
+        durationMs: performance.now() - started,
+      },
+      url: existingUrl,
+    };
+  }
+
   const runtimeRoot = resolveRuntimeRoot();
   const launchScriptCandidates = [
     resolve(runtimeRoot, "plugins/planban/scripts/launch-planban.mjs"),
@@ -172,7 +289,7 @@ async function launchPlanban({ cwd, port, noVite = false, tutorial = false, demo
   if (!launchScript) {
     throw new Error(`Could not find launch-planban.mjs under ${runtimeRoot}`);
   }
-  const args = [launchScript, "--cwd", resolve(cwd ?? processEnv().PWD ?? "."), "--port", String(port ?? 4317)];
+  const args = [launchScript, "--cwd", resolve(cwd ?? processEnv().PWD ?? "."), "--port", String(port)];
   if (noVite) args.push("--no-vite");
   if (demo) args.push("--demo");
   if (tutorial) args.push("--tutorial");
@@ -180,20 +297,70 @@ async function launchPlanban({ cwd, port, noVite = false, tutorial = false, demo
   const launch = await runTimed(nodeCommand(nodePath), args, {
     cwd: runtimeRoot,
     env: { PLANBAN_REPO_ROOT: runtimeRoot },
-    timeoutMs: 15000,
+    timeoutMs: launchTimeoutMs,
   });
   const url = launch.ok ? extractFirstUrl(launch.stdout) : null;
   if (!launch.ok || !url) {
+    const recoveredUrl = await runningPlanbanUrl({ cwd, port, tutorial, demo, statusTimeoutMs }).catch(() => null);
+    if (recoveredUrl) {
+      return {
+        launch: {
+          ...launch,
+          ok: true,
+          recovered: true,
+        },
+        url: recoveredUrl,
+      };
+    }
     throw new Error(launch.error ?? "Planban launcher did not return a URL");
   }
   return { launch, url };
 }
 
-export async function openPlanbanBoardInCodexBrowser(options = {}) {
+async function openPlanbanTab(browser, url, options = {}) {
+  const errors = [];
+  let tab = null;
+
+  if (options.reuseSelectedTab) {
+    try {
+      const selected = await browser.tabs.selected();
+      if (selected && await selected.url().catch(() => null) === url) tab = selected;
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  if (!tab) {
+    try {
+      tab = await browser.tabs.new();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  if (!tab) {
+    try {
+      tab = await browser.tabs.selected();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  if (!tab) {
+    const message = errors.map((error) => error?.message).filter(Boolean).join("; ");
+    throw new Error(message || "Could not open or select a Codex browser tab");
+  }
+
+  await tab.goto(url);
+  return tab;
+}
+
+export async function openUrlInCodexBrowser(options = {}) {
   const started = performance.now();
-  const launchStarted = performance.now();
-  const { launch, url } = await launchPlanban(options);
-  const launchMs = performance.now() - launchStarted;
+  const { url } = options;
+  if (typeof url !== "string" || !url.trim()) {
+    throw new Error("openUrlInCodexBrowser requires a URL");
+  }
 
   const browserStarted = performance.now();
   const browserClientPath = options.browserClientPath ?? await findBrowserClientPath();
@@ -205,8 +372,7 @@ export async function openPlanbanBoardInCodexBrowser(options = {}) {
   const visibility = await browser.capabilities.get("visibility").catch(() => null);
   if (visibility) await visibility.set(true);
 
-  const tab = await browser.tabs.new();
-  await tab.goto(url);
+  const tab = await openPlanbanTab(browser, url, options);
   await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: options.loadTimeoutMs ?? 10000 });
   const finalUrl = await tab.url();
   const title = await tab.title().catch(() => null);
@@ -224,8 +390,26 @@ export async function openPlanbanBoardInCodexBrowser(options = {}) {
     browserClientPath,
     timings: {
       totalMs: Math.round(performance.now() - started),
-      launchMs: Math.round(launchMs),
       browserMs: Math.round(browserMs),
+    },
+  };
+}
+
+export async function openPlanbanBoardInCodexBrowser(options = {}) {
+  const started = performance.now();
+  const launchStarted = performance.now();
+  const { launch, url } = await launchPlanban(options);
+  const launchMs = performance.now() - launchStarted;
+
+  const opened = await openUrlInCodexBrowser({ ...options, url });
+
+  return {
+    ...opened,
+    url,
+    timings: {
+      totalMs: Math.round(performance.now() - started),
+      launchMs: Math.round(launchMs),
+      browserMs: opened.timings.browserMs,
       launcherProcessMs: Math.round(launch.durationMs),
     },
   };
