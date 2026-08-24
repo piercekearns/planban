@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { createCard, initializeProject, readDoc, saveRoadmap, setCardStatus } from "../src/core/storage";
 import { PLANBAN_VERSION } from "../src/core/version";
-import { startServer } from "../src/server/server";
+import { isIgnoredPlanbanWatchPath, planbanWatchPaths, startServer } from "../src/server/server";
 
 const repoId = "planban-server-test";
 const otherRepoId = "planban-server-test-other";
@@ -78,6 +79,77 @@ test("serves the built app and exposes state APIs", async () => {
       state.roadmap.roadmapItems.map((item) => item.id),
       ["alpha"],
     );
+  } finally {
+    await server.close();
+  }
+});
+
+test("bounds filesystem watching when history is large and file descriptors are scarce", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const largeHistory = Array.from({ length: 500 }, (_entry, index) =>
+    join(planningRoot, "history", `v${String(index + 1).padStart(4, "0")}`, "roadmap.json")
+  );
+  for (const path of largeHistory) {
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, "{}\n", "utf8");
+  }
+
+  class LowFdWatcher extends EventEmitter {
+    async close() {}
+  }
+  let watchedPaths: string[] = [];
+  const server = await startServer({
+    cwd,
+    port: await freePort(),
+    useVite: false,
+    watcherFactory(paths, options) {
+      watchedPaths = paths;
+      const ignored = options.ignored;
+      assert.equal(typeof ignored, "function");
+      const admittedPaths = [join(planningRoot, "roadmap.json"), ...largeHistory]
+        .filter((path) => !(ignored as (candidate: string) => boolean)(path));
+      if (admittedPaths.length > 32) {
+        const error = new Error("too many open files") as NodeJS.ErrnoException;
+        error.code = "EMFILE";
+        throw error;
+      }
+      return new LowFdWatcher() as never;
+    },
+  });
+
+  try {
+    assert.deepEqual(watchedPaths, planbanWatchPaths());
+    assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, "history", "v0500", "roadmap.json")), true);
+    assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, "roadmap.json")), false);
+    assert.equal((await fetch(`${server.url}/api/status`)).status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test("handles asynchronous watcher errors without terminating the server", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  class FailingWatcher extends EventEmitter {
+    closed = false;
+    async close() { this.closed = true; }
+  }
+  const watcher = new FailingWatcher();
+  const server = await startServer({
+    cwd,
+    port: await freePort(),
+    useVite: false,
+    watcherFactory() {
+      return watcher as never;
+    },
+  });
+
+  try {
+    const error = new Error("too many open files") as NodeJS.ErrnoException;
+    error.code = "EMFILE";
+    watcher.emit("error", error);
+    await new Promise((resolveWait) => setImmediate(resolveWait));
+    assert.equal(watcher.closed, true);
+    assert.equal((await fetch(`${server.url}/api/status`)).status, 200);
   } finally {
     await server.close();
   }
