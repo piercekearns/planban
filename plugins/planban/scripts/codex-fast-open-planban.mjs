@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
@@ -10,7 +10,7 @@ const realProcess = globalThis.process;
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(scriptDir, "..");
 
-function resolveRuntimeRoot() {
+export function resolveRuntimeRoot() {
   const bundledRuntimeRoot = resolve(pluginRoot, "runtime");
   if (existsSync(resolve(bundledRuntimeRoot, "bin/planban.mjs"))) return bundledRuntimeRoot;
   if (existsSync(resolve(pluginRoot, "bin/planban.mjs"))) return pluginRoot;
@@ -29,12 +29,12 @@ function runtimeRootFromMcpConfig(root) {
     const config = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
     const rootValue = config?.mcpServers?.planban?.env?.PLANBAN_REPO_ROOT;
     if (typeof rootValue === "string" && rootValue.trim()) {
-      const runtimeRoot = resolve(rootValue);
+      const runtimeRoot = isAbsolute(rootValue) ? resolve(rootValue) : resolve(root, rootValue);
       if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
     }
     const cwdValue = config?.mcpServers?.planban?.cwd;
     if (typeof cwdValue === "string" && cwdValue.trim()) {
-      const runtimeRoot = resolve(cwdValue);
+      const runtimeRoot = isAbsolute(cwdValue) ? resolve(cwdValue) : resolve(root, cwdValue);
       if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
     }
   } catch {
@@ -201,17 +201,33 @@ function wait(ms) {
 }
 
 async function setupBrowserRuntimeWithRetry(setupBrowserRuntime, globals) {
+  if (globals.agent?.browsers) return globals.agent;
   let lastError = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      await setupBrowserRuntime({ globals });
-      return;
+      const browserAgent = await setupBrowserRuntime();
+      if (!browserAgent?.browsers) {
+        throw new Error("Browser runtime setup did not return an Agent with browser access");
+      }
+      globals.agent = browserAgent;
+      return browserAgent;
     } catch (error) {
       lastError = error;
       if (attempt === 0) await wait(150);
     }
   }
   throw lastError;
+}
+
+function launchFailureMessage(launch) {
+  const details = [
+    launch.error,
+    launch.stderr?.trim() ? `stderr: ${launch.stderr.trim()}` : null,
+    launch.stdout?.trim() ? `stdout: ${launch.stdout.trim()}` : null,
+  ].filter(Boolean);
+  return details.length > 0
+    ? `Planban launcher failed: ${details.join("; ")}`
+    : `Planban launcher exited with code ${launch.exitCode ?? "unknown"} without returning a URL`;
 }
 
 async function findMatchingFiles(root, matcher, maxDepth = 6) {
@@ -312,7 +328,7 @@ async function launchPlanban({
         url: recoveredUrl,
       };
     }
-    throw new Error(launch.error ?? "Planban launcher did not return a URL");
+    throw new Error(launchFailureMessage(launch));
   }
   return { launch, url };
 }
@@ -363,16 +379,23 @@ export async function openUrlInCodexBrowser(options = {}) {
   }
 
   const browserStarted = performance.now();
-  const browserClientPath = options.browserClientPath ?? await findBrowserClientPath();
-  const { setupBrowserRuntime } = await import(pathToFileURL(browserClientPath).href);
-  await setupBrowserRuntimeWithRetry(setupBrowserRuntime, globalThis);
-  const browser = options.browser ?? globalThis.browser ?? await globalThis.agent.browsers.get("iab");
-  globalThis.browser = browser;
+  let browserClientPath = options.browserClientPath ?? null;
+  let inAppBrowser = options.browser ?? globalThis.iab;
+  if (!inAppBrowser) {
+    let browserAgent = globalThis.agent?.browsers ? globalThis.agent : null;
+    if (!browserAgent) {
+      browserClientPath ??= await findBrowserClientPath();
+      const { setupBrowserRuntime } = await import(pathToFileURL(browserClientPath).href);
+      browserAgent = await setupBrowserRuntimeWithRetry(setupBrowserRuntime, globalThis);
+    }
+    inAppBrowser = await browserAgent.browsers.get("iab");
+    globalThis.iab = inAppBrowser;
+  }
 
-  const visibility = await browser.capabilities.get("visibility").catch(() => null);
+  const visibility = await inAppBrowser.capabilities.get("visibility").catch(() => null);
   if (visibility) await visibility.set(true);
 
-  const tab = await openPlanbanTab(browser, url, options);
+  const tab = await openPlanbanTab(inAppBrowser, url, options);
   await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: options.loadTimeoutMs ?? 10000 });
   const finalUrl = await tab.url();
   const title = await tab.title().catch(() => null);

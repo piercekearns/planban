@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -14,16 +14,35 @@ const requiredRuntimePaths = [
   "node_modules/iconv-lite/encodings/index.js",
 ];
 
-function resolveRuntimeRoot() {
+export function resolveRuntimeRoot() {
   const bundledRuntimeRoot = resolve(pluginRoot, "runtime");
   if (existsSync(resolve(bundledRuntimeRoot, "bin/planban.mjs"))) return bundledRuntimeRoot;
   if (existsSync(resolve(pluginRoot, "bin/planban.mjs"))) return pluginRoot;
+  const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
+  if (mcpRuntimeRoot) return mcpRuntimeRoot;
   if (process.env.PLANBAN_REPO_ROOT) return resolve(process.env.PLANBAN_REPO_ROOT);
   const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
   if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
   const parentRuntimeRoot = resolve(pluginRoot, "../..");
   if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
   return parentRuntimeRoot;
+}
+
+function runtimeRootFromMcpConfig(root) {
+  try {
+    const config = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
+    for (const value of [
+      config?.mcpServers?.planban?.env?.PLANBAN_REPO_ROOT,
+      config?.mcpServers?.planban?.cwd,
+    ]) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      const runtimeRoot = isAbsolute(value) ? resolve(value) : resolve(root, value);
+      if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
+    }
+  } catch {
+    // Not an installed plugin cache, or not enough metadata to resolve a runtime.
+  }
+  return null;
 }
 
 function codexHome() {
@@ -157,18 +176,62 @@ async function webSurfaceHealthy(url) {
   }
 }
 
-async function waitForStatus(baseUrl, timeoutMs = 15000) {
+function launchLogPath(port) {
+  if (process.env.PLANBAN_LAUNCH_LOG_FILE) return resolve(process.env.PLANBAN_LAUNCH_LOG_FILE);
+  const planbanHome = process.env.PLANBAN_HOME ? resolve(process.env.PLANBAN_HOME) : join(homedir(), ".planban");
+  return join(planbanHome, "logs", `launch-${port}.log`);
+}
+
+function launchLogTail(path) {
+  try {
+    const contents = readFileSync(path, "utf8").trim();
+    return contents ? contents.slice(-4000) : "";
+  } catch {
+    return "";
+  }
+}
+
+async function waitForDetachedServer({ baseUrl, child, cwd, logPath, timeoutMs = 15000 }) {
   const started = Date.now();
   let lastError = null;
+  let healthyChecks = 0;
+  let spawnError = null;
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+
   while (Date.now() - started < timeoutMs) {
-    try {
-      return await statusFor(baseUrl);
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    if (spawnError || child.exitCode !== null || child.signalCode !== null) {
+      const exitSummary = spawnError?.message ?? (
+        child.signalCode ? `terminated by ${child.signalCode}` : `exited with code ${child.exitCode}`
+      );
+      const log = launchLogTail(logPath);
+      throw new Error(`Detached Planban server ${exitSummary}.${log ? ` Server log: ${log}` : ` See ${logPath}.`}`);
     }
+
+    try {
+      const status = await statusFor(baseUrl);
+      const url = await boardUrl(baseUrl, status, cwd);
+      if (await webSurfaceHealthy(url)) {
+        healthyChecks += 1;
+        if (healthyChecks >= 2) return { status, url };
+      } else {
+        healthyChecks = 0;
+        lastError = new Error(`Planban API is responding, but ${url} is not serving the web app`);
+      }
+    } catch (error) {
+      healthyChecks = 0;
+      lastError = error;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
-  throw lastError ?? new Error("Timed out waiting for Planban");
+
+  const log = launchLogTail(logPath);
+  const reason = lastError instanceof Error ? lastError.message : "server did not become healthy";
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for detached Planban server at ${baseUrl}: ${reason}.` +
+    (log ? ` Server log: ${log}` : ` See ${logPath}.`),
+  );
 }
 
 async function isPortOpen(port, timeoutMs = 750) {
@@ -343,25 +406,52 @@ async function main() {
   const args = [cliPath, "serve", "--cwd", cwd, "--port", String(options.port)];
   if (shouldUseBuiltBundle) args.push("--no-vite");
 
-  const child = spawn(process.execPath, args, {
-    cwd: runtimeRoot,
-    detached: true,
-    stdio: "ignore",
-  });
+  const logPath = launchLogPath(options.port);
+  mkdirSync(dirname(logPath), { recursive: true });
+  const logFd = openSync(logPath, "w");
+  let child;
+  try {
+    child = spawn(process.execPath, args, {
+      cwd: runtimeRoot,
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+  } finally {
+    closeSync(logFd);
+  }
+
+  let ready;
+  try {
+    ready = await waitForDetachedServer({ baseUrl, child, cwd, logPath });
+  } catch (error) {
+    if (child.pid && child.exitCode === null) child.kill("SIGTERM");
+    throw error;
+  }
+
   if (process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
     mkdirSync(dirname(process.env.PLANBAN_RESTART_PID_FILE), { recursive: true });
     writeFileSync(process.env.PLANBAN_RESTART_PID_FILE, String(child.pid), "utf8");
   }
   child.unref();
 
-  const status = await waitForStatus(baseUrl);
-  const url = options.tutorial ? tutorialUrl(baseUrl) : await boardUrl(baseUrl, status, cwd);
+  const url = options.tutorial ? tutorialUrl(baseUrl) : ready.url;
   if (options.open) openUrl(url);
   process.stdout.write(`Planban started at ${url}\n`);
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-});
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
+}

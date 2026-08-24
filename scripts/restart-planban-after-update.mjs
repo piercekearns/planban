@@ -118,7 +118,10 @@ async function main() {
     detached: true,
     stdio: ["ignore", logFd, logFd],
   });
-  if (process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
+  // The launcher publishes the verified server PID after its health checks. Do
+  // not briefly publish the launcher's own PID, or cleanup/monitoring can race
+  // the handoff and lose track of the real server process.
+  if (!useLauncher && process.env.PLANBAN_RESTART_PID_FILE && child.pid) {
     await mkdir(dirname(process.env.PLANBAN_RESTART_PID_FILE), { recursive: true });
     await writeFile(process.env.PLANBAN_RESTART_PID_FILE, String(child.pid), "utf8");
   }

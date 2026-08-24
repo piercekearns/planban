@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -40,9 +40,11 @@ async function freePort() {
 }
 
 async function run(command, args, options = {}) {
+  const env = { ...process.env, ...(options.env ?? {}) };
+  for (const name of options.unsetEnv ?? []) delete env[name];
   return await execFileAsync(command, args, {
     cwd: options.cwd,
-    env: { ...process.env, ...(options.env ?? {}) },
+    env,
     maxBuffer: 1024 * 1024,
     timeout: options.timeout ?? 20_000,
   });
@@ -134,20 +136,19 @@ async function main() {
   let staleServer = null;
 
   try {
-    await mkdir(dirname(marketplaceRoot), { recursive: true });
     await mkdir(projectRoot, { recursive: true });
-    await symlink(options.runtimeRoot, marketplaceRoot, "dir");
     await mkdir(cacheRoot, { recursive: true });
+    await assert.rejects(access(marketplaceRoot), { code: "ENOENT" });
     await cp(join(options.runtimeRoot, "plugins/planban/scripts"), join(cacheRoot, "scripts"), { recursive: true });
     await writeFile(
       join(cacheRoot, ".mcp.json"),
       JSON.stringify({
         mcpServers: {
           planban: {
-            cwd: "__PLANBAN_REPO_ROOT__",
+            cwd: options.runtimeRoot,
             command: "node",
             args: ["--import", "tsx/esm", "./plugins/planban/mcp/server.mjs"],
-            env: { PLANBAN_REPO_ROOT: "__PLANBAN_REPO_ROOT__" },
+            env: { PLANBAN_REPO_ROOT: options.runtimeRoot },
           },
         },
       }, null, 2) + "\n",
@@ -182,6 +183,7 @@ async function main() {
         PLANBAN_HOME: planbanHome,
         PLANBAN_RESTART_PID_FILE: pidFile,
       },
+      unsetEnv: ["PLANBAN_REPO_ROOT"],
     });
 
     assert.match(launch.stdout, new RegExp(`http://localhost:${port}/boards/cache-launcher-verify`, "u"));
@@ -210,6 +212,7 @@ async function main() {
         PLANBAN_HOME: planbanHome,
         PLANBAN_RESTART_PID_FILE: staleRepairPidFile,
       },
+      unsetEnv: ["PLANBAN_REPO_ROOT"],
     });
 
     assert.match(staleRepairLaunch.stdout, new RegExp(`http://localhost:${stalePort}/boards/cache-launcher-verify`, "u"));
@@ -226,6 +229,7 @@ async function main() {
       runtimeRoot: options.runtimeRoot,
       cacheRoot,
       marketplaceRoot,
+      marketplaceSymlinkUsed: false,
       url: `http://localhost:${port}/boards/cache-launcher-verify`,
       staleRepairUrl: `http://localhost:${stalePort}/boards/cache-launcher-verify`,
     }, null, 2) + "\n");

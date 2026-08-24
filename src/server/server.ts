@@ -4,10 +4,10 @@ import { randomUUID } from "node:crypto";
 import { closeSync, createReadStream, existsSync, mkdirSync, openSync } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import chokidar from "chokidar";
+import chokidar, { type ChokidarOptions, type FSWatcher } from "chokidar";
 import type { ViteDevServer } from "vite";
 import { defaultPlanbanRoot, PlanbanPathError } from "../core/paths";
 import { ensureDemoBoard } from "../core/demo";
@@ -76,6 +76,20 @@ export interface ServeOptions {
   cwd: string;
   port: number;
   useVite: boolean;
+  watcherFactory?: (paths: string[], options: ChokidarOptions) => FSWatcher;
+}
+
+export function isIgnoredPlanbanWatchPath(path: string): boolean {
+  const root = defaultPlanbanRoot();
+  const relativePath = relative(root, resolve(path));
+  if (!relativePath || relativePath.startsWith(`..${sep}`) || relativePath === "..") return false;
+  const segments = relativePath.split(sep);
+  return segments[0] === "repos" && segments[2] === "history";
+}
+
+export function planbanWatchPaths(): string[] {
+  const root = defaultPlanbanRoot();
+  return [join(root, "index.json"), join(root, "repos")];
 }
 
 function isStatus(value: string): value is PlanbanStatus {
@@ -354,7 +368,7 @@ export async function startServer(options: ServeOptions) {
   const app = express();
   const server = createHttpServer(app);
   let vite: ViteDevServer | null = null;
-  let watcher: ReturnType<typeof chokidar.watch> | null = null;
+  let watcher: FSWatcher | null = null;
   const clients = new Set<express.Response>();
   const currentBoard = await registerBoardFromCwd(cwd).catch(() => null);
 
@@ -1283,8 +1297,23 @@ export async function startServer(options: ServeOptions) {
   });
 
   try {
-    watcher = chokidar.watch(defaultPlanbanRoot(), { ignoreInitial: true, persistent: false });
-    watcher.on("all", (_event: string, path: string) => sendEvent("state", { path }));
+    const watcherFactory = options.watcherFactory ?? chokidar.watch;
+    watcher = watcherFactory(planbanWatchPaths(), {
+      ignored: isIgnoredPlanbanWatchPath,
+      ignoreInitial: true,
+      persistent: false,
+    });
+    const activeWatcher = watcher;
+    activeWatcher.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Planban file watcher disabled after an error: ${message}\n`);
+      if (watcher === activeWatcher) watcher = null;
+      void activeWatcher.close().catch((closeError) => {
+        const closeMessage = closeError instanceof Error ? closeError.message : String(closeError);
+        process.stderr.write(`Planban file watcher cleanup failed: ${closeMessage}\n`);
+      });
+    });
+    activeWatcher.on("all", (_event: string, path: string) => sendEvent("state", { path }));
   } catch {
     // Uninitialized projects can still be served so the UI can show onboarding.
   }
