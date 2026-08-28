@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
+import { openUrlInCodexBrowser } from "./codex-browser-adapter.mjs";
+
+export { openUrlInCodexBrowser } from "./codex-browser-adapter.mjs";
 
 const realProcess = globalThis.process;
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -17,8 +18,6 @@ export function resolveRuntimeRoot() {
   const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
   if (mcpRuntimeRoot) return mcpRuntimeRoot;
   if (realProcess?.env?.PLANBAN_REPO_ROOT) return resolve(realProcess.env.PLANBAN_REPO_ROOT);
-  const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
-  if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
   const parentRuntimeRoot = resolve(pluginRoot, "../..");
   if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
   return parentRuntimeRoot;
@@ -40,18 +39,6 @@ function runtimeRootFromMcpConfig(root) {
   } catch {
     // Not an installed plugin cache, or not enough metadata to resolve a runtime.
   }
-  return null;
-}
-
-function codexHome() {
-  return processEnv().CODEX_HOME
-    ? resolve(processEnv().CODEX_HOME)
-    : join(homedir(), ".codex");
-}
-
-function runtimeRootFromCodexMarketplace() {
-  const runtimeRoot = join(codexHome(), ".tmp/marketplaces/planban");
-  if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
   return null;
 }
 
@@ -153,6 +140,20 @@ async function boardsFor(baseUrl, timeoutMs) {
   return await fetchJson(`${baseUrl}/api/boards`, timeoutMs);
 }
 
+async function verifiedWebSurface(url, timeoutMs = 1200) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return false;
+    return (await response.text()).includes('<div id="root"></div>');
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function repoIdFromCwd(cwd) {
   try {
     const manifest = JSON.parse(readFileSync(resolve(cwd, ".planban/project.json"), "utf8"));
@@ -196,29 +197,6 @@ async function runningPlanbanUrl({ cwd, port = 4317, tutorial = false, demo = fa
   return tutorial ? `${baseUrl}/tutorial?mode=first-run` : await boardUrl(baseUrl, status, resolvedCwd, statusTimeoutMs);
 }
 
-function wait(ms) {
-  return new Promise((resolveWait) => setTimeout(resolveWait, ms));
-}
-
-async function setupBrowserRuntimeWithRetry(setupBrowserRuntime, globals) {
-  if (globals.agent?.browsers) return globals.agent;
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const browserAgent = await setupBrowserRuntime();
-      if (!browserAgent?.browsers) {
-        throw new Error("Browser runtime setup did not return an Agent with browser access");
-      }
-      globals.agent = browserAgent;
-      return browserAgent;
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) await wait(150);
-    }
-  }
-  throw lastError;
-}
-
 function launchFailureMessage(launch) {
   const details = [
     launch.error,
@@ -230,46 +208,7 @@ function launchFailureMessage(launch) {
     : `Planban launcher exited with code ${launch.exitCode ?? "unknown"} without returning a URL`;
 }
 
-async function findMatchingFiles(root, matcher, maxDepth = 6) {
-  const matches = [];
-
-  async function visit(directory, depth) {
-    if (depth > maxDepth) return;
-    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-    await Promise.all(entries.map(async (entry) => {
-      const candidate = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(candidate, depth + 1);
-        return;
-      }
-      if (entry.isFile() && matcher(candidate)) matches.push(candidate);
-    }));
-  }
-
-  await visit(root, 0);
-  return matches.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
-}
-
-async function findBrowserClientPath() {
-  const browserCacheRoot = join(codexHome(), "plugins/cache/openai-bundled/browser");
-  const versions = await readdir(browserCacheRoot).catch(() => []);
-  const candidates = versions
-    .map((version) => join(browserCacheRoot, version, "scripts/browser-client.mjs"))
-    .filter((candidate) => existsSync(candidate))
-    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
-  if (candidates[0]) return candidates[0];
-
-  const pluginCacheRoot = join(codexHome(), "plugins/cache");
-  const fallbackCandidates = await findMatchingFiles(
-    pluginCacheRoot,
-    (candidate) => candidate.endsWith("/scripts/browser-client.mjs"),
-  );
-  if (fallbackCandidates[0]) return fallbackCandidates[0];
-
-  throw new Error(`Could not find browser-client.mjs under ${browserCacheRoot} or ${pluginCacheRoot}`);
-}
-
-async function launchPlanban({
+export async function resolvePlanbanBoard({
   cwd,
   port = 4317,
   noVite = false,
@@ -281,10 +220,13 @@ async function launchPlanban({
 }) {
   const started = performance.now();
   const existingUrl = await runningPlanbanUrl({ cwd, port, tutorial, demo, statusTimeoutMs });
-  if (existingUrl) {
+  if (existingUrl && await verifiedWebSurface(existingUrl, statusTimeoutMs)) {
     return {
       launch: {
         ok: true,
+        boundary: "service-url",
+        status: "ready",
+        urlVerified: true,
         reused: true,
         exitCode: 0,
         error: null,
@@ -318,11 +260,14 @@ async function launchPlanban({
   const url = launch.ok ? extractFirstUrl(launch.stdout) : null;
   if (!launch.ok || !url) {
     const recoveredUrl = await runningPlanbanUrl({ cwd, port, tutorial, demo, statusTimeoutMs }).catch(() => null);
-    if (recoveredUrl) {
+    if (recoveredUrl && await verifiedWebSurface(recoveredUrl, statusTimeoutMs)) {
       return {
         launch: {
           ...launch,
           ok: true,
+          boundary: "service-url",
+          status: "ready",
+          urlVerified: true,
           recovered: true,
         },
         url: recoveredUrl,
@@ -330,109 +275,41 @@ async function launchPlanban({
     }
     throw new Error(launchFailureMessage(launch));
   }
-  return { launch, url };
-}
-
-async function openPlanbanTab(browser, url, options = {}) {
-  const errors = [];
-  let tab = null;
-
-  if (options.reuseSelectedTab) {
-    try {
-      const selected = await browser.tabs.selected();
-      if (selected && await selected.url().catch(() => null) === url) tab = selected;
-    } catch (error) {
-      errors.push(error);
-    }
+  if (!await verifiedWebSurface(url, statusTimeoutMs)) {
+    throw new Error(`Planban resolved ${url}, but the board web surface did not pass health verification`);
   }
-
-  if (!tab) {
-    try {
-      tab = await browser.tabs.new();
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  if (!tab) {
-    try {
-      tab = await browser.tabs.selected();
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  if (!tab) {
-    const message = errors.map((error) => error?.message).filter(Boolean).join("; ");
-    throw new Error(message || "Could not open or select a Codex browser tab");
-  }
-
-  await tab.goto(url);
-  return tab;
-}
-
-export async function openUrlInCodexBrowser(options = {}) {
-  const started = performance.now();
-  const { url } = options;
-  if (typeof url !== "string" || !url.trim()) {
-    throw new Error("openUrlInCodexBrowser requires a URL");
-  }
-
-  const browserStarted = performance.now();
-  let browserClientPath = options.browserClientPath ?? null;
-  let inAppBrowser = options.browser ?? globalThis.iab;
-  if (!inAppBrowser) {
-    let browserAgent = globalThis.agent?.browsers ? globalThis.agent : null;
-    if (!browserAgent) {
-      browserClientPath ??= await findBrowserClientPath();
-      const { setupBrowserRuntime } = await import(pathToFileURL(browserClientPath).href);
-      browserAgent = await setupBrowserRuntimeWithRetry(setupBrowserRuntime, globalThis);
-    }
-    inAppBrowser = await browserAgent.browsers.get("iab");
-    globalThis.iab = inAppBrowser;
-  }
-
-  const visibility = await inAppBrowser.capabilities.get("visibility").catch(() => null);
-  if (visibility) await visibility.set(true);
-
-  const tab = await openPlanbanTab(inAppBrowser, url, options);
-  await tab.playwright.waitForLoadState({ state: "domcontentloaded", timeoutMs: options.loadTimeoutMs ?? 10000 });
-  const finalUrl = await tab.url();
-  const title = await tab.title().catch(() => null);
-  const browserMs = performance.now() - browserStarted;
-
-  if (finalUrl !== url) {
-    throw new Error(`Opened ${finalUrl}, expected ${url}`);
-  }
-
   return {
-    ok: true,
-    url,
-    finalUrl,
-    title,
-    browserClientPath,
-    timings: {
-      totalMs: Math.round(performance.now() - started),
-      browserMs: Math.round(browserMs),
+    launch: {
+      ...launch,
+      boundary: "service-url",
+      status: "ready",
+      urlVerified: true,
     },
+    url,
   };
 }
 
 export async function openPlanbanBoardInCodexBrowser(options = {}) {
   const started = performance.now();
   const launchStarted = performance.now();
-  const { launch, url } = await launchPlanban(options);
+  const resolveBoard = options.resolveBoard ?? resolvePlanbanBoard;
+  const presentUrl = options.presentUrl ?? openUrlInCodexBrowser;
+  const { launch, url } = await resolveBoard(options);
   const launchMs = performance.now() - launchStarted;
 
-  const opened = await openUrlInCodexBrowser({ ...options, url });
+  const opened = await presentUrl({ ...options, url, urlVerified: true, serviceReady: true });
 
   return {
     ...opened,
+    ok: true,
     url,
+    urlVerified: true,
+    serviceReady: true,
+    launch,
     timings: {
       totalMs: Math.round(performance.now() - started),
       launchMs: Math.round(launchMs),
-      browserMs: opened.timings.browserMs,
+      browserMs: opened.timings?.browserMs ?? null,
       launcherProcessMs: Math.round(launch.durationMs),
     },
   };

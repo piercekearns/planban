@@ -186,6 +186,44 @@ async function fetchJson(url) {
   return await response.json();
 }
 
+async function verifyWebSurface(url, timeoutMs = 1500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.text();
+    if (!body.includes('<div id="root"></div>')) throw new Error("response is not the Planban web surface");
+  } catch (error) {
+    throw new Error(`Planban service resolved ${url}, but URL verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function verifiedLaunchResult({ cwd, port, started, url }) {
+  return {
+    ok: true,
+    cwd,
+    port,
+    started,
+    url,
+    urlVerified: true,
+    serviceReady: true,
+    capabilities: {
+      canonicalUrl: true,
+      browserPresentation: "client-optional",
+    },
+    diagnostics: [
+      {
+        boundary: "service-url",
+        status: "ready",
+        code: started ? "service_started" : "service_reused",
+      },
+    ],
+  };
+}
+
 async function statusFor(baseUrl) {
   return await fetchJson(`${baseUrl}/api/status`);
 }
@@ -255,12 +293,9 @@ async function launchBoard(args) {
   const baseUrl = `http://localhost:${port}`;
   const existingStatus = await statusFor(baseUrl).catch(() => null);
   if (existingStatus) {
-    return {
-      cwd,
-      port,
-      started: false,
-      url: await boardUrl(baseUrl, existingStatus, cwd),
-    };
+    const url = await boardUrl(baseUrl, existingStatus, cwd);
+    await verifyWebSurface(url);
+    return verifiedLaunchResult({ cwd, port, started: false, url });
   }
 
   if (await isPortOpen(port)) {
@@ -282,12 +317,9 @@ async function launchBoard(args) {
   child.unref();
 
   const status = await waitForStatus(baseUrl);
-  return {
-    cwd,
-    port,
-    started: true,
-    url: await boardUrl(baseUrl, status, cwd),
-  };
+  const url = await boardUrl(baseUrl, status, cwd);
+  await verifyWebSurface(url);
+  return verifiedLaunchResult({ cwd, port, started: true, url });
 }
 
 const schema = {

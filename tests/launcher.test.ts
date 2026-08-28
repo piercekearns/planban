@@ -4,21 +4,29 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { openUrlInCodexBrowser } from "../plugins/planban/scripts/codex-fast-open-planban.mjs";
+import {
+  openPlanbanBoardInCodexBrowser,
+  openUrlInCodexBrowser,
+} from "../plugins/planban/scripts/codex-fast-open-planban.mjs";
 
 const repoRoot = resolve(new URL("..", import.meta.url).pathname);
 
-test("uses the Agent returned by Browser setup and safely reuses a distinct in-app binding", async () => {
-  const root = await mkdtemp(join(tmpdir(), "planban-browser-runtime-"));
-  const browserClientPath = join(root, "browser-client.mjs");
-  const previous = {
-    agent: globalThis.agent,
-    browser: globalThis.browser,
-    iab: globalThis.iab,
+function verifiedLaunch(url = "http://localhost:4317/boards/alpha") {
+  return {
+    launch: {
+      ok: true,
+      status: "ready",
+      urlVerified: true,
+      durationMs: 2,
+    },
+    url,
   };
+}
+
+function workingBrowser() {
   let currentUrl = "about:blank";
   let newTabCalls = 0;
-  const inAppBrowser = {
+  const browser = {
     capabilities: { get: async () => null },
     tabs: {
       new: async () => {
@@ -33,49 +41,81 @@ test("uses the Agent returned by Browser setup and safely reuses a distinct in-a
       selected: async () => null,
     },
   };
+  return { browser, newTabCalls: () => newTabCalls };
+}
 
-  try {
-    await writeFile(browserClientPath, `
-      export async function setupBrowserRuntime() {
-        globalThis.__planbanSetupCalls = (globalThis.__planbanSetupCalls ?? 0) + 1;
-        return {
-          browsers: {
-            async get(selector) {
-              globalThis.__planbanGetCalls = (globalThis.__planbanGetCalls ?? 0) + 1;
-              if (selector !== "iab") throw new Error("unexpected selector " + selector);
-              return globalThis.__planbanTestBrowser;
-            }
-          }
-        };
-      }
-    `, "utf8");
-    globalThis.agent = undefined;
-    globalThis.iab = undefined;
-    globalThis.browser = { externalBrowserSentinel: true };
-    globalThis.__planbanSetupCalls = 0;
-    globalThis.__planbanGetCalls = 0;
-    globalThis.__planbanTestBrowser = inAppBrowser;
+test("keeps successful URL resolution authoritative when the browser is unavailable", async () => {
+  const result = await openPlanbanBoardInCodexBrowser({
+    resolveBoard: async () => verifiedLaunch(),
+    browserAvailable: false,
+  });
 
-    const first = await openUrlInCodexBrowser({ url: "http://localhost:4317/boards/alpha", browserClientPath });
-    globalThis.agent = undefined;
-    const second = await openUrlInCodexBrowser({ url: "http://localhost:4317/boards/beta", browserClientPath });
+  assert.equal(result.ok, true);
+  assert.equal(result.serviceReady, true);
+  assert.equal(result.urlVerified, true);
+  assert.equal(result.url, "http://localhost:4317/boards/alpha");
+  assert.equal(result.browserOpened, false);
+  assert.equal(result.presentation.status, "unavailable");
+  assert.equal(result.diagnostics[0]?.boundary, "browser-presentation");
+});
 
-    assert.equal(first.finalUrl, "http://localhost:4317/boards/alpha");
-    assert.equal(second.finalUrl, "http://localhost:4317/boards/beta");
-    assert.equal(globalThis.__planbanSetupCalls, 1);
-    assert.equal(globalThis.__planbanGetCalls, 1);
-    assert.equal(globalThis.iab, inAppBrowser);
-    assert.deepEqual(globalThis.browser, { externalBrowserSentinel: true });
-    assert.equal(newTabCalls, 2);
-  } finally {
-    globalThis.agent = previous.agent;
-    globalThis.browser = previous.browser;
-    globalThis.iab = previous.iab;
-    delete globalThis.__planbanSetupCalls;
-    delete globalThis.__planbanGetCalls;
-    delete globalThis.__planbanTestBrowser;
-    await rm(root, { recursive: true, force: true });
-  }
+test("returns the verified URL when Browser runtime setup fails", async () => {
+  const result = await openUrlInCodexBrowser({
+    url: "http://localhost:4317/boards/alpha",
+    setupBrowserRuntime: async () => { throw new Error("runtime setup failed"); },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.url, "http://localhost:4317/boards/alpha");
+  assert.equal(result.browserOpened, false);
+  assert.equal(result.presentation.status, "unavailable");
+  assert.equal(result.presentation.stage, "setup");
+  assert.match(result.diagnostics[0]?.message ?? "", /runtime setup failed/u);
+});
+
+test("returns the verified URL when tab navigation fails", async () => {
+  const browser = {
+    capabilities: { get: async () => null },
+    tabs: {
+      new: async () => ({ goto: async () => { throw new Error("navigation failed"); } }),
+      selected: async () => null,
+    },
+  };
+  const result = await openUrlInCodexBrowser({ url: "http://localhost:4317/boards/alpha", browser });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.url, "http://localhost:4317/boards/alpha");
+  assert.equal(result.browserOpened, false);
+  assert.equal(result.presentation.status, "failed");
+  assert.equal(result.presentation.stage, "navigation");
+  assert.match(result.diagnostics[0]?.message ?? "", /navigation failed/u);
+});
+
+test("automatically opens a verified URL when the browser capability is available", async () => {
+  const available = workingBrowser();
+  let setupCalls = 0;
+  const result = await openUrlInCodexBrowser({
+    url: "http://localhost:4317/boards/alpha",
+    setupBrowserRuntime: async () => {
+      setupCalls += 1;
+      return {
+        browsers: {
+          get: async (selector: string) => {
+            assert.equal(selector, "iab");
+            return available.browser;
+          },
+        },
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.browserOpened, true);
+  assert.equal(result.finalUrl, "http://localhost:4317/boards/alpha");
+  assert.equal(result.presentation.status, "opened");
+  assert.equal(result.diagnostics.length, 0);
+  assert.equal(setupCalls, 1);
+  assert.equal(available.newTabCalls(), 1);
 });
 
 test("resolves an installed-cache runtime from adjacent MCP metadata without env or marketplace fallback", async () => {
@@ -101,6 +141,7 @@ test("resolves an installed-cache runtime from adjacent MCP metadata without env
       },
     }), "utf8");
     await cp(join(repoRoot, "plugins/planban/scripts/codex-fast-open-planban.mjs"), join(scriptsRoot, "codex-fast-open-planban.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts/codex-browser-adapter.mjs"), join(scriptsRoot, "codex-browser-adapter.mjs"));
     await cp(join(repoRoot, "plugins/planban/scripts/launch-planban.mjs"), join(scriptsRoot, "launch-planban.mjs"));
 
     delete process.env.PLANBAN_REPO_ROOT;

@@ -14,9 +14,10 @@ Critical open path:
 1. No pre-open explanation.
 2. Do not read linked docs, inspect board state, load Browser docs, or load the full
    Planban protocol before the board is visible.
-3. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover
-   the board URL.
-4. Open the returned URL with the installed browser-only opener in one Node REPL `js`
+3. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover and
+   verify the board URL. A result with `serviceReady: true` and `urlVerified: true` is
+   the authoritative successful launch; preserve its URL before browser work.
+4. Open the returned URL with the installed browser-only adapter in one Node REPL `js`
    call, unless the Codex browser bridge itself is unavailable:
 
 ```js
@@ -50,10 +51,18 @@ Critical open path:
   }
   if (!script) throw new Error(`Could not find codex-fast-open-planban.mjs under ${cacheRoot}`);
   const mod = await import(url.pathToFileURL(script).href);
-  const result = await mod.openUrlInCodexBrowser({ url: "URL_FROM_PLANBAN_LAUNCH_BOARD" });
+  const result = await mod.openUrlInCodexBrowser({
+    url: "VERIFIED_URL_FROM_PLANBAN_LAUNCH_BOARD",
+    urlVerified: true,
+    serviceReady: true
+  });
   nodeRepl.write(JSON.stringify(result));
 }
 ```
+
+The adapter returns `browserOpened: false`, the preserved verified `url`, and
+structured browser diagnostics instead of throwing for browser degradation. Browser
+presentation is optional and must not redefine the successful launch result.
 
 If `node_repl` `js` is not callable, make at most one tool-discovery call for
 `node_repl js execute JavaScript`. Do not call `js_reset`, `js_add_node_module_dir`,
@@ -64,8 +73,8 @@ If the `node_repl` `js` call fails at the tool/runtime layer before JavaScript r
 failure, or MCP argument validation failure), treat the Codex browser bridge as
 unavailable for this turn. Do not try local Node, Browser documentation, Computer Use,
 Codex app UI automation, or repeated opener variations. Return the verified Planban
-URL immediately and state that the board is running but the Codex browser bridge failed
-before the opener code could execute.
+URL immediately and state that the board is running but automatic in-app opening is
+unavailable.
 
 Fallbacks:
 
@@ -77,9 +86,11 @@ Fallbacks:
 3. Otherwise run `node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo`
    to resolve/start the board, then attempt the single browser opener above if
    `node_repl` is available.
-4. If browser automation runs and fails after JavaScript executes, return the clickable URL.
+4. If browser automation runs and reports `browserOpened: false`, return the clickable URL.
 
-Keep the open response short.
+Keep the open response short. On any browser degradation, always return:
+`Planban is running: [Open the verified board](URL)` and at most one short reason from
+the structured browser diagnostics.
 
 ## Broader Planban Work
 

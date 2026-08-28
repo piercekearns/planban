@@ -5,14 +5,15 @@ description: Fast Planban opener. Use when the user invokes pb, /pb, asks to qui
 
 # PB
 
-Open the best matching Planban board in the Codex in-app browser immediately.
+Resolve the best matching Planban board immediately and open it in the Codex in-app browser when that optional presentation capability is available.
 
 Critical path for a plain `/pb` request:
 
 1. Do not explain, inspect docs, read card state, or load Browser docs first.
-2. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover the board URL.
-3. Use the browser-only opener below to make that URL visible in the Codex in-app browser.
-4. Reply only after the in-app browser URL is verified, unless the Codex browser bridge itself is unavailable.
+2. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover and verify the board URL.
+3. Treat `serviceReady: true` and `urlVerified: true` as a successful launch. Preserve its URL before browser work.
+4. Use the browser-only opener below once to make that URL visible in the Codex in-app browser.
+5. If browser setup, visibility, tab creation, navigation, or verification is unavailable or fails, stop browser work and return the preserved clickable URL. The board remains successfully launched.
 
 Browser opener, preferred in Codex Desktop after `planban_launch_board` returns a URL:
 
@@ -47,10 +48,18 @@ Browser opener, preferred in Codex Desktop after `planban_launch_board` returns 
   }
   if (!script) throw new Error(`Could not find codex-fast-open-planban.mjs under ${cacheRoot}`);
   const mod = await import(url.pathToFileURL(script).href);
-  const result = await mod.openUrlInCodexBrowser({ url: "URL_FROM_PLANBAN_LAUNCH_BOARD" });
+  const result = await mod.openUrlInCodexBrowser({
+    url: "VERIFIED_URL_FROM_PLANBAN_LAUNCH_BOARD",
+    urlVerified: true,
+    serviceReady: true
+  });
   nodeRepl.write(JSON.stringify(result));
 }
 ```
+
+The opener is an optional presentation adapter. It returns `browserOpened: false`, the
+verified `url`, and a structured `diagnostics` entry when browser presentation
+degrades; do not turn that into a Planban launch failure.
 
 Use the current workspace path for `cwd`.
 
@@ -63,15 +72,15 @@ If the `node_repl` `js` call fails at the tool/runtime layer before JavaScript r
 failure, or MCP argument validation failure), treat the Codex browser bridge as
 unavailable for this turn. Do not try local Node, Browser documentation, Computer Use,
 Codex app UI automation, or repeated opener variations. Return the verified Planban
-URL immediately and state that the board is running but the Codex browser bridge failed
-before the opener code could execute.
+URL immediately and state that the board is running but automatic in-app opening is
+unavailable.
 
 Fallbacks:
 
 1. If the Planban MCP tool is not callable but `node_repl` `js` is available, use `openPlanbanBoardInCodexBrowser({ cwd, statusTimeoutMs: 800, launchTimeoutMs: 3500 })`.
 2. Use the current Browser plugin/runtime when opening any returned URL; do not reuse a browser helper path from an older thread or older Codex app build.
 3. Otherwise run `node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo` to resolve/start the board, then attempt the single browser opener above if `node_repl` is available.
-4. If browser automation runs and fails after JavaScript executes, return the clickable URL.
+4. If browser automation runs and reports `browserOpened: false`, return the clickable URL.
 
 Expected URL resolution is handled by `planban_launch_board` or the bounded fallback launcher:
 
@@ -82,3 +91,9 @@ Expected URL resolution is handled by `planban_launch_board` or the bounded fall
 After `/pb` opens a board, treat near-term ambiguous follow-ups like "work on this",
 "do the next thing", or "start this card" as likely Planban-related. Load the broader
 Planban protocol only then, before reading or mutating roadmap/card state.
+
+## Response
+
+When automatic opening succeeds, keep the acknowledgement short. When it is unavailable
+or fails, always return: `Planban is running: [Open the verified board](URL)` and, at
+most, one short browser-degradation reason from the structured diagnostics.

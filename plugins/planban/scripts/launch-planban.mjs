@@ -2,7 +2,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,8 +20,6 @@ export function resolveRuntimeRoot() {
   const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
   if (mcpRuntimeRoot) return mcpRuntimeRoot;
   if (process.env.PLANBAN_REPO_ROOT) return resolve(process.env.PLANBAN_REPO_ROOT);
-  const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
-  if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
   const parentRuntimeRoot = resolve(pluginRoot, "../..");
   if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
   return parentRuntimeRoot;
@@ -42,16 +39,6 @@ function runtimeRootFromMcpConfig(root) {
   } catch {
     // Not an installed plugin cache, or not enough metadata to resolve a runtime.
   }
-  return null;
-}
-
-function codexHome() {
-  return process.env.CODEX_HOME ? resolve(process.env.CODEX_HOME) : join(homedir(), ".codex");
-}
-
-function runtimeRootFromCodexMarketplace() {
-  const runtimeRoot = join(codexHome(), ".tmp/marketplaces/planban");
-  if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
   return null;
 }
 
