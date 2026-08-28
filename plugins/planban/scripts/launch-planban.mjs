@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -163,7 +164,7 @@ async function webSurfaceHealthy(url) {
   }
 }
 
-function launchLogPath(port) {
+export function launchLogPath(port) {
   if (process.env.PLANBAN_LAUNCH_LOG_FILE) return resolve(process.env.PLANBAN_LAUNCH_LOG_FILE);
   const planbanHome = process.env.PLANBAN_HOME ? resolve(process.env.PLANBAN_HOME) : join(homedir(), ".planban");
   return join(planbanHome, "logs", `launch-${port}.log`);
