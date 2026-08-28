@@ -48,15 +48,20 @@ Opening a board is the same primary service for `/pb` and `/planban`:
 2. Else if there is exactly one registered Planban board, open it.
 3. Else open the all-boards selector.
 
-In Codex Desktop, prefer the Planban MCP tool for server lifecycle and board URL
-resolution, then use the Planban browser opener module only for in-app browser
-visibility, fresh-tab navigation, and URL verification. The Node REPL runtime can be
-sandboxed away from localhost networking, so it should not be the primary place where
-server health or cold launch is decided.
+In Codex Desktop, use the Planban MCP tool as the authority for server lifecycle,
+service health, canonical board URL resolution, and URL verification. Use the Planban
+browser opener module only as a bounded optional adapter for in-app browser visibility,
+fresh-tab navigation, and presentation verification. The Node REPL runtime can be
+sandboxed away from localhost networking, so browser availability must never redefine
+whether the board launched successfully.
 
 ```js
 const mod = await import("/absolute/path/to/codex-fast-open-planban.mjs");
-const result = await mod.openUrlInCodexBrowser({ url: "URL_FROM_PLANBAN_LAUNCH_BOARD" });
+const result = await mod.openUrlInCodexBrowser({
+  url: "VERIFIED_URL_FROM_PLANBAN_LAUNCH_BOARD",
+  urlVerified: true,
+  serviceReady: true
+});
 nodeRepl.write(JSON.stringify(result));
 ```
 
@@ -80,8 +85,8 @@ If the `node_repl` `js` call fails at the tool/runtime layer before JavaScript r
 failure, or MCP argument validation failure), classify this as "Codex browser bridge
 unavailable". Do not spend more time on local Node invocations, Browser documentation,
 Computer Use, Codex app UI automation, or repeated opener variations. Keep the board
-launch result, return the verified URL, and say that the board is running but the
-Codex browser bridge failed before the opener code could execute.
+launch result, return the clickable verified URL, and say that the board is running
+but automatic in-app opening is unavailable.
 
 Use `planban_launch_board` when it is available, then open the returned URL in the
 Codex in-app browser through the current official Browser plugin/runtime. Do not
@@ -97,7 +102,7 @@ node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo
 Do not use the OS URL handler, `open`, an external browser, or a clickable URL as the
 first response when the user specifically wants the board visible beside the Codex
 thread. Those are only fallbacks if the in-app browser is unavailable, browser
-automation has actually failed after retrying with the current Browser runtime, or the
+automation has reported failure through the current Browser adapter, or the
 user asks for an external browser.
 
 Default board opening should optimize for the cold-start return-to-work case. The
@@ -108,8 +113,9 @@ verify the URL, and tell the user the board is open. Only reuse the selected tab
 when it is already exactly at the resolved Planban URL. After the board is visible,
 continue with a lightweight ready-next warm-up for likely follow-up work: load broader
 Planban context, linked docs, or Browser context then when useful. Do not put that
-work on the critical path, and do not delay the visible-open acknowledgement until
-warm-up is finished.
+work on the critical path. If browser presentation fails, return the verified URL with
+the adapter's structured `browser-presentation` diagnostic; service/URL failures remain
+separate `service-url` failures.
 
 For first-run or install verification, create or reuse the demo board:
 

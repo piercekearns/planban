@@ -246,7 +246,13 @@ async function main() {
 
     const launch = assertNoError(responseById(responses, 11));
     assert.equal(launch.url, `http://localhost:${launchPort}/boards/mcp-verify`);
-    check("planban_launch_board", launch.url);
+    assert.equal(launch.ok, true);
+    assert.equal(launch.serviceReady, true);
+    assert.equal(launch.urlVerified, true);
+    assert.equal(launch.capabilities.canonicalUrl, true);
+    assert.equal(launch.capabilities.browserPresentation, "client-optional");
+    assert.equal(launch.diagnostics[0].boundary, "service-url");
+    check("planban_launch_board", `verified ${launch.url}`);
 
     const finalState = await loadState(cwd);
     const finalCard = finalState.roadmap.roadmapItems.find((item) => item.id === cardId);

@@ -1,14 +1,17 @@
 import { spawn } from "node:child_process";
 import { appendFile, mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { assertPortClosed, terminateChild } from "./process-cleanup.mjs";
 import { createCard, initializeProject, readDoc } from "../src/core/storage";
 
-const cwd = "/tmp/planban-http-smoke";
+const cwd = resolve(process.env.PLANBAN_SMOKE_CWD ?? "/tmp/planban-http-smoke");
 const repoId = "planban-http-smoke";
-const port = 4321;
-const planningRoot = join(homedir(), ".planban", "repos", repoId);
+const port = Number(process.env.PLANBAN_SMOKE_PORT ?? 4321);
+const planbanHome = process.env.PLANBAN_HOME ? resolve(process.env.PLANBAN_HOME) : join(homedir(), ".planban");
+const planningRoot = join(planbanHome, "repos", repoId);
+
+if (!Number.isInteger(port) || port <= 0) throw new Error("PLANBAN_SMOKE_PORT must be a positive integer");
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
