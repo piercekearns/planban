@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -8,6 +8,7 @@ import {
   openPlanbanBoardInCodexBrowser,
   openUrlInCodexBrowser,
 } from "../plugins/planban/scripts/codex-fast-open-planban.mjs";
+import { launchLogPath } from "../plugins/planban/scripts/launch-planban.mjs";
 
 const repoRoot = resolve(new URL("..", import.meta.url).pathname);
 
@@ -116,6 +117,21 @@ test("automatically opens a verified URL when the browser capability is availabl
   assert.equal(result.diagnostics.length, 0);
   assert.equal(setupCalls, 1);
   assert.equal(available.newTabCalls(), 1);
+});
+
+test("resolves the default cold-launch log path without PLANBAN_HOME", () => {
+  const previousPlanbanHome = process.env.PLANBAN_HOME;
+  const previousLogFile = process.env.PLANBAN_LAUNCH_LOG_FILE;
+  try {
+    delete process.env.PLANBAN_HOME;
+    delete process.env.PLANBAN_LAUNCH_LOG_FILE;
+    assert.equal(launchLogPath(4317), join(homedir(), ".planban", "logs", "launch-4317.log"));
+  } finally {
+    if (previousPlanbanHome === undefined) delete process.env.PLANBAN_HOME;
+    else process.env.PLANBAN_HOME = previousPlanbanHome;
+    if (previousLogFile === undefined) delete process.env.PLANBAN_LAUNCH_LOG_FILE;
+    else process.env.PLANBAN_LAUNCH_LOG_FILE = previousLogFile;
+  }
 });
 
 test("resolves an installed-cache runtime from adjacent MCP metadata without env or marketplace fallback", async () => {
