@@ -48,6 +48,8 @@ Opening a board is the same primary service for `/pb` and `/planban`:
 2. Else if there is exactly one registered Planban board, open it.
 3. Else open the all-boards selector.
 
+Every successful board-open confirmation must include the exact verified board URL as a clickable Markdown link, regardless of whether in-app browser presentation succeeds. A bare “board opened” acknowledgement is never sufficient. The verified link is part of the durable response contract, while browser presentation is optional.
+
 In Codex Desktop, use the Planban MCP tool as the authority for server lifecycle,
 service health, canonical board URL resolution, and URL verification. Use the Planban
 browser opener module only as a bounded optional adapter for in-app browser visibility,
@@ -99,23 +101,22 @@ as a bounded fallback. Otherwise, run:
 node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo
 ```
 
-Do not use the OS URL handler, `open`, an external browser, or a clickable URL as the
-first response when the user specifically wants the board visible beside the Codex
-thread. Those are only fallbacks if the in-app browser is unavailable, browser
-automation has reported failure through the current Browser adapter, or the
-user asks for an external browser.
+Do not use the OS URL handler, `open`, or an external browser as the first presentation
+attempt when the user specifically wants the board visible beside the Codex thread.
+The clickable verified URL is not merely a fallback: include it in the final reply
+after every successful resolution, including when the in-app browser opened correctly.
 
 Default board opening should optimize for the cold-start return-to-work case. The
 Planban server may be stopped, the in-app browser may be closed, or the selected tab
 may be stale, unrelated, or on an error page. Use an open-first flow: resolve the
 board, make the in-app browser visible, open a fresh in-app browser tab by default,
-verify the URL, and tell the user the board is open. Only reuse the selected tab
+verify the URL, and tell the user the board is open with the exact clickable verified URL. Only reuse the selected tab
 when it is already exactly at the resolved Planban URL. After the board is visible,
 continue with a lightweight ready-next warm-up for likely follow-up work: load broader
 Planban context, linked docs, or Browser context then when useful. Do not put that
-work on the critical path. If browser presentation fails, return the verified URL with
-the adapter's structured `browser-presentation` diagnostic; service/URL failures remain
-separate `service-url` failures.
+work on the critical path. Always return the verified URL. If browser presentation fails,
+also include at most one useful reason from the adapter's structured `browser-presentation`
+diagnostic; service/URL failures remain separate `service-url` failures.
 
 For first-run or install verification, create or reuse the demo board:
 

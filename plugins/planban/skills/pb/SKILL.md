@@ -7,13 +7,17 @@ description: Fast Planban opener. Use when the user invokes pb, /pb, asks to qui
 
 Resolve the best matching Planban board immediately and open it in the Codex in-app browser when that optional presentation capability is available.
 
+## Non-negotiable response contract
+
+After any successful board URL resolution, the user-facing reply **must include the exact verified URL as a clickable Markdown link**, even when automatic in-app browser opening succeeds. Never reply only that the board opened. Browser presentation is a convenience; the link is the durable handoff and must always remain available in chat.
+
 Critical path for a plain `/pb` request:
 
 1. Do not explain, inspect docs, read card state, or load Browser docs first.
 2. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover and verify the board URL.
 3. Treat `serviceReady: true` and `urlVerified: true` as a successful launch. Preserve its URL before browser work.
 4. Use the browser-only opener below once to make that URL visible in the Codex in-app browser.
-5. If browser setup, visibility, tab creation, navigation, or verification is unavailable or fails, stop browser work and return the preserved clickable URL. The board remains successfully launched.
+5. Reply with the preserved clickable verified URL whether browser presentation succeeds or fails. If browser setup, visibility, tab creation, navigation, or verification is unavailable or fails, stop browser work and add at most one short degradation reason. The board remains successfully launched.
 
 Browser opener, preferred in Codex Desktop after `planban_launch_board` returns a URL:
 
@@ -80,7 +84,7 @@ Fallbacks:
 1. If the Planban MCP tool is not callable but `node_repl` `js` is available, use `openPlanbanBoardInCodexBrowser({ cwd, statusTimeoutMs: 800, launchTimeoutMs: 3500 })`.
 2. Use the current Browser plugin/runtime when opening any returned URL; do not reuse a browser helper path from an older thread or older Codex app build.
 3. Otherwise run `node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo` to resolve/start the board, then attempt the single browser opener above if `node_repl` is available.
-4. If browser automation runs and reports `browserOpened: false`, return the clickable URL.
+4. Always return the clickable verified URL; use `browserOpened` only to choose the short success or degradation wording.
 
 Expected URL resolution is handled by `planban_launch_board` or the bounded fallback launcher:
 
@@ -94,6 +98,9 @@ Planban protocol only then, before reading or mutating roadmap/card state.
 
 ## Response
 
-When automatic opening succeeds, keep the acknowledgement short. When it is unavailable
-or fails, always return: `Planban is running: [Open the verified board](URL)` and, at
-most, one short browser-degradation reason from the structured diagnostics.
+Every successful response includes the exact verified URL:
+
+- Browser opened: `Planban is open: [Open the verified board](URL)`
+- Browser unavailable or failed: `Planban is running: [Open the verified board](URL)` plus, at most, one short browser-degradation reason from the structured diagnostics.
+
+Do not replace either response with an unlinked statement such as “Planban is open” or “Board opened.”
