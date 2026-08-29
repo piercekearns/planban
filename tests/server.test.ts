@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createCard, initializeProject, readDoc, saveRoadmap, setCardStatus } from "../src/core/storage";
 import { PLANBAN_VERSION } from "../src/core/version";
-import { isIgnoredPlanbanWatchPath, planbanWatchPaths, startServer } from "../src/server/server";
+import { isIgnoredPlanbanWatchPath, planbanWatcherOptions, planbanWatchPaths, startServer } from "../src/server/server";
 
 const repoId = "planban-server-test";
 const otherRepoId = "planban-server-test-other";
@@ -124,6 +124,24 @@ test("bounds filesystem watching when history is large and file descriptors are 
     assert.equal((await fetch(`${server.url}/api/status`)).status, 200);
   } finally {
     await server.close();
+  }
+});
+
+test("uses polling when native file watching is unsafe", () => {
+  const previous = process.env.CHOKIDAR_USEPOLLING;
+  process.env.CHOKIDAR_USEPOLLING = "1";
+
+  try {
+    const options = planbanWatcherOptions();
+    assert.equal(options.usePolling, true);
+    assert.equal(options.interval, 1000);
+  } finally {
+    if (previous === undefined) delete process.env.CHOKIDAR_USEPOLLING;
+    else process.env.CHOKIDAR_USEPOLLING = previous;
+  }
+
+  if (process.platform === "win32") {
+    assert.equal(planbanWatcherOptions().usePolling, true);
   }
 });
 

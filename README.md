@@ -55,6 +55,8 @@ node plugins/planban/scripts/launch-planban.mjs --tutorial
 
 Then open the printed local tutorial URL. In Codex, ask your agent to open it in the in-app browser.
 
+On Windows, Planban uses polling for its small local planning state directory. This avoids native file-watcher permission failures while keeping board updates live. You can also force polling on other platforms with `CHOKIDAR_USEPOLLING=1`.
+
 Local clone fallback:
 
 ```bash
