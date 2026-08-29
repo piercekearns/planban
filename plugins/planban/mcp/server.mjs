@@ -213,6 +213,12 @@ function verifiedLaunchResult({ cwd, port, started, url }) {
     capabilities: {
       canonicalUrl: true,
       browserPresentation: "client-optional",
+      userReplyRequiresUrl: true,
+    },
+    userReply: {
+      urlRequired: true,
+      url,
+      markdown: `[Open the verified board](${url})`,
     },
     diagnostics: [
       {
@@ -500,7 +506,7 @@ const tools = [
     name: "planban_launch_board",
     title: "Launch Planban Board",
     description:
-      "Start or discover the local Planban web app and return the board URL. Pass demo true to create/reuse the Planban Demo board. Use the Browser plugin/in-app browser to open the returned URL when the user wants the board visible.",
+      "Start or discover the local Planban web app and return the verified board URL. Pass demo true to create/reuse the Planban Demo board. Use the Browser plugin/in-app browser to open the returned URL when the user wants the board visible. Every successful user-facing confirmation must still include the exact clickable URL, even when browser opening succeeds.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       demo: { type: "boolean", description: "Create or reuse the Planban Demo board instead of launching a specific repo board." },
@@ -673,7 +679,10 @@ async function callTool(name, rawArgs) {
 
   if (name === "planban_launch_board") {
     const launched = await launchBoard(args);
-    return textResult(`Planban board URL: ${launched.url}`, launched);
+    return textResult(
+      `Planban board URL: ${launched.url}\nInclude this exact clickable URL in the user-facing confirmation even if the in-app browser opened successfully.`,
+      launched,
+    );
   }
 
   throw new Error(`Unknown tool: ${name}`);

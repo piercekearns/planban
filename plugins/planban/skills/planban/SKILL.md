@@ -9,6 +9,10 @@ For a plain open request (`/planban`, "open Planban", or selecting Planban from 
 slash menu), behave like `/pb`: open the best matching Planban board in the Codex
 in-app browser before doing anything else.
 
+## Non-negotiable response contract
+
+After any successful board URL resolution, the user-facing reply **must include the exact verified URL as a clickable Markdown link**, even when automatic in-app browser opening succeeds. Never reply only that the board opened. Browser presentation is a convenience; the link is the durable handoff and must always remain available in chat.
+
 Critical open path:
 
 1. No pre-open explanation.
@@ -86,11 +90,14 @@ Fallbacks:
 3. Otherwise run `node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo`
    to resolve/start the board, then attempt the single browser opener above if
    `node_repl` is available.
-4. If browser automation runs and reports `browserOpened: false`, return the clickable URL.
+4. Always return the clickable verified URL; use `browserOpened` only to choose the short success or degradation wording.
 
-Keep the open response short. On any browser degradation, always return:
-`Planban is running: [Open the verified board](URL)` and at most one short reason from
-the structured browser diagnostics.
+Keep the response short, but always include the exact verified URL:
+
+- Browser opened: `Planban is open: [Open the verified board](URL)`
+- Browser unavailable or failed: `Planban is running: [Open the verified board](URL)` plus at most one short reason from the structured browser diagnostics.
+
+Do not replace either response with an unlinked statement such as “Planban is open” or “Board opened.”
 
 ## Broader Planban Work
 

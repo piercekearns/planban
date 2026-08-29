@@ -7,6 +7,8 @@ description: Open the interactive Planban tutorial in Codex. Use when the user w
 
 Open the interactive Planban tutorial quickly.
 
+After resolving the tutorial URL, every user-facing confirmation must include the exact verified URL as a clickable Markdown link, even when in-app browser presentation succeeds. Never reply only that the tutorial opened.
+
 ## Behavior
 
 Use the Codex in-app browser when available. If the Browser plugin is available, load its current `browser:control-in-app-browser` skill and navigate to the tutorial URL.
@@ -47,6 +49,9 @@ http://localhost:4317/tutorial?mode=first-run
 
 Open that URL in the Codex in-app browser, not an external browser, unless the in-app browser is unavailable.
 
-Do not say the tutorial is open until the in-app browser URL check succeeds. If the URL check still fails after retrying, return the clickable URL and say that the user can open it in the Codex in-app browser.
+Do not say the tutorial is open until the in-app browser URL check succeeds. In both outcomes, include the clickable tutorial URL:
+
+- Browser verified: `Planban tutorial is open: [Open the tutorial](URL)`
+- Browser unavailable or failed: `Planban tutorial is running: [Open the tutorial](URL)` and say briefly that automatic in-app opening was unavailable.
 
 Keep the response short. This command is for getting the user into the product tour, not explaining every Planban concept in chat.
