@@ -76,6 +76,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 3500;
 const CODEX_SESSION_FILE_LIMIT = 250;
 const CODEX_SESSION_SCAN_BYTES = 2 * 1024 * 1024;
 const CODEX_THREAD_LOOKUP_CACHE_TTL_MS = 10000;
+const PLANBAN_WATCH_POLL_INTERVAL_MS = 1000;
 const updateJobs = new Map<string, UpdateRunSnapshot>();
 const codexThreadLookupCache = new Map<string, {
   expiresAt: number;
@@ -100,6 +101,16 @@ export function isIgnoredPlanbanWatchPath(path: string): boolean {
 export function planbanWatchPaths(): string[] {
   const root = defaultPlanbanRoot();
   return [join(root, "index.json"), join(root, "repos")];
+}
+
+export function planbanWatcherOptions(): ChokidarOptions {
+  const usePolling = process.platform === "win32" || process.env.CHOKIDAR_USEPOLLING === "1";
+  return {
+    ignored: isIgnoredPlanbanWatchPath,
+    ignoreInitial: true,
+    persistent: false,
+    ...(usePolling ? { usePolling: true, interval: PLANBAN_WATCH_POLL_INTERVAL_MS } : {}),
+  };
 }
 
 function isStatus(value: string): value is PlanbanStatus {
@@ -1604,11 +1615,7 @@ export async function startServer(options: ServeOptions) {
 
   try {
     const watcherFactory = options.watcherFactory ?? chokidar.watch;
-    watcher = watcherFactory(planbanWatchPaths(), {
-      ignored: isIgnoredPlanbanWatchPath,
-      ignoreInitial: true,
-      persistent: false,
-    });
+    watcher = watcherFactory(planbanWatchPaths(), planbanWatcherOptions());
     const activeWatcher = watcher;
     activeWatcher.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
