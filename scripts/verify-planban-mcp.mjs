@@ -276,7 +276,7 @@ async function main() {
     check("completion guard", "complete without confirmation rejected");
 
     const launch = assertNoError(responseById(responses, 12));
-    assert.equal(launch.url, `http://localhost:${launchPort}/boards/mcp-verify`);
+    assert.equal(launch.url, `http://127.0.0.1:${launchPort}/boards/mcp-verify`);
     assert.equal(launch.ok, true);
     assert.equal(launch.serviceReady, true);
     assert.equal(launch.urlVerified, true);

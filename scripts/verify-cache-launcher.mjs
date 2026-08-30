@@ -187,7 +187,7 @@ async function main() {
       unsetEnv: ["PLANBAN_REPO_ROOT"],
     });
 
-    assert.match(launch.stdout, new RegExp(`http://localhost:${port}/boards/cache-launcher-verify`, "u"));
+    assert.match(launch.stdout, new RegExp(`http://127\\.0\\.0\\.1:${port}/boards/cache-launcher-verify`, "u"));
     serverPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
     assert.ok(Number.isInteger(serverPid) && serverPid > 0, "launcher should write a server PID");
 
@@ -219,7 +219,7 @@ async function main() {
       unsetEnv: ["PLANBAN_REPO_ROOT"],
     });
 
-    assert.match(staleRepairLaunch.stdout, new RegExp(`http://localhost:${stalePort}/boards/cache-launcher-verify`, "u"));
+    assert.match(staleRepairLaunch.stdout, new RegExp(`http://127\\.0\\.0\\.1:${stalePort}/boards/cache-launcher-verify`, "u"));
     staleRepairServerPid = Number.parseInt(await readFile(staleRepairPidFile, "utf8"), 10);
     assert.ok(Number.isInteger(staleRepairServerPid) && staleRepairServerPid > 0, "launcher should write a stale-repair server PID");
 
@@ -234,8 +234,8 @@ async function main() {
       cacheRoot,
       marketplaceRoot,
       marketplaceSymlinkUsed: false,
-      url: `http://localhost:${port}/boards/cache-launcher-verify`,
-      staleRepairUrl: `http://localhost:${stalePort}/boards/cache-launcher-verify`,
+      url: `http://127.0.0.1:${port}/boards/cache-launcher-verify`,
+      staleRepairUrl: `http://127.0.0.1:${stalePort}/boards/cache-launcher-verify`,
     }, null, 2) + "\n");
   } finally {
     if (serverPid) await terminatePid(serverPid, "cache launcher verification server");

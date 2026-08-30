@@ -1650,7 +1650,7 @@ export async function startServer(options: ServeOptions) {
   });
 
   return {
-    url: `http://localhost:${options.port}`,
+    url: `http://127.0.0.1:${options.port}`,
     close: closeServer,
   };
 }

@@ -314,7 +314,7 @@ async function launchBoard(args) {
   const cwd = optionalBoolean(args.demo, "demo") ? (await ensureDemoBoard()).cwd : await cwdFromArgs(args);
   const port = optionalNumber(args.port, "port") ?? 4317;
   if (!Number.isInteger(port) || port <= 0) throw new Error("port must be a positive integer.");
-  const baseUrl = `http://localhost:${port}`;
+  const baseUrl = `http://127.0.0.1:${port}`;
   const existingStatus = await statusFor(baseUrl).catch(() => null);
   if (existingStatus) {
     const url = await boardUrl(baseUrl, existingStatus, cwd);

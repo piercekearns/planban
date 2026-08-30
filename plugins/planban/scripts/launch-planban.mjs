@@ -340,7 +340,7 @@ function openUrl(url) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const baseUrl = `http://localhost:${options.port}`;
+  const baseUrl = `http://127.0.0.1:${options.port}`;
   const runtimeRoot = resolveRuntimeRoot();
   const cliPath = resolve(runtimeRoot, "bin/planban.mjs");
   const hasBuiltWebBundle = existsSync(resolve(runtimeRoot, "dist/web/index.html"));

@@ -198,7 +198,7 @@ async function boardUrl(baseUrl, status, cwd, timeoutMs) {
 async function runningPlanbanUrl({ cwd, port = 4317, tutorial = false, demo = false, statusTimeoutMs = 1200 }) {
   if (demo) return null;
   const resolvedCwd = resolve(cwd ?? processEnv().PWD ?? ".");
-  const baseUrl = `http://localhost:${port}`;
+  const baseUrl = `http://127.0.0.1:${port}`;
   const status = await statusFor(baseUrl, statusTimeoutMs).catch(() => null);
   if (!status) return null;
   return tutorial ? `${baseUrl}/tutorial?mode=first-run` : await boardUrl(baseUrl, status, resolvedCwd, statusTimeoutMs);

@@ -44,7 +44,7 @@ node plugins/planban/scripts/launch-planban.mjs --tutorial
 The script creates or reuses the local Planban Demo board, starts the local app if needed, and prints a URL like:
 
 ```text
-http://localhost:4317/tutorial?mode=first-run
+http://127.0.0.1:4317/tutorial?mode=first-run
 ```
 
 Open that URL in the Codex in-app browser, not an external browser, unless the in-app browser is unavailable.
