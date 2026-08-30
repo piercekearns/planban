@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { promisify } from "node:util";
 import { ensureDemoBoard } from "../src/core/demo";
@@ -45,8 +46,9 @@ function createGroup(input: Omit<Parameters<typeof createGroupCore>[0], "summary
 }
 
 const repoId = "planban-storage-test";
-const cwd = "/tmp/planban-storage-test";
-const planbanHome = "/tmp/planban-storage-home";
+const testRoot = join(tmpdir(), `planban-storage-${process.pid}`);
+const cwd = join(testRoot, "repo");
+const planbanHome = join(testRoot, "home");
 const planningRoot = join(planbanHome, "repos", repoId);
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(".");

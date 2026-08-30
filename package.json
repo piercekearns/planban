@@ -1,6 +1,6 @@
 {
   "name": "planban",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -14,7 +14,7 @@
     "dev": "tsx src/cli.ts serve",
     "planban": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx/esm --test tests/*.test.ts",
+    "test": "node --test-concurrency=1 --import tsx/esm --test tests/*.test.ts",
     "build": "vite build",
     "preview": "tsx src/cli.ts serve --no-vite",
     "smoke": "npm run build && tsx scripts/smoke.ts",

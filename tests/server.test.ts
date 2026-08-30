@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { createCard, createGroup as createGroupCore, initializeProject, loadState, readDoc, saveRoadmap, setCardStatus, writeDoc } from "../src/core/storage";
 import { PLANBAN_VERSION } from "../src/core/version";
@@ -10,9 +11,10 @@ import { isIgnoredPlanbanWatchPath, planbanWatcherOptions, planbanWatchPaths, st
 
 const repoId = "planban-server-test";
 const otherRepoId = "planban-server-test-other";
-const cwd = "/tmp/planban-server-test";
-const otherCwd = "/tmp/planban-server-test-other";
-const planbanHome = "/tmp/planban-server-home";
+const testRoot = join(tmpdir(), `planban-server-${process.pid}`);
+const cwd = join(testRoot, "repo");
+const otherCwd = join(testRoot, "other-repo");
+const planbanHome = join(testRoot, "home");
 const planningRoot = join(planbanHome, "repos", repoId);
 const otherPlanningRoot = join(planbanHome, "repos", otherRepoId);
 
