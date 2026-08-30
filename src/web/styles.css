@@ -2688,10 +2688,8 @@ h1 {
   font-weight: 600;
 }
 
-.group-nav-root span {
+.group-nav-root-title {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .group-nav-root small {
@@ -2858,12 +2856,84 @@ h1 {
   flex: 1 1 auto;
 }
 
-.group-rail-card-title b {
+.group-rail-card-title > svg { flex: 0 0 auto; }
+
+.overflow-marquee-text {
+  --overflow-marquee-left-fade: 0.571429em;
+  --overflow-marquee-right-fade: 1.14286em;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.overflow-marquee-text-track {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(0);
+  transition: transform 140ms ease-out;
+  white-space: nowrap;
+}
+
+.group-rail-card-title-text {
+  flex: 1 1 auto;
   overflow: hidden;
   font-size: 0.8125rem;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.overflow-marquee-trigger:hover .overflow-marquee-text[data-overflow="true"],
+.overflow-marquee-trigger:focus-within .overflow-marquee-text[data-overflow="true"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--overflow-marquee-left-fade), black calc(100% - var(--overflow-marquee-right-fade)), transparent);
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  animation: overflow-marquee-fade-right calc(350ms + var(--overflow-marquee-duration)) linear forwards;
+  mask-image: linear-gradient(to right, transparent, black var(--overflow-marquee-left-fade), black calc(100% - var(--overflow-marquee-right-fade)), transparent);
+  mask-repeat: no-repeat;
+  mask-size: 100% 100%;
+}
+
+.overflow-marquee-trigger:hover .overflow-marquee-text[data-overflow="true"] .overflow-marquee-text-track,
+.overflow-marquee-trigger:focus-within .overflow-marquee-text[data-overflow="true"] .overflow-marquee-text-track {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  transform: translateX(calc(-1 * var(--overflow-marquee-distance)));
+  transition-duration: var(--overflow-marquee-duration);
+  transition-delay: 350ms;
+  transition-timing-function: cubic-bezier(0.49, 0.6, 0.7, 1);
+}
+
+@keyframes overflow-marquee-fade-right {
+  75% {
+    -webkit-mask-size: 100% 100%;
+    mask-size: 100% 100%;
+  }
+
+  100% {
+    -webkit-mask-size: calc(100% + var(--overflow-marquee-right-fade)) 100%;
+    mask-size: calc(100% + var(--overflow-marquee-right-fade)) 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overflow-marquee-trigger:hover .overflow-marquee-text[data-overflow="true"],
+  .overflow-marquee-trigger:focus-within .overflow-marquee-text[data-overflow="true"] {
+    -webkit-mask-image: none;
+    animation: none;
+    mask-image: none;
+  }
+
+  .overflow-marquee-trigger:hover .overflow-marquee-text[data-overflow="true"] .overflow-marquee-text-track,
+  .overflow-marquee-trigger:focus-within .overflow-marquee-text[data-overflow="true"] .overflow-marquee-text-track {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transform: none;
+    transition: none;
+  }
 }
 
 .group-rail-empty {

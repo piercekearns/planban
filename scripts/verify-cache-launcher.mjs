@@ -5,11 +5,12 @@ import { createServer } from "node:http";
 import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { terminatePid, assertPortClosed, waitForChildExit } from "./process-cleanup.mjs";
 
 const execFileAsync = promisify(execFile);
-const repoRoot = resolve(new URL("..", import.meta.url).pathname);
+const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function parseArgs(argv) {
   const options = {

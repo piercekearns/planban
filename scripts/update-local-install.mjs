@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = resolve(new URL("..", import.meta.url).pathname);
+const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const args = process.argv.slice(2);
 const hasDryRun = args.includes("--dry-run");
 const hasExecute = args.includes("--execute");

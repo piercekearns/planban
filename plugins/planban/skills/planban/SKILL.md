@@ -111,6 +111,13 @@ For roadmap, card, spec, plan, docs, status, creation, review, completion, or ot
 Planban state work, read `references/planban-protocol.md` before changing Planban
 state.
 
+After a successful user-requested Planban creation or material mutation, follow the
+shared protocol's post-mutation handoff. Resolve the verified Board URL once after
+the complete logical mutation sequence, make one bounded in-app presentation
+attempt where supported unless the user requested headless behavior, and include
+the clickable verified URL in the final response. Do not reopen the Board after
+every individual write in a multi-step mutation.
+
 After `/planban` or `/pb` opens a board in the current thread, treat near-term
 ambiguous follow-ups like "work on this", "do the next thing", "start this card", or
 "continue from here" as likely Planban-related when the in-app browser is showing a

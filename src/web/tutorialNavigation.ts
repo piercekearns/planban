@@ -1,3 +1,18 @@
+export type TutorialProgress = "completed" | "skipped" | null;
+export type TutorialBoardKind = "project" | "demo" | undefined;
+
+export function shouldOfferFirstRunTutorial({
+  progress,
+  boardKind,
+  isPreviewing,
+}: {
+  progress: TutorialProgress;
+  boardKind: TutorialBoardKind;
+  isPreviewing: boolean;
+}) {
+  return progress === null && boardKind === "demo" && !isPreviewing;
+}
+
 export function tutorialPath(mode = "first-run", returnRepoId?: string | null) {
   const params = new URLSearchParams({ mode });
   if (returnRepoId?.trim()) params.set("returnTo", returnRepoId.trim());

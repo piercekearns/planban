@@ -51,6 +51,17 @@ Use the Planban domain model deliberately:
 - As an agent, supply a concise Group objective by default. Leave it blank only when the user explicitly requests that or the larger outcome is genuinely unresolved; never fabricate one from weak context. UI-created Groups may add or edit the objective later.
 - Preserve Workflow Status during Placement changes unless the user asks otherwise, and choose the destination Group Rank explicitly.
 
+## Post-creation handoff
+
+After successfully creating a new Planban board or project setup, or one or more Work
+Items, follow the shared post-mutation handoff in
+`../planban/references/planban-protocol.md`. Resolve the verified Board URL once after
+the complete creation sequence, make one bounded open-or-focus attempt where
+supported unless the user requested headless behavior, and include the verified URL
+as a clickable Markdown link in the final response. Prefer a stable new-Item URL when
+Planban supports one; otherwise use the Board URL. Browser-presentation failure does
+not invalidate a successful creation.
+
 ## Useful Commands
 
 For a simple card:

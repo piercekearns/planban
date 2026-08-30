@@ -87,7 +87,13 @@ import {
   type BoardViewPreferences,
 } from "./boardPreferences";
 import { groupAncestryForPrompt } from "./hierarchyPrompt";
-import { tutorialExitRepoId, tutorialPath } from "./tutorialNavigation";
+import {
+  shouldOfferFirstRunTutorial,
+  tutorialExitRepoId,
+  tutorialPath,
+  type TutorialProgress,
+} from "./tutorialNavigation";
+import { OverflowMarqueeText } from "./OverflowMarqueeText";
 import {
   canPlaceItemInside,
   groupPlacementDecision,
@@ -347,8 +353,6 @@ function openTutorial(mode = "first-run", returnRepoId?: string | null) {
 }
 
 const tutorialStorageKey = "planban:tutorial:v1";
-
-type TutorialProgress = "completed" | "skipped" | null;
 
 function readTutorialProgress(): TutorialProgress {
   try {
@@ -3330,10 +3334,13 @@ function GroupRailCard({
         opacity: isDragging ? hierarchyDraggedSourceOpacity(reorderPreview, hideSourceDuringDrag, 0.4) : 1,
       }}
       aria-hidden={isDragging && hideSourceDuringDrag ? true : undefined}
-      className={`group-rail-card ${selected ? "active" : ""} ${isDragging && reorderPreview ? "hierarchy-reorder-placeholder" : ""} ${isDragging && hideSourceDuringDrag ? "hierarchy-hidden-drag-source" : ""} ${dropOperation ? `hierarchy-drop-${dropOperation}` : ""}`}
+      className={`group-rail-card overflow-marquee-trigger ${selected ? "active" : ""} ${isDragging && reorderPreview ? "hierarchy-reorder-placeholder" : ""} ${isDragging && hideSourceDuringDrag ? "hierarchy-hidden-drag-source" : ""} ${dropOperation ? `hierarchy-drop-${dropOperation}` : ""}`}
     >
       <button className="group-rail-card-main" {...attributes} {...listeners} onClick={onSelect}>
-        <span className="group-rail-card-title">{item.isGroup ? <GroupIcon status={item.status} size={13} /> : null}<b>{item.title}</b></span>
+        <span className="group-rail-card-title">
+          {item.isGroup ? <GroupIcon status={item.status} size={13} /> : null}
+          <OverflowMarqueeText text={item.title} className="group-rail-card-title-text" />
+        </span>
       </button>
       {dropOperation === "inside" ? <div className="hierarchy-drop-inside-label"><GroupIcon size={13} /><span>Move inside</span></div> : null}
       <div className="group-rank-actions" aria-label={`${item.title} order controls`}>
@@ -3978,9 +3985,9 @@ function DetailView({
         {workspaceRoot ? (
           <aside className="group-navigator" aria-label={`${workspaceRoot.title} items`}>
             <nav>
-              <button className={`group-nav-root ${item.id === workspaceRoot.id ? "active" : ""}`} onClick={() => onSelectWorkItem?.(workspaceRoot.id)}>
+              <button className={`group-nav-root overflow-marquee-trigger ${item.id === workspaceRoot.id ? "active" : ""}`} onClick={() => onSelectWorkItem?.(workspaceRoot.id)}>
                 <GroupIcon status={workspaceRoot.status} size={14} />
-                <span title={workspaceRoot.title}>{workspaceRoot.title}</span>
+                <OverflowMarqueeText text={workspaceRoot.title} className="group-nav-root-title" title={workspaceRoot.title} />
                 <small className="count count-compact">{workspaceItems.length}</small>
               </button>
               <DndContext
@@ -4602,12 +4609,13 @@ function BoardView({
     return value && value.trim() ? value.trim() : null;
   });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload | null>(null);
-  const [showFirstRunPrompt, setShowFirstRunPrompt] = useState(() => readTutorialProgress() === null);
+  const [tutorialProgress, setTutorialProgress] = useState<TutorialProgress>(() => readTutorialProgress());
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
   const displayState = preview?.state ?? state;
   const previewVersion = preview?.version ?? null;
   const isPreviewing = preview !== null;
-  const isDemoBoard = boardId === "planban-demo";
+  const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
+  const isDemoBoard = boardKind === "demo";
 
   useEffect(() => {
     const preferences = normalizeBoardViewPreferences(readBoardViewPreferences(boardId));
@@ -5388,8 +5396,8 @@ function BoardView({
         ) : null;
       })() : null}
 
-      {showFirstRunPrompt && !isPreviewing ? (
-        <FirstRunPrompt onDismiss={() => setShowFirstRunPrompt(false)} />
+      {shouldOfferFirstRunTutorial({ progress: tutorialProgress, boardKind, isPreviewing }) ? (
+        <FirstRunPrompt onDismiss={() => setTutorialProgress("skipped")} />
       ) : null}
 
       {queryError ? <section className="query-error" role="alert"><span>{queryError}</span><button onClick={clearQuery}>Clear invalid query</button></section> : null}
