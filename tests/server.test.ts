@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
-import { createCard, initializeProject, readDoc, saveRoadmap, setCardStatus } from "../src/core/storage";
+import { createCard, createGroup as createGroupCore, initializeProject, loadState, readDoc, saveRoadmap, setCardStatus, writeDoc } from "../src/core/storage";
 import { PLANBAN_VERSION } from "../src/core/version";
 import { isIgnoredPlanbanWatchPath, planbanWatchPaths, startServer } from "../src/server/server";
 
@@ -15,6 +15,10 @@ const otherCwd = "/tmp/planban-server-test-other";
 const planbanHome = "/tmp/planban-server-home";
 const planningRoot = join(planbanHome, "repos", repoId);
 const otherPlanningRoot = join(planbanHome, "repos", otherRepoId);
+
+function createGroup(input: Omit<Parameters<typeof createGroupCore>[0], "summary"> & { summary?: string }) {
+  return createGroupCore({ ...input, summary: input.summary ?? `${input.title} objective` });
+}
 
 function nextPatchVersion(version: string) {
   const [major = 0, minor = 0, patch = 0] = version.split(".").map((part) => Number.parseInt(part, 10) || 0);
@@ -63,7 +67,7 @@ test("serves the built app and exposes state APIs", async () => {
     assert.equal(html.status, 200);
     assert.match(await html.text(), /Planban/);
 
-    for (const route of ["/boards", "/tutorial?mode=first-run"]) {
+    for (const route of ["/boards", `/boards/${repoId}?projection=flattened`, "/tutorial?mode=first-run"]) {
       const routedHtml = await fetch(`${server.url}${route}`);
       assert.equal(routedHtml.status, 200, `${route} should serve the SPA shell`);
       assert.match(await routedHtml.text(), /<div id="root"><\/div>/u);
@@ -82,6 +86,77 @@ test("serves the built app and exposes state APIs", async () => {
   } finally {
     await server.close();
   }
+});
+
+test("atomically creates multiple Group children through the board API", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  await createGroup({ cwd, title: "MIMEeq Capability", status: "in-progress" });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  try {
+    const state = await jsonFetch<{ roadmap: { revision: number }; createdCards: Array<{ title: string; parentId: string }> }>(
+      `${server.url}/api/boards/${repoId}/cards/batch`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ titles: ["Product Authoring", "R-Logo"], parentId: "mimeeq-capability", status: "pending" }) },
+    );
+    assert.deepEqual(state.createdCards.map((item) => [item.title, item.parentId]), [["Product Authoring", "mimeeq-capability"], ["R-Logo", "mimeeq-capability"]]);
+
+    for (const body of [
+      { titles: ["Wrong status"], status: "later" },
+      { titles: ["Wrong parent"], parentId: 42 },
+    ]) {
+      const response = await fetch(`${server.url}/api/boards/${repoId}/cards/batch`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 422);
+    }
+  } finally { await server.close(); }
+});
+
+test("queries Group Items through HTTP without changing roadmap state", async () => {
+  await initializeProject({ cwd, title: "MIMEeq", repoId, updateAgents: false });
+  await createGroup({ cwd, title: "MIMEeq Capability", status: "in-progress" });
+  await createCard({ cwd, title: "Product Authoring", status: "pending", parentId: "mimeeq-capability", tags: ["editor"] });
+  await createCard({ cwd, title: "Panel-Aware Interiors", status: "pending", parentId: "mimeeq-capability" });
+  await createCard({ cwd, title: "R-Logo", status: "pending", parentId: "mimeeq-capability", nextAction: "Validate panel render", tags: ["editor", "visual"] });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  try {
+    const before = await jsonFetch<{ roadmap: { revision: number } }>(`${server.url}/api/boards/${repoId}/state`);
+    const searched = await jsonFetch<{ revision: number; matches: Array<{ item: { id: string } }>; context: Array<{ item: { id: string } }>; visible: Array<{ item: { id: string } }> }>(
+      `${server.url}/api/boards/${repoId}/cards/query?projection=main&q=editor`,
+    );
+    assert.deepEqual(searched.matches.map((entry) => entry.item.id), ["product-authoring", "r-logo"]);
+    assert.deepEqual(searched.context.map((entry) => entry.item.id), ["mimeeq-capability"]);
+    assert.deepEqual(searched.visible.map((entry) => entry.item.id), ["mimeeq-capability", "product-authoring", "r-logo"]);
+
+    const composed = await jsonFetch<{ matches: Array<{ item: { id: string } }> }>(
+      `${server.url}/api/boards/${repoId}/cards/query?projection=flattened&scope=owned&groupRole=item-only&status=pending&tag=editor&tag=visual`,
+    );
+    assert.deepEqual(composed.matches.map((entry) => entry.item.id), ["r-logo"]);
+    const after = await jsonFetch<{ roadmap: { revision: number } }>(`${server.url}/api/boards/${repoId}/state`);
+    assert.equal(searched.revision, before.roadmap.revision);
+    assert.equal(after.roadmap.revision, before.roadmap.revision);
+    const invalid = await fetch(`${server.url}/api/boards/${repoId}/cards/query?status=pendng`);
+    assert.equal(invalid.status, 422);
+    assert.match((await invalid.json() as { error: string }).error, /Invalid status: pendng/);
+  } finally { await server.close(); }
+});
+
+test("reconstructs hierarchy and creates a recoverable flat export through HTTP", async () => {
+  await initializeProject({ cwd, title: "Revival", repoId, updateAgents: false });
+  await createGroup({ cwd, title: "MIMEeq", status: "in-progress" });
+  await createCard({ cwd, title: "R-logo", status: "up-next" });
+  const before = await loadState(cwd);
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  try {
+    const reconstructed = await jsonFetch<{ roadmap: { revision: number; roadmapItems: Array<{ id: string; parentId: string | null }> } }>(`${server.url}/api/boards/${repoId}/hierarchy/reconstruct`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groups: [{ id: "mimeeq", childIds: ["r-logo"] }], baseRevision: before.roadmap.revision }),
+    });
+    assert.equal(reconstructed.roadmap.roadmapItems.find((item) => item.id === "r-logo")?.parentId, "mimeeq");
+    const exported = await jsonFetch<{ exportId: string; roadmapPath: string }>(`${server.url}/api/boards/${repoId}/exports/flat-v1`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exportId: "http-flat-v1" }),
+    });
+    assert.equal(exported.exportId, "http-flat-v1");
+    assert.equal((JSON.parse(await readFile(exported.roadmapPath, "utf8")) as { version: number }).version, 1);
+  } finally { await server.close(); }
 });
 
 test("bounds filesystem watching when history is large and file descriptors are scarce", async () => {
@@ -463,6 +538,133 @@ test("creates structured cards through the board API", async () => {
 
     const plan = await jsonFetch<{ markdown: string }>(`${server.url}/api/boards/${repoId}/cards/api-structured/docs/plan`);
     assert.equal(plan.markdown, "# API Plan\n");
+  } finally {
+    await server.close();
+  }
+});
+
+test("updates and clears a Group objective through the board API", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  await createGroupCore({ cwd, title: "Objective Group", summary: undefined });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  const headers = { "Content-Type": "application/json", Origin: server.url, "Sec-Fetch-Site": "same-origin" };
+
+  try {
+    const updated = await jsonFetch<{ roadmap: { revision: number; roadmapItems: Array<{ id: string; summary: string | null }> } }>(
+      `${server.url}/api/boards/${repoId}/cards/objective-group`,
+      { method: "PATCH", headers, body: JSON.stringify({ summary: "Coordinate the shared outcome." }) },
+    );
+    assert.equal(updated.roadmap.roadmapItems.find((item) => item.id === "objective-group")?.summary, "Coordinate the shared outcome.");
+
+    const cleared = await jsonFetch<{ roadmap: { roadmapItems: Array<{ id: string; summary: string | null }> } }>(
+      `${server.url}/api/boards/${repoId}/cards/objective-group`,
+      { method: "PATCH", headers, body: JSON.stringify({ summary: null, baseRevision: updated.roadmap.revision }) },
+    );
+    assert.equal(cleared.roadmap.roadmapItems.find((item) => item.id === "objective-group")?.summary, null);
+
+    const empty = await fetch(`${server.url}/api/boards/${repoId}/cards/objective-group`, {
+      method: "PATCH", headers, body: "{}",
+    });
+    assert.equal(empty.status, 422);
+  } finally {
+    await server.close();
+  }
+});
+
+test("creates, reparents, and detaches nested cards through the board API", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  await createGroup({ cwd, title: "Group A" });
+  await createGroup({ cwd, title: "Group B" });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  const mutation = { "Content-Type": "application/json", Origin: server.url, "Sec-Fetch-Site": "same-origin" };
+  try {
+    const invalidParent = await fetch(`${server.url}/api/boards/${repoId}/cards`, {
+      method: "POST", headers: mutation, body: JSON.stringify({ title: "Invalid", parentId: 42 }),
+    });
+    assert.equal(invalidParent.status, 422);
+    const created = await jsonFetch<{ createdCard: { id: string; parentId: string | null }; roadmap: { roadmapItems: Array<{ id: string; isGroup: boolean }> } }>(
+      `${server.url}/api/boards/${repoId}/cards`, { method: "POST", headers: mutation, body: JSON.stringify({ title: "Nested", parentId: "group-a" }) },
+    );
+    assert.equal(created.createdCard.parentId, "group-a");
+    assert.equal(created.roadmap.roadmapItems.find((item) => item.id === "group-a")?.isGroup, true);
+
+    const staleCreate = await fetch(`${server.url}/api/boards/${repoId}/cards`, {
+      method: "POST", headers: mutation, body: JSON.stringify({ title: "Stale", parentId: "group-a", baseRevision: 1 }),
+    });
+    assert.equal(staleCreate.status, 409);
+
+    await jsonFetch(`${server.url}/api/boards/${repoId}/cards/nested/move`, {
+      method: "POST", headers: mutation, body: JSON.stringify({ parentId: "group-b" }),
+    });
+    const nested = await jsonFetch<{ parentId: string | null; ancestry: Array<{ id: string }> }>(`${server.url}/api/boards/${repoId}/cards/nested`);
+    assert.equal(nested.parentId, "group-b");
+    assert.deepEqual(nested.ancestry.map((item) => item.id), ["group-b"]);
+
+    const blankParent = await fetch(`${server.url}/api/boards/${repoId}/cards/nested/move`, {
+      method: "POST", headers: mutation, body: JSON.stringify({ parentId: " " }),
+    });
+    assert.equal(blankParent.status, 422);
+
+    const detached = await jsonFetch<{ roadmap: { roadmapItems: Array<{ id: string; parentId: string | null }> } }>(
+      `${server.url}/api/boards/${repoId}/cards/nested/move`, { method: "POST", headers: mutation, body: JSON.stringify({ parentId: null }) },
+    );
+    assert.equal(detached.roadmap.roadmapItems.find((item) => item.id === "nested")?.parentId, null);
+  } finally { await server.close(); }
+});
+
+test("creates a distinct Group from Items through the board API", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending", summary: "Alpha outcome" });
+  const initial = await createCard({ cwd, title: "Beta", status: "up-next", summary: "Beta outcome" });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+
+  try {
+    const created = await jsonFetch<{
+      createdGroup: { id: string; isGroup: boolean; summary: string };
+      roadmap: { revision: number; roadmapItems: Array<{ id: string; parentId: string | null; summary: string | null }> };
+    }>(`${server.url}/api/boards/${repoId}/groups`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.url, "Sec-Fetch-Site": "same-origin" },
+      body: JSON.stringify({ title: "Alpha Beta Group", summary: "Joint objective", itemIds: ["alpha", "beta"], anchorId: "alpha", baseRevision: initial.roadmap.revision }),
+    });
+    assert.equal(created.createdGroup.isGroup, true);
+    assert.equal(created.createdGroup.summary, "Joint objective");
+    assert.deepEqual(created.roadmap.roadmapItems.filter((item) => item.parentId === created.createdGroup.id).map((item) => [item.id, item.summary]).sort(([a], [b]) => a.localeCompare(b)), [["alpha", "Alpha outcome"], ["beta", "Beta outcome"]]);
+
+    const objectiveLater = await jsonFetch<{ createdGroup: { summary: string | null } }>(`${server.url}/api/boards/${repoId}/groups`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.url, "Sec-Fetch-Site": "same-origin" },
+      body: JSON.stringify({ title: "Objective Later", baseRevision: created.roadmap.revision }),
+    });
+    assert.equal(objectiveLater.createdGroup.summary, null);
+
+    const stale = await fetch(`${server.url}/api/boards/${repoId}/groups`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.url, "Sec-Fetch-Site": "same-origin" },
+      body: JSON.stringify({ title: "Stale", summary: "Stale Group objective", baseRevision: initial.roadmap.revision }),
+    });
+    assert.equal(stale.status, 409);
+  } finally {
+    await server.close();
+  }
+});
+
+test("preserves the deprecated Programme board API route and payload", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const initial = await createCard({ cwd, title: "Legacy Item", status: "pending" });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+
+  try {
+    const created = await jsonFetch<{
+      createdGroup: { id: string; isGroup: boolean };
+      roadmap: { roadmapItems: Array<{ id: string; parentId: string | null }> };
+    }>(`${server.url}/api/boards/${repoId}/programmes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.url, "Sec-Fetch-Site": "same-origin" },
+      body: JSON.stringify({ title: "Legacy Group", summary: "Legacy compatibility", deliverableIds: ["legacy-item"], baseRevision: initial.roadmap.revision }),
+    });
+    assert.equal(created.createdGroup.isGroup, true);
+    assert.equal(created.roadmap.roadmapItems.find((item) => item.id === "legacy-item")?.parentId, "legacy-group");
   } finally {
     await server.close();
   }

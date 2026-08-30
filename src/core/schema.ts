@@ -15,8 +15,7 @@ export const manifestSchema = z.object({
     .optional(),
 });
 
-export const roadmapItemSchema = z
-  .object({
+const roadmapItemBaseSchema = z.object({
     id: z.string().min(1),
     title: z.string().min(1),
     status: statusSchema,
@@ -29,13 +28,34 @@ export const roadmapItemSchema = z
     specDoc: z.string().nullable().default(null),
     planDoc: z.string().nullable().default(null),
     completedAt: z.string().nullable().default(null),
+    reviewState: z.enum(["not-ready", "ready-for-review"]).optional(),
     updatedAt: z.string().nullable().default(null),
     metadata: z.record(z.string(), z.unknown()).optional(),
-  })
-  .passthrough();
+  });
 
-export const roadmapSchema = z.object({
-  version: z.literal(1),
+export const roadmapV1ItemSchema = roadmapItemBaseSchema.passthrough();
+
+const roadmapWriter1ItemSchema = roadmapItemBaseSchema.extend({
+  isProgramme: z.boolean().default(false),
+}).passthrough();
+
+const legacyRoadmapV2ItemSchema = roadmapItemBaseSchema.extend({
+  isProgramme: z.boolean(),
+  parentId: z.string().min(1).nullable(),
+  blockedBy: z.string().min(1).nullable().default(null),
+  boardRank: z.number().int().positive().nullable(),
+  programmeRank: z.number().int().positive().nullable(),
+}).passthrough();
+
+export const roadmapV2ItemSchema = roadmapItemBaseSchema.extend({
+  isGroup: z.boolean(),
+  parentId: z.string().min(1).nullable(),
+  blockedBy: z.string().min(1).nullable().default(null),
+  boardRank: z.number().int().positive().nullable(),
+  groupRank: z.number().int().positive().nullable(),
+}).passthrough();
+
+const roadmapBaseShape = {
   revision: z.number().int().nonnegative().default(1),
   updatedAt: z.string().min(1),
   project: z.object({
@@ -53,5 +73,25 @@ export const roadmapSchema = z.object({
       }),
     )
     .default([]),
-  roadmapItems: z.array(roadmapItemSchema).default([]),
+};
+
+export const roadmapV1Schema = z.object({
+  version: z.literal(1),
+  ...roadmapBaseShape,
+  roadmapItems: z.array(roadmapV1ItemSchema).default([]),
 });
+
+const roadmapWriter3ItemSchema = legacyRoadmapV2ItemSchema.extend({ reviewState: z.enum(["not-ready", "ready-for-review"]) });
+const roadmapWriter5ItemSchema = legacyRoadmapV2ItemSchema.omit({ reviewState: true });
+const roadmapWriter6ItemSchema = roadmapV2ItemSchema.omit({ reviewState: true });
+
+export const roadmapV2Schema = z.union([
+  z.object({ version: z.literal(2), writerVersion: z.literal(1), ...roadmapBaseShape, roadmapItems: z.array(roadmapWriter1ItemSchema).default([]) }),
+  z.object({ version: z.literal(2), writerVersion: z.literal(2), ...roadmapBaseShape, roadmapItems: z.array(legacyRoadmapV2ItemSchema).default([]) }),
+  z.object({ version: z.literal(2), writerVersion: z.literal(3), ...roadmapBaseShape, roadmapItems: z.array(roadmapWriter3ItemSchema).default([]) }),
+  z.object({ version: z.literal(2), writerVersion: z.literal(4), ...roadmapBaseShape, roadmapItems: z.array(roadmapWriter3ItemSchema).default([]) }),
+  z.object({ version: z.literal(2), writerVersion: z.literal(5), ...roadmapBaseShape, roadmapItems: z.array(roadmapWriter5ItemSchema).default([]) }),
+  z.object({ version: z.literal(2), writerVersion: z.literal(6), ...roadmapBaseShape, roadmapItems: z.array(roadmapWriter6ItemSchema).default([]) }),
+]);
+
+export const roadmapSchema = z.union([roadmapV1Schema, roadmapV2Schema]);

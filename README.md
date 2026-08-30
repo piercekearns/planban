@@ -9,6 +9,7 @@ It gives you a simple roadmap board, keeps your planning state local, and helps 
 - Opens local project boards from Codex with `/pb` or `/planban`.
 - Keeps live planning state on your machine, separate from your source repo.
 - Gives agents stable board, card, spec, plan, and next-action context.
+- Organizes related outcomes into root Groups while each owned Item remains independently completable, ranked, documented, and movable.
 - Supports board creation, duplication, archiving, restoring, card movement, docs, history, and feedback flows.
 - Ships CLI, local API, and MCP tools so Codex can work with Planban through structured local actions.
 
@@ -75,6 +76,8 @@ Use it to:
 
 - learn how `/PB`, `/Planban`, and `Planban Tutorial` work inside Codex
 - drag cards between columns
+- drag one Item onto another to create a Group, or move an Item into an existing Group
+- open a Group to review its objective, progress, and status-ranked Items together
 - open a roadmap item in Codex
 - inspect roadmap item details and specs
 - mark a card Complete when you are done

@@ -34,6 +34,8 @@ import {
   loadState,
   moveCard,
   PlanbanConflictError,
+  PlanbanNotFoundError,
+  PlanbanValidationError,
   readDoc,
   readHistoryDoc,
   reorderCards,
@@ -42,13 +44,21 @@ import {
   restoreDocVersion,
   saveRoadmap,
   setCardStatus,
+  setCardParent,
+  updateCard,
+  cardAncestry,
   writeDoc,
   createCard,
+  createCards,
+  createGroup,
   deleteArchivedCard,
   historyPayload,
   loadHistoryState,
+  exportFlatVersion1,
+  reconstructHierarchy,
 } from "../core/storage";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
+import { PlanbanQueryValidationError, queryWorkItems, workItemQueryFromSearchParams } from "../core/workItemQuery";
 import {
   compareVersions,
   currentVersionInfo,
@@ -140,6 +150,50 @@ function optionalMetadata(value: unknown): Record<string, unknown> | undefined {
 
 function optionalCreatePosition(value: unknown) {
   return value === "top" || value === "bottom" ? value : undefined;
+}
+
+function optionalBaseRevision(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < 0) {
+    throw new PlanbanValidationError("baseRevision must be a non-negative integer.");
+  }
+  return value as number;
+}
+
+function parseCardUpdate(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new PlanbanValidationError("Card update body must be an object.");
+  }
+  const body = value as Record<string, unknown>;
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
+  const nullableText = (key: string) => {
+    const field = body[key];
+    if (field !== null && typeof field !== "string") {
+      throw new PlanbanValidationError(`${key} must be a string or null.`);
+    }
+    return field as string | null;
+  };
+  if (!["title", "summary", "nextAction", "tags", "blockedBy", "metadata"].some(has)) {
+    throw new PlanbanValidationError("Provide title, summary, nextAction, tags, blockedBy, or metadata.");
+  }
+  if (has("title") && (typeof body.title !== "string" || !body.title.trim())) {
+    throw new PlanbanValidationError("title must be a non-empty string.");
+  }
+  if (has("tags") && (!Array.isArray(body.tags) || body.tags.some((entry) => typeof entry !== "string"))) {
+    throw new PlanbanValidationError("tags must be an array of strings.");
+  }
+  if (has("metadata") && body.metadata !== null && (typeof body.metadata !== "object" || Array.isArray(body.metadata))) {
+    throw new PlanbanValidationError("metadata must be an object or null.");
+  }
+  return {
+    title: has("title") ? (body.title as string) : undefined,
+    summary: has("summary") ? nullableText("summary") : undefined,
+    nextAction: has("nextAction") ? nullableText("nextAction") : undefined,
+    tags: has("tags") ? body.tags as string[] : undefined,
+    blockedBy: has("blockedBy") ? nullableText("blockedBy") : undefined,
+    metadata: has("metadata") ? body.metadata as Record<string, unknown> | null : undefined,
+    baseRevision: optionalBaseRevision(body.baseRevision),
+  };
 }
 
 function openExternalUrl(url: string) {
@@ -694,7 +748,8 @@ export async function startServer(options: ServeOptions) {
         return;
       }
 
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const repoId = req.params.repoId as string;
+      const cwdForBoard = await boardCwd(repoId);
       const { replayed, value: nextState } = await runApiMutation(req, cwdForBoard, async () => {
         const state = await loadState(cwdForBoard);
         let found = false;
@@ -823,6 +878,48 @@ export async function startServer(options: ServeOptions) {
     }
   });
 
+  app.post("/api/boards/:repoId/exports/flat-v1", async (req, res, next) => {
+    try {
+      const exportId = typeof req.body?.exportId === "string" ? req.body.exportId : "";
+      if (!exportId) throw new PlanbanValidationError("exportId is required.");
+      const cwdForBoard = await boardCwd(req.params.repoId);
+      const { value: result } = await runApiMutation(req, cwdForBoard, () => exportFlatVersion1({ cwd: cwdForBoard, exportId }));
+      res.json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/boards/:repoId/hierarchy/reconstruct", async (req, res, next) => {
+    try {
+      const groups = req.body?.groups ?? req.body?.programmes;
+      if (!Array.isArray(groups)) throw new PlanbanValidationError("groups must be an array.");
+      const cwdForBoard = await boardCwd(req.params.repoId);
+      const { value: state } = await runApiMutation(req, cwdForBoard, () => reconstructHierarchy({
+        cwd: cwdForBoard,
+        groups,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
+      res.json(state);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/boards/:repoId/cards/query", async (req, res, next) => {
+    try {
+      const state = await loadState(await boardCwd(req.params.repoId));
+      const params = new URL(req.originalUrl, "http://planban.local").searchParams;
+      res.json({
+        revision: state.roadmap.revision,
+        ...queryWorkItems(state.roadmap.roadmapItems, workItemQueryFromSearchParams(params)),
+      });
+    } catch (error) {
+      if (error instanceof PlanbanQueryValidationError) {
+        res.status(422).json({ error: error.message });
+        return;
+      }
+      next(error);
+    }
+  });
+
   app.post("/api/boards/:repoId/cards", async (req, res, next) => {
     try {
       const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
@@ -833,7 +930,12 @@ export async function startServer(options: ServeOptions) {
       const status = typeof req.body?.status === "string" && isStatus(req.body.status)
         ? req.body.status
         : undefined;
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      if (req.body?.parentId !== undefined && req.body.parentId !== null && (typeof req.body.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" });
+        return;
+      }
+      const repoId = req.params.repoId as string;
+      const cwdForBoard = await boardCwd(repoId);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createCard({
         cwd: cwdForBoard,
         title,
@@ -846,12 +948,68 @@ export async function startServer(options: ServeOptions) {
         planMarkdown: typeof req.body?.planMarkdown === "string" ? req.body.planMarkdown : undefined,
         position: optionalCreatePosition(req.body?.position),
         afterId: typeof req.body?.afterId === "string" ? req.body.afterId : undefined,
+        parentId: typeof req.body?.parentId === "string" ? req.body.parentId : null,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
-      sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
+      sendEvent("state", { repoId, revision: state.roadmap.revision });
       res.json(state);
     } catch (error) {
       next(error);
     }
+  });
+
+  app.post(["/api/boards/:repoId/groups", "/api/boards/:repoId/programmes"], async (req, res, next) => {
+    try {
+      const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+      if (!title) { res.status(422).json({ error: "title is required" }); return; }
+      const summary = typeof req.body?.summary === "string" ? req.body.summary.trim() : undefined;
+      const itemIds = req.body?.itemIds ?? req.body?.deliverableIds;
+      if (itemIds !== undefined && (!Array.isArray(itemIds) || itemIds.some((id: unknown) => typeof id !== "string" || !id.trim()))) {
+        res.status(422).json({ error: "itemIds must contain card ids" }); return;
+      }
+      if (req.body?.status !== undefined && (typeof req.body.status !== "string" || !isStatus(req.body.status))) {
+        res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` }); return;
+      }
+      const repoId = req.params.repoId as string;
+      const cwdForBoard = await boardCwd(repoId);
+      const { value: state } = await runApiMutation(req, cwdForBoard, () => createGroup({
+        cwd: cwdForBoard,
+        title,
+        summary,
+        nextAction: typeof req.body?.nextAction === "string" ? req.body.nextAction : undefined,
+        status: typeof req.body?.status === "string" ? req.body.status : undefined,
+        itemIds,
+        anchorId: typeof req.body?.anchorId === "string" ? req.body.anchorId : undefined,
+        specMarkdown: typeof req.body?.specMarkdown === "string" ? req.body.specMarkdown : undefined,
+        planMarkdown: typeof req.body?.planMarkdown === "string" ? req.body.planMarkdown : undefined,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { repoId, revision: state.roadmap.revision });
+      res.json(state);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/boards/:repoId/cards/batch", async (req, res, next) => {
+    try {
+      if (!Array.isArray(req.body?.titles) || req.body.titles.length === 0 || req.body.titles.some((title: unknown) => typeof title !== "string" || !title.trim())) {
+        res.status(422).json({ error: "titles must contain at least one non-empty title" }); return;
+      }
+      if (req.body?.status !== undefined && (typeof req.body.status !== "string" || !isStatus(req.body.status))) {
+        res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` }); return;
+      }
+      if (req.body?.parentId !== undefined && req.body.parentId !== null && (typeof req.body.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" }); return;
+      }
+      const status = typeof req.body?.status === "string" && isStatus(req.body.status) ? req.body.status : undefined;
+      const cwdForBoard = await boardCwd(req.params.repoId);
+      const { value: state } = await runApiMutation(req, cwdForBoard, () => createCards({
+        cwd: cwdForBoard, titles: req.body.titles, status,
+        parentId: typeof req.body?.parentId === "string" ? req.body.parentId : null,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
+      res.json(state);
+    } catch (error) { next(error); }
   });
 
   app.get("/api/boards/:repoId/cards/:id", async (req, res, next) => {
@@ -862,7 +1020,23 @@ export async function startServer(options: ServeOptions) {
         res.status(404).json({ error: "Card not found" });
         return;
       }
-      res.json(card);
+      res.json({ ...card, ancestry: cardAncestry(state.roadmap, card.id) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/boards/:repoId/cards/:id", async (req, res, next) => {
+    try {
+      const cwdForBoard = await boardCwd(req.params.repoId);
+      const update = parseCardUpdate(req.body);
+      const { value: state } = await runApiMutation(req, cwdForBoard, () => updateCard({
+        cwd: cwdForBoard,
+        cardId: req.params.id,
+        ...update,
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
+      res.json(state);
     } catch (error) {
       next(error);
     }
@@ -892,7 +1066,7 @@ export async function startServer(options: ServeOptions) {
       const { value: state } = await runApiMutation(req, cwdForBoard, () => reorderCards({
         cwd: cwdForBoard,
         items: parsed as Array<{ id: string; status: PlanbanStatus }>,
-        baseRevision: typeof req.body?.baseRevision === "number" ? req.body.baseRevision : undefined,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -903,24 +1077,54 @@ export async function startServer(options: ServeOptions) {
 
   app.post("/api/boards/:repoId/cards/:id/move", async (req, res, next) => {
     try {
-      const status = String(req.body?.status ?? "");
-      if (!isStatus(status)) {
-        res.status(422).json({ error: `Invalid status: ${status}` });
+      if (req.body?.status !== undefined && (typeof req.body.status !== "string" || !isStatus(req.body.status))) {
+        res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` });
+        return;
+      }
+      if (req.body?.parentId !== undefined && req.body.parentId !== null && (typeof req.body.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" });
+        return;
+      }
+      if (req.body?.afterId !== undefined && req.body.afterId !== null && typeof req.body.afterId !== "string") {
+        res.status(422).json({ error: "afterId must be a card id or null" });
+        return;
+      }
+      if (req.body?.status === undefined && req.body?.parentId === undefined && req.body?.afterId === undefined) {
+        res.status(422).json({ error: "A status, parentId, or afterId is required" });
         return;
       }
       const cwdForBoard = await boardCwd(req.params.repoId);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => moveCard({
         cwd: cwdForBoard,
         cardId: req.params.id,
-        status,
-        afterId: typeof req.body?.afterId === "string" ? req.body.afterId : undefined,
-        baseRevision: typeof req.body?.baseRevision === "number" ? req.body.baseRevision : undefined,
+        status: typeof req.body?.status === "string" ? req.body.status : undefined,
+        parentId: req.body?.parentId === undefined ? undefined : req.body.parentId,
+        afterId: req.body?.afterId === undefined ? undefined : req.body.afterId,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
     } catch (error) {
       next(error);
     }
+  });
+
+  app.post("/api/boards/:repoId/cards/:id/parent", async (req, res, next) => {
+    try {
+      if (req.body?.parentId !== null && (typeof req.body?.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" });
+        return;
+      }
+      const cwdForBoard = await boardCwd(req.params.repoId);
+      const { value: state } = await runApiMutation(req, cwdForBoard, () => setCardParent({
+        cwd: cwdForBoard,
+        cardId: req.params.id,
+        parentId: req.body.parentId,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
+      res.json(state);
+    } catch (error) { next(error); }
   });
 
   for (const [route, status] of [
@@ -948,7 +1152,7 @@ export async function startServer(options: ServeOptions) {
       const { value: state } = await runApiMutation(req, cwdForBoard, () => deleteArchivedCard({
         cwd: cwdForBoard,
         cardId: req.params.id,
-        baseRevision: typeof req.body?.baseRevision === "number" ? req.body.baseRevision : undefined,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -1123,6 +1327,10 @@ export async function startServer(options: ServeOptions) {
       const status = typeof req.body?.status === "string" && isStatus(req.body.status)
         ? req.body.status
         : undefined;
+      if (req.body?.parentId !== undefined && req.body.parentId !== null && (typeof req.body.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" });
+        return;
+      }
       const { value: state } = await runApiMutation(req, cwd, () => createCard({
         cwd,
         title,
@@ -1135,12 +1343,64 @@ export async function startServer(options: ServeOptions) {
         planMarkdown: typeof req.body?.planMarkdown === "string" ? req.body.planMarkdown : undefined,
         position: optionalCreatePosition(req.body?.position),
         afterId: typeof req.body?.afterId === "string" ? req.body.afterId : undefined,
+        parentId: typeof req.body?.parentId === "string" ? req.body.parentId : null,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { revision: state.roadmap.revision });
       res.json(state);
     } catch (error) {
       next(error);
     }
+  });
+
+  app.post(["/api/groups", "/api/programmes"], async (req, res, next) => {
+    try {
+      const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+      if (!title) { res.status(422).json({ error: "title is required" }); return; }
+      const summary = typeof req.body?.summary === "string" ? req.body.summary.trim() : undefined;
+      const itemIds = req.body?.itemIds ?? req.body?.deliverableIds;
+      if (itemIds !== undefined && (!Array.isArray(itemIds) || itemIds.some((id: unknown) => typeof id !== "string" || !id.trim()))) {
+        res.status(422).json({ error: "itemIds must contain card ids" }); return;
+      }
+      if (req.body?.status !== undefined && (typeof req.body.status !== "string" || !isStatus(req.body.status))) {
+        res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` }); return;
+      }
+      const { value: state } = await runApiMutation(req, cwd, () => createGroup({
+        cwd,
+        title,
+        summary,
+        nextAction: typeof req.body?.nextAction === "string" ? req.body.nextAction : undefined,
+        status: typeof req.body?.status === "string" ? req.body.status : undefined,
+        itemIds,
+        anchorId: typeof req.body?.anchorId === "string" ? req.body.anchorId : undefined,
+        specMarkdown: typeof req.body?.specMarkdown === "string" ? req.body.specMarkdown : undefined,
+        planMarkdown: typeof req.body?.planMarkdown === "string" ? req.body.planMarkdown : undefined,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { revision: state.roadmap.revision });
+      res.json(state);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/cards/batch", async (req, res, next) => {
+    try {
+      if (!Array.isArray(req.body?.titles) || req.body.titles.length === 0 || req.body.titles.some((title: unknown) => typeof title !== "string" || !title.trim())) {
+        res.status(422).json({ error: "titles must contain at least one non-empty title" }); return;
+      }
+      if (req.body?.status !== undefined && (typeof req.body.status !== "string" || !isStatus(req.body.status))) {
+        res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` }); return;
+      }
+      if (req.body?.parentId !== undefined && req.body.parentId !== null && (typeof req.body.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" }); return;
+      }
+      const status = typeof req.body?.status === "string" && isStatus(req.body.status) ? req.body.status : undefined;
+      const { value: state } = await runApiMutation(req, cwd, () => createCards({
+        cwd, titles: req.body.titles, status,
+        parentId: typeof req.body?.parentId === "string" ? req.body.parentId : null,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { revision: state.roadmap.revision }); res.json(state);
+    } catch (error) { next(error); }
   });
 
   app.get("/api/cards/:id", async (req, res, next) => {
@@ -1151,7 +1411,22 @@ export async function startServer(options: ServeOptions) {
         res.status(404).json({ error: "Card not found" });
         return;
       }
-      res.json(card);
+      res.json({ ...card, ancestry: cardAncestry(state.roadmap, card.id) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/cards/:id", async (req, res, next) => {
+    try {
+      const update = parseCardUpdate(req.body);
+      const { value: state } = await runApiMutation(req, cwd, () => updateCard({
+        cwd,
+        cardId: req.params.id,
+        ...update,
+      }));
+      sendEvent("state", { revision: state.roadmap.revision });
+      res.json(state);
     } catch (error) {
       next(error);
     }
@@ -1167,7 +1442,7 @@ export async function startServer(options: ServeOptions) {
       const { value: state } = await runApiMutation(req, cwd, () => reorderCards({
         cwd,
         items: parsed as Array<{ id: string; status: PlanbanStatus }>,
-        baseRevision: typeof req.body?.baseRevision === "number" ? req.body.baseRevision : undefined,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { revision: state.roadmap.revision });
       res.json(state);
@@ -1178,23 +1453,52 @@ export async function startServer(options: ServeOptions) {
 
   app.post("/api/cards/:id/move", async (req, res, next) => {
     try {
-      const status = String(req.body?.status ?? "");
-      if (!isStatus(status)) {
-        res.status(422).json({ error: `Invalid status: ${status}` });
+      if (req.body?.status !== undefined && (typeof req.body.status !== "string" || !isStatus(req.body.status))) {
+        res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` });
+        return;
+      }
+      if (req.body?.parentId !== undefined && req.body.parentId !== null && (typeof req.body.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" });
+        return;
+      }
+      if (req.body?.afterId !== undefined && req.body.afterId !== null && typeof req.body.afterId !== "string") {
+        res.status(422).json({ error: "afterId must be a card id or null" });
+        return;
+      }
+      if (req.body?.status === undefined && req.body?.parentId === undefined && req.body?.afterId === undefined) {
+        res.status(422).json({ error: "A status, parentId, or afterId is required" });
         return;
       }
       const { value: state } = await runApiMutation(req, cwd, () => moveCard({
         cwd,
         cardId: req.params.id,
-        status,
-        afterId: typeof req.body?.afterId === "string" ? req.body.afterId : undefined,
-        baseRevision: typeof req.body?.baseRevision === "number" ? req.body.baseRevision : undefined,
+        status: typeof req.body?.status === "string" ? req.body.status : undefined,
+        parentId: req.body?.parentId === undefined ? undefined : req.body.parentId,
+        afterId: req.body?.afterId === undefined ? undefined : req.body.afterId,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { revision: state.roadmap.revision });
       res.json(state);
     } catch (error) {
       next(error);
     }
+  });
+
+  app.post("/api/cards/:id/parent", async (req, res, next) => {
+    try {
+      if (req.body?.parentId !== null && (typeof req.body?.parentId !== "string" || !req.body.parentId.trim())) {
+        res.status(422).json({ error: "parentId must be a non-empty card id or null" });
+        return;
+      }
+      const { value: state } = await runApiMutation(req, cwd, () => setCardParent({
+        cwd,
+        cardId: req.params.id,
+        parentId: req.body.parentId,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
+      }));
+      sendEvent("state", { revision: state.roadmap.revision });
+      res.json(state);
+    } catch (error) { next(error); }
   });
 
   for (const [route, status] of [
@@ -1218,7 +1522,7 @@ export async function startServer(options: ServeOptions) {
       const { value: state } = await runApiMutation(req, cwd, () => deleteArchivedCard({
         cwd,
         cardId: req.params.id,
-        baseRevision: typeof req.body?.baseRevision === "number" ? req.body.baseRevision : undefined,
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { revision: state.roadmap.revision });
       res.json(state);
@@ -1288,9 +1592,11 @@ export async function startServer(options: ServeOptions) {
       : null;
     const responseStatus = Number.isInteger(statusCode)
       ? statusCode as number
-      : error instanceof PlanbanConflictError || error instanceof PlanbanIdempotencyConflictError
+      : error instanceof PlanbanNotFoundError
+        ? 404
+        : error instanceof PlanbanConflictError || error instanceof PlanbanIdempotencyConflictError
         ? 409
-        : error instanceof PlanbanPathError
+        : error instanceof PlanbanPathError || error instanceof PlanbanValidationError
           ? 422
           : 500;
     res.status(responseStatus).json({ error: message });

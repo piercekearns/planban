@@ -17,9 +17,8 @@ import {
 import { ensureHistoryBaseline, recordHistoryVersion } from "./history";
 import { atomicWriteFile, appendLineDurably, withBoardWriteLock } from "./persistence";
 import { buildAgentContext } from "./protocol";
-import { manifestSchema, roadmapSchema } from "./schema";
-import type { PlanbanBoardRecord, PlanbanBoardRegistry, PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap, PlanbanStatus } from "./types";
-import { PLANBAN_STATUSES } from "./types";
+import { manifestSchema } from "./schema";
+import type { PlanbanBoardRecord, PlanbanBoardRegistry, PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap } from "./types";
 
 const boardRecordSchema = z.object({
   repoId: z.string().min(1),
@@ -200,6 +199,8 @@ function duplicateTitle(sourceTitle: string, requestedTitle?: string) {
 function duplicateRoadmap(source: PlanbanRoadmap, input: { repoId: string; title: string; timestamp: string }): PlanbanRoadmap {
   return {
     ...source,
+    version: 2,
+    writerVersion: 6,
     revision: 1,
     updatedAt: input.timestamp,
     project: {
@@ -207,40 +208,6 @@ function duplicateRoadmap(source: PlanbanRoadmap, input: { repoId: string; title
       id: input.repoId,
       title: input.title,
     },
-  };
-}
-
-const STATUS_LABELS: Record<PlanbanStatus, string> = {
-  "in-progress": "In Progress",
-  "up-next": "Up Next",
-  pending: "Pending",
-  complete: "Complete",
-  archived: "Archived",
-};
-
-function normalizeSourceRoadmap(input: unknown): PlanbanRoadmap {
-  const parsed = roadmapSchema.parse(input);
-  return {
-    ...parsed,
-    columns: parsed.columns.length > 0
-      ? parsed.columns
-      : PLANBAN_STATUSES.map((id) => ({ id, label: STATUS_LABELS[id] })),
-    roadmapItems: parsed.roadmapItems.map((item) => ({
-      id: item.id,
-      title: item.title,
-      status: item.status,
-      priority: item.priority,
-      summary: item.summary,
-      nextAction: item.nextAction,
-      tags: item.tags,
-      icon: item.icon,
-      blockedBy: item.blockedBy,
-      specDoc: item.specDoc,
-      planDoc: item.planDoc,
-      completedAt: item.completedAt,
-      updatedAt: item.updatedAt,
-      ...(item.metadata ? { metadata: item.metadata } : {}),
-    })),
   };
 }
 
@@ -256,7 +223,10 @@ export async function duplicateBoard(input: {
     throw new Error(`Planban roadmap is missing at ${source.roadmapPath}`);
   }
 
-  const sourceRoadmap = normalizeSourceRoadmap(JSON.parse(await readFile(source.roadmapPath, "utf8")));
+  // Loaded lazily to avoid the storage -> registry initialization cycle while reusing
+  // the exact same schema migration and hierarchy invariants as normal board loads.
+  const { normalizeRoadmap } = await import("./storage");
+  const sourceRoadmap = normalizeRoadmap(JSON.parse(await readFile(source.roadmapPath, "utf8")));
   const title = duplicateTitle(sourceRoadmap.project.title, input.title);
   const explicitRepoId = input.repoId?.trim() ? slugify(input.repoId) : null;
   if (explicitRepoId && registry.boards.some((board) => board.repoId === explicitRepoId)) {

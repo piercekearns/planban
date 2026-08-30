@@ -1,5 +1,5 @@
-import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { cp, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import {
   historyDocPath,
   historyIndexPath,
@@ -36,6 +36,7 @@ export interface PlanbanHistoryMeta {
   summary: string;
   affectedCards?: string[] | undefined;
   affectedDocs?: PlanbanHistoryDocRef[] | undefined;
+  strictDocs?: boolean | undefined;
 }
 
 function nowIso(): string {
@@ -57,8 +58,9 @@ async function pathExists(path: string): Promise<boolean> {
 
 function normalizeHistoryRoadmap(input: unknown): PlanbanRoadmap {
   const parsed = roadmapSchema.parse(input);
-  return {
+  const roadmap: PlanbanRoadmap = {
     ...parsed,
+    writerVersion: parsed.version === 2 ? parsed.writerVersion : 0,
     roadmapItems: parsed.roadmapItems.map((item) => ({
       id: item.id,
       title: item.title,
@@ -68,14 +70,39 @@ function normalizeHistoryRoadmap(input: unknown): PlanbanRoadmap {
       nextAction: item.nextAction,
       tags: item.tags,
       icon: item.icon,
-      blockedBy: item.blockedBy,
+      blockedBy: item.blockedBy?.trim() || null,
       specDoc: item.specDoc,
       planDoc: item.planDoc,
       completedAt: item.completedAt,
       updatedAt: item.updatedAt,
+      isGroup: parsed.version === 2
+        ? "isGroup" in item
+          ? item.isGroup === true
+          : "isProgramme" in item && item.isProgramme === true
+        : false,
+      parentId: parsed.version === 2 && parsed.writerVersion >= 2 ? item.parentId as string | null : null,
+      boardRank: parsed.version === 2 && parsed.writerVersion >= 2 ? item.boardRank as number | null : item.priority,
+      groupRank: parsed.version === 2 && parsed.writerVersion >= 2
+        ? "groupRank" in item
+          ? item.groupRank as number | null
+          : "programmeRank" in item ? item.programmeRank as number | null : null
+        : null,
       ...(item.metadata ? { metadata: item.metadata } : {}),
     })),
   };
+  if (parsed.version === 1 || parsed.writerVersion < 2) {
+    const counts = new Map<string, number>();
+    roadmap.roadmapItems = roadmap.roadmapItems.map((item) => {
+      const key = JSON.stringify([item.parentId, item.status]);
+      const rank = (counts.get(key) ?? 0) + 1;
+      counts.set(key, rank);
+      return { ...item, boardRank: rank, groupRank: null };
+    });
+  }
+  if (new Set(roadmap.roadmapItems.map((item) => item.id)).size !== roadmap.roadmapItems.length) {
+    throw new Error("Historical Work Item ids must be unique.");
+  }
+  return roadmap;
 }
 
 function emptyIndex(): PlanbanHistoryIndex {
@@ -113,16 +140,27 @@ function docRefsForRoadmap(roadmap: PlanbanRoadmap): PlanbanHistoryDocRef[] {
   });
 }
 
-async function copyHistoryDoc(state: PlanbanResolvedState, version: number, doc: PlanbanHistoryDocRef) {
+async function copyHistoryDoc(state: PlanbanResolvedState, version: number, doc: PlanbanHistoryDocRef, strict = false) {
   if (!doc.path) return;
   let source: string;
   try {
     source = resolveInsideRoot(state.planningRoot, doc.path, `${doc.kind} history document path for ${doc.cardId}`);
   } catch (error) {
-    if (error instanceof PlanbanPathError) return;
+    if (error instanceof PlanbanPathError && !strict) return;
     throw error;
   }
-  if (!(await pathExists(source))) return;
+  if (!(await pathExists(source))) {
+    if (strict) throw new Error(`Required ${doc.kind} history document for ${doc.cardId} does not exist: ${doc.path}`);
+    return;
+  }
+  if (strict) {
+    const [realRoot, realSource] = await Promise.all([realpath(state.planningRoot), realpath(source)]);
+    const pathFromRoot = relative(realRoot, realSource);
+    if (pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot)) {
+      throw new PlanbanPathError(`${doc.kind} history document path for ${doc.cardId} resolves outside the planning root.`);
+    }
+    source = realSource;
+  }
   const target = historyDocPath(state.planningRoot, version, doc.cardId, doc.kind);
   await mkdir(dirname(target), { recursive: true });
   await cp(source, target, { force: true });
@@ -133,10 +171,11 @@ async function writeVersionFiles(
   version: number,
   roadmap: PlanbanRoadmap,
   docs: PlanbanHistoryDocRef[],
+  strictDocs = false,
 ) {
   await mkdir(historyVersionRoot(state.planningRoot, version), { recursive: true });
   await atomicWriteFile(historyRoadmapPath(state.planningRoot, version), JSON.stringify(roadmap, null, 2) + "\n");
-  for (const doc of docs) await copyHistoryDoc(state, version, doc);
+  for (const doc of docs) await copyHistoryDoc(state, version, doc, strictDocs);
 }
 
 async function pruneHistory(planningRoot: string, index: PlanbanHistoryIndex): Promise<PlanbanHistoryIndex> {
@@ -160,11 +199,14 @@ async function pruneHistory(planningRoot: string, index: PlanbanHistoryIndex): P
   };
 }
 
-export async function ensureHistoryBaseline(state: PlanbanResolvedState): Promise<PlanbanHistoryIndex> {
+export async function ensureHistoryBaseline(state: PlanbanResolvedState, strictDocs = false): Promise<PlanbanHistoryIndex> {
   return withBoardWriteLock(state.planningRoot, async () => {
   let index = await readHistoryIndex(state.planningRoot);
   if (index.entries.length > 0) return index;
 
+  const baselineRoadmap = state.roadmap.version === 2 && state.roadmap.writerVersion < 6
+    ? { ...state.roadmap, writerVersion: 6 as const }
+    : state.roadmap;
   const docs = docRefsForRoadmap(state.roadmap);
   const entry: PlanbanHistoryEntry = {
     version: 1,
@@ -176,7 +218,12 @@ export async function ensureHistoryBaseline(state: PlanbanResolvedState): Promis
     affectedCards: state.roadmap.roadmapItems.map((item) => item.id),
     affectedDocs: docs,
   };
-  await writeVersionFiles(state, 1, state.roadmap, docs);
+  try {
+    await writeVersionFiles(state, 1, baselineRoadmap, docs, strictDocs);
+  } catch (error) {
+    await rm(historyVersionRoot(state.planningRoot, 1), { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
   index = {
     ...index,
     latestVersion: 1,
@@ -193,7 +240,7 @@ export async function recordHistoryVersion(
   meta: PlanbanHistoryMeta,
 ): Promise<PlanbanHistoryEntry> {
   return withBoardWriteLock(state.planningRoot, async () => {
-  const baseline = await ensureHistoryBaseline(state);
+  const baseline = await ensureHistoryBaseline(state, meta.strictDocs === true);
   let index = await readHistoryIndex(state.planningRoot);
   const nextVersion = Math.max(baseline.latestVersion, index.latestVersion) + 1;
   const affectedDocs = meta.affectedDocs ?? [];
@@ -208,7 +255,12 @@ export async function recordHistoryVersion(
     affectedDocs,
   };
 
-  await writeVersionFiles(state, nextVersion, roadmap, affectedDocs);
+  try {
+    await writeVersionFiles(state, nextVersion, roadmap, affectedDocs, meta.strictDocs === true);
+  } catch (error) {
+    await rm(historyVersionRoot(state.planningRoot, nextVersion), { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
   index = {
     ...index,
     latestVersion: nextVersion,

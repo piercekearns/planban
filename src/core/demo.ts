@@ -25,7 +25,15 @@ const DEMO_CARDS: DemoCardSeed[] = [
     nextAction: "Move this card into In Progress, then ask your agent to summarize the board.",
     spec: `# Drag This Card To In Progress
 
+## Purpose
+
 Planban is a local roadmap board for agent-led work.
+
+## Current state
+
+This section is authoritative for the tutorial. The card is ready to move.
+
+## Agent reference
 
 Start here: drag this card into In Progress. The board will save the status and order for you.
 `,
@@ -37,9 +45,17 @@ Start here: drag this card into In Progress. The board will save the status and 
     nextAction: "Open this item in Codex, then hit enter to test out the generated prompt.",
     spec: `# Open This Roadmap Item In Codex
 
-Hit enter to test out this prompt.
+## Purpose
 
 Roadmap items can carry enough context for an agent to start work without rediscovering the project.
+
+## Current state
+
+This section is authoritative for the tutorial. The generated prompt is ready to test.
+
+## Agent reference
+
+Hit enter to test the prompt.
 
 This demo prompt should open the Planban board, move this roadmap item into In Progress, update the card details, and tell you the new thread was created successfully.
 `,
@@ -55,7 +71,15 @@ This demo prompt should open the Planban board, move this roadmap item into In P
     nextAction: "Drag this In Progress card to Complete once you are happy with the work.",
     spec: `# Mark A Card Complete When You Are Done
 
+## Purpose
+
 Planban treats Complete as a deliberate user-controlled transition.
+
+## Current state
+
+This section is authoritative for the tutorial. The card is ready for user-controlled completion.
+
+## Agent reference
 
 Agents can run tests and prepare work for review, but your board should only mark a real task Complete when you confirm it is done. Try that here by dragging this In Progress card into Complete.
 `,
@@ -67,7 +91,15 @@ Agents can run tests and prepare work for review, but your board should only mar
     nextAction: "If you want to share feedback, select the toolbar icon and let your agent prepare it before anything is filed publicly.",
     spec: `# Send Feedback From The Toolbar
 
+## Purpose
+
 Planban has a feedback button in the board toolbar.
+
+## Current state
+
+This section is authoritative for the tutorial. The feedback action is available.
+
+## Agent reference
 
 Feedback is welcome. If you find a bug, want a feature, feel confused, or want to share what worked well, use the toolbar icon.
 
@@ -81,7 +113,15 @@ Planban creates a Codex-ready prompt so your agent can turn rough notes into the
     nextAction: "Give Codex your current planning context and ask it to draft Planban roadmap items for review.",
     spec: `# Ask Codex To Create Roadmap Items From Your Plans
 
+## Purpose
+
 If you already track work somewhere else, you do not need a perfect migration file.
+
+## Current state
+
+This section is authoritative for the tutorial. Planban is ready to receive planning context.
+
+## Agent reference
 
 Give your agent context from repo docs, GitHub Issues, Notion, Jira, Linear, copied notes, or a plain-language project update. Then ask it to draft Planban roadmap items that you can review and edit.
 `,

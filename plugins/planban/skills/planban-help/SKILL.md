@@ -36,6 +36,13 @@ Then include a short getting-started guide:
 6. Start work from a card when you want Codex to pick up the full planning context.
 7. In a new thread, reopen Planban with `/PB`, `/Planban`, or `Open my Planban board.`
 
+Then give this vocabulary when the user asks how to structure work:
+
+- An **Item** is one independently trackable outcome. It can live on the Main Board or inside one Group.
+- A **Group** is a Main Board card that groups Items and gives them an internal status and priority list.
+- Groups do not nest, and Items do not turn into Groups. Grouping Items creates a distinct Group while keeping every Item intact.
+- Moving an Item changes where it is planned; changing status changes its workflow stage. These are separate choices.
+
 For a guided product tour, choose `/Planban Tutorial` from the slash menu. It opens the local tutorial in the Codex in-app browser.
 
 Then list common actions:

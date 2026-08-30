@@ -5,6 +5,8 @@ export interface BoardOrderItem {
   id: string;
   status: Status;
   priority: number | null;
+  boardRank?: number | null;
+  groupRank?: number | null;
 }
 
 export function emptyStatusGroups<T extends BoardOrderItem>() {
@@ -21,7 +23,7 @@ export function groupItems<T extends BoardOrderItem>(items: T[]) {
   const grouped = emptyStatusGroups<T>();
   for (const item of items) grouped[item.status].push(item);
   for (const status of statuses) {
-    grouped[status].sort((a, b) => (a.priority ?? 9999) - (b.priority ?? 9999));
+    grouped[status].sort((a, b) => (a.boardRank ?? a.groupRank ?? a.priority ?? 9999) - (b.boardRank ?? b.groupRank ?? b.priority ?? 9999));
   }
   return grouped;
 }

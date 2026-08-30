@@ -19,12 +19,14 @@ const HAS_BUILT_WEB_BUNDLE = existsSync(resolve(PLANBAN_RUNTIME_ROOT, "dist/web/
 const storageModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/storage.ts")).href);
 const registryModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/registry.ts")).href);
 const typesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/types.ts")).href);
+const queryModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/workItemQuery.ts")).href);
 const demoModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/demo.ts")).href);
 const versionModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/version.ts")).href);
 
-const { createCard, getStatus, loadState, moveCard, readDoc, updateCard, writeDoc } = storageModule;
+const { cardAncestry, createCard, createCards, createGroup, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
+const { queryWorkItems } = queryModule;
 const { ensureDemoBoard } = demoModule;
 const { PLANBAN_MCP_VERSION } = versionModule;
 
@@ -93,6 +95,14 @@ function optionalNullableString(value, name) {
 function optionalNumber(value, name) {
   if (value === undefined || value === null) return undefined;
   if (!Number.isFinite(value)) throw new Error(`${name} must be a number.`);
+  return value;
+}
+
+function optionalRevision(value, name) {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
   return value;
 }
 
@@ -355,9 +365,7 @@ const tools = [
     name: "planban_status",
     title: "Planban Status",
     description: "Check whether Planban is initialized for a local repository and report live state paths.",
-    inputSchema: schema.object({
-      cwd: { type: "string", description: "Absolute repository path." },
-    }, ["cwd"]),
+    inputSchema: schema.object(commonBoardProperties),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
@@ -416,6 +424,23 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: "planban_query_cards",
+    title: "Query Planban Work Items",
+    description: "Search and compose projection, hierarchy, Group-role, status, blocked, and tag filters without changing roadmap state.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      search: { type: "string", description: "Search id, title, summary, next action, and tags." },
+      projection: { type: "string", enum: ["main", "group", "flattened"] },
+      groupId: { type: "string", description: "Selected Group for Group projection or selected-Group scope." },
+      hierarchyScope: { type: "string", enum: ["projection", "root", "owned", "leaf", "selected-group"] },
+      groupRole: { type: "string", enum: ["any", "group", "item-only"] },
+      statuses: { type: "array", items: { type: "string", enum: [...PLANBAN_STATUSES] } },
+      blocked: { type: "string", enum: ["any", "blocked", "unblocked"] },
+      tags: { type: "array", items: { type: "string" } },
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
     name: "planban_get_card",
     title: "Get Planban Card",
     description: "Read one Planban roadmap card, including linked document paths and metadata.",
@@ -426,9 +451,27 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: "planban_export_flat_v1",
+    title: "Export Recoverable Flat Version-1 Board",
+    description: "Create a deliberate history-backed flat version-1 export without changing the live hierarchy.",
+    inputSchema: schema.object({ ...commonBoardProperties, exportId: { type: "string" } }, ["exportId"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "planban_reconstruct_hierarchy",
+    title: "Reconstruct Planban Hierarchy",
+    description: "Atomically attach existing Work Items into explicit ordered Group mappings without recreating cards or documents.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      groups: { type: "array", items: { type: "object", properties: { id: { type: "string" }, childIds: { type: "array", items: { type: "string" } } }, required: ["id", "childIds"], additionalProperties: false } },
+      baseRevision: { type: "number" },
+    }, ["baseRevision"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "planban_create_card",
     title: "Create Planban Card",
-    description: "Create a Planban roadmap card with optional placement, tags, metadata, and initial spec or plan markdown.",
+    description: "Create a Planban roadmap card with optional placement, tags, metadata, and initial spec or plan markdown. Follow the installed Planban house style for all owner-facing fields and documents.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       title: { type: "string", description: "Card title." },
@@ -441,7 +484,40 @@ const tools = [
       planMarkdown: { type: "string", description: "Optional initial plan markdown. Creates a plan document when supplied." },
       position: { type: "string", enum: ["top", "bottom"], description: "Insert at top or bottom of the target status column." },
       afterId: { type: "string", description: "Optional card id to insert after in the target status column." },
+      parentId: { type: "string", description: "Optional existing Group id. Creates an owned Item." },
+      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
     }, ["title"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "planban_create_group",
+    title: "Create Planban Group",
+    description: "Create a distinct Group and place existing root Items inside it without changing their identities or documents. Follow the installed Planban house style. Agents should normally supply a concise objective unless explicitly asked not to.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      title: { type: "string", description: "Group title." },
+      summary: { type: "string", description: "Group-level objective uniting its Items. Optional in storage and UI; agents should normally supply it unless explicitly asked not to." },
+      nextAction: { type: "string", description: "Optional Group next action." },
+      status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Initial Group status." },
+      itemIds: { type: "array", items: { type: "string" }, description: "Existing root Items to place inside the new Group." },
+      anchorId: { type: "string", description: "Initial Item whose Main Board position the Group takes." },
+      specMarkdown: { type: "string", description: "Optional initial Group spec markdown." },
+      planMarkdown: { type: "string", description: "Optional initial Group plan markdown." },
+      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+    }, ["title"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "planban_create_cards",
+    title: "Create Multiple Planban Cards",
+    description: "Atomically create one or more sibling Work Item skeletons, optionally inside a Group. Follow the installed Planban house style and add current summaries, next actions, or document detail through focused follow-up mutations when the Items require them.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      titles: { type: "array", items: { type: "string" }, description: "One or more Work Item titles." },
+      status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Initial status. Defaults to pending." },
+      parentId: { type: "string", description: "Optional parent Group id." },
+      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+    }, ["titles"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   {
@@ -457,30 +533,32 @@ const tools = [
   },
   {
     name: "planban_move_card",
-    title: "Move Planban Card",
+    title: "Place Planban Card",
     description:
-      "Move a card to another Planban status. Only use status complete when the user explicitly asks, confirms review/testing, or clearly waives user-side verification; set completionConfirmed true in that case.",
+      "Place an Item in one mutation: change status, move it into or out of an existing Group, and/or set its sibling rank. Groups cannot be placed inside Groups, and Items never become Groups through movement. Use null afterId for first position. Only use status complete when the user explicitly asks, confirms review/testing, or clearly waives user-side verification; set completionConfirmed true in that case.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
-      status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Target status." },
-      afterId: { type: "string", description: "Optional card id to insert after." },
+      status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Optional target status." },
+      parentId: { type: ["string", "null"], description: "Optional root Group/destination id, or null for the Main Board." },
+      afterId: { type: ["string", "null"], description: "Optional sibling id to insert after, or null for first position." },
       baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
       completionConfirmed: {
         type: "boolean",
         description: "Required true when moving a card to complete.",
       },
-    }, ["cardId", "status"]),
+    }, ["cardId"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   {
     name: "planban_update_card",
     title: "Update Planban Card",
-    description: "Update non-status card fields such as summary, next action, tags, blocked-by, or metadata.",
+    description: "Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Follow the installed Planban house style when owner-facing content changes.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
       baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      title: { type: "string", description: "New non-empty card title." },
       summary: { type: ["string", "null"], description: "New card summary, or null to clear." },
       nextAction: { type: ["string", "null"], description: "New next action, or null to clear." },
       tags: { type: "array", items: { type: "string" }, description: "Replacement tag list." },
@@ -490,9 +568,21 @@ const tools = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   {
+    name: "planban_set_card_parent",
+    title: "Set Planban Card Parent",
+    description: "Move an Item into an existing Group, or detach it to the Main Board. Groups cannot be attached and Items are never converted.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      cardId: { type: "string", description: "Planban card id." },
+      parentId: { type: ["string", "null"], description: "Root Group/destination id, or null for the Main Board." },
+      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+    }, ["cardId", "parentId"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "planban_write_doc",
     title: "Write Planban Document",
-    description: "Write a card spec or plan document with optional stale-file protection.",
+    description: "Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
@@ -519,7 +609,7 @@ const tools = [
 async function callTool(name, rawArgs) {
   const args = requireObject(rawArgs ?? {}, "arguments");
   if (name === "planban_status") {
-    const status = await getStatus(requireString(args.cwd, "cwd"));
+    const status = await getStatus(await cwdFromArgs(args));
     return textResult(
       status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`,
       status,
@@ -569,6 +659,30 @@ async function callTool(name, rawArgs) {
     return textResult(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, summarizeBoard(state));
   }
 
+  if (name === "planban_query_cards") {
+    const cwd = await cwdFromArgs(args);
+    const state = await loadState(cwd);
+    const result = queryWorkItems(state.roadmap.roadmapItems, {
+      search: optionalString(args.search, "search"),
+      projection: optionalString(args.projection, "projection") === "programme" ? "group" : optionalString(args.projection, "projection"),
+      groupId: optionalString(args.groupId, "groupId") ?? optionalString(args.programmeId, "programmeId"),
+      hierarchyScope: optionalString(args.hierarchyScope, "hierarchyScope") === "selected-programme" ? "selected-group" : optionalString(args.hierarchyScope, "hierarchyScope"),
+      groupRole: (() => {
+        const role = optionalString(args.groupRole, "groupRole") ?? optionalString(args.programmeRole, "programmeRole");
+        return role === "programme" ? "group" : role === "deliverable-only" ? "item-only" : role;
+      })(),
+      statuses: optionalStringArray(args.statuses, "statuses"),
+      blocked: optionalString(args.blocked, "blocked"),
+      tags: optionalStringArray(args.tags, "tags"),
+    });
+    return textResult(`Matched ${result.matches.length} Planban Work Items at revision ${state.roadmap.revision}.`, {
+      cwd: state.cwd,
+      repoId: state.manifest.repoId,
+      revision: state.roadmap.revision,
+      ...result,
+    });
+  }
+
   if (name === "planban_get_card") {
     const cwd = await cwdFromArgs(args);
     const cardId = requireString(args.cardId, "cardId");
@@ -580,7 +694,29 @@ async function callTool(name, rawArgs) {
       revision: state.roadmap.revision,
       planningRoot: state.planningRoot,
       card,
+      ancestry: cardAncestry(state.roadmap, cardId),
     });
+  }
+
+  if (name === "planban_export_flat_v1") {
+    const result = await exportFlatVersion1({ cwd: await cwdFromArgs(args), exportId: requireString(args.exportId, "exportId"), actor: "agent" });
+    return textResult(`Created recoverable flat version-1 export ${result.exportId}.`, result);
+  }
+
+  if (name === "planban_reconstruct_hierarchy") {
+    const groups = args.groups ?? args.programmes;
+    if (!Array.isArray(groups)) throw new Error("groups must be an array.");
+    const result = await reconstructHierarchy({
+      cwd: await cwdFromArgs(args),
+      groups: groups.map((entry, index) => {
+        const mapping = requireObject(entry, `groups[${index}]`);
+        const childIds = optionalStringArray(mapping.childIds, `groups[${index}].childIds`);
+        if (!childIds) throw new Error(`groups[${index}].childIds is required.`);
+        return { id: requireString(mapping.id, `groups[${index}].id`), childIds };
+      }),
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
+    });
+    return textResult(`Reconstructed ${groups.length} Group mappings.`, { ...summarizeBoard(result), cards: result.cards });
   }
 
   if (name === "planban_read_doc") {
@@ -610,6 +746,8 @@ async function callTool(name, rawArgs) {
       planMarkdown: args.planMarkdown === undefined ? undefined : requireText(args.planMarkdown, "planMarkdown"),
       position: optionalCreatePosition(args.position, "position"),
       afterId: optionalString(args.afterId, "afterId"),
+      parentId: optionalString(args.parentId, "parentId"),
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
     });
     return textResult(`Created Planban card ${state.createdCard.id}.`, {
@@ -618,8 +756,48 @@ async function callTool(name, rawArgs) {
     });
   }
 
+  if (name === "planban_create_cards") {
+    const titles = optionalStringArray(args.titles, "titles");
+    if (!titles?.length) throw new Error("titles must contain at least one title");
+    const state = await createCards({
+      cwd: await cwdFromArgs(args), titles,
+      status: optionalStatus(args.status, "status"),
+      parentId: optionalString(args.parentId, "parentId"),
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
+    });
+    return textResult(`Created ${state.createdCards.length} Planban cards.`, { ...summarizeBoard(state), cards: state.createdCards });
+  }
+
+  if (name === "planban_create_group" || name === "planban_create_programme") {
+    const itemIds = optionalStringArray(args.itemIds, "itemIds")
+      ?? optionalStringArray(args.deliverableIds, "deliverableIds")
+      ?? [];
+    const state = await createGroup({
+      cwd: await cwdFromArgs(args),
+      title: requireString(args.title, "title"),
+      summary: optionalString(args.summary, "summary"),
+      nextAction: optionalString(args.nextAction, "nextAction"),
+      status: optionalStatus(args.status, "status"),
+      itemIds,
+      anchorId: optionalString(args.anchorId, "anchorId"),
+      specMarkdown: args.specMarkdown === undefined ? undefined : requireText(args.specMarkdown, "specMarkdown"),
+      planMarkdown: args.planMarkdown === undefined ? undefined : requireText(args.planMarkdown, "planMarkdown"),
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
+      actor: "agent",
+    });
+    return textResult(`Created Group ${state.createdGroup.id} with ${itemIds.length} Items.`, {
+      ...summarizeBoard(state),
+      group: state.createdGroup,
+    });
+  }
+
   if (name === "planban_move_card") {
-    const status = requireStatus(args.status);
+    const status = optionalStatus(args.status, "status");
+    const parentId = optionalNullableString(args.parentId, "parentId");
+    const afterId = optionalNullableString(args.afterId, "afterId");
+    if (status === undefined && parentId === undefined && afterId === undefined) {
+      throw new Error("Provide status, parentId, or afterId.");
+    }
     if (status === "complete" && !optionalBoolean(args.completionConfirmed, "completionConfirmed")) {
       throw new Error("completionConfirmed must be true when moving a card to complete.");
     }
@@ -627,8 +805,9 @@ async function callTool(name, rawArgs) {
       cwd: await cwdFromArgs(args),
       cardId: requireString(args.cardId, "cardId"),
       status,
-      afterId: optionalString(args.afterId, "afterId"),
-      baseRevision: optionalNumber(args.baseRevision, "baseRevision"),
+      parentId,
+      afterId,
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
@@ -642,7 +821,8 @@ async function callTool(name, rawArgs) {
     const state = await updateCard({
       cwd: await cwdFromArgs(args),
       cardId: requireString(args.cardId, "cardId"),
-      baseRevision: optionalNumber(args.baseRevision, "baseRevision"),
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
+      title: args.title === undefined ? undefined : requireString(args.title, "title"),
       summary: optionalNullableString(args.summary, "summary"),
       nextAction: optionalNullableString(args.nextAction, "nextAction"),
       tags: optionalStringArray(args.tags, "tags"),
@@ -654,6 +834,19 @@ async function callTool(name, rawArgs) {
     return textResult(`Updated Planban card ${card.id}.`, {
       ...summarizeBoard(state),
       card,
+    });
+  }
+
+  if (name === "planban_set_card_parent") {
+    const cardId = requireString(args.cardId, "cardId");
+    const parentId = args.parentId === null ? null : requireString(args.parentId, "parentId");
+    const state = await setCardParent({
+      cwd: await cwdFromArgs(args), cardId, parentId,
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
+    });
+    const card = findCard(state, cardId);
+    return textResult(parentId ? `Moved ${card.id} into ${parentId}.` : `Moved ${card.id} to the main board.`, {
+      ...summarizeBoard(state), card, ancestry: cardAncestry(state.roadmap, cardId),
     });
   }
 
@@ -697,7 +890,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Use Planban tools for structured local roadmap, card, and document operations. Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review.",
+        "Use Planban tools for structured local roadmap, card, and document operations. Before creating or materially editing owner-facing content, follow the installed Planban protocol and Planban house style. Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review.",
     });
     return;
   }

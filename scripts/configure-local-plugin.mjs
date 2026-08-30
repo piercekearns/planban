@@ -9,7 +9,7 @@ const manifest = {
   mcpServers: {
     planban: {
       cwd: repoRoot,
-      command: "node",
+      command: process.execPath,
       args: ["--import", "tsx/esm", "./plugins/planban/mcp/server.mjs"],
       env: {
         PLANBAN_REPO_ROOT: repoRoot,

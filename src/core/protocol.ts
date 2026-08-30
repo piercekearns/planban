@@ -25,6 +25,7 @@ When the user asks to update the roadmap:
 - update priority when ordering changes within a column
 - update the card summary and next action so they match the current phase of work
 - update linked specs, and only create or update separate implementation plans when the work is complex enough to need one
+- before creating or materially editing owner-facing Planban content, follow the installed Planban protocol and Planban house style
 - do not create or prefer ROADMAP.md
 
 Roadmap status protocol for agent work:
@@ -33,6 +34,6 @@ Roadmap status protocol for agent work:
 - do not move a card to In Progress merely because a Codex thread was opened, context was read, or planning/discussion happened
 - when the agent finishes its own implementation and verification, leave the card In Progress and update summary and next action to say it is ready for user review/testing
 - move a card to Complete only when the user explicitly asks, manually confirms completion after testing/review, or clearly waives user-side verification
-- agent-side tests and verification are enough to record "ready for review"; they are not enough by themselves to self-complete the roadmap item
+- agent-side tests and verification are enough to update the next action for user review/testing; they are not enough by themselves to self-complete the roadmap item
 `;
 }

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -7,21 +7,32 @@ import {
   Archive,
   ArrowLeft,
   ArrowRight,
+  ArrowRightLeft,
+  Bug,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   CircleArrowUp,
   Copy,
   ExternalLink,
   FilePenLine,
+  Folder,
+  FolderInput,
+  FolderOpen,
+  FolderPlus,
+  FolderTree,
   HelpCircle,
   Loader2,
+  ListTree,
   MessageSquareText,
   Minimize2,
   Pencil,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   Send,
   SquarePen,
   Trash2,
@@ -39,6 +50,7 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -46,6 +58,7 @@ import {
   SortableContext,
   useSortable,
   verticalListSortingStrategy,
+  type SortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
@@ -58,11 +71,50 @@ import {
   statuses,
   type Status,
 } from "./boardOrdering";
+import { mainBoardProjection, itemsInGroup, groupProgressSegments, groupRollup, workItemRank, type GroupRollup } from "./mainBoardProjection";
+import { groupWorkspaceProjection } from "./groupWorkspaceProjection";
+import { flattenedExecutionMoveForDrop, flattenedExecutionProjection } from "./flattenedExecutionProjection";
+import {
+  queryWorkItems,
+  type PlanbanBlockedFilter,
+  type PlanbanHierarchyScope,
+  type PlanbanGroupRole,
+} from "../core/workItemQuery";
 import {
   boardViewPreferencesKey,
   normalizeBoardViewPreferences,
+  resolveBoardQueryState,
   type BoardViewPreferences,
 } from "./boardPreferences";
+import { groupAncestryForPrompt } from "./hierarchyPrompt";
+import { tutorialExitRepoId, tutorialPath } from "./tutorialNavigation";
+import {
+  canPlaceItemInside,
+  groupPlacementDecision,
+  groupPlacementPositionFromValue,
+  groupPlacementPositionValue,
+  previewGroupWorkspaceMove,
+  groupWorkspaceDropOutcome,
+  groupWorkspaceMoveForDrop,
+  type PendingGroupPlacement,
+  type GroupPlacementPosition,
+  type GroupWorkspaceMove,
+} from "./groupWorkspaceOrdering";
+import {
+  hierarchyColumnDropPreview,
+  hierarchyColumnSpatialTarget,
+  hierarchyContainmentCue,
+  hierarchyContainmentLatch,
+  hierarchyContainmentSourceFootprint,
+  hierarchyDropCommitDecision,
+  hierarchyDraggedSourceOpacity,
+  hierarchyDropOperation,
+  hierarchyPlacementChanges,
+  hierarchyReorderPlaceholderVisible,
+  hierarchyReorderPreviewIndex,
+  type HierarchyDropOperation,
+  type HierarchyDropRect,
+} from "./hierarchyDropIntent";
 import "./styles.css";
 type DocKind = "spec" | "plan";
 
@@ -80,6 +132,10 @@ interface RoadmapItem {
   planDoc: string | null;
   completedAt: string | null;
   updatedAt: string | null;
+  isGroup?: boolean;
+  parentId?: string | null;
+  boardRank?: number | null;
+  groupRank?: number | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -276,10 +332,6 @@ function isTutorialPath() {
   return window.location.pathname === "/tutorial";
 }
 
-function tutorialPath(mode = "first-run") {
-  return `/tutorial?mode=${encodeURIComponent(mode)}`;
-}
-
 function replaceBoardPath(repoId: string | null) {
   const nextPath = repoId ? `/boards/${encodeURIComponent(repoId)}` : "/boards";
   if (window.location.pathname !== nextPath) window.history.replaceState(null, "", nextPath);
@@ -290,8 +342,8 @@ function pushBoardPath(repoId: string | null) {
   if (window.location.pathname !== nextPath) window.history.pushState(null, "", nextPath);
 }
 
-function openTutorial(mode = "first-run") {
-  window.location.assign(tutorialPath(mode));
+function openTutorial(mode = "first-run", returnRepoId?: string | null) {
+  window.location.assign(tutorialPath(mode, returnRepoId));
 }
 
 const tutorialStorageKey = "planban:tutorial:v1";
@@ -351,7 +403,28 @@ function writeBoardViewPreferences(repoId: string, preferences: BoardViewPrefere
   });
 }
 
+function initialBoardQueryState(repoId: string) {
+  return resolveBoardQueryState(readBoardViewPreferences(repoId), new URLSearchParams(window.location.search));
+}
+
 const boardDashboardPreferencesKey = "planban:boards-dashboard:v1";
+
+function groupRailPreferencesKey(repoId: string, groupId: string) {
+  return `planban:group-rail:v1:${encodeURIComponent(repoId)}:${encodeURIComponent(groupId)}`;
+}
+
+function defaultGroupRailSections(items: RoadmapItem[], groupId: string): Partial<Record<Status, boolean>> {
+  const openStatus = statuses.find((status) => items.some((entry) => entry.parentId === groupId && entry.status === status)) ?? "in-progress";
+  return Object.fromEntries(statuses.map((status) => [status, status !== openStatus])) as Partial<Record<Status, boolean>>;
+}
+
+function readGroupRailSections(repoId: string, groupId: string) {
+  return readLocalJson<Partial<Record<Status, boolean>> | null>(groupRailPreferencesKey(repoId, groupId), null);
+}
+
+function writeGroupRailSections(repoId: string, groupId: string, collapsed: Partial<Record<Status, boolean>>) {
+  writeLocalJson(groupRailPreferencesKey(repoId, groupId), collapsed);
+}
 
 function readBoardDashboardPreferences(): BoardDashboardPreferences {
   return readLocalJson<BoardDashboardPreferences>(boardDashboardPreferencesKey, {});
@@ -410,12 +483,13 @@ function buildCodexDraftPrompt(state: PlanbanState, item: RoadmapItem, launchTok
   const demoSuccessMessage = typeof item.metadata?.demoSuccessMessage === "string"
     ? item.metadata.demoSuccessMessage
     : "New thread created successfully. Check the In Progress column in your Planban board.";
+  const ancestry = groupAncestryForPrompt(state.roadmap.roadmapItems, item);
 
   if (item.metadata?.demoCodexPrompt === true) {
     return [
       "Test this Planban tutorial prompt.",
       "",
-      "Use the Planban plugin/protocol if available.",
+      "Use the Planban plugin and protocol if available. Follow the Planban house style before editing owner-facing card fields or documents.",
       formatOptionalLine("Repo", state.cwd),
       formatOptionalLine("Board", boardUrl),
       formatOptionalLine("Card id", item.id),
@@ -432,11 +506,12 @@ function buildCodexDraftPrompt(state: PlanbanState, item: RoadmapItem, launchTok
   return [
     `Start this Planban roadmap item: "${item.title}".`,
     "",
-    "Use the Planban plugin/protocol if available.",
+    "Use the Planban plugin and protocol if available. Follow the Planban house style before editing owner-facing card fields or documents.",
     formatOptionalLine("Repo", state.cwd),
     formatOptionalLine("Board", boardUrl),
     formatOptionalLine("Card id", item.id),
     formatOptionalLine("Status", labels[item.status]),
+    formatOptionalLine("Group ancestry", ancestry),
     formatOptionalLine("Spec", specPath),
     formatOptionalLine("Plan", planPath),
     formatOptionalLine("Launch token", launchToken),
@@ -559,6 +634,7 @@ function buildTutorialCreatePrompt(state: PlanbanState, planningContext: string)
   return [
     "Use Planban Create to turn this rough planning context into reviewable Planban roadmap items.",
     "",
+    "Follow the installed Planban house style for every drafted card field and document.",
     "Ask which project/repo to plan if unclear. If no Planban board exists for that project, ask before initializing one.",
     "Use repo docs, issues, notes, connected context, or the text below. Do not invent private project facts.",
     "",
@@ -720,14 +796,71 @@ function docKindLabel(kind: DocKind) {
 }
 
 const boardCollisionDetection: CollisionDetection = (args) => {
-  const pointerCollisions = pointerWithin(args);
+  const activeId = String(args.active.id);
+  const pointerCollisions = pointerWithin(args).filter((collision) => String(collision.id) !== activeId);
+  const cardCollision = pointerCollisions.find((collision) => {
+    const id = String(collision.id);
+    return !statuses.includes(id as Status);
+  });
+  if (cardCollision) return [cardCollision];
   if (pointerCollisions.length > 0) return pointerCollisions;
 
-  const rectCollisions = rectIntersection(args);
+  const rectCollisions = rectIntersection(args).filter((collision) => String(collision.id) !== activeId);
   if (rectCollisions.length > 0) return rectCollisions;
 
-  return closestCorners(args);
+  return closestCorners(args).filter((collision) => String(collision.id) !== activeId);
 };
+
+function hierarchyBoardCollisionDetection(items: RoadmapItem[]): CollisionDetection {
+  return (args) => {
+    const collisions = boardCollisionDetection(args);
+    const firstId = collisions[0] ? String(collisions[0].id) : null;
+    if (!firstId || !statuses.includes(firstId as Status)) return collisions;
+    const pointerY = args.pointerCoordinates?.y;
+    if (pointerY === undefined) return collisions;
+    const active = items.find((item) => item.id === String(args.active.id));
+    if (!active) return collisions;
+    const targetId = hierarchyColumnSpatialTarget(
+      pointerY,
+      items
+        .filter((item) => item.id !== active.id && (item.parentId ?? null) === (active.parentId ?? null) && item.status === firstId)
+        .flatMap((item) => {
+          const rect = args.droppableRects.get(item.id);
+          return rect ? [{ id: item.id, top: rect.top, bottom: rect.bottom }] : [];
+        }),
+    );
+    return targetId ? [{ id: targetId }] : collisions;
+  };
+}
+
+function dragPointerCoordinates(event: DragMoveEvent) {
+  const activator = event.activatorEvent as PointerEvent;
+  return { x: activator.clientX + event.delta.x, y: activator.clientY + event.delta.y };
+}
+
+function dragPointerY(event: DragMoveEvent) {
+  return dragPointerCoordinates(event).y;
+}
+
+function stableDropRect(rect: { top: number; bottom: number; height: number; left: number; right: number; width: number }): HierarchyDropRect {
+  return { top: rect.top, bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right, width: rect.width };
+}
+
+function hierarchySortingStrategy(
+  itemIds: string[],
+  targetId: string | null,
+  operation: HierarchyDropOperation | null,
+): SortingStrategy {
+  return (args) => {
+    if (!targetId || !operation || operation === "inside") return null;
+    const targetIndex = itemIds.indexOf(targetId);
+    if (targetIndex < 0 || args.activeIndex < 0) return verticalListSortingStrategy(args);
+    return verticalListSortingStrategy({
+      ...args,
+      overIndex: hierarchyReorderPreviewIndex(args.activeIndex, targetIndex, operation),
+    });
+  };
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -901,19 +1034,121 @@ function TooltipButton({
   );
 }
 
-function CardContent({ item }: { item: RoadmapItem }) {
+function AutoSizingTextarea({
+  value,
+  onChange,
+  className = "",
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const resizeToContent = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, []);
+
+  useLayoutEffect(resizeToContent, [resizeToContent, value]);
+
+  return (
+    <textarea
+      {...props}
+      ref={textareaRef}
+      className={`auto-sizing-textarea ${className}`.trim()}
+      value={value}
+      rows={2}
+      onChange={(event) => {
+        onChange?.(event);
+        requestAnimationFrame(resizeToContent);
+      }}
+    />
+  );
+}
+
+function GroupIcon({
+  status,
+  size = 15,
+  className,
+  labelled = false,
+}: {
+  status?: Status | undefined;
+  size?: number;
+  className?: string;
+  labelled?: boolean;
+}) {
+  const Icon = status === "complete" || status === "archived" ? Folder : FolderOpen;
+  return (
+    <Icon
+      className={className}
+      size={size}
+      aria-label={labelled ? "Group" : undefined}
+      aria-hidden={labelled ? undefined : true}
+      role={labelled ? "img" : undefined}
+    />
+  );
+}
+
+function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined; ancestry?: RoadmapItem[]; expanded?: boolean }) {
   const description = item.nextAction || item.summary || "";
+  const progressSegments = rollup ? groupProgressSegments(rollup) : [];
+  const visibleItemTotal = progressSegments.reduce((total, segment) => total + segment.count, 0);
+  const progressLabel = progressSegments.map((segment) => `${segment.count} ${labels[segment.status]}`).join(", ");
 
   return (
     <>
       <div className="card-title-row">
         <p className="card-title">
+          {item.isGroup ? <GroupIcon status={item.status} className="group-role-icon" size={15} labelled /> : null}
           {item.icon ? <span className="card-title-icon">{item.icon}</span> : null}
           {item.title}
         </p>
-        {item.priority ? <span className="priority">P{item.priority}</span> : null}
+        {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
       </div>
+      {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
       {description ? <p className="card-copy">{description}</p> : null}
+      {rollup ? (
+        <div className="group-rollup">
+          <div className={visibleItemTotal > 0 ? "group-progress-region" : undefined}>
+            <div className="group-progress-summary">
+              <p className="group-remaining">{visibleItemTotal === 0 ? "No items yet" : `${rollup.complete}/${visibleItemTotal} complete`}</p>
+            </div>
+            {visibleItemTotal > 0 ? (
+              <div className="group-progress" role="img" aria-label={progressLabel}>
+                <div className="group-progress-track">
+                  {progressSegments.map((segment) => (
+                    <span
+                      key={segment.status}
+                      className={`group-progress-segment status-${segment.status}`}
+                      style={{ flexGrow: segment.count }}
+                      title={`${segment.count} ${labels[segment.status]}`}
+                    />
+                  ))}
+                </div>
+                <div className="group-progress-tooltip" role="tooltip">
+                  {progressSegments.map((segment) => (
+                    <span key={segment.status}>
+                      <i className={`status-${segment.status}`} aria-hidden="true" />
+                      <b>{segment.count}</b> {labels[segment.status]}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          {!expanded && rollup.previews.length > 0 ? (
+            <div className="group-preview">
+              <p className="group-preview-heading">Snapshot</p>
+              <ul>{rollup.previews.map((preview) => (
+                <li key={preview.id}>
+                  <span>{preview.title}</span>
+                  <small className={`work-status-label status-${preview.status}`}>{labels[preview.status] ?? "No status"}</small>
+                </li>
+              ))}</ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -925,6 +1160,17 @@ function SortableCard({
   onMove,
   onDelete,
   readOnly = false,
+  rollup,
+  onOpenGroup,
+  expanded = false,
+  onToggleExpanded,
+  inlineChildren = [],
+  dropOperation = null,
+  reorderPreview = false,
+  hideSourceDuringDrag = false,
+  containmentActive = false,
+  receiverDragHeight = null,
+  ancestry = [],
 }: {
   item: RoadmapItem;
   onSelect: (id: string) => void;
@@ -932,17 +1178,31 @@ function SortableCard({
   onMove: (id: string, status: Status) => void;
   onDelete: (id: string) => void;
   readOnly?: boolean;
+  rollup: GroupRollup<RoadmapItem> | undefined;
+  onOpenGroup?: ((id: string) => void) | undefined;
+  expanded?: boolean;
+  onToggleExpanded?: ((id: string) => void) | undefined;
+  inlineChildren?: RoadmapItem[];
+  dropOperation?: HierarchyDropOperation | null;
+  reorderPreview?: boolean;
+  hideSourceDuringDrag?: boolean;
+  containmentActive?: boolean;
+  receiverDragHeight?: number | null;
+  ancestry?: RoadmapItem[];
 }) {
   const hasDescription = Boolean(item.nextAction || item.summary);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
     disabled: readOnly,
   });
+  const containmentCue = dropOperation === "inside" ? hierarchyContainmentCue(item.isGroup === true) : null;
+  const containmentSourceFootprint = hierarchyContainmentSourceFootprint(receiverDragHeight, containmentActive);
   const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.45 : 1,
-  };
+    transform: isDragging || reorderPreview ? CSS.Transform.toString(transform) : undefined,
+    transition: isDragging || reorderPreview ? transition : undefined,
+    height: isDragging && receiverDragHeight ? containmentSourceFootprint ?? receiverDragHeight : undefined,
+    opacity: isDragging ? hierarchyDraggedSourceOpacity(reorderPreview, hideSourceDuringDrag) : 1,
+  } as React.CSSProperties;
   const codexThreadId = getCodexThreadId(item);
   const codexLabel = codexThreadId
     ? "Open Codex thread"
@@ -963,12 +1223,37 @@ function SortableCard({
         }
       }}
       onClick={() => onSelect(item.id)}
-      className={`card ${hasDescription ? "" : "compact"} ${readOnly ? "read-only" : ""} ${isDragging ? "is-dragging" : ""}`}
+      aria-hidden={isDragging && hideSourceDuringDrag ? true : undefined}
+      className={`card ${hasDescription ? "" : "compact"} ${readOnly ? "read-only" : ""} ${isDragging ? "is-dragging" : ""} ${isDragging && reorderPreview ? "hierarchy-reorder-placeholder" : ""} ${isDragging && hideSourceDuringDrag ? "hierarchy-hidden-drag-source" : ""} ${dropOperation ? `hierarchy-drop-${dropOperation}` : ""}`}
     >
-      <CardContent item={item} />
+      <CardContent item={item} rollup={rollup} ancestry={ancestry} expanded={expanded} />
+      {containmentCue ? (
+        <div className="hierarchy-drop-inside-label">
+          <span>{item.isGroup ? <FolderInput size={15} /> : <FolderPlus size={15} />}{containmentCue.label}</span>
+          <small>{containmentCue.detail}</small>
+        </div>
+      ) : null}
+      {expanded && inlineChildren.length > 0 ? (
+        <div className="inline-group-branch">
+          {inlineChildren.map((child) => <div key={child.id}><span>{child.title}</span><small className={`work-status-label status-${child.status}`}>{labels[child.status] ?? "No status"}</small></div>)}
+        </div>
+      ) : null}
       {!readOnly ? (
-        <div className="card-actions" onPointerDown={(event) => event.stopPropagation()}>
+        <div
+          className="card-actions"
+          onPointerDown={(event) => {
+            if (event.target instanceof Element && event.target.closest("button")) event.stopPropagation();
+          }}
+        >
           <div className="card-action-group">
+            {ancestry.length > 0 && onOpenGroup ? (
+              <TooltipButton label="Open owning Group" onClick={(event) => { event.stopPropagation(); onOpenGroup(ancestry.at(-1)!.id); }}><ListTree size={14} /></TooltipButton>
+            ) : null}
+            {item.isGroup && onOpenGroup ? (
+              <>
+                {inlineChildren.some((child) => !rollup?.previews.some((preview) => preview.id === child.id)) && onToggleExpanded ? <TooltipButton label={expanded ? "Hide items" : "Show all items"} onClick={(event) => { event.stopPropagation(); onToggleExpanded(item.id); }}>{expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</TooltipButton> : null}
+              </>
+            ) : null}
             <TooltipButton
               label={codexLabel}
               className={codexThreadId ? "codex-linked" : ""}
@@ -1031,6 +1316,21 @@ function SortableCard({
   );
 }
 
+interface CrossColumnDropPreview {
+  item: RoadmapItem;
+  status: Status;
+  targetId: string | null;
+  operation: "before" | "after" | "empty";
+}
+
+function CrossColumnPreviewCard({ item, rollup }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined }) {
+  return (
+    <article className={`card ${item.nextAction || item.summary ? "" : "compact"} hierarchy-reorder-placeholder cross-column-drop-preview`} aria-hidden="true">
+      <CardContent item={item} rollup={rollup} />
+    </article>
+  );
+}
+
 function Column({
   status,
   items,
@@ -1044,6 +1344,15 @@ function Column({
   onMove,
   onDelete,
   readOnly = false,
+  groupRollups,
+  onOpenGroup,
+  expandedGroupIds,
+  onToggleGroupExpanded,
+  allItems = [],
+  dropIntent = null,
+  crossColumnDropPreview = null,
+  receiverDragHeight = null,
+  ancestryById,
 }: {
   status: Status;
   items: RoadmapItem[];
@@ -1057,12 +1366,25 @@ function Column({
   onMove: (id: string, status: Status) => void;
   onDelete: (id: string) => void;
   readOnly?: boolean;
+  groupRollups?: Map<string, GroupRollup<RoadmapItem>>;
+  onOpenGroup?: (id: string) => void;
+  expandedGroupIds?: Set<string>;
+  onToggleGroupExpanded?: (id: string) => void;
+  allItems?: RoadmapItem[];
+  dropIntent?: { targetId: string; operation: HierarchyDropOperation } | null;
+  crossColumnDropPreview?: CrossColumnDropPreview | null;
+  receiverDragHeight?: number | null;
+  ancestryById?: Map<string, RoadmapItem[]>;
 }) {
   const { setNodeRef } = useDroppable({ id: status });
+  const destinationPreview = crossColumnDropPreview?.status === status ? crossColumnDropPreview : null;
+  const previewCard = destinationPreview
+    ? <CrossColumnPreviewCard item={destinationPreview.item} rollup={groupRollups?.get(destinationPreview.item.id)} />
+    : null;
 
   if (collapsed) {
     return (
-      <section ref={setNodeRef} className="column collapsed" data-status={status}>
+      <section ref={setNodeRef} className={`column collapsed ${highlighted && !readOnly ? "highlighted" : ""}`} data-status={status}>
         <button onClick={onToggleCollapsed} className="icon-button">
           <Minimize2 size={14} />
         </button>
@@ -1088,20 +1410,42 @@ function Column({
       </header>
       <div className={`column-drop-zone ${highlighted && !readOnly ? "highlighted" : ""}`}>
         {!cardsHidden ? (
-          <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
+          <SortableContext
+            items={items.map((item) => item.id)}
+            strategy={hierarchySortingStrategy(
+              items.map((item) => item.id),
+              crossColumnDropPreview ? null : dropIntent?.targetId ?? null,
+              crossColumnDropPreview ? null : dropIntent?.operation ?? null,
+            )}
+          >
             <div className="card-stack">
               {items.map((item) => (
-                <SortableCard
-                  key={item.id}
-                  item={item}
-                  onSelect={onSelect}
-                  onStartCodex={onStartCodex}
-                  onMove={onMove}
-                  onDelete={onDelete}
-                  readOnly={readOnly}
-                />
+                <React.Fragment key={item.id}>
+                  {destinationPreview?.targetId === item.id && destinationPreview.operation === "before" ? previewCard : null}
+                  <SortableCard
+                    item={item}
+                    onSelect={onSelect}
+                    onStartCodex={onStartCodex}
+                    onMove={onMove}
+                    onDelete={onDelete}
+                    readOnly={readOnly}
+                    rollup={groupRollups?.get(item.id)}
+                    onOpenGroup={onOpenGroup}
+                    expanded={expandedGroupIds?.has(item.id) === true}
+                    onToggleExpanded={onToggleGroupExpanded}
+                    inlineChildren={itemsInGroup(allItems, item.id)}
+                    dropOperation={dropIntent?.targetId === item.id && dropIntent.operation === "inside" ? "inside" : null}
+                    reorderPreview={hierarchyReorderPlaceholderVisible(dropIntent?.operation ?? null) && !crossColumnDropPreview}
+                    hideSourceDuringDrag={dropIntent?.operation === "inside" || Boolean(crossColumnDropPreview)}
+                    containmentActive={dropIntent?.operation === "inside"}
+                    receiverDragHeight={receiverDragHeight}
+                    ancestry={ancestryById?.get(item.id) ?? []}
+                  />
+                  {destinationPreview?.targetId === item.id && destinationPreview.operation === "after" ? previewCard : null}
+                </React.Fragment>
               ))}
-              {items.length === 0 ? <div className="empty-drop">Drop here</div> : null}
+              {destinationPreview?.operation === "empty" ? previewCard : null}
+              {items.length === 0 && !destinationPreview ? <div className="empty-drop">Drop here</div> : null}
             </div>
           </SortableContext>
         ) : (
@@ -1110,6 +1454,111 @@ function Column({
       </div>
     </section>
   );
+}
+
+function useListboxPopover(
+  open: boolean,
+  setOpen: React.Dispatch<React.SetStateAction<boolean>>,
+  disabled = false,
+) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [open, setOpen]);
+
+  function focusOption(preferSelected: boolean, direction: 1 | -1 = 1) {
+    requestAnimationFrame(() => {
+      const enabledOptions = [...(containerRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? [])];
+      const selected = preferSelected
+        ? containerRef.current?.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]:not(:disabled)')
+        : null;
+      (selected ?? (direction > 0 ? enabledOptions[0] : enabledOptions.at(-1)))?.focus();
+    });
+  }
+
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (disabled) return;
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      containerRef.current?.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')?.focus();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const direction: 1 | -1 = event.key === "ArrowUp" || event.key === "End" ? -1 : 1;
+    if (!open) {
+      setOpen(true);
+      focusOption(true, direction);
+      return;
+    }
+    const enabledOptions = [...(containerRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? [])];
+    if (enabledOptions.length === 0) return;
+    if (event.key === "Home" || event.key === "End") {
+      (event.key === "Home" ? enabledOptions[0] : enabledOptions.at(-1))?.focus();
+      return;
+    }
+    const currentIndex = enabledOptions.indexOf(document.activeElement as HTMLButtonElement);
+    const nextIndex = currentIndex < 0
+      ? (direction > 0 ? 0 : enabledOptions.length - 1)
+      : (currentIndex + direction + enabledOptions.length) % enabledOptions.length;
+    enabledOptions[nextIndex]?.focus();
+  }
+
+  return { containerRef, onKeyDown };
+}
+
+function useDialogFocus<T extends HTMLElement>(enabled = true) {
+  const dialogRef = useRef<T>(null);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    if (!dialog) return undefined;
+    const activeDialog = dialog;
+    const focusableSelector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])';
+    const focusableElements = () => [...activeDialog.querySelectorAll<HTMLElement>(focusableSelector)]
+      .filter((element) => element.getClientRects().length > 0);
+    const frame = requestAnimationFrame(() => {
+      if (activeDialog.contains(document.activeElement)) return;
+      const preferred = activeDialog.querySelector<HTMLElement>('[data-dialog-initial-focus], [autofocus]');
+      (preferred ?? focusableElements()[0] ?? activeDialog).focus();
+    });
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Tab") return;
+      const focusable = focusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        activeDialog.focus();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", onKeyDown);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [enabled]);
+
+  return dialogRef;
 }
 
 function BoardPicker({
@@ -1127,26 +1576,17 @@ function BoardPicker({
   );
   const [open, setOpen] = useState(false);
   const [visibleBoards, setVisibleBoards] = useState(orderedBoards);
-  const containerRef = useRef<HTMLDivElement>(null);
   const currentBoard = boards.find((board) => board.repoId === currentRepoId);
   const canSwitch = orderedBoards.length > 1;
   const pickerBoards = open ? visibleBoards : orderedBoards;
+  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen, !canSwitch);
 
   useEffect(() => {
     if (!open) setVisibleBoards(orderedBoards);
   }, [open, orderedBoards]);
 
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(event: PointerEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
-
   return (
-    <div ref={containerRef} className="board-picker">
+    <div ref={containerRef} className="board-picker" onKeyDown={onKeyDown}>
       <button
         className={`board-picker-trigger ${canSwitch ? "" : "single-board"}`}
         aria-haspopup={canSwitch ? "listbox" : undefined}
@@ -1200,20 +1640,11 @@ function HistoryPicker({
   onReturnToCurrent: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen);
   const currentVersion = history?.currentVersion ?? 1;
 
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(event: PointerEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
-
   return (
-    <div ref={containerRef} className="history-picker">
+    <div ref={containerRef} className="history-picker" onKeyDown={onKeyDown}>
       <button
         className={`history-trigger ${previewVersion ? "previewing" : ""}`}
         aria-haspopup="listbox"
@@ -1282,6 +1713,7 @@ function FeedbackModal({
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState<"open" | "copy" | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const dialogRef = useDialogFocus<HTMLElement>();
   const canSubmit = feedback.trim().length > 0 && busy === null;
 
   useEffect(() => {
@@ -1324,10 +1756,12 @@ function FeedbackModal({
   return createPortal(
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
+        ref={dialogRef}
         className="feedback-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="feedback-title"
+        tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="feedback-modal-header">
@@ -1382,6 +1816,7 @@ function UpdateModal({
   const [preflight, setPreflight] = useState<UpdatePreflightPayload | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [updateJob, setUpdateJob] = useState<UpdateRunSnapshot | null>(null);
+  const dialogRef = useDialogFocus<HTMLElement>();
   const latest = status?.latest ?? null;
   const canDirectUpdate = Boolean(status?.updateAvailable && status.compatible && preflight?.directUpdateAvailable);
   const isPostUpdate = Boolean(postUpdateVersion && latest?.version === postUpdateVersion && !status?.updateAvailable);
@@ -1578,10 +2013,12 @@ function UpdateModal({
   return createPortal(
     <div className="modal-backdrop update-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
+        ref={dialogRef}
         className="update-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="update-title"
+        tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="feedback-modal-header">
@@ -1888,7 +2325,7 @@ function TutorialMiniBoard({
   onItemsChange?: (items: RoadmapItem[], selectedId?: string) => void;
   draggable?: boolean;
 }) {
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeSize, setActiveSize] = useState<{ width: number; height: number } | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<Status | null>(null);
@@ -2098,7 +2535,7 @@ function TutorialLiveBoard({
   const [dragOver, setDragOver] = useState<Status | null>(null);
   const dragStartItemsRef = useRef<RoadmapItem[] | null>(null);
   const lastDropTargetIdRef = useRef<string | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
   const grouped = useMemo(() => groupItemsInCurrentOrder(items), [items]);
   const activeItem = activeId ? items.find((item) => item.id === activeId) : null;
   const visibleStatuses = statuses.filter((status) => status !== "archived");
@@ -2216,7 +2653,7 @@ function TutorialLiveBoard({
         <DragOverlay>
           {activeId ? (
             <article className={`card drag-card ${activeItem?.nextAction || activeItem?.summary ? "" : "compact"}`} style={activeSize ?? undefined}>
-              {activeItem ? <CardContent item={activeItem} /> : null}
+              {activeItem ? <CardContent item={activeItem} rollup={undefined} /> : null}
             </article>
           ) : null}
         </DragOverlay>
@@ -2238,6 +2675,31 @@ function TutorialIntroPreview() {
         <p className="eyebrow">Codex works</p>
         <h3>Start from the same state</h3>
         <p>Your agent can read and update the board, then keep the card status and docs in sync.</p>
+      </div>
+    </section>
+  );
+}
+
+function TutorialGroupPreview() {
+  return (
+    <section className="tutorial-group-preview" aria-label="Group and Item model preview">
+      <article className="tutorial-group-card">
+        <header>
+          <span><FolderOpen size={16} /> Launch readiness</span>
+          <b>1/3 complete</b>
+        </header>
+        <p>Ship one coherent release across product, docs, migration, and public installation.</p>
+        <div className="tutorial-group-progress" aria-label="One of three Items complete">
+          <span className="complete" />
+          <span className="in-progress" />
+          <span className="pending" />
+        </div>
+      </article>
+      <div className="tutorial-group-items">
+        <p className="eyebrow">Items inside this Group</p>
+        <article><span>Verify the release candidate</span><b className="status-in-progress">In Progress</b></article>
+        <article><span>Refresh the tutorial</span><b className="status-up-next">Up Next</b></article>
+        <article><span>Publish and verify</span><b>Pending</b></article>
       </div>
     </section>
   );
@@ -2382,6 +2844,10 @@ const tutorialSteps = [
     copy: "Click to open a card and see its next action, spec, plan, and the context Codex should use when starting work.",
   },
   {
+    title: "Groups keep related outcomes together",
+    copy: "Create a Group when several independently completable Items contribute to one larger outcome. The Group stays on the Main Board while its Items keep their own status, priority, documents, and history.",
+  },
+  {
     title: "Open Planban from any thread",
     copy: "Codex browser tabs are thread-local, but Planban can be summoned again from your Codex chat thread with /PB, /Planban, or a plain prompt.",
   },
@@ -2433,7 +2899,8 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
 
   function finish(status: "completed" | "skipped") {
     writeTutorialProgress(status);
-    if (state) onSelectBoard(state.manifest.repoId);
+    const destinationRepoId = tutorialExitRepoId(window.location.search, state?.manifest.repoId ?? null);
+    if (destinationRepoId) onSelectBoard(destinationRepoId);
     else window.location.assign("/boards");
   }
 
@@ -2549,18 +3016,20 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
             {error ? <p className="tutorial-status">Demo board fallback active: {error}</p> : null}
           </section>
 
-          <section className={`tutorial-stage ${stepIndex === 3 ? "empty" : ""}`}>
+          <section className={`tutorial-stage ${stepIndex === 4 ? "empty" : ""}`}>
             {stepIndex === 0 ? (
               <TutorialIntroPreview />
             ) : stepIndex === 3 ? (
-              null
+              <TutorialGroupPreview />
             ) : stepIndex === 4 ? (
+              null
+            ) : stepIndex === 5 ? (
               <TutorialPlanningComposer
                 state={state}
                 planningContext={planningContext}
                 onPlanningContextChange={setPlanningContext}
               />
-            ) : stepIndex === 5 ? (
+            ) : stepIndex === 6 ? (
               <TutorialFeedbackPreview />
             ) : stepIndex === 2 && detailRevealed ? (
               <div className="tutorial-stage-board">
@@ -2640,6 +3109,7 @@ function VersionChangeMenu({
   entries,
   currentVersion,
   previewVersion,
+  labelPlacement = "inside",
   onSelectVersion,
   onReturnToCurrent,
 }: {
@@ -2647,35 +3117,27 @@ function VersionChangeMenu({
   entries: HistoryEntry[];
   currentVersion: number | null;
   previewVersion: number | null;
+  labelPlacement?: "inside" | "outside";
   onSelectVersion: ((version: number) => void) | undefined;
   onReturnToCurrent: (() => void) | undefined;
 }) {
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(event: PointerEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
+  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen);
 
   if (entries.length === 0) return null;
   const viewedBoardVersion = previewVersion ?? currentVersion;
   const activeEntry = entries.find((entry) => viewedBoardVersion !== null && entry.version <= viewedBoardVersion) ?? entries[0]!;
   const activeVersion = activeEntry.version;
 
-  return (
-    <div ref={containerRef} className="version-change-menu">
+  const menu = (
+    <div ref={containerRef} className="version-change-menu" onKeyDown={onKeyDown}>
       <button
-        className={`version-change-trigger ${previewVersion ? "previewing" : ""}`}
+        className={`version-change-trigger ${labelPlacement === "outside" ? "label-outside" : ""} ${previewVersion ? "previewing" : ""}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <span>{label}</span>
+        {labelPlacement === "inside" ? <span>{label}</span> : null}
         <b>Viewing {versionLabel(activeVersion, currentVersion)}</b>
         <ChevronDown size={14} />
       </button>
@@ -2708,6 +3170,329 @@ function VersionChangeMenu({
       ) : null}
     </div>
   );
+
+  return labelPlacement === "outside" ? (
+    <div className="planban-select-field version-change-field">
+      <span className="planban-select-field-label">{label}</span>
+      {menu}
+    </div>
+  ) : menu;
+}
+
+interface PlanbanSelectOption<T extends string> {
+  value: T;
+  label: string;
+  disabled?: boolean;
+}
+
+function PlanbanSelectMenu<T extends string>({
+  label,
+  value,
+  options,
+  disabled = false,
+  disabledReason,
+  labelPlacement = "inside",
+  initialFocus = false,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: PlanbanSelectOption<T>[];
+  disabled?: boolean;
+  disabledReason?: string | undefined;
+  labelPlacement?: "inside" | "outside";
+  initialFocus?: boolean;
+  onChange: (value: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const disabledReasonId = useId();
+  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen, disabled);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  const menu = (
+    <div ref={containerRef} className="version-change-menu planban-select-menu" onKeyDown={onKeyDown}>
+      <button
+        type="button"
+        className={`version-change-trigger planban-select-trigger ${labelPlacement === "outside" ? "label-outside" : ""}`}
+        aria-label={`${label}: ${selected?.label ?? value}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-describedby={disabled && disabledReason ? disabledReasonId : undefined}
+        disabled={disabled}
+        data-dialog-initial-focus={initialFocus ? true : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {labelPlacement === "inside" ? <span>{label}</span> : null}
+        <b>{selected?.label ?? value}</b>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="version-change-popover planban-select-popover" role="listbox" aria-label={label}>
+          {options.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              className={option.value === value ? "active" : ""}
+              role="option"
+              aria-selected={option.value === value}
+              disabled={disabled || option.disabled}
+              onClick={() => {
+                setOpen(false);
+                onChange(option.value);
+              }}
+            >
+              <span><b>{option.label}</b></span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  return labelPlacement === "outside" ? (
+    <div className={`planban-select-field ${disabled && disabledReason ? "has-disabled-reason" : ""}`}>
+      <span className="planban-select-field-label">{label}</span>
+      {menu}
+      {disabled && disabledReason ? <span className="disabled-control-tooltip" id={disabledReasonId} role="tooltip">{disabledReason}</span> : null}
+    </div>
+  ) : menu;
+}
+
+function WorkflowStatusMenu({
+  status,
+  busy,
+  onChange,
+}: {
+  status: Status;
+  busy: boolean;
+  onChange: (status: Status) => void;
+}) {
+  return (
+    <PlanbanSelectMenu
+      label="Status"
+      value={status}
+      options={statuses.map((option) => ({ value: option, label: labels[option] }))}
+      disabled={busy}
+      labelPlacement="outside"
+      onChange={onChange}
+    />
+  );
+}
+
+function GroupRailDropZone({ status, previewed, children }: { status: Status; previewed: boolean; children: React.ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id: `group-status:${status}` });
+  return <div ref={setNodeRef} className={`group-rail-drop-zone ${isOver || previewed ? "active" : ""}`}>{children}</div>;
+}
+
+interface GroupRailDropPreview {
+  item: RoadmapItem;
+  status: Status;
+  targetId: string | null;
+  operation: "before" | "after" | "empty";
+}
+
+function GroupRailInsertionPreview() {
+  return <div className="group-rail-insertion-preview" aria-hidden="true"><span /></div>;
+}
+
+function GroupRailCard({
+  item,
+  selected,
+  disabled,
+  canMoveUp,
+  canMoveDown,
+  onSelect,
+  onMoveUp,
+  onMoveDown,
+  dropOperation,
+  reorderPreview,
+  hideSourceDuringDrag,
+}: {
+  item: RoadmapItem;
+  selected: boolean;
+  disabled: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onSelect: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  dropOperation: HierarchyDropOperation | null;
+  reorderPreview: boolean;
+  hideSourceDuringDrag: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: `group-item:${item.id}`, disabled });
+  return (
+    <article
+      ref={setNodeRef}
+      style={{
+        transform: isDragging || reorderPreview ? CSS.Transform.toString(transform) : undefined,
+        transition: [isDragging || reorderPreview ? transition : null, "border-color 140ms ease", "box-shadow 140ms ease", "background 140ms ease"].filter(Boolean).join(", "),
+        opacity: isDragging ? hierarchyDraggedSourceOpacity(reorderPreview, hideSourceDuringDrag, 0.4) : 1,
+      }}
+      aria-hidden={isDragging && hideSourceDuringDrag ? true : undefined}
+      className={`group-rail-card ${selected ? "active" : ""} ${isDragging && reorderPreview ? "hierarchy-reorder-placeholder" : ""} ${isDragging && hideSourceDuringDrag ? "hierarchy-hidden-drag-source" : ""} ${dropOperation ? `hierarchy-drop-${dropOperation}` : ""}`}
+    >
+      <button className="group-rail-card-main" {...attributes} {...listeners} onClick={onSelect}>
+        <span className="group-rail-card-title">{item.isGroup ? <GroupIcon status={item.status} size={13} /> : null}<b>{item.title}</b></span>
+      </button>
+      {dropOperation === "inside" ? <div className="hierarchy-drop-inside-label"><GroupIcon size={13} /><span>Move inside</span></div> : null}
+      <div className="group-rank-actions" aria-label={`${item.title} order controls`}>
+        <button title="Move up" aria-label={`Move ${item.title} up`} disabled={disabled || !canMoveUp} onClick={onMoveUp}><ChevronUp size={13} /></button>
+        <button title="Move down" aria-label={`Move ${item.title} down`} disabled={disabled || !canMoveDown} onClick={onMoveDown}><ChevronDown size={13} /></button>
+      </div>
+    </article>
+  );
+}
+
+function GroupPlacementModal({
+  active,
+  parent,
+  items,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  active: RoadmapItem;
+  parent: RoadmapItem;
+  items: RoadmapItem[];
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (decision:
+    | { kind: "move"; status: Status; position: GroupPlacementPosition }
+    | { kind: "create"; title: string; summary: string; status: Status }) => void;
+}) {
+  const [status, setStatus] = useState<Status>(active.status);
+  const [position, setPosition] = useState<GroupPlacementPosition>({ kind: "last" });
+  const [groupTitle, setGroupTitle] = useState(`${parent.title} Group`);
+  const [groupSummary, setGroupSummary] = useState("");
+  const [groupStatus, setGroupStatus] = useState<Status>(parent.status);
+  const dialogRef = useDialogFocus<HTMLElement>();
+  const siblings = useMemo(() => items
+    .filter((entry) => entry.id !== active.id && entry.parentId === parent.id && entry.status === status)
+    .sort((a, b) => (a.groupRank ?? Number.MAX_SAFE_INTEGER) - (b.groupRank ?? Number.MAX_SAFE_INTEGER)),
+  [active.id, items, parent.id, status]);
+  const parentIsClosed = parent.status === "complete" || parent.status === "archived";
+  const statusIsAllowed = (option: Status) => {
+    const optionIsClosed = option === "complete" || option === "archived";
+    return !parentIsClosed || optionIsClosed;
+  };
+  const groupStatusIsAllowed = (option: Status) => {
+    const hasOpenItem = [active, parent].some((item) => item.status !== "complete" && item.status !== "archived");
+    return !hasOpenItem || (option !== "complete" && option !== "archived");
+  };
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !busy) onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+
+  return createPortal(
+    <div className="modal-backdrop group-placement-backdrop" role="presentation" onMouseDown={() => { if (!busy) onClose(); }}>
+      <section
+        ref={dialogRef}
+        className="group-placement-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="group-placement-title"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="group-placement-header">
+          <div className="group-placement-heading">
+            <span className="group-placement-heading-icon" aria-hidden="true">
+              {parent.isGroup ? <FolderInput size={17} /> : <FolderPlus size={17} />}
+            </span>
+            <div>
+              <h2 id="group-placement-title">{parent.isGroup ? `Add to ${parent.title}` : "Create Group"}</h2>
+              <p>{parent.isGroup
+                ? <>Choose where “{active.title}” belongs inside this Group.</>
+                : <>Create a new Group for “{parent.title}” and “{active.title}”. Each Item keeps its own status and can still be completed independently.</>}</p>
+            </div>
+          </div>
+          <TooltipButton label="Close" className="toolbar-icon-button" disabled={busy} onClick={onClose}>
+            <X size={14} />
+          </TooltipButton>
+        </header>
+
+        {parent.isGroup ? (
+          <div className="group-placement-transfer" aria-label={`Move ${active.title} into ${parent.title}`}>
+            <div className="group-placement-transfer-node item">
+              <span>Item</span>
+              <b>{active.title}</b>
+            </div>
+            <div className="group-placement-transfer-direction" aria-hidden="true">
+              <FolderInput size={18} />
+            </div>
+            <div className="group-placement-transfer-node group">
+              <span>Group</span>
+              <b>{parent.title}</b>
+            </div>
+          </div>
+        ) : null}
+
+        {parent.isGroup ? <><div className={`group-placement-fields ${siblings.length === 0 ? "single-field" : ""}`}>
+          <PlanbanSelectMenu
+            label="Item status"
+            value={status}
+            options={statuses.map((option) => ({ value: option, label: labels[option], disabled: !statusIsAllowed(option) }))}
+            disabled={busy}
+            labelPlacement="outside"
+            initialFocus
+            onChange={(nextStatus) => { setStatus(nextStatus); setPosition({ kind: "last" }); }}
+          />
+          {siblings.length > 0 ? <PlanbanSelectMenu
+            label={`Position in ${labels[status]}`}
+            value={groupPlacementPositionValue(position)}
+            options={[
+              { value: "first", label: "First" },
+              { value: "last", label: "Last" },
+              ...siblings.map((entry) => ({ value: `after:${entry.id}`, label: `After ${entry.title}` })),
+            ]}
+            disabled={busy}
+            labelPlacement="outside"
+            onChange={(nextPosition) => setPosition(groupPlacementPositionFromValue(nextPosition))}
+          /> : null}
+        </div>
+
+        {siblings.length > 0 ? <p className="group-placement-outcome">
+          {active.title} will be {position.kind === "first" ? "first" : position.kind === "last" ? "last" : `placed after ${siblings.find((entry) => entry.id === position.siblingId)?.title ?? "the selected item"}`} in {labels[status]}.
+        </p> : null}</> : <>
+          <div className="group-placement-fields group-creation-fields">
+            <label>
+              <span>Group title</span>
+              <input value={groupTitle} disabled={busy} onChange={(event) => setGroupTitle(event.target.value)} aria-required="true" autoFocus />
+            </label>
+            <PlanbanSelectMenu
+              label="Group status"
+              value={groupStatus}
+              options={statuses.map((option) => ({ value: option, label: labels[option], disabled: !groupStatusIsAllowed(option) }))}
+              disabled={busy}
+              labelPlacement="outside"
+              onChange={setGroupStatus}
+            />
+            <label className="group-objective-field">
+              <span>Group objective</span>
+              <textarea value={groupSummary} disabled={busy} onChange={(event) => setGroupSummary(event.target.value)} placeholder="What larger outcome do these Items achieve together? Add this now or define it later." rows={3} />
+            </label>
+          </div>
+        </>}
+
+        <footer className="feedback-actions group-placement-actions">
+          <button disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="primary" disabled={busy || (!parent.isGroup && !groupTitle.trim())} onClick={() => parent.isGroup
+            ? onConfirm({ kind: "move", status, position })
+            : onConfirm({ kind: "create", title: groupTitle.trim(), summary: groupSummary.trim(), status: groupStatus })}>
+            {busy ? <Loader2 size={14} className="spin" /> : parent.isGroup ? <FolderInput size={14} /> : <FolderPlus size={14} />}
+            {parent.isGroup ? "Add to group" : "Create Group"}
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 function DetailView({
@@ -2723,6 +3508,7 @@ function DetailView({
   onReturnToCurrent,
   onRestoreCard,
   onRestoreDoc,
+  onSelectWorkItem,
 }: {
   state: PlanbanState;
   item: RoadmapItem;
@@ -2736,6 +3522,7 @@ function DetailView({
   onReturnToCurrent?: () => void;
   onRestoreCard?: (cardId: string) => void;
   onRestoreDoc?: (cardId: string, kind: DocKind) => void;
+  onSelectWorkItem?: (cardId: string) => void;
 }) {
   const availableDocKinds = useMemo<DocKind[]>(
     () => ["spec", ...(item.planDoc ? (["plan"] as const) : [])],
@@ -2745,7 +3532,27 @@ function DetailView({
   const [docsByKind, setDocsByKind] = useState<Partial<Record<DocKind, DocPayload>>>({});
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [objectiveEditing, setObjectiveEditing] = useState(false);
+  const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
   const [busy, setBusy] = useState(false);
+  const [placementOpen, setPlacementOpen] = useState(false);
+  const [placementQuery, setPlacementQuery] = useState("");
+  const [placementDestination, setPlacementDestination] = useState<{
+    id: string | null;
+    title: string;
+    isGroup: boolean;
+  } | null>(null);
+  const [placementStatus, setPlacementStatus] = useState<Status>(item.status);
+  const [placementPosition, setPlacementPosition] = useState<GroupPlacementPosition>({ kind: "last" });
+  const [collapsedGroupStatuses, setCollapsedGroupStatuses] = useState<Partial<Record<Status, boolean>>>({});
+  const [groupDragId, setGroupDragId] = useState<string | null>(null);
+  const [groupDropIntent, setGroupDropIntent] = useState<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
+  const [groupColumnDropPreview, setGroupColumnDropPreview] = useState<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
+  const [groupOptimisticItems, setGroupOptimisticItems] = useState<RoadmapItem[] | null>(null);
+  const groupSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
+  const groupDropIntentRef = useRef<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
+  const groupColumnDropPreviewRef = useRef<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
+  const groupDropRectsRef = useRef(new Map<string, HierarchyDropRect>());
   const doc = docsByKind[activeTab] ?? null;
   const isPreviewing = previewVersion !== null;
   const currentVersion = history?.currentVersion ?? null;
@@ -2758,6 +3565,279 @@ function DetailView({
     [activeTab, history, item.id],
   );
   const canRestoreActiveDoc = isPreviewing && activeDocHistoryEntries.some((entry) => entry.version === previewVersion);
+  const byId = useMemo(() => new Map(state.roadmap.roadmapItems.map((entry) => [entry.id, entry])), [state.roadmap.roadmapItems]);
+  const ancestry = useMemo(() => {
+    const parent = item.parentId ? byId.get(item.parentId) : null;
+    return parent ? [parent] : [];
+  }, [byId, item.parentId]);
+  const workspaceRoot = item.isGroup ? item : (item.parentId ? byId.get(item.parentId) ?? null : null);
+  const workspaceItems = useMemo(() => {
+    if (!workspaceRoot) return [];
+    return (groupOptimisticItems ?? state.roadmap.roadmapItems)
+      .filter((entry) => entry.parentId === workspaceRoot.id)
+      .sort((a, b) => statuses.indexOf(a.status) - statuses.indexOf(b.status)
+        || (a.groupRank ?? Number.MAX_SAFE_INTEGER) - (b.groupRank ?? Number.MAX_SAFE_INTEGER));
+  }, [groupOptimisticItems, state.roadmap.roadmapItems, workspaceRoot]);
+  const workspaceGroups = useMemo(() => {
+    const groups: Record<Status, RoadmapItem[]> = {
+      "in-progress": [],
+      "up-next": [],
+      pending: [],
+      complete: [],
+      archived: [],
+    };
+    for (const entry of workspaceItems) groups[entry.status].push(entry);
+    return groups;
+  }, [workspaceItems]);
+  const groupRailDropPreview = useMemo<GroupRailDropPreview | null>(() => {
+    if (!groupDragId) return null;
+    const active = byId.get(groupDragId);
+    if (!active) return null;
+    if (groupColumnDropPreview) return { item: active, ...groupColumnDropPreview };
+    if (!groupDropIntent || groupDropIntent.operation === "inside") return null;
+    const target = byId.get(groupDropIntent.targetId);
+    if (!target) return null;
+    return {
+      item: active,
+      status: target.status,
+      targetId: target.id,
+      operation: groupDropIntent.operation,
+    };
+  }, [byId, groupColumnDropPreview, groupDragId, groupDropIntent]);
+  const groupRailPreviewStatus = groupRailDropPreview?.status
+    ?? (groupDropIntent && hierarchyReorderPlaceholderVisible(groupDropIntent.operation)
+      ? byId.get(groupDropIntent.targetId)?.status ?? null
+      : null);
+  const placementCandidates = useMemo(() => {
+    const query = placementQuery.trim().toLocaleLowerCase();
+    return state.roadmap.roadmapItems
+      .filter((entry) => entry.parentId === null && entry.id !== item.id && entry.isGroup)
+      .filter((entry) => !query || entry.title.toLocaleLowerCase().includes(query) || entry.id.toLocaleLowerCase().includes(query))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [item.id, placementQuery, state.roadmap.roadmapItems]);
+  const currentScopeItems = useMemo(() => state.roadmap.roadmapItems
+    .filter((entry) => entry.parentId === item.parentId && entry.status === item.status)
+    .sort((a, b) => (workItemRank(a) ?? Number.MAX_SAFE_INTEGER) - (workItemRank(b) ?? Number.MAX_SAFE_INTEGER)),
+  [item.parentId, item.status, state.roadmap.roadmapItems]);
+  const currentScopeSiblings = useMemo(() => currentScopeItems.filter((entry) => entry.id !== item.id), [currentScopeItems, item.id]);
+  const currentScopeIndex = currentScopeItems.findIndex((entry) => entry.id === item.id);
+  const currentPosition: GroupPlacementPosition = currentScopeIndex <= 0
+    ? { kind: "first" }
+    : currentScopeIndex === currentScopeItems.length - 1
+      ? { kind: "last" }
+      : { kind: "after", siblingId: currentScopeItems[currentScopeIndex - 1]!.id };
+  const currentPositionOptions = useMemo<PlanbanSelectOption<string>[]>(() => {
+    if (currentScopeSiblings.length === 0) return [{ value: "first", label: "Only Item", disabled: true }];
+    const value = groupPlacementPositionValue(currentPosition);
+    const lastSiblingId = currentScopeSiblings.at(-1)?.id;
+    return [
+      { value: "first", label: "First", disabled: value === "first" },
+      { value: "last", label: "Last", disabled: value === "last" },
+      ...currentScopeSiblings
+        .filter((entry) => entry.id !== lastSiblingId)
+        .map((entry) => ({ value: `after:${entry.id}`, label: `After ${entry.title}`, disabled: value === `after:${entry.id}` })),
+    ];
+  }, [currentPosition, currentScopeSiblings]);
+  const placementSiblings = useMemo(() => {
+    if (!placementDestination) return [];
+    return state.roadmap.roadmapItems
+      .filter((entry) => entry.id !== item.id && entry.parentId === placementDestination.id && entry.status === placementStatus)
+      .sort((a, b) => (workItemRank(a) ?? Number.MAX_SAFE_INTEGER) - (workItemRank(b) ?? Number.MAX_SAFE_INTEGER));
+  }, [item.id, placementDestination, placementStatus, state.roadmap.roadmapItems]);
+  const placementParent = placementDestination?.id ? byId.get(placementDestination.id) ?? null : null;
+  const placementStatusAllowed = (status: Status) => {
+    if (!placementParent || (placementParent.status !== "complete" && placementParent.status !== "archived")) return true;
+    return status === "complete" || status === "archived";
+  };
+  async function changeWorkflowStatus(status: Status) {
+    if (status === item.status) return;
+    setBusy(true);
+    try {
+      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+        method: "POST",
+        body: JSON.stringify({ status, baseRevision: state.roadmap.revision }),
+      });
+      await onStateRefresh();
+    } catch (error) { window.alert(error instanceof Error ? error.message : "Status update failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function changePosition(position: GroupPlacementPosition) {
+    const afterId = position.kind === "first"
+      ? null
+      : position.kind === "after"
+        ? position.siblingId
+        : currentScopeSiblings.at(-1)?.id ?? null;
+    setBusy(true);
+    try {
+      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+        method: "POST",
+        body: JSON.stringify({ afterId, baseRevision: state.roadmap.revision }),
+      });
+      await onStateRefresh();
+    } catch (error) { window.alert(error instanceof Error ? error.message : "Position update failed"); }
+    finally { setBusy(false); }
+  }
+
+  function choosePlacementDestination(destination: { id: string | null; title: string; isGroup: boolean }) {
+    const destinationGroup = destination.id ? byId.get(destination.id) : null;
+    const destinationIsClosed = destinationGroup?.status === "complete" || destinationGroup?.status === "archived";
+    setPlacementDestination(destination);
+    setPlacementStatus(destinationIsClosed ? destinationGroup.status : item.status);
+    setPlacementPosition({ kind: "last" });
+  }
+
+  async function moveToParent(parentId: string | null, status: Status, position: GroupPlacementPosition) {
+    const afterId = position.kind === "first"
+      ? null
+      : position.kind === "after"
+        ? position.siblingId
+        : placementSiblings.at(-1)?.id ?? null;
+    setBusy(true);
+    try {
+      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+        method: "POST",
+        body: JSON.stringify({ parentId, status, afterId, baseRevision: state.roadmap.revision }),
+      });
+      setPlacementOpen(false);
+      setPlacementQuery("");
+      setPlacementDestination(null);
+      setPlacementStatus(item.status);
+      setPlacementPosition({ kind: "last" });
+      await onStateRefresh();
+    } catch (error) { window.alert(error instanceof Error ? error.message : "Move failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function saveObjective() {
+    setBusy(true);
+    try {
+      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}`), {
+        method: "PATCH",
+        body: JSON.stringify({
+          summary: objectiveDraft.trim() || null,
+          baseRevision: state.roadmap.revision,
+        }),
+      });
+      setObjectiveEditing(false);
+      await onStateRefresh();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Group objective update failed");
+      setObjectiveDraft(item.summary ?? "");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyWorkspaceMove(activeId: string, move: GroupWorkspaceMove) {
+    setGroupOptimisticItems(previewGroupWorkspaceMove(state.roadmap.roadmapItems, activeId, move));
+    setBusy(true);
+    try {
+      await api<PlanbanState>(boardPath(boardId, `/cards/${activeId}/move`), {
+        method: "POST",
+        body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
+      });
+      await onStateRefresh();
+      return true;
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Workflow move failed");
+      return false;
+    } finally {
+      setGroupOptimisticItems(null);
+      setBusy(false);
+    }
+  }
+
+  function clearGroupColumnDropPreview() {
+    groupColumnDropPreviewRef.current = null;
+    setGroupColumnDropPreview(null);
+  }
+
+  function clearGroupDropIntent() {
+    groupDropIntentRef.current = null;
+    groupDropRectsRef.current.clear();
+    setGroupDropIntent(null);
+    clearGroupColumnDropPreview();
+  }
+
+  function considerGroupDropIntent(event: DragMoveEvent) {
+    const activeId = String(event.active.id).replace("group-item:", "");
+    const overId = event.over ? String(event.over.id) : null;
+    const candidateId = overId?.startsWith("group-item:") ? overId.slice("group-item:".length) : null;
+    if (candidateId === activeId) {
+      groupDropIntentRef.current = null;
+      setGroupDropIntent(null);
+      clearGroupColumnDropPreview();
+      return;
+    }
+    if (!candidateId || !event.over) {
+      groupDropIntentRef.current = null;
+      setGroupDropIntent(null);
+      const targetStatus = overId?.startsWith("group-status:")
+        ? overId.slice("group-status:".length) as Status
+        : null;
+      const active = state.roadmap.roadmapItems.find((entry) => entry.id === activeId);
+      if (active && targetStatus && targetStatus !== active.status && !collapsedGroupStatuses[targetStatus]) {
+        const tail = workspaceGroups[targetStatus].filter((entry) => entry.id !== activeId).at(-1) ?? null;
+        const next = {
+          status: targetStatus,
+          targetId: tail?.id ?? null,
+          operation: tail ? "after" as const : "empty" as const,
+        };
+        groupColumnDropPreviewRef.current = next;
+        setGroupColumnDropPreview(next);
+      } else {
+        clearGroupColumnDropPreview();
+      }
+      return;
+    }
+    clearGroupColumnDropPreview();
+    const rect = groupDropRectsRef.current.get(candidateId) ?? stableDropRect(event.over.rect);
+    groupDropRectsRef.current.set(candidateId, rect);
+    const previous = groupDropIntentRef.current?.targetId === candidateId ? groupDropIntentRef.current.operation : null;
+    const operation = hierarchyDropOperation(dragPointerY(event), rect, {
+      canMoveInside: false,
+      previous,
+    });
+    if (operation !== "inside" && !hierarchyPlacementChanges(state.roadmap.roadmapItems, activeId, candidateId, operation)) {
+      groupDropIntentRef.current = null;
+      setGroupDropIntent(null);
+      return;
+    }
+    const next = { targetId: candidateId, operation };
+    groupDropIntentRef.current = next;
+    setGroupDropIntent(next);
+  }
+
+  function handleWorkspaceDrop(activeId: string, overId: string) {
+    const outcome = groupWorkspaceDropOutcome(state.roadmap.roadmapItems, activeId, overId);
+    if (!outcome) return;
+    void applyWorkspaceMove(outcome.activeId, outcome.move);
+  }
+
+  async function reorderWorkspaceItem(targetId: string, direction: "up" | "down") {
+    const target = byId.get(targetId);
+    if (!target) return;
+    const siblings = workspaceGroups[target.status];
+    const index = siblings.findIndex((entry) => entry.id === target.id);
+    if (index < 0 || (direction === "up" && index === 0) || (direction === "down" && index === siblings.length - 1)) return;
+    const afterId = direction === "up"
+      ? (index <= 1 ? null : siblings[index - 2]?.id ?? null)
+      : siblings[index + 1]?.id ?? null;
+    setGroupOptimisticItems(previewGroupWorkspaceMove(state.roadmap.roadmapItems, target.id, { afterId }));
+    setBusy(true);
+    try {
+      await api<PlanbanState>(boardPath(boardId, `/cards/${target.id}/move`), {
+        method: "POST",
+        body: JSON.stringify({ afterId, baseRevision: state.roadmap.revision }),
+      });
+      await onStateRefresh();
+    } catch (error) { window.alert(error instanceof Error ? error.message : "Group order update failed"); }
+    finally {
+      setGroupOptimisticItems(null);
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!availableDocKinds.includes(activeTab)) setActiveTab("spec");
@@ -2768,7 +3848,43 @@ function DetailView({
     setDraft("");
     setEditing(false);
     setActiveTab("spec");
+    setPlacementOpen(false);
+    setPlacementQuery("");
+    setPlacementDestination(null);
+    setPlacementStatus(item.status);
+    setPlacementPosition({ kind: "last" });
+    setGroupOptimisticItems(null);
   }, [boardId, item.id, previewVersion]);
+
+  useEffect(() => {
+    setObjectiveEditing(false);
+    setObjectiveDraft(item.summary ?? "");
+  }, [item.id, item.summary]);
+
+  useEffect(() => {
+    if (!workspaceRoot) return;
+    const saved = readGroupRailSections(boardId, workspaceRoot.id);
+    const next = { ...(saved ?? defaultGroupRailSections(state.roadmap.roadmapItems, workspaceRoot.id)) };
+    if (item.parentId === workspaceRoot.id) next[item.status] = false;
+    setCollapsedGroupStatuses(next);
+    if (item.parentId === workspaceRoot.id && saved?.[item.status] === true) {
+      writeGroupRailSections(boardId, workspaceRoot.id, next);
+    }
+  }, [boardId, item.id, item.parentId, item.status, state.roadmap.roadmapItems, workspaceRoot]);
+
+  useEffect(() => {
+    if (!placementOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || busy) return;
+      setPlacementOpen(false);
+      setPlacementQuery("");
+      setPlacementDestination(null);
+      setPlacementStatus(item.status);
+      setPlacementPosition({ kind: "last" });
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [busy, item.status, placementOpen]);
 
   const loadDoc = useCallback(
     async (kind: DocKind) => {
@@ -2822,7 +3938,8 @@ function DetailView({
   }
 
   return (
-    <main className="detail">
+    <>
+    <main className={`detail ${workspaceRoot ? "group-detail" : ""}`}>
       <header className="detail-header">
         <button onClick={onBack} className="back-button">
           <ArrowLeft size={16} />
@@ -2836,6 +3953,16 @@ function DetailView({
             </p>
           ) : null}
         </div>
+        <div className="detail-header-actions">
+          <VersionChangeMenu
+            label="Version"
+            entries={cardHistoryEntries}
+            currentVersion={currentVersion}
+            previewVersion={previewVersion}
+            labelPlacement="outside"
+            onSelectVersion={onSelectVersion}
+            onReturnToCurrent={onReturnToCurrent}
+          />
         {isPreviewing ? (
           <div className="detail-history-actions">
             <button onClick={onReturnToCurrent}>Close preview</button>
@@ -2844,32 +3971,178 @@ function DetailView({
             </button>
           </div>
         ) : null}
+        </div>
       </header>
+
+      <div className={workspaceRoot ? "group-workspace" : "detail-content"}>
+        {workspaceRoot ? (
+          <aside className="group-navigator" aria-label={`${workspaceRoot.title} items`}>
+            <nav>
+              <button className={`group-nav-root ${item.id === workspaceRoot.id ? "active" : ""}`} onClick={() => onSelectWorkItem?.(workspaceRoot.id)}>
+                <GroupIcon status={workspaceRoot.status} size={14} />
+                <span title={workspaceRoot.title}>{workspaceRoot.title}</span>
+                <small className="count count-compact">{workspaceItems.length}</small>
+              </button>
+              <DndContext
+                sensors={groupSensors}
+                collisionDetection={(args) => {
+                  const collisions = pointerWithin(args);
+                  const itemCollision = collisions.find((collision) => String(collision.id).startsWith("group-item:")
+                    && String(collision.id) !== String(args.active.id));
+                  if (itemCollision) return [itemCollision];
+                  const statusCollision = collisions.find((collision) => String(collision.id).startsWith("group-status:"));
+                  if (!statusCollision) return collisions;
+                  const activeId = String(args.active.id).replace("group-item:", "");
+                  const status = String(statusCollision.id).slice("group-status:".length) as Status;
+                  const pointerY = args.pointerCoordinates?.y;
+                  if (pointerY === undefined) return collisions;
+                  const targetId = hierarchyColumnSpatialTarget(
+                    pointerY,
+                    workspaceGroups[status]
+                      .filter((entry) => entry.id !== activeId)
+                      .flatMap((entry) => {
+                        const rect = args.droppableRects.get(`group-item:${entry.id}`);
+                        return rect ? [{ id: entry.id, top: rect.top, bottom: rect.bottom }] : [];
+                      }),
+                  );
+                  return targetId ? [{ id: `group-item:${targetId}` }] : collisions;
+                }}
+                onDragStart={(event) => {
+                  clearGroupDropIntent();
+                  setGroupDragId(String(event.active.id).replace("group-item:", ""));
+                }}
+                onDragMove={considerGroupDropIntent}
+                onDragCancel={() => {
+                  setGroupDragId(null);
+                  clearGroupDropIntent();
+                }}
+                onDragEnd={(event) => {
+                  const active = String(event.active.id).replace("group-item:", "");
+                  const rawOver = event.over ? String(event.over.id) : null;
+                  const intent = groupDropIntentRef.current;
+                  const columnDropPreview = groupColumnDropPreviewRef.current;
+                  const activeItem = state.roadmap.roadmapItems.find((entry) => entry.id === active);
+                  const overItemId = rawOver?.startsWith("group-item:") ? rawOver.slice("group-item:".length) : null;
+                  const overStatus = overItemId
+                    ? state.roadmap.roadmapItems.find((entry) => entry.id === overItemId)?.status ?? null
+                    : rawOver?.startsWith("group-status:")
+                      ? rawOver.slice("group-status:".length)
+                      : null;
+                  const decision = hierarchyDropCommitDecision(
+                    active,
+                    activeItem?.status ?? "",
+                    overItemId ?? rawOver,
+                    overStatus,
+                    intent,
+                  );
+                  const over = decision.kind === "hierarchy"
+                    ? `group-${decision.operation}:${decision.targetId}`
+                    : decision.kind === "move"
+                      ? columnDropPreview && rawOver === `group-status:${columnDropPreview.status}`
+                        ? columnDropPreview.targetId
+                          ? `group-after:${columnDropPreview.targetId}`
+                          : rawOver
+                        : null
+                      : null;
+                  setGroupDragId(null);
+                  clearGroupDropIntent();
+                  if (over) handleWorkspaceDrop(active, over);
+                }}
+              >
+                {statuses.map((status) => {
+                  const group = workspaceGroups[status];
+                  if (status === "archived" && group.length === 0) return null;
+                  const collapsed = collapsedGroupStatuses[status] === true;
+                  return (
+                    <section key={status} className="group-rail-section">
+                      <button className="group-rail-section-header" aria-expanded={!collapsed} onClick={() => setCollapsedGroupStatuses((current) => {
+                        const next = { ...current, [status]: !current[status] };
+                        if (workspaceRoot) writeGroupRailSections(boardId, workspaceRoot.id, next);
+                        return next;
+                      })}>
+                        {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                        <span>{labels[status]}</span>
+                        <small className="count count-compact">{group.length}</small>
+                      </button>
+                      {!collapsed ? (
+                        <GroupRailDropZone status={status} previewed={groupRailPreviewStatus === status}>
+                          <SortableContext
+                            items={group.map((entry) => `group-item:${entry.id}`)}
+                            strategy={hierarchySortingStrategy(
+                              group.map((entry) => `group-item:${entry.id}`),
+                              groupRailDropPreview ? null : groupDropIntent ? `group-item:${groupDropIntent.targetId}` : null,
+                              groupRailDropPreview ? null : groupDropIntent?.operation ?? null,
+                            )}
+                          >
+                            {group.map((entry, index) => (
+                              <React.Fragment key={entry.id}>
+                                {groupRailDropPreview?.status === status && groupRailDropPreview.targetId === entry.id && groupRailDropPreview.operation === "before"
+                                  ? <GroupRailInsertionPreview />
+                                  : null}
+                                <GroupRailCard
+                                  item={entry}
+                                  selected={item.id === entry.id}
+                                  disabled={isPreviewing || busy}
+                                  canMoveUp={index > 0}
+                                  canMoveDown={index < group.length - 1}
+                                  onSelect={() => onSelectWorkItem?.(entry.id)}
+                                  onMoveUp={() => void reorderWorkspaceItem(entry.id, "up")}
+                                onMoveDown={() => void reorderWorkspaceItem(entry.id, "down")}
+                                dropOperation={groupDropIntent?.targetId === entry.id && groupDropIntent.operation === "inside" ? "inside" : null}
+                                reorderPreview={hierarchyReorderPlaceholderVisible(groupDropIntent?.operation ?? null) && !groupRailDropPreview}
+                                hideSourceDuringDrag={groupDropIntent?.operation === "inside" || Boolean(groupRailDropPreview)}
+                                />
+                                {groupRailDropPreview?.status === status && groupRailDropPreview.targetId === entry.id && groupRailDropPreview.operation === "after"
+                                  ? <GroupRailInsertionPreview />
+                                  : null}
+                              </React.Fragment>
+                            ))}
+                            {groupRailDropPreview?.status === status && groupRailDropPreview.operation === "empty"
+                              ? <GroupRailInsertionPreview />
+                              : null}
+                          </SortableContext>
+                          {group.length === 0 && groupRailDropPreview?.status !== status ? <div className="group-rail-empty">Drop here</div> : null}
+                        </GroupRailDropZone>
+                      ) : null}
+                    </section>
+                  );
+                })}
+                <DragOverlay>
+                  {groupDragId ? <div className="group-rail-drag">{byId.get(groupDragId)?.title}</div> : null}
+                </DragOverlay>
+              </DndContext>
+            </nav>
+          </aside>
+        ) : null}
+        <div className="group-workspace-detail">
 
       <section className="overview-panel">
         <div className="meta-grid">
-          <div>
-            <span>Status</span>
-            <b>{labels[item.status]}</b>
+          <div className="workflow-status-summary">
+            {isPreviewing ? <><span>Status</span><b>{labels[item.status]}</b></> : (
+              <WorkflowStatusMenu status={item.status} busy={busy} onChange={(status) => void changeWorkflowStatus(status)} />
+            )}
           </div>
-          <div>
-            <span>Priority</span>
-            <b>{item.priority ? `P${item.priority}` : "None"}</b>
-          </div>
-          <div>
-            <span>Planning root</span>
-            <b className="path-text">{state.planningRoot}</b>
-          </div>
-          <div className="meta-version-cell">
-            <VersionChangeMenu
-              label="Card details"
-              entries={cardHistoryEntries}
-              currentVersion={currentVersion}
-              previewVersion={previewVersion}
-              onSelectVersion={onSelectVersion}
-              onReturnToCurrent={onReturnToCurrent}
+          {isPreviewing ? (
+            <div className="position-summary"><span>Position</span><b>{workItemRank(item) ? `P${workItemRank(item)}` : "None"}</b></div>
+          ) : (
+            <PlanbanSelectMenu
+              label="Position"
+              value={groupPlacementPositionValue(currentPosition)}
+              options={currentPositionOptions}
+              disabled={busy || currentScopeSiblings.length === 0}
+              disabledReason={currentScopeSiblings.length === 0 ? `This is the only Work Item in ${labels[item.status]}, so its position cannot change.` : undefined}
+              labelPlacement="outside"
+              onChange={(nextPosition) => void changePosition(groupPlacementPositionFromValue(nextPosition))}
             />
-          </div>
+          )}
+          {!isPreviewing && !item.isGroup ? (
+            <div className="meta-move-cell">
+              <button className="meta-move-button" aria-expanded={placementOpen} onClick={() => setPlacementOpen(true)}>
+                <ArrowRightLeft size={14} /> Move Item
+              </button>
+            </div>
+          ) : null}
         </div>
         {item.nextAction ? (
           <div className="next-action">
@@ -2878,6 +4151,185 @@ function DetailView({
           </div>
         ) : null}
       </section>
+
+      {!isPreviewing && !item.isGroup && placementOpen ? createPortal(
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => {
+          if (busy) return;
+          setPlacementOpen(false);
+          setPlacementQuery("");
+          setPlacementDestination(null);
+        }}>
+          <section className="group-placement-modal item-move-modal" role="dialog" aria-modal="true" aria-labelledby="item-move-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="group-placement-header">
+              <div className="group-placement-heading">
+                <span className="group-placement-heading-icon" aria-hidden="true"><ArrowRightLeft size={17} /></span>
+                <div>
+                  <h2 id="item-move-title">Move Item</h2>
+                  <p>{placementDestination ? "Review the destination before moving this Item." : `Choose a new location for “${item.title}”.`}</p>
+                </div>
+              </div>
+              <TooltipButton label="Close" className="toolbar-icon-button" disabled={busy} onClick={() => {
+                setPlacementOpen(false);
+                setPlacementQuery("");
+                setPlacementDestination(null);
+              }}>
+                <X size={14} />
+              </TooltipButton>
+            </header>
+            {placementDestination ? (
+              <>
+                <div className="item-move-review">
+                  <div className="group-placement-transfer" aria-label={`${item.title} will move to ${placementDestination.title}`}>
+                    <div className="group-placement-transfer-node item">
+                      <span>Item</span>
+                      <b>{item.title}</b>
+                    </div>
+                    <div className="group-placement-transfer-direction" aria-hidden="true">
+                      <FolderInput size={18} />
+                    </div>
+                    <div className="group-placement-transfer-node group">
+                      <span>{placementDestination.isGroup ? "Group" : "Board"}</span>
+                      <b>{placementDestination.title}</b>
+                    </div>
+                  </div>
+                  <div className={`group-placement-fields ${placementSiblings.length === 0 ? "single-field" : ""}`}>
+                    <PlanbanSelectMenu
+                      label="Item status"
+                      value={placementStatus}
+                      options={statuses.map((status) => ({ value: status, label: labels[status], disabled: !placementStatusAllowed(status) }))}
+                      disabled={busy}
+                      labelPlacement="outside"
+                      onChange={(status) => {
+                        setPlacementStatus(status);
+                        setPlacementPosition({ kind: "last" });
+                      }}
+                    />
+                    {placementSiblings.length > 0 ? (
+                      <PlanbanSelectMenu
+                        label={`Position in ${labels[placementStatus]}`}
+                        value={groupPlacementPositionValue(placementPosition)}
+                        options={[
+                          { value: "first", label: "First", disabled: placementPosition.kind === "first" },
+                          { value: "last", label: "Last", disabled: placementPosition.kind === "last" },
+                          ...placementSiblings
+                            .filter((entry) => entry.id !== placementSiblings.at(-1)?.id)
+                            .map((entry) => ({
+                              value: `after:${entry.id}`,
+                              label: `After ${entry.title}`,
+                              disabled: placementPosition.kind === "after" && placementPosition.siblingId === entry.id,
+                            })),
+                        ]}
+                        disabled={busy}
+                        labelPlacement="outside"
+                        onChange={(position) => setPlacementPosition(groupPlacementPositionFromValue(position))}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+                <footer className="feedback-actions group-placement-actions">
+                  <button disabled={busy} onClick={() => setPlacementDestination(null)}>Back</button>
+                  <button className="primary" disabled={busy} onClick={() => void moveToParent(placementDestination.id, placementStatus, placementPosition)}>
+                    <ArrowRightLeft size={14} /> {busy ? "Moving…" : "Confirm move"}
+                  </button>
+                </footer>
+              </>
+            ) : <div className="hierarchy-editor">
+              <div className="placement-picker">
+                <label>
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    autoFocus
+                    value={placementQuery}
+                    onChange={(event) => setPlacementQuery(event.target.value)}
+                    placeholder="Find a Group…"
+                    aria-label="Find a destination"
+                  />
+                </label>
+                <div className="placement-options" role="listbox" aria-label="Item location">
+                  <button
+                    className={!item.parentId ? "active" : ""}
+                    role="option"
+                    aria-selected={!item.parentId}
+                    disabled={busy || !item.parentId}
+                    onClick={() => choosePlacementDestination({ id: null, title: "Main Board", isGroup: false })}
+                  >
+                    <span><b>Main Board</b></span>
+                  </button>
+                  {placementCandidates.map((entry) => (
+                    <button
+                      key={entry.id}
+                      className={item.parentId === entry.id ? "active" : ""}
+                      role="option"
+                      aria-selected={item.parentId === entry.id}
+                      disabled={busy || item.parentId === entry.id}
+                      onClick={() => choosePlacementDestination({ id: entry.id, title: entry.title, isGroup: true })}
+                    >
+                      <GroupIcon status={entry.status} size={14} />
+                      <span><b>{entry.title}</b></span>
+                    </button>
+                  ))}
+                  {placementCandidates.length === 0 ? <p>No matching destinations</p> : null}
+                </div>
+              </div>
+            </div>}
+          </section>
+        </div>,
+        document.body,
+      ) : null}
+
+      {item.isGroup ? (
+        <section className={`group-objective-panel ${objectiveEditing ? "editing" : ""} ${item.summary ? "" : "empty"}`}>
+          <div className="doc-tabs group-objective-tabs">
+            <span className="group-objective-tab">Group objective</span>
+          </div>
+          {objectiveEditing ? (
+            <div className="editor-pane group-objective-editor">
+              <AutoSizingTextarea
+                autoFocus
+                aria-label="Group objective"
+                value={objectiveDraft}
+                disabled={busy}
+                onChange={(event) => setObjectiveDraft(event.target.value)}
+                placeholder="What larger outcome do these Items achieve together?"
+              />
+              <div className="editor-actions group-objective-actions">
+                <button disabled={busy} onClick={() => {
+                  setObjectiveDraft(item.summary ?? "");
+                  setObjectiveEditing(false);
+                }}>Cancel</button>
+                <button
+                  className="primary"
+                  disabled={busy || objectiveDraft.trim() === (item.summary ?? "")}
+                  onClick={() => void saveObjective()}
+                >
+                  {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
+                  Save objective
+                </button>
+              </div>
+            </div>
+          ) : item.summary ? (
+            <div className="group-objective-body editable-content-region">
+              {!isPreviewing ? (
+                <TooltipButton
+                  label="Edit Group objective"
+                  className="content-edit-action"
+                  onClick={() => setObjectiveEditing(true)}
+                >
+                  <FilePenLine size={14} />
+                </TooltipButton>
+              ) : null}
+              <p>{item.summary}</p>
+            </div>
+          ) : isPreviewing ? (
+            <div className="group-objective-empty"><p>No objective recorded.</p></div>
+          ) : (
+            <div className="group-objective-empty">
+              <p>No Group objective yet.</p>
+              <button onClick={() => setObjectiveEditing(true)}>Add objective</button>
+            </div>
+          )}
+        </section>
+      ) : null}
 
       <section className="doc-shell">
         <div className="doc-tabs">
@@ -2889,24 +4341,18 @@ function DetailView({
               Plan
             </button>
           ) : null}
-          {!isPreviewing ? (
-            <TooltipButton
-              label={editing ? "Preview document" : "Edit document"}
-              className="edit-doc"
-              onClick={() => setEditing((value) => !value)}
-            >
-              <FilePenLine size={14} />
-            </TooltipButton>
-          ) : null}
         </div>
 
         {doc ? (
           editing ? (
             <div className="editor-pane">
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} />
+              <AutoSizingTextarea value={draft} onChange={(event) => setDraft(event.target.value)} />
               <div className="editor-actions">
-                <button onClick={() => setDraft(doc.markdown)}>Reset</button>
-                <button className="primary" onClick={saveDoc} disabled={busy}>
+                <button disabled={busy} onClick={() => {
+                  setDraft(doc.markdown);
+                  setEditing(false);
+                }}>Cancel</button>
+                <button className="primary" onClick={saveDoc} disabled={busy || draft === doc.markdown}>
                   {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
                   Save {activeTab}
                 </button>
@@ -2914,31 +4360,46 @@ function DetailView({
             </div>
           ) : doc.exists ? (
             <article className="markdown-body">
-              <div className="doc-version-row">
-                <VersionChangeMenu
-                  label={`${docKindLabel(activeTab)} document`}
-                  entries={activeDocHistoryEntries}
-                  currentVersion={currentVersion}
-                  previewVersion={previewVersion}
-                  onSelectVersion={onSelectVersion}
-                  onReturnToCurrent={onReturnToCurrent}
-                />
-                {canRestoreActiveDoc ? (
-                  <button className="primary" onClick={() => onRestoreDoc?.(item.id, activeTab)}>
-                    Restore {docKindLabel(activeTab).toLowerCase()} to latest
-                  </button>
+              {activeDocHistoryEntries.length > 0 || canRestoreActiveDoc ? (
+                <div className="doc-version-row">
+                  <VersionChangeMenu
+                    label="Version"
+                    entries={activeDocHistoryEntries}
+                    currentVersion={currentVersion}
+                    previewVersion={previewVersion}
+                    labelPlacement="outside"
+                    onSelectVersion={onSelectVersion}
+                    onReturnToCurrent={onReturnToCurrent}
+                  />
+                  {canRestoreActiveDoc ? (
+                    <button className="primary" onClick={() => onRestoreDoc?.(item.id, activeTab)}>
+                      Restore {docKindLabel(activeTab).toLowerCase()} to latest
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="markdown-content-region">
+                {!isPreviewing ? (
+                  <TooltipButton
+                    label={`Edit ${docKindLabel(activeTab)}`}
+                    className="content-edit-action doc-content-edit-action"
+                    onClick={() => setEditing(true)}
+                  >
+                    <FilePenLine size={14} />
+                  </TooltipButton>
                 ) : null}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(doc.markdown)}</ReactMarkdown>
               </div>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(doc.markdown)}</ReactMarkdown>
             </article>
           ) : isPreviewing ? (
             <div className="missing-doc">
               <div className="doc-version-row">
                 <VersionChangeMenu
-                  label={`${docKindLabel(activeTab)} document`}
+                  label="Version"
                   entries={activeDocHistoryEntries}
                   currentVersion={currentVersion}
                   previewVersion={previewVersion}
+                  labelPlacement="outside"
                   onSelectVersion={onSelectVersion}
                   onReturnToCurrent={onReturnToCurrent}
                 />
@@ -2955,7 +4416,132 @@ function DetailView({
           <div className="loading">Loading document...</div>
         )}
       </section>
+        </div>
+      </div>
     </main>
+    </>
+  );
+}
+
+function WorkItemSearchModal({
+  items,
+  onClose,
+  onSelect,
+}: {
+  items: RoadmapItem[];
+  onClose: () => void;
+  onSelect: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useDialogFocus<HTMLElement>();
+  const matches = useMemo(() => {
+    if (!query.trim()) return [];
+    return queryWorkItems(items, {
+      search: query,
+      projection: "flattened",
+      hierarchyScope: "projection",
+      groupRole: "any",
+      statuses: [],
+      blocked: "any",
+      tags: [],
+    }).matches.slice(0, 40);
+  }, [items, query]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query]);
+
+  function choose(id: string) {
+    onSelect(id);
+    onClose();
+  }
+
+  function onInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key === "ArrowDown" && matches.length) {
+      event.preventDefault();
+      setActiveIndex((current) => (current + 1) % matches.length);
+      return;
+    }
+    if (event.key === "ArrowUp" && matches.length) {
+      event.preventDefault();
+      setActiveIndex((current) => (current - 1 + matches.length) % matches.length);
+      return;
+    }
+    if (event.key === "Enter" && matches[activeIndex]) {
+      event.preventDefault();
+      choose(matches[activeIndex].item.id);
+    }
+  }
+
+  return createPortal(
+    <div className="modal-backdrop work-item-search-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        ref={dialogRef}
+        className="work-item-search-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search Work Items"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <label className="work-item-search-input">
+          <Search size={17} aria-hidden="true" />
+          <input
+            ref={inputRef}
+            aria-label="Search Work Items"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={onInputKeyDown}
+            placeholder="Search titles, summaries, next actions, and tags"
+          />
+          <button type="button" aria-label="Close search" onClick={onClose}><X size={15} /></button>
+        </label>
+        <div className="work-item-search-results" aria-live="polite">
+          {!query.trim() ? (
+            <div className="work-item-search-empty">
+              <Search size={18} aria-hidden="true" />
+              <span>Find any Work Item, including Items inside Groups.</span>
+            </div>
+          ) : matches.length ? matches.map((entry, index) => (
+            <button
+              key={entry.item.id}
+              type="button"
+              className={index === activeIndex ? "active" : ""}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => choose(entry.item.id)}
+            >
+              <span className="work-item-search-result-title">
+                <b>{entry.item.title}</b>
+                {entry.item.isGroup ? <small>Group</small> : null}
+              </span>
+              <span className="work-item-search-result-meta">
+                {labels[entry.item.status]}
+                {entry.ancestry.length ? ` · ${entry.ancestry.map((ancestor) => ancestor.title).join(" › ")}` : " · Main Board"}
+              </span>
+            </button>
+          )) : (
+            <div className="work-item-search-empty">No Work Items match “{query.trim()}”.</div>
+          )}
+        </div>
+        <footer className="work-item-search-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+          <span><kbd>↵</kbd> open</span>
+          <span><kbd>esc</kbd> close</span>
+        </footer>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -2972,8 +4558,25 @@ function BoardView({
 }) {
   const boardId = state.manifest.repoId;
   const [items, setItems] = useState<RoadmapItem[]>(state.roadmap.roadmapItems);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return ["group", "programme"].includes(params.get("projection") ?? "") ? params.get("groupId") ?? params.get("programmeId") : null;
+  });
   const [showArchived, setShowArchived] = useState(() => normalizeBoardViewPreferences(readBoardViewPreferences(state.manifest.repoId)).showArchived);
+  const [search, setSearch] = useState(() => initialBoardQueryState(state.manifest.repoId).search);
+  const [queryError, setQueryError] = useState<string | null>(() => initialBoardQueryState(state.manifest.repoId).error);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [hierarchyScope, setHierarchyScope] = useState<PlanbanHierarchyScope>(() => initialBoardQueryState(state.manifest.repoId).hierarchyScope);
+  const [groupRole, setGroupRoleFilter] = useState<PlanbanGroupRole>(() => initialBoardQueryState(state.manifest.repoId).groupRole);
+  const [filterStatuses, setFilterStatuses] = useState<Status[]>(() => initialBoardQueryState(state.manifest.repoId).statuses);
+  const [blockedFilter, setBlockedFilter] = useState<PlanbanBlockedFilter>(() => initialBoardQueryState(state.manifest.repoId).blocked);
+  const [filterTags, setFilterTags] = useState<string[]>(() => initialBoardQueryState(state.manifest.repoId).tags);
+  const [groupId, setGroupId] = useState<string | null>(null);
+  const [projection, setProjection] = useState<"main" | "flattened">(() => {
+    const queryProjection = new URLSearchParams(window.location.search).get("projection");
+    return queryProjection === "flattened" ? "flattened" : "main";
+  });
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set(normalizeBoardViewPreferences(readBoardViewPreferences(state.manifest.repoId)).expandedGroupIds));
   const boardGridRef = useRef<HTMLDivElement | null>(null);
   const skipNextPreferenceWriteRef = useRef(false);
   const [collapsed, setCollapsed] = useState<Partial<Record<Status, boolean>>>(() => normalizeBoardViewPreferences(readBoardViewPreferences(state.manifest.repoId)).collapsed);
@@ -2981,8 +4584,15 @@ function BoardView({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeSize, setActiveSize] = useState<{ width: number; height: number } | null>(null);
   const [dragOver, setDragOver] = useState<Status | null>(null);
+  const [boardDropIntent, setBoardDropIntent] = useState<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
+  const [boardColumnDropPreview, setBoardColumnDropPreview] = useState<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
+  const [pendingBoardPlacement, setPendingBoardPlacement] = useState<PendingGroupPlacement | null>(null);
+  const [boardPlacementBusy, setBoardPlacementBusy] = useState(false);
   const dragStartItemsRef = useRef<RoadmapItem[] | null>(null);
   const lastDropTargetIdRef = useRef<string | null>(null);
+  const boardDropIntentRef = useRef<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
+  const boardColumnDropPreviewRef = useRef<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
+  const boardDropRectsRef = useRef(new Map<string, HierarchyDropRect>());
   const [history, setHistory] = useState<HistoryPayload | null>(null);
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -2993,7 +4603,7 @@ function BoardView({
   });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload | null>(null);
   const [showFirstRunPrompt, setShowFirstRunPrompt] = useState(() => readTutorialProgress() === null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
   const displayState = preview?.state ?? state;
   const previewVersion = preview?.version ?? null;
   const isPreviewing = preview !== null;
@@ -3005,6 +4615,28 @@ function BoardView({
     setCollapsed(preferences.collapsed);
     setHiddenCards(preferences.hiddenCards);
     setShowArchived(preferences.showArchived);
+    setExpandedGroupIds(new Set(preferences.expandedGroupIds));
+    const params = new URLSearchParams(window.location.search);
+    const queryProjection = params.get("projection");
+    const isGroupProjection = queryProjection === "group" || queryProjection === "programme";
+    setSelectedId(isGroupProjection ? params.get("groupId") ?? params.get("programmeId") : null);
+    setGroupId(null);
+    setProjection(queryProjection === "flattened" ? "flattened" : "main");
+    if (isGroupProjection) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("projection");
+      url.searchParams.delete("groupId");
+      url.searchParams.delete("programmeId");
+      window.history.replaceState({}, "", url.toString());
+    }
+    const nextQuery = initialBoardQueryState(boardId);
+    setSearch(nextQuery.search);
+    setQueryError(nextQuery.error);
+    setHierarchyScope(nextQuery.hierarchyScope);
+    setGroupRoleFilter(nextQuery.groupRole);
+    setFilterStatuses(nextQuery.statuses);
+    setBlockedFilter(nextQuery.blocked);
+    setFilterTags(nextQuery.tags);
   }, [boardId]);
 
   useEffect(() => {
@@ -3045,9 +4677,95 @@ function BoardView({
 
   const selectedItem = selectedId ? items.find((item) => item.id === selectedId) : null;
   const activeItem = activeId ? items.find((item) => item.id === activeId) : null;
-  const grouped = useMemo(() => groupItems(items), [items]);
+  const activeGroup = groupId ? items.find((item) => item.id === groupId && item.isGroup) ?? null : null;
+  const groupWorkspace = useMemo(() => groupId ? groupWorkspaceProjection(items, groupId) : null, [items, groupId]);
+  const rootItems = useMemo(() => mainBoardProjection(items), [items]);
+  const flattened = useMemo(() => flattenedExecutionProjection(items), [items]);
+  const queryResult = useMemo(() => queryWorkItems(items, {
+    search,
+    projection: groupWorkspace ? "group" : projection,
+    groupId,
+    hierarchyScope,
+    groupRole,
+    statuses: filterStatuses,
+    blocked: blockedFilter,
+    tags: filterTags,
+  }), [blockedFilter, filterStatuses, filterTags, hierarchyScope, groupWorkspace, items, groupId, groupRole, projection, search]);
+  const queryActive = Boolean(
+    search.trim() || hierarchyScope !== "projection" || groupRole !== "any" || filterStatuses.length ||
+    blockedFilter !== "any" || filterTags.length,
+  );
+  const filteredItems = queryResult.matches.map((entry) => entry.item);
+  const groupRollups = useMemo(() => new Map(items.filter((item) => item.isGroup).map((item) => [item.id, groupRollup(items, item.id)])), [items]);
+
+  useEffect(() => {
+    if (groupId && !activeGroup) setGroupId(null);
+  }, [activeGroup, groupId]);
+  const grouped = useMemo(
+    () => projection === "flattened" && !groupWorkspace ? groupItemsInCurrentOrder(filteredItems) : groupItems(filteredItems),
+    [filteredItems, groupWorkspace, projection],
+  );
   const hasArchivedCards = grouped.archived.length > 0;
   const visibleStatuses = showArchived && hasArchivedCards ? statuses : statuses.filter((status) => status !== "archived");
+  const isFlattenedRoot = projection === "flattened" && !groupWorkspace;
+  const hierarchyCollisionDetection = useMemo(() => hierarchyBoardCollisionDetection(items), [items]);
+  const containmentTarget = boardDropIntent?.operation === "inside"
+    ? items.find((item) => item.id === boardDropIntent.targetId) ?? null
+    : null;
+  const containmentCue = containmentTarget ? hierarchyContainmentCue(containmentTarget.isGroup === true) : null;
+  const crossColumnDropPreview = useMemo<CrossColumnDropPreview | null>(() => {
+    if (isFlattenedRoot || !activeItem) return null;
+    if (boardColumnDropPreview) return { item: activeItem, ...boardColumnDropPreview };
+    if (!boardDropIntent || boardDropIntent.operation === "inside") return null;
+    const target = items.find((item) => item.id === boardDropIntent.targetId);
+    if (!target || target.status === activeItem.status) return null;
+    return {
+      item: activeItem,
+      status: target.status,
+      targetId: target.id,
+      operation: boardDropIntent.operation,
+    };
+  }, [activeItem, boardColumnDropPreview, boardDropIntent, isFlattenedRoot, items]);
+
+  function selectProjection(nextProjection: "main" | "flattened") {
+    setGroupId(null);
+    setProjection(nextProjection);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("groupId");
+    if (nextProjection === "flattened") url.searchParams.set("projection", "flattened");
+    else url.searchParams.delete("projection");
+    window.history.replaceState({}, "", url.toString());
+  }
+
+  function openGroup(id: string) {
+    setSelectedId(id);
+    setGroupId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("projection");
+    url.searchParams.delete("groupId");
+    window.history.replaceState({}, "", url.toString());
+  }
+
+  function leaveGroup(parentId: string | null) {
+    if (parentId) {
+      openGroup(parentId);
+      return;
+    }
+    selectProjection(projection);
+  }
+
+  function clearQuery() {
+    setSearch("");
+    setHierarchyScope("projection");
+    setGroupRoleFilter("any");
+    setFilterStatuses([]);
+    setBlockedFilter("any");
+    setFilterTags([]);
+    setQueryError(null);
+    const url = new URL(window.location.href);
+    for (const name of ["q", "scope", "groupRole", "status", "blocked", "tag"]) url.searchParams.delete(name);
+    window.history.replaceState({}, "", url.toString());
+  }
 
   useEffect(() => {
     if (skipNextPreferenceWriteRef.current) {
@@ -3058,8 +4776,31 @@ function BoardView({
       collapsed,
       hiddenCards,
       showArchived: hasArchivedCards ? showArchived : false,
+      expandedGroupIds: [...expandedGroupIds],
+      groupId,
+      projection,
+      hierarchyScope,
+      groupRole,
+      filterStatuses,
+      blockedFilter,
+      filterTags,
     });
-  }, [boardId, collapsed, hasArchivedCards, hiddenCards, showArchived]);
+  }, [blockedFilter, boardId, collapsed, expandedGroupIds, filterStatuses, filterTags, hasArchivedCards, hiddenCards, hierarchyScope, groupId, groupRole, projection, showArchived]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const replace = (name: string, values: string[]) => {
+      url.searchParams.delete(name);
+      for (const value of values) url.searchParams.append(name, value);
+    };
+    if (search.trim()) url.searchParams.set("q", search.trim()); else url.searchParams.delete("q");
+    if (hierarchyScope !== "projection") url.searchParams.set("scope", hierarchyScope); else url.searchParams.delete("scope");
+    if (groupRole !== "any") url.searchParams.set("groupRole", groupRole); else url.searchParams.delete("groupRole");
+    replace("status", filterStatuses);
+    if (blockedFilter !== "any") url.searchParams.set("blocked", blockedFilter); else url.searchParams.delete("blocked");
+    replace("tag", filterTags);
+    window.history.replaceState({}, "", url.toString());
+  }, [blockedFilter, filterStatuses, filterTags, hierarchyScope, groupRole, search]);
 
   useEffect(() => {
     if (!hasArchivedCards) setShowArchived(false);
@@ -3226,27 +4967,102 @@ function BoardView({
     return statusForDropTarget(dragStartItemsRef.current ?? items, id);
   }
 
+  function clearBoardColumnDropPreview() {
+    boardColumnDropPreviewRef.current = null;
+    setBoardColumnDropPreview(null);
+  }
+
   function onDragStart(event: DragStartEvent) {
     if (isPreviewing) return;
+    const id = String(event.active.id);
     dragStartItemsRef.current = items;
     lastDropTargetIdRef.current = null;
-    setActiveId(String(event.active.id));
+    boardDropIntentRef.current = null;
+    clearBoardColumnDropPreview();
+    boardDropRectsRef.current.clear();
+    setBoardDropIntent(null);
+    setActiveId(id);
+    setDragOver(findStatus(id));
     const rect = event.active.rect.current.initial;
     setActiveSize(rect ? { width: rect.width, height: rect.height } : null);
   }
 
+  function onDragMove(event: DragMoveEvent) {
+    if (isPreviewing || isFlattenedRoot) return;
+    const draggingId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    const dragItems = dragStartItemsRef.current ?? items;
+    const pointer = dragPointerCoordinates(event);
+    const previousIntent = boardDropIntentRef.current;
+    const previousRect = previousIntent?.operation === "inside" ? boardDropRectsRef.current.get(previousIntent.targetId) : null;
+    const latchedTarget = previousIntent?.operation === "inside" && previousRect && hierarchyContainmentLatch(pointer, previousRect)
+      ? dragItems.find((entry) => entry.id === previousIntent.targetId) ?? null
+      : null;
+    const target = latchedTarget ?? (overId ? dragItems.find((entry) => entry.id === overId) ?? null : null);
+    if (target?.id === draggingId) {
+      boardDropIntentRef.current = null;
+      setBoardDropIntent(null);
+      clearBoardColumnDropPreview();
+      return;
+    }
+    if (!target || !event.over) {
+      boardDropIntentRef.current = null;
+      setBoardDropIntent(null);
+      const targetStatus = overId && statuses.includes(overId as Status) ? overId as Status : null;
+      const next = targetStatus ? hierarchyColumnDropPreview(dragItems, draggingId, targetStatus) : null;
+      if (next) {
+        boardColumnDropPreviewRef.current = next;
+        setBoardColumnDropPreview(next);
+      } else {
+        clearBoardColumnDropPreview();
+      }
+      return;
+    }
+    clearBoardColumnDropPreview();
+    const rect = boardDropRectsRef.current.get(target.id) ?? stableDropRect(event.over.rect);
+    boardDropRectsRef.current.set(target.id, rect);
+    const previous = boardDropIntentRef.current?.targetId === target.id ? boardDropIntentRef.current.operation : null;
+    const operation = hierarchyDropOperation(dragPointerY(event), rect, {
+      canMoveInside: canPlaceItemInside(dragStartItemsRef.current ?? items, draggingId, target.id),
+      previous,
+      deadbandPx: 8,
+    });
+    if (operation !== "inside" && !hierarchyPlacementChanges(dragItems, draggingId, target.id, operation)) {
+      boardDropIntentRef.current = null;
+      setBoardDropIntent(null);
+      return;
+    }
+    const next = { targetId: target.id, operation };
+    boardDropIntentRef.current = next;
+    setBoardDropIntent(next);
+  }
+
   function onDragOver(event: DragOverEvent) {
     if (isPreviewing) return;
-    if (!event.over) return;
+    if (!event.over) {
+      setDragOver(null);
+      return;
+    }
     const draggingId = String(event.active.id);
     const overId = String(event.over.id);
-    if (overId === draggingId) return;
     const dragStartItems = dragStartItemsRef.current ?? items;
+    if (overId === draggingId) {
+      setDragOver(dragStartItems.find((entry) => entry.id === draggingId)?.status ?? null);
+      return;
+    }
+    if (dragStartItems.some((entry) => entry.id === overId)) {
+      setDragOver(dragStartItems.find((entry) => entry.id === overId)?.status ?? null);
+      lastDropTargetIdRef.current = overId;
+      return;
+    }
     const target = statusForDropTarget(dragStartItems, overId);
     setDragOver(target);
-    if (!target) return;
+    if (!target) {
+      setDragOver(null);
+      lastDropTargetIdRef.current = overId;
+      return;
+    }
     lastDropTargetIdRef.current = overId;
-    setItems(previewCrossStatusDragOver(dragStartItems, draggingId, overId));
   }
 
   async function onDragEnd(event: DragEndEvent) {
@@ -3254,10 +5070,16 @@ function BoardView({
     const id = String(event.active.id);
     const overId = event.over ? String(event.over.id) : null;
     const dragStartItems = dragStartItemsRef.current ?? items;
+    const dropIntent = boardDropIntentRef.current;
+    const columnDropPreview = boardColumnDropPreviewRef.current;
     const resolvedOverId = resolveDropTargetId(dragStartItems, id, overId, lastDropTargetIdRef.current);
     setActiveId(null);
     setActiveSize(null);
     setDragOver(null);
+    boardDropIntentRef.current = null;
+    clearBoardColumnDropPreview();
+    boardDropRectsRef.current.clear();
+    setBoardDropIntent(null);
     if (!resolvedOverId) {
       dragStartItemsRef.current = null;
       lastDropTargetIdRef.current = null;
@@ -3265,20 +5087,100 @@ function BoardView({
       return;
     }
 
-    const targetStatus = statusForDropTarget(dragStartItems, resolvedOverId);
+    if (isFlattenedRoot) {
+      dragStartItemsRef.current = null;
+      lastDropTargetIdRef.current = null;
+      setItems(state.roadmap.roadmapItems);
+      const move = flattenedExecutionMoveForDrop(dragStartItems, id, resolvedOverId);
+      if (!move) return;
+      try {
+        const placed = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+          method: "POST",
+          body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
+        });
+        onStateChange(placed);
+        await loadHistory().catch(() => undefined);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Card status move failed");
+        await refreshState();
+      }
+      return;
+    }
+
+    const activeItem = dragStartItems.find((entry) => entry.id === id);
+    const directOverStatus = overId ? statusForDropTarget(dragStartItems, overId) : null;
+    const decision = hierarchyDropCommitDecision(
+      id,
+      activeItem?.status ?? "",
+      overId,
+      directOverStatus,
+      dropIntent,
+    );
+
+    if (decision.kind === "hierarchy") {
+      dragStartItemsRef.current = null;
+      lastDropTargetIdRef.current = null;
+      if (decision.operation === "inside") {
+        setItems(state.roadmap.roadmapItems);
+        setPendingBoardPlacement({ activeId: id, parentId: decision.targetId });
+        return;
+      }
+      const move = groupWorkspaceMoveForDrop(dragStartItems, id, `group-${decision.operation}:${decision.targetId}`);
+      if (!move) return;
+      setItems(previewGroupWorkspaceMove(dragStartItems, id, move));
+      try {
+        const placed = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+          method: "POST",
+          body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
+        });
+        onStateChange(placed);
+        await loadHistory().catch(() => undefined);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Card reorder failed");
+        await refreshState();
+      }
+      return;
+    }
+
+    if (decision.kind === "noop") {
+      dragStartItemsRef.current = null;
+      lastDropTargetIdRef.current = null;
+      setItems(state.roadmap.roadmapItems);
+      return;
+    }
+
+    if (!columnDropPreview || overId !== columnDropPreview.status) {
+      dragStartItemsRef.current = null;
+      lastDropTargetIdRef.current = null;
+      setItems(state.roadmap.roadmapItems);
+      return;
+    }
+
+    const targetStatus = statusForDropTarget(dragStartItems, decision.overId);
     dragStartItemsRef.current = null;
     lastDropTargetIdRef.current = null;
     if (!targetStatus) return;
 
-    const nextItems = reorderItemsForDrop(dragStartItems, id, resolvedOverId);
-    setItems(nextItems);
+    const nextItems = reorderItemsForDrop(dragStartItems, id, decision.overId);
+    const movedItem = nextItems.find((entry) => entry.id === id);
+    if (!movedItem) return;
+    const scopedItems = nextItems.filter((entry) => entry.parentId === movedItem.parentId && entry.status === movedItem.status);
+    const movedIndex = scopedItems.findIndex((entry) => entry.id === id);
+    const afterId = movedIndex > 0 ? scopedItems[movedIndex - 1]!.id : null;
+    setItems(previewGroupWorkspaceMove(dragStartItems, id, {
+      status: movedItem.status,
+      parentId: movedItem.parentId ?? null,
+      afterId,
+    }));
 
     try {
-      const reordered = await api<PlanbanState>(boardPath(boardId, "/cards/reorder"), {
+      const reordered = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
         method: "POST",
         body: JSON.stringify({
           baseRevision: state.roadmap.revision,
-          items: nextItems.map((item) => ({ id: item.id, status: item.status })),
+          status: movedItem.status,
+          parentId: movedItem.parentId,
+          afterId,
         }),
       });
       onStateChange(reordered);
@@ -3295,7 +5197,51 @@ function BoardView({
     setActiveId(null);
     setActiveSize(null);
     setDragOver(null);
+    boardDropIntentRef.current = null;
+    clearBoardColumnDropPreview();
+    boardDropRectsRef.current.clear();
+    setBoardDropIntent(null);
     setItems(state.roadmap.roadmapItems);
+  }
+
+  async function confirmBoardPlacement(decisionInput:
+    | { kind: "move"; status: Status; position: GroupPlacementPosition }
+    | { kind: "create"; title: string; summary: string; status: Status }) {
+    if (!pendingBoardPlacement) return;
+    const active = items.find((entry) => entry.id === pendingBoardPlacement.activeId);
+    const parent = items.find((entry) => entry.id === pendingBoardPlacement.parentId);
+    if (!active || !parent) return;
+    setBoardPlacementBusy(true);
+    try {
+      const placed = decisionInput.kind === "create"
+        ? await api<PlanbanState>(boardPath(boardId, "/groups"), {
+            method: "POST",
+            body: JSON.stringify({
+              title: decisionInput.title,
+              summary: decisionInput.summary,
+              status: decisionInput.status,
+              itemIds: [parent.id, active.id],
+              anchorId: parent.id,
+              baseRevision: state.roadmap.revision,
+            }),
+          })
+        : await (async () => {
+            const decision = groupPlacementDecision(pendingBoardPlacement, decisionInput.status, decisionInput.position);
+            if (!decision) throw new Error("Placement is no longer valid.");
+            return api<PlanbanState>(boardPath(boardId, `/cards/${decision.activeId}/move`), {
+              method: "POST",
+              body: JSON.stringify({ ...decision.move, baseRevision: state.roadmap.revision }),
+            });
+          })();
+      setPendingBoardPlacement(null);
+      onStateChange(placed);
+      await loadHistory().catch(() => undefined);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Group placement failed");
+      await refreshState();
+    } finally {
+      setBoardPlacementBusy(false);
+    }
   }
 
   if (selectedItem) {
@@ -3313,6 +5259,7 @@ function BoardView({
         onReturnToCurrent={returnToCurrent}
         onRestoreCard={restoreCardFromPreview}
         onRestoreDoc={restoreDocFromPreview}
+        onSelectWorkItem={setSelectedId}
       />
     );
   }
@@ -3325,10 +5272,31 @@ function BoardView({
             <span className="board-breadcrumb-main">
               <button className="board-breadcrumb-home" onClick={() => onSelectBoard(null)}>Planban</button>
               <span>/</span>
-              <span>{state.roadmap.project.title}</span>
+              {activeGroup ? <button className="board-breadcrumb-home" onClick={() => leaveGroup(null)}>{state.roadmap.project.title}</button> : <span>{state.roadmap.project.title}</span>}
+              {activeGroup ? <><span>/</span><span>{activeGroup.title}</span></> : null}
             </span>
           </div>
-          <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
+          <div className="board-title-row">
+            <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
+            <div className="board-header-tools" aria-label="Board tools">
+              <TooltipButton
+                label="Search Work Items"
+                className="toolbar-icon-button board-header-tool"
+                aria-haspopup="dialog"
+                onClick={() => setSearchOpen(true)}
+              >
+                <Search size={15} />
+              </TooltipButton>
+              <TooltipButton
+                label={projection === "main" ? "Show All Work Items" : "Return to Main Board"}
+                className={`toolbar-icon-button board-header-tool ${projection === "flattened" ? "active" : ""}`}
+                aria-pressed={projection === "flattened"}
+                onClick={() => selectProjection(projection === "main" ? "flattened" : "main")}
+              >
+                {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
+              </TooltipButton>
+            </div>
+          </div>
         </div>
         <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
           {updateStatus?.updateAvailable ? (
@@ -3357,12 +5325,12 @@ function BoardView({
             <TooltipButton
               label="Open Planban tutorial"
               className="toolbar-icon-button tooltip-below"
-              onClick={() => openTutorial("first-run")}
+              onClick={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
             >
               <HelpCircle size={14} />
             </TooltipButton>
             <TooltipButton label="Provide feedback" className="toolbar-icon-button tooltip-below" onClick={() => setFeedbackOpen(true)}>
-              <MessageSquareText size={14} />
+              <Bug size={14} />
             </TooltipButton>
             <TooltipButton label="Refresh board from disk" className="toolbar-icon-button tooltip-below" onClick={refreshState}>
               <RefreshCw size={14} />
@@ -3397,9 +5365,34 @@ function BoardView({
         />
       ) : null}
 
+      {searchOpen ? (
+        <WorkItemSearchModal
+          items={items}
+          onClose={() => setSearchOpen(false)}
+          onSelect={(id) => setSelectedId(id)}
+        />
+      ) : null}
+
+      {pendingBoardPlacement ? (() => {
+        const active = items.find((entry) => entry.id === pendingBoardPlacement.activeId);
+        const parent = items.find((entry) => entry.id === pendingBoardPlacement.parentId);
+        return active && parent ? (
+          <GroupPlacementModal
+            active={active}
+            parent={parent}
+            items={items}
+            busy={boardPlacementBusy}
+            onClose={() => { if (!boardPlacementBusy) setPendingBoardPlacement(null); }}
+            onConfirm={(decision) => void confirmBoardPlacement(decision)}
+          />
+        ) : null;
+      })() : null}
+
       {showFirstRunPrompt && !isPreviewing ? (
         <FirstRunPrompt onDismiss={() => setShowFirstRunPrompt(false)} />
       ) : null}
+
+      {queryError ? <section className="query-error" role="alert"><span>{queryError}</span><button onClick={clearQuery}>Clear invalid query</button></section> : null}
 
       {preview ? (
         <section className="history-preview-banner">
@@ -3416,10 +5409,27 @@ function BoardView({
         </section>
       ) : null}
 
-      <DndContext
+      {queryActive ? (
+        <section className="query-results" aria-label="Filtered Work Items">
+          <header><div><span>Query results</span><b>{queryResult.matches.length} matching {queryResult.matches.length === 1 ? "Work Item" : "Work Items"}</b><small>WIP {queryResult.wip} · {queryResult.context.length} muted {queryResult.context.length === 1 ? "ancestor" : "ancestors"}</small></div><button onClick={clearQuery}>Clear</button></header>
+          <div className="query-result-list">
+            {queryResult.visible.map((entry) => (
+              <article key={entry.item.id} className={`query-result ${entry.kind === "context" ? "context" : ""}`} style={{ marginLeft: `${Math.min(entry.ancestry.length, 8) * 22}px` }}>
+                <button onClick={() => entry.kind === "context" && entry.item.isGroup ? openGroup(entry.item.id) : setSelectedId(entry.item.id)}>
+                  <span className="query-result-title">{entry.item.title}</span>
+                  <span className="query-result-meta">{entry.kind === "context" ? "Ancestor context" : labels[entry.item.status]}{entry.item.isGroup ? " · Group" : ""}</span>
+                  {entry.ancestry.length ? <span className="query-result-ancestry">{entry.ancestry.map((ancestor) => ancestor.title).join(" › ")}</span> : null}
+                </button>
+              </article>
+            ))}
+            {queryResult.matches.length === 0 ? <div className="query-empty">No Work Items match this query.</div> : null}
+          </div>
+        </section>
+      ) : <DndContext
         sensors={sensors}
-        collisionDetection={boardCollisionDetection}
+        collisionDetection={isFlattenedRoot ? boardCollisionDetection : hierarchyCollisionDetection}
         onDragStart={onDragStart}
+        onDragMove={onDragMove}
         onDragOver={onDragOver}
         onDragEnd={onDragEnd}
         onDragCancel={onDragCancel}
@@ -3444,17 +5454,40 @@ function BoardView({
               onMove={moveItem}
               onDelete={deleteItem}
               readOnly={isPreviewing}
+              groupRollups={isFlattenedRoot ? new Map() : groupRollups}
+              onOpenGroup={openGroup}
+              expandedGroupIds={isFlattenedRoot ? new Set() : expandedGroupIds}
+              {...(!isFlattenedRoot ? { onToggleGroupExpanded: (id: string) => setExpandedGroupIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }) } : {})}
+              allItems={items}
+              dropIntent={isFlattenedRoot ? null : boardDropIntent}
+              crossColumnDropPreview={crossColumnDropPreview}
+              receiverDragHeight={activeSize?.height ?? null}
+              {...(isFlattenedRoot ? { ancestryById: flattened.ancestryById } : {})}
             />
           ))}
         </div>
+        {containmentTarget && containmentCue && activeItem ? (
+          <div className="visually-hidden" role="status" aria-live="polite">
+            {containmentCue.label}: {activeItem.title} with {containmentTarget.title}. {containmentCue.detail}.
+          </div>
+        ) : null}
         <DragOverlay>
           {activeId ? (
-            <article className={`card drag-card ${activeItem?.nextAction || activeItem?.summary ? "" : "compact"}`} style={activeSize ?? undefined}>
-              {activeItem ? <CardContent item={activeItem} /> : null}
-            </article>
+            <div
+              className={`hierarchy-drag-overlay-shell ${containmentTarget ? "hierarchy-drag-card-docking" : ""}`}
+              style={activeSize ?? undefined}
+            >
+              <article className={`card drag-card ${activeItem?.nextAction || activeItem?.summary ? "" : "compact"}`}>
+                {activeItem ? containmentTarget ? (
+                  <div className="hierarchy-drag-card-docking-content" title={activeItem.title}>
+                    {activeItem.title}
+                  </div>
+                ) : <CardContent item={activeItem} rollup={groupRollups.get(activeItem.id)} /> : null}
+              </article>
+            </div>
           ) : null}
         </DragOverlay>
-      </DndContext>
+      </DndContext>}
     </main>
   );
 }
@@ -3475,6 +5508,7 @@ function BoardDashboard({
   const [duplicateRepoId, setDuplicateRepoId] = useState("");
   const [busyAction, setBusyAction] = useState<"archive" | "delete" | "duplicate" | "restore" | null>(null);
   const [toast, setToast] = useState<{ tone: "success" | "error"; message: string; detail?: string } | null>(null);
+  const boardActionDialogRef = useDialogFocus<HTMLElement>(Boolean(pendingAction));
   const activeBoards = boards.filter((board) => !board.archivedAt);
   const archivedBoards = boards.filter((board) => board.archivedAt);
   const visibleBoards = showArchivedBoards ? archivedBoards : activeBoards;
@@ -3691,10 +5725,12 @@ function BoardDashboard({
           if (!busyAction) closeBoardActionModal();
         }}>
           <section
+            ref={boardActionDialogRef}
             className="board-action-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="board-action-title"
+            tabIndex={-1}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <header className="feedback-modal-header">

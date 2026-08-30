@@ -45,11 +45,16 @@ export interface PlanbanRoadmapItem {
   planDoc: string | null;
   completedAt: string | null;
   updatedAt: string | null;
+  isGroup: boolean;
+  parentId: string | null;
+  boardRank: number | null;
+  groupRank: number | null;
   metadata?: Record<string, unknown>;
 }
 
 export interface PlanbanRoadmap {
-  version: 1;
+  version: 1 | 2;
+  writerVersion: number;
   revision: number;
   updatedAt: string;
   project: PlanbanProject;

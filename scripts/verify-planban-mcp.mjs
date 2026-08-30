@@ -81,6 +81,7 @@ async function main() {
     initializeProject,
     loadState,
     readDoc,
+    writeDoc,
   } = await import("../src/core/storage.ts");
 
   const root = mkdtempSync(join(tmpdir(), "planban-mcp-verify-"));
@@ -105,6 +106,7 @@ async function main() {
       summary: "Initial MCP verification summary",
       nextAction: "Initial MCP verification next action",
     });
+    await writeDoc({ cwd, cardId: "verify-mcp-card", kind: "spec", markdown: "# MCP Verification\n\n- [ ] Promoted verification outcome\n" });
 
     const cardId = "verify-mcp-card";
     const before = await loadState(cwd);
@@ -166,6 +168,20 @@ async function main() {
         id: 9,
         method: "tools/call",
         params: {
+          name: "planban_create_group",
+          arguments: {
+            cwd,
+            title: "Distinct Group",
+            summary: "Separate Group outcome",
+            specMarkdown: "# Distinct Group\n\n- [ ] Promoted verification outcome\n",
+          },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
           name: "planban_write_doc",
           arguments: {
             cwd,
@@ -178,18 +194,24 @@ async function main() {
       },
       {
         jsonrpc: "2.0",
-        id: 10,
+        id: 11,
         method: "tools/call",
         params: { name: "planban_move_card", arguments: { cwd, cardId, status: "complete" } },
       },
       {
         jsonrpc: "2.0",
-        id: 11,
+        id: 12,
         method: "tools/call",
         params: {
           name: "planban_launch_board",
           arguments: { cwd, port: launchPort },
         },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 13,
+        method: "tools/call",
+        params: { name: "planban_query_cards", arguments: { cwd, search: "verification", projection: "flattened" } },
       },
     ], { PLANBAN_HOME: planbanHome, PLANBAN_RESTART_PID_FILE: pidFile });
 
@@ -205,11 +227,17 @@ async function main() {
       "planban_duplicate_board",
       "planban_delete_board",
       "planban_get_board",
+      "planban_query_cards",
       "planban_get_card",
+      "planban_export_flat_v1",
+      "planban_reconstruct_hierarchy",
       "planban_create_card",
+      "planban_create_group",
+      "planban_create_cards",
       "planban_read_doc",
       "planban_move_card",
       "planban_update_card",
+      "planban_set_card_parent",
       "planban_write_doc",
       "planban_launch_board",
     ]);
@@ -224,7 +252,7 @@ async function main() {
     assert.equal(assertNoError(responseById(responses, 5)).card.title, "Verify MCP Card");
     check("planban_get_card", "card loaded through MCP");
 
-    assert.match(assertNoError(responseById(responses, 6)).markdown, /Verify MCP Card Spec/);
+    assert.match(assertNoError(responseById(responses, 6)).markdown, /Promoted verification outcome/);
     check("planban_read_doc", "spec markdown read through MCP");
 
     assert.equal(assertNoError(responseById(responses, 7)).card.status, "in-progress");
@@ -236,15 +264,18 @@ async function main() {
     assert.deepEqual(updatedCard.tags, ["mcp", "verification"]);
     check("planban_update_card", "summary, next action, and tags updated");
 
-    assert.equal(assertNoError(responseById(responses, 9)).markdown, "# MCP Verification Plan\n\nThis was written through the Planban MCP server.\n");
+    assert.equal(assertNoError(responseById(responses, 9)).group.isGroup, true);
+    check("planban_create_group", "distinct empty Group created");
+
+    assert.equal(assertNoError(responseById(responses, 10)).markdown, "# MCP Verification Plan\n\nThis was written through the Planban MCP server.\n");
     check("planban_write_doc", "plan document written");
 
-    const completionResponse = responseById(responses, 10);
+    const completionResponse = responseById(responses, 11);
     assert.equal(completionResponse.error.code, -32602);
     assert.match(completionResponse.error.message, /completionConfirmed/);
     check("completion guard", "complete without confirmation rejected");
 
-    const launch = assertNoError(responseById(responses, 11));
+    const launch = assertNoError(responseById(responses, 12));
     assert.equal(launch.url, `http://localhost:${launchPort}/boards/mcp-verify`);
     assert.equal(launch.ok, true);
     assert.equal(launch.serviceReady, true);
@@ -254,11 +285,16 @@ async function main() {
     assert.equal(launch.diagnostics[0].boundary, "service-url");
     check("planban_launch_board", `verified ${launch.url}`);
 
+    assert.deepEqual(assertNoError(responseById(responses, 13)).matches.map((entry) => entry.item.id), [cardId]);
+    check("planban_query_cards", "read-only hierarchy query matched the verification card");
+
     const finalState = await loadState(cwd);
     const finalCard = finalState.roadmap.roadmapItems.find((item) => item.id === cardId);
     assert.equal(finalCard.status, "in-progress");
     assert.equal(finalCard.summary, "Updated by MCP verification");
     assert.equal(finalCard.nextAction, "MCP verification updated this next action");
+    assert.equal(finalCard.isGroup, false);
+    assert.equal(finalState.roadmap.roadmapItems.find((item) => item.id === "distinct-group")?.isGroup, true);
     check("roadmap.json verification", `revision ${finalState.roadmap.revision}`);
 
     const planDoc = await readDoc({ cwd, cardId, kind: "plan" });

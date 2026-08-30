@@ -30,6 +30,19 @@ The repo-local files are discovery files. The canonical live roadmap state for t
 device is listed in `.planban/agent-context.md`, usually under
 `~/.planban/repos/<repo-id>/roadmap.json`.
 
+## Owner-Facing Authoring
+
+Before creating or materially editing a Title, Summary, Next action, Group objective,
+Spec, or Plan, read `planban-house-style.md` completely and follow it. That reference
+is the authority for lifecycle language, information placement, current-state
+orientation, and lossless agent detail. Do not copy its full rules into prompts or
+tool descriptions.
+
+A status-only, priority-only, placement-only, or rank-only mutation does not require
+the house-style reference unless the same change also edits owner-facing content.
+Never rewrite historical evidence merely to make older content match the current
+style.
+
 ## Local Storage Model
 
 Planban deliberately separates repo discovery from live local state:
@@ -39,6 +52,39 @@ Planban deliberately separates repo discovery from live local state:
 - Device-local card docs: `~/.planban/repos/<repo-id>/items/<card-id>/spec.md` and `plan.md`
 
 Do not create or prefer `ROADMAP.md`.
+
+## Work Item Model
+
+Use these terms consistently:
+
+- **Item**: one independently trackable outcome. It may stand alone on the Main Board or be owned by one Group.
+- **Group**: a root Work Item that groups Items. It has its own title, summary, evidence, Workflow Status, and Board Rank, while its Items have their own statuses and Group Ranks.
+- **Placement**: whether an Item is on the Main Board or owned by a Group. Placement is independent of Workflow Status.
+- **Rollup**: derived progress across a Group's direct Items. It does not set the Group's own Workflow Status.
+
+The hierarchy is exactly one level: `Group → Item`. Groups cannot own
+Groups, and Items never own Work Items or become Groups. A Group is
+a distinct root Work Item with its own purpose and evidence. Its purpose may be supplied
+at creation or refined later. Grouping two root Items collects a title and optional Group-level purpose, creates the Group, and places both Items inside it atomically;
+their identities, context, Workflow Statuses, and history remain unchanged. Empty
+Groups may also be created deliberately.
+
+Create an Item for a concrete outcome that can be prioritized, completed, and
+reviewed independently. Create a Group when several Items contribute to one
+larger outcome and need their own internal priority/status list. Do not create a
+Group merely to represent a label, category, or speculative future hierarchy.
+Make this decision before creating the Work Item. If the proposed scope already
+contains several independently deliverable outcomes, create the Group and its
+Items rather than storing a latent backlog in one Item's Spec or Plan. Markdown
+checklists in documents remain execution notes or evidence, not uncreated Work
+Items.
+
+When moving an Item into a Group, preserve its Workflow Status unless the
+owner asks to change it and choose an explicit Group Rank in that status. Moving it
+between Groups removes the old ownership and assigns the new Group Rank in one
+mutation. Moving it to the Main Board removes ownership and assigns Board Rank. A
+Group's Workflow Status remains explicit; its Rollup is supporting evidence, not an
+automatic status transition.
 
 ## Board Opening
 
@@ -165,10 +211,19 @@ the tools are unavailable or insufficient for the task.
 Prefer the Planban CLI or API when available. Example CLI operations from the Planban
 repo:
 
+When an agent creates a Group, provide a concise Group objective by default. Omit it
+only when the owner explicitly asks for no objective or when the larger outcome is
+genuinely unresolved; do not invent a specific objective from weak context. The UI
+may leave the objective blank and add or edit it later.
+
 ```bash
 npm run planban -- status --cwd /path/to/repo -o json
 npm run planban -- get-card <card-id> --cwd /path/to/repo -o json
 npm run planban -- move-card <card-id> --status in-progress --cwd /path/to/repo -o json
+npm run planban -- create-group "Larger outcome" --summary "Outcome these Items achieve together" --item <card-id> --item <card-id> --cwd /path/to/repo -o json
+npm run planban -- update-card <group-id> --summary "Refined Group objective" --cwd /path/to/repo -o json
+npm run planban -- set-card-parent <card-id> --parent <group-id> --cwd /path/to/repo -o json
+npm run planban -- set-card-parent <card-id> --board --cwd /path/to/repo -o json
 npm run planban -- read-doc <card-id> spec --cwd /path/to/repo -o json
 npm run planban -- demo -o json
 ```
@@ -181,6 +236,7 @@ Planban thread prompts should include enough context to begin without rediscover
 - board URL
 - card id
 - current status
+- Group ancestry from root to direct parent, when present
 - linked spec and plan doc paths
 - launch token when present
 - this status protocol
