@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { auditReleasePolicy } from "./release-policy.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
@@ -26,6 +27,14 @@ const packageLock = await readJson("package-lock.json");
 const releaseManifest = await readJson("release/latest.json");
 const pluginManifest = await readJson("plugins/planban/.codex-plugin/plugin.json");
 const versionSource = await readFile(join(repoRoot, "src/core/version.ts"), "utf8");
+const workflowSources = Object.fromEntries(await Promise.all([
+  ".github/workflows/ci.yml",
+  ".github/workflows/release-readiness.yml",
+].map(async (path) => [path, await readFile(join(repoRoot, path), "utf8")])));
+const remoteResult = spawnSync("git", ["remote", "get-url", "origin"], {
+  cwd: repoRoot,
+  encoding: "utf8",
+});
 const findings = [];
 
 if (packageJson.version !== releaseManifest.version) {
@@ -54,18 +63,12 @@ for (const [constantName, expectedVersion] of [
   }
 }
 
-const installScriptAudit = spawnSync("npm", ["install-scripts", "ls", "--json"], {
-  cwd: repoRoot,
-  encoding: "utf8",
-});
-if (installScriptAudit.status !== 0) {
-  findings.push(`could not audit dependency install scripts: ${installScriptAudit.stderr.trim() || "unknown npm error"}`);
-} else {
-  const unreviewedInstallScripts = JSON.parse(installScriptAudit.stdout).allowScripts ?? [];
-  if (unreviewedInstallScripts.length > 0) {
-    findings.push(`unreviewed dependency install scripts: ${unreviewedInstallScripts.map((entry) => entry.key ?? entry.name).join(", ")}`);
-  }
-}
+findings.push(...auditReleasePolicy({
+  remoteUrl: remoteResult.status === 0 ? remoteResult.stdout.trim() : "",
+  workflows: workflowSources,
+  packageJson,
+  packageLock,
+}));
 
 if (findings.length > 0) {
   process.stderr.write(JSON.stringify({ ok: false, findings }, null, 2) + "\n");
@@ -85,7 +88,8 @@ process.stdout.write(JSON.stringify({
   version: releaseManifest.version,
   checked: [
     "version consistency",
-    "dependency install-script allowlist",
+    "remote-owner Linux runner policy",
+    "lockfile dependency install-script allowlist",
     "typecheck",
     "tests",
     "high-severity dependency audit",
