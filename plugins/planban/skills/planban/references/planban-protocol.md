@@ -43,6 +43,18 @@ the house-style reference unless the same change also edits owner-facing content
 Never rewrite historical evidence merely to make older content match the current
 style.
 
+## Product Constitution
+
+Before creating or materially reshaping a Planban product feature, domain model,
+workflow semantic, visible information hierarchy, platform or cloud behavior,
+roadmap structure, onboarding, positioning, or agent guidance, read the repository
+root `PRODUCT.md` completely. It is the public authority for Planban's product
+definition, principles, boundaries, and feature-decision test.
+
+Do not reload `PRODUCT.md` for routine Board operations, small current-state
+corrections, or execution of an already accepted Plan. The constitution governs
+product decisions; it must not become ceremony for ordinary use.
+
 ## Local Storage Model
 
 Planban deliberately separates repo discovery from live local state:

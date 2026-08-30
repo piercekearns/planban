@@ -12,6 +12,12 @@ Before drafting any Title, Summary, Next action, Group objective, Spec, or Plan,
 owner-facing writing and information placement. Keep this skill focused on creation
 and structure.
 
+When the target Board is Planban's own product roadmap and the request creates or
+materially reshapes a Planban product feature, also read the repository root
+`PRODUCT.md` completely. Apply its product definition, boundaries, and feature
+decision test. Do not require this extra read for ordinary user-project Items or
+routine roadmap maintenance.
+
 ## Intent Routing
 
 Infer whether the user wants:
