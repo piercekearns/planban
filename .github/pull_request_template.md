@@ -15,7 +15,13 @@ MIT License.
 
 ## Why
 
-<!-- Explain the problem being solved and why this approach is appropriate. -->
+<!-- Explain the observed problem, root cause, and why this implementation is appropriate. -->
+
+## Bug Evidence
+
+<!-- For bug fixes: link the issue or include the bug capsule. State how the original
+     failure was reproduced and how the implemented change resolved that same scenario.
+     Delete this section when the PR is not a bug fix. -->
 
 ## Validation
 
@@ -37,6 +43,7 @@ MIT License.
 
 - [ ] This PR is small and focused.
 - [ ] I explained what changed and why.
+- [ ] For a bug fix, I or my agent implemented and verified the fix against the reported failure; this is not only a proposed fix.
 - [ ] I ran relevant checks or explained why they were not run.
 - [ ] I removed private board contents, local paths, logs, screenshots, credentials, and personal project details.
 - [ ] I opened an issue first for non-trivial feature, architecture, storage, install, update, API, MCP, or CLI contract changes.

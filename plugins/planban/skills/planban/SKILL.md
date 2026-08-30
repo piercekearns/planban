@@ -5,6 +5,10 @@ description: Use when the user invokes /planban, asks to open Planban, mentions 
 
 # Planban
 
+If the user wants to report feedback or appears to be experiencing a Planban bug,
+rough edge, or confusing behavior, use `planban-feedback` instead of opening the
+board by default. Let that skill reconstruct, investigate, and route the report.
+
 For a plain open request (`/planban`, "open Planban", or selecting Planban from the
 slash menu), behave like `/pb`: open the best matching Planban board in the Codex
 in-app browser before doing anything else.

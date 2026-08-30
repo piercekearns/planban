@@ -40,11 +40,19 @@ wasting your time on a direction that may not fit the current roadmap.
 
 Keep pull requests small and focused.
 
+For a bug fix, a pull request should deliver an implemented and verified solution,
+not merely propose one. Show that the reported failure was investigated, the original
+scenario succeeds after the change, and the fix applies to current `main`. If the
+change is still a hypothesis, workaround, or unverified local patch, file or update a
+bug issue instead.
+
 Explain:
 
 - what changed;
-- why it should exist;
+- the observed problem and confirmed or best-supported root cause;
+- why this implementation is appropriate;
 - how you tested it;
+- which environment or product surfaces were verified; and
 - what risks or follow-up work remain.
 
 For UI changes, include before/after screenshots. For motion, drag/drop, browser

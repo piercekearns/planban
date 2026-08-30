@@ -93,12 +93,14 @@ You can also give Codex planning context from Notion, Jira, Linear, GitHub Issue
 
 Planban uses GitHub Issues for bugs, feature requests, and product feedback.
 
-Feedback is welcome. If you want to share a bug, request, rough edge, or reaction, select the feedback button in the board toolbar, describe what happened, then choose whether to open a Codex draft thread or copy the prompt. Your agent will help turn the feedback into the right issue format before anything is filed publicly.
+Feedback is welcome. If you want to share a bug, request, rough edge, or reaction, select the feedback button in the board toolbar and add whatever you remember. Your agent will use that note plus available conversation and workspace context, gather relevant Planban diagnostics, search existing issues and fixes, and recommend the best reporting route before anything is filed publicly. Missing details do not block a report.
+
+For bugs, Planban Feedback normally prepares a new issue or a useful comment on an existing issue. It recommends a pull request only when it can verify that you or your agent already implemented and validated a focused fix for the same failure. Reporting a bug does not by itself create or recommend a PR.
 
 Ask Codex:
 
 ```text
-I want to give feedback on Planban. Turn the feedback below into a concise GitHub issue for piercekearns/planban. Choose whether it is a bug, feature request, or general feedback. Ask me one clarifying question if needed. Do not include private repo paths, board contents, logs, screenshots, or personal project details unless I explicitly approve them.
+I want to give feedback on Planban. Use the current conversation and safely discoverable Planban context so I do not have to repeat details. Investigate the report, search existing issues and fixes, then recommend and draft the best route for piercekearns/planban. Do not recommend a PR unless you verify that my agent already implemented and validated the fix. Do not include private repo paths, board contents, logs, screenshots, or personal project details unless I explicitly approve them.
 
 Feedback:
 <paste your feedback here>

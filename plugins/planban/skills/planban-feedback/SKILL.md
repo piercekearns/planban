@@ -1,101 +1,135 @@
 ---
 name: planban-feedback
-description: Package Planban feedback for the project. Use when the user wants to report a bug, request a feature, share feedback, or send product feedback about Planban.
+description: Investigate and package Planban bugs, feature requests, usability problems, and product feedback. Use when the user wants to report feedback or appears to be experiencing a Planban problem.
 ---
 
 # Planban Feedback
 
-Package user feedback using Planban's feedback flow.
+Turn the user's existing context into a maintainer-useful report with as little
+additional effort from the user as possible. Diagnose and route the feedback before
+asking the user to approve any public action.
 
-## Gather
+## Start From Available Context
 
-Capture the user's rough feedback, then gather enough diagnostic context for the
-Planban maintainer to understand why the issue is surfacing, reproduce it where
-possible, and decide whether it belongs as a bug, feature request, PR, security
-report, or general product feedback.
+Treat the current conversation, recent tool output, and relevant workspace state as
+the user's initial account. Do not ask them to repeat facts already available there.
 
-Do not jump straight from rough feedback to a public issue. Treat feedback capture
-as a short diagnostic conversation:
+For a bug, reconstruct:
 
-1. Restate what you think the user is reporting.
-2. Identify the likely feedback route.
-3. Ask the minimum useful follow-up questions before drafting if key information is
-   missing.
-4. Package the proposed title/body/context back to the user.
-5. Recommend the route, for example: "I'd recommend raising this as a bug issue"
-   or "This looks more like a focused PR proposal."
-6. Let the user decide whether, where, and how to send it.
+- what the user was trying to do;
+- expected and observed behavior;
+- errors, screenshots, or logs already shared;
+- whether the problem appears repeatable; and
+- any workaround or local code change already attempted.
 
-Classify the feedback where useful:
+Ask only short, high-value questions whose answers cannot be safely discovered and
+would materially improve the diagnosis or routing. Forgotten details never block a
+report: record them as unknown.
 
-- bug
-- feature request
-- usability issue
-- documentation/onboarding issue
-- proposed fix or pull request idea
-- private security concern
-- praise
-- other
+## Investigate Before Routing
 
-Include local context when available:
+Use targeted, read-only inspection when it is available and relevant. Prefer facts
+from Planban's own installation and current workspace, such as:
 
-- Planban version
-- plugin version
-- current board URL or repo id
-- relevant browser/app behavior
-- reproduction steps for bugs
-- what the user expected to happen
-- what actually happened
-- whether the issue is repeatable
-- whether it happens on a fresh board/project/thread or only a specific board
-- relevant host app and permission/setup context, such as Codex version, browser
-  mode, plugin install shape, update path, and OS when the user knows them
-- screenshots, logs, board contents, local URLs, local file paths, or project
-  details only after the user explicitly approves including or summarizing them
+- Planban and plugin versions;
+- OS version and architecture;
+- host app, install method, and update path;
+- Planban service status and relevant configuration; and
+- narrowly relevant, sanitized Planban errors or logs.
 
-For bugs, prioritize maintainer-useful detail:
+Do not stop for separate permission before ordinary in-scope read-only checks. Ask
+before a write, a consequential reproduction, or access to sensitive material.
 
-- clear steps to reproduce
-- observed result
-- expected result
-- frequency and scope
-- likely trigger or recent change
-- relevant environment
-- any workaround the user found
+Do not inspect secrets, unrelated machine state, private board contents, or project
+documents merely to enrich a report. Never publish board names, repo ids, local URLs,
+paths, logs, screenshots, or project details without the user's approval. Tell the
+user what categories of local information you inspected.
 
-For feature requests, prioritize:
+After understanding the problem, search open and closed issues, pull requests,
+recent releases, and the latest available default-branch source in
+`piercekearns/planban`. Record the source ref or freshness when it affects the
+diagnosis. Determine whether a result is a strong match, a possible match, already
+fixed upstream, or unrelated. Explain the evidence for that classification rather
+than handing raw search results to the user.
 
-- the user's underlying job or pain
-- why current Planban behavior is insufficient
-- the smallest useful version of the request
-- examples of when the user would use it
+## Build The Bug Capsule
 
-For PR or fix ideas, prioritize:
+Package bugs with:
 
-- what the change would alter
-- why it is safe and focused
-- whether an issue should be opened first
-- what checks or tests would be expected
+- one-sentence impact;
+- best-known reproduction steps;
+- expected and actual behavior;
+- automatically observed environment and version facts;
+- minimal sanitized evidence;
+- frequency and scope;
+- diagnosis, clearly separating confirmed cause from inference;
+- workaround or local change, if any;
+- same-machine before/after result when available;
+- matching issues, pull requests, releases, or competing work;
+- unknown facts and why they could not be recovered; and
+- the agent/model/harness that investigated or implemented the work.
 
-## Route
+Classify facts as observed automatically, reported by the user, inferred, or unknown
+when that distinction affects confidence.
 
-Use the same standards as the in-app feedback button. Prepare a concise GitHub issue, pull request outline, or project feedback payload for `piercekearns/planban` unless the local feedback flow provides a more specific route.
+## Recommend One Route
 
-Use public GitHub Issues for bugs, feature requests, usability issues, documentation issues, and general product feedback. If the user has a concrete code or docs change, help them shape it as a focused pull request proposal and remind them to keep the change small unless an issue has been discussed first.
+Give the user a directed recommendation and prepare the corresponding exact draft:
 
-Do not route private security concerns to public issues. If the feedback describes a vulnerability, secret exposure, unsafe local file access, or another sensitive security concern, point the user to `SECURITY.md` and draft a private report instead.
+- For a strong existing match, recommend adding the new environment or reproduction
+  evidence to that issue instead of filing a duplicate.
+- For a possible match, explain the uncertainty and recommend either a distinguishing
+  comment or a new issue.
+- When no credible match exists, recommend a new bug issue.
+- When a newer release likely fixes the problem, recommend updating and retesting
+  before filing. If it persists, return to the matching issue or new-issue route.
+- Route feature requests, usability issues, documentation issues, and general product
+  feedback to the appropriate public issue format.
+- Route vulnerabilities, secret exposure, or unsafe local file access through
+  `SECURITY.md`, never a public issue.
 
-Before any public action, present the draft and recommendation back to the user:
+Do not present an unexplained menu and make the user determine the route. They decide
+whether to approve the recommended public action after seeing its destination and
+exact text.
 
-- recommended route
-- concise reason for that route
-- proposed title
-- proposed body
-- any context intentionally omitted for privacy
-- any open questions that would make the report more useful
+## Pull Request Eligibility
 
-If GitHub tooling is available and the user has clearly authorized submitting the
-exact draft to the exact destination, create the issue. Otherwise, draft the issue
-text for review.
+A reported bug is not itself a reason to recommend a pull request. Recommend a PR
+only when inspection of the conversation and workspace confirms that the user or
+their agent already:
 
-Keep the response clear: confirm what feedback was captured, where it is going, and whether anything still needs user approval.
+1. investigated this specific bug;
+2. implemented a concrete code or documentation change;
+3. retested the original failing scenario successfully;
+4. applied or reproduced the change against current Planban `main`;
+5. added proportionate regression coverage where practical;
+6. passed the relevant checks; and
+7. produced a focused change without unresolved dependencies or known blockers.
+
+A hypothesis, proposed edit, configuration workaround, unverified local patch, or
+one-time disappearance of the symptom is not PR-eligible. Record it in the issue as
+an attempted fix or workaround. Do not recommend that the user ask an agent to file
+a PR for a fix that has not already been implemented and verified.
+
+When the existing local fix is PR-eligible, link it to the strong matching issue when
+one exists. Otherwise, normally recommend a new bug issue plus a linked PR. A tiny
+self-contained correction may go directly to a PR only when its body carries the
+complete bug capsule. Include root cause, scope, tests, platform or interaction
+evidence, residual risk, and agent assistance in the PR package.
+
+Do not silently expand feedback capture into implementation work. When no verified
+fix exists, file the report first; the user may separately ask an agent to work on it.
+
+## Approval And Handoff
+
+Before posting, commenting, or opening a PR, show:
+
+- the recommended route and why;
+- the exact destination;
+- the proposed title and body;
+- what local information was inspected;
+- what was omitted or redacted; and
+- any remaining uncertainty.
+
+Perform the external action only after the user explicitly approves the exact action
+or has already clearly authorized it. Then confirm what was submitted and link it.
