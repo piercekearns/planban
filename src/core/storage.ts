@@ -139,7 +139,7 @@ export function normalizeRoadmap(input: unknown): PlanbanRoadmap {
       ...(item.metadata ? { metadata: item.metadata } : {}),
     })),
   };
-  if (parsed.version === 1 || parsed.writerVersion < 2) {
+  if (parsed.version === 1 || parsed.writerVersion < 6) {
     roadmap.roadmapItems = assignHierarchyRanks(roadmap.roadmapItems);
   }
   assertRoadmapRelations(roadmap);

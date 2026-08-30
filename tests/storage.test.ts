@@ -466,6 +466,46 @@ test("loads version-1 boards as flat roots without rewriting the roadmap", async
   assert.deepEqual(JSON.parse(await readFile(roadmapFile, "utf8")), versionOneRoadmap);
 });
 
+test("loads recoverable legacy fields and removes them on the next writer upgrade", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  const roadmapFile = join(planningRoot, "roadmap.json");
+  const legacyRoadmap = {
+    version: 2,
+    writerVersion: 3,
+    revision: 3,
+    updatedAt: "2026-08-30T00:00:00.000Z",
+    project: { id: repoId, title: "Storage Test", status: "active", description: "", tags: [] },
+    columns: [],
+    roadmapItems: [
+      {
+        id: "legacy-item", title: "Legacy Item", status: "pending", priority: 2,
+        summary: null, nextAction: null, tags: [], icon: null, blockedBy: null,
+        specDoc: null, planDoc: null, completedAt: null, reviewState: null, updatedAt: null,
+        isProgramme: false, parentId: null, boardRank: 2, programmeRank: null,
+      },
+      {
+        id: "legacy-peer", title: "Legacy Peer", status: "pending", priority: 3,
+        summary: null, nextAction: null, tags: [], icon: null, blockedBy: null,
+        specDoc: null, planDoc: null, completedAt: null, reviewState: "not-ready", updatedAt: null,
+        isProgramme: false, parentId: null, boardRank: 2, programmeRank: null,
+      },
+    ],
+  };
+  await writeFile(roadmapFile, JSON.stringify(legacyRoadmap, null, 2) + "\n", "utf8");
+
+  const loaded = await loadState(cwd);
+  assert.equal(loaded.roadmap.writerVersion, 3);
+  assert.equal(loaded.roadmap.roadmapItems[0]?.id, "legacy-item");
+  assert.deepEqual(loaded.roadmap.roadmapItems.map((item) => item.boardRank), [1, 2]);
+  assert.deepEqual(JSON.parse(await readFile(roadmapFile, "utf8")), legacyRoadmap);
+
+  const updated = await updateCard({ cwd, cardId: "legacy-item", summary: "Recovered legacy Item" });
+  const persisted = JSON.parse(await readFile(roadmapFile, "utf8"));
+  assert.equal(updated.roadmap.writerVersion, 6);
+  assert.equal(persisted.writerVersion, 6);
+  assert.equal("reviewState" in persisted.roadmapItems[0], false);
+});
+
 test("loads writer-5 Programme fields and rewrites them as writer-6 Group fields on mutation", async () => {
   await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
   const roadmapFile = join(planningRoot, "roadmap.json");
@@ -573,7 +613,7 @@ test("upgrades a version-1 board on an ordinary first mutation", async () => {
   assert.equal(updated.roadmap.roadmapItems[0]?.isGroup, false);
 });
 
-test("normalizes legacy ranks and rejects malformed writer-2 rank scopes", async () => {
+test("normalizes legacy ranks and rejects malformed current rank scopes", async () => {
   await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
   await createCard({ cwd, title: "Alpha", status: "pending" });
   await createCard({ cwd, title: "Beta", status: "pending" });

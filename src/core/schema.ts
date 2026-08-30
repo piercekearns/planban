@@ -28,7 +28,7 @@ const roadmapItemBaseSchema = z.object({
     specDoc: z.string().nullable().default(null),
     planDoc: z.string().nullable().default(null),
     completedAt: z.string().nullable().default(null),
-    reviewState: z.enum(["not-ready", "ready-for-review"]).optional(),
+    reviewState: z.enum(["not-ready", "ready-for-review"]).nullish(),
     updatedAt: z.string().nullable().default(null),
     metadata: z.record(z.string(), z.unknown()).optional(),
   });
@@ -81,7 +81,7 @@ export const roadmapV1Schema = z.object({
   roadmapItems: z.array(roadmapV1ItemSchema).default([]),
 });
 
-const roadmapWriter3ItemSchema = legacyRoadmapV2ItemSchema.extend({ reviewState: z.enum(["not-ready", "ready-for-review"]) });
+const roadmapWriter3ItemSchema = legacyRoadmapV2ItemSchema.extend({ reviewState: z.enum(["not-ready", "ready-for-review"]).nullish() });
 const roadmapWriter5ItemSchema = legacyRoadmapV2ItemSchema.omit({ reviewState: true });
 const roadmapWriter6ItemSchema = roadmapV2ItemSchema.omit({ reviewState: true });
 

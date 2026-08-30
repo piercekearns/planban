@@ -204,6 +204,14 @@ async function verifyWebSurface(url, timeoutMs = 1500) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.text();
     if (!body.includes('<div id="root"></div>')) throw new Error("response is not the Planban web surface");
+    const parsedUrl = new URL(url);
+    const boardMatch = parsedUrl.pathname.match(/^\/boards\/([^/]+)$/u);
+    if (boardMatch) {
+      const health = await fetch(`${parsedUrl.origin}/api/boards/${boardMatch[1]}/health`, { signal: controller.signal });
+      if (!health.ok) throw new Error(`board health returned HTTP ${health.status}`);
+      const payload = await health.json().catch(() => null);
+      if (payload?.ok !== true) throw new Error("board health response was invalid");
+    }
   } catch (error) {
     throw new Error(`Planban service resolved ${url}, but URL verification failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {

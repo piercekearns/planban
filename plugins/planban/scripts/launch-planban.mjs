@@ -158,7 +158,14 @@ async function webSurfaceHealthy(url) {
   try {
     const response = await fetch(url);
     if (!response.ok) return false;
-    return (await response.text()).includes('<div id="root"></div>');
+    if (!(await response.text()).includes('<div id="root"></div>')) return false;
+    const parsedUrl = new URL(url);
+    const boardMatch = parsedUrl.pathname.match(/^\/boards\/([^/]+)$/u);
+    if (!boardMatch) return true;
+    const health = await fetch(`${parsedUrl.origin}/api/boards/${boardMatch[1]}/health`);
+    if (!health.ok) return false;
+    const payload = await health.json().catch(() => null);
+    return payload?.ok === true;
   } catch {
     return false;
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -7,6 +8,7 @@ import test from "node:test";
 import {
   openPlanbanBoardInCodexBrowser,
   openUrlInCodexBrowser,
+  verifiedWebSurface,
 } from "../plugins/planban/scripts/codex-fast-open-planban.mjs";
 import { launchLogPath } from "../plugins/planban/scripts/launch-planban.mjs";
 
@@ -117,6 +119,33 @@ test("automatically opens a verified URL when the browser capability is availabl
   assert.equal(result.diagnostics.length, 0);
   assert.equal(setupCalls, 1);
   assert.equal(available.newTabCalls(), 1);
+});
+
+test("rejects a board URL whose shell and fallback route load but board state is unverified", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/boards/legacy-board") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end('<div id="root"></div>');
+      return;
+    }
+    if (request.url === "/api/boards/legacy-board/health") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end('<div id="root"></div>');
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+
+  try {
+    assert.equal(await verifiedWebSurface(`http://127.0.0.1:${address.port}/boards/legacy-board`), false);
+  } finally {
+    await new Promise<void>((resolveClose, rejectClose) => {
+      server.close((error) => error ? rejectClose(error) : resolveClose());
+    });
+  }
 });
 
 test("resolves the default cold-launch log path without PLANBAN_HOME", () => {

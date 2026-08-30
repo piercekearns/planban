@@ -140,13 +140,20 @@ async function boardsFor(baseUrl, timeoutMs) {
   return await fetchJson(`${baseUrl}/api/boards`, timeoutMs);
 }
 
-async function verifiedWebSurface(url, timeoutMs = 1200) {
+export async function verifiedWebSurface(url, timeoutMs = 1200) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) return false;
-    return (await response.text()).includes('<div id="root"></div>');
+    if (!(await response.text()).includes('<div id="root"></div>')) return false;
+    const parsedUrl = new URL(url);
+    const boardMatch = parsedUrl.pathname.match(/^\/boards\/([^/]+)$/u);
+    if (!boardMatch) return true;
+    const health = await fetch(`${parsedUrl.origin}/api/boards/${boardMatch[1]}/health`, { signal: controller.signal });
+    if (!health.ok) return false;
+    const payload = await health.json().catch(() => null);
+    return payload?.ok === true;
   } catch {
     return false;
   } finally {

@@ -194,6 +194,9 @@ async function main() {
     const response = await fetch(`http://localhost:${port}/boards/cache-launcher-verify`);
     assert.equal(response.status, 200);
     assert.match(await response.text(), /<div id="root"><\/div>/u);
+    const health = await fetch(`http://localhost:${port}/api/boards/cache-launcher-verify/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).ok, true);
 
     staleServer = await startStalePlanbanServer(stalePort, "cache-launcher-verify");
     const staleResponse = await fetch(`http://localhost:${stalePort}/boards/cache-launcher-verify`);

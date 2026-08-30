@@ -65,6 +65,11 @@ try {
     cwd: oldRoot,
     env,
   });
+  run("node", ["--import", "tsx/esm", "src/cli.ts", "create-card", "Upgrade proof",
+    "--status", "pending", "--cwd", projectRoot, "--output", "json"], {
+    cwd: oldRoot,
+    env,
+  });
 
   run("node", ["scripts/update-local-install.mjs", "--execute",
     "--target-version", options.expectedVersion, "--target-ref", "release-candidate"], {
@@ -84,6 +89,16 @@ try {
     cwd: oldRoot,
     env,
   }));
+  const loadedCard = JSON.parse(run("node", ["--import", "tsx/esm", "src/cli.ts", "get-card", "upgrade-proof",
+    "--cwd", projectRoot, "--output", "json"], {
+    cwd: oldRoot,
+    env,
+  }));
+  const updatedCard = JSON.parse(run("node", ["--import", "tsx/esm", "src/cli.ts", "update-card", "upgrade-proof",
+    "--summary", "Loaded and updated after upgrade", "--cwd", projectRoot, "--output", "json"], {
+    cwd: oldRoot,
+    env,
+  }));
 
   if (updatedSha !== candidateSha) throw new Error(`updated HEAD ${updatedSha} does not match candidate ${candidateSha}`);
   if (packageJson.version !== options.expectedVersion) {
@@ -91,6 +106,12 @@ try {
   }
   if (!status.initialized || !status.roadmapExists || status.repoId !== "release-upgrade-rehearsal") {
     throw new Error("device-local board did not survive the release upgrade rehearsal");
+  }
+  if (loadedCard.id !== "upgrade-proof" || loadedCard.title !== "Upgrade proof") {
+    throw new Error("updated runtime could not read the board created by the previous release");
+  }
+  if (updatedCard.roadmap?.roadmapItems?.find((item) => item.id === "upgrade-proof")?.summary !== "Loaded and updated after upgrade") {
+    throw new Error("updated runtime could not safely mutate the board created by the previous release");
   }
   if (status.version?.version !== options.expectedVersion) {
     throw new Error(`updated runtime version ${status.version?.version ?? "missing"} does not match ${options.expectedVersion}`);
@@ -109,6 +130,8 @@ try {
     expectedVersion: options.expectedVersion,
     candidateSha,
     boardPreserved: true,
+    boardReadable: true,
+    boardWritable: true,
     cachedGuidanceVerified: true,
   }, null, 2) + "\n");
 } finally {

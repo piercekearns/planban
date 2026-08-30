@@ -84,6 +84,15 @@ test("serves the built app and exposes state APIs", async () => {
       state.roadmap.roadmapItems.map((item) => item.id),
       ["alpha"],
     );
+    const health = await jsonFetch<{ ok: boolean; repoId: string; revision: number; writerVersion: number }>(
+      `${server.url}/api/boards/${repoId}/health`,
+    );
+    assert.deepEqual(health, {
+      ok: true,
+      repoId,
+      revision: 2,
+      writerVersion: 6,
+    });
   } finally {
     await server.close();
   }

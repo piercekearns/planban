@@ -880,6 +880,20 @@ export async function startServer(options: ServeOptions) {
     }
   });
 
+  app.get("/api/boards/:repoId/health", async (req, res, next) => {
+    try {
+      const state = await loadState(await boardCwd(req.params.repoId));
+      res.json({
+        ok: true,
+        repoId: state.manifest.repoId,
+        revision: state.roadmap.revision,
+        writerVersion: state.roadmap.writerVersion,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/boards/:repoId/cards", async (req, res, next) => {
     try {
       const state = await loadState(await boardCwd(req.params.repoId));
