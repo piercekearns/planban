@@ -482,10 +482,13 @@ async function openCodexDraftThread(state: PlanbanState, item: RoadmapItem) {
 function buildFeedbackPrompt(state: PlanbanState, feedback: string) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
   return [
-    "Use Planban Feedback to package this for piercekearns/planban.",
+    "Use Planban Feedback to investigate and package this for piercekearns/planban.",
     "",
     "Draft only. Do not file or post publicly without my explicit approval of the exact destination and text.",
-    "Route as a bug issue, feature request, general feedback, PR idea, or private security report. Ask only for missing details that would make the draft maintainer-useful.",
+    "Treat this note and available conversation/workspace context as my initial account; do not ask me to repeat facts you can infer or safely inspect.",
+    "For a bug, gather narrow local facts, search existing issues, pull requests, releases, and current source, then recommend one specific reporting route.",
+    "Unknown details must not block the report. Tell me what you inspected and keep private context out of the public draft unless I approve it.",
+    "Recommend a pull request only if you can verify that my agent already implemented and validated a focused fix for this same bug against current main. Otherwise recommend an issue or existing-issue comment only.",
     "",
     "Private orientation context; do not include publicly unless approved:",
     formatOptionalLine("Board", state.roadmap.project.title),
