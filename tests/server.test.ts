@@ -27,8 +27,9 @@ function nextPatchVersion(version: string) {
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  assert.equal(response.ok, true, `${url} returned ${response.status}`);
-  return response.json() as Promise<T>;
+  const body = await response.text();
+  assert.equal(response.ok, true, `${url} returned ${response.status}: ${body}`);
+  return JSON.parse(body) as T;
 }
 
 async function freePort() {
@@ -349,7 +350,7 @@ test("starts update jobs and records preflight failure for blocked installs", as
     }
 
     assert.equal(finalJob?.status, "failed");
-    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes|development checkout|Missing required command: (?:codex|npm|git)/u);
+    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes|development checkout|Missing required commands?: (?:codex|npm|git)(?:, (?:codex|npm|git))*/u);
   } finally {
     await server.close();
     await new Promise<void>((resolveClose, rejectClose) => {
@@ -776,7 +777,7 @@ test("serializes concurrent API creates and replays idempotent mutations", async
   const server = await startServer({ cwd, port: await freePort(), useVite: false });
 
   try {
-    await Promise.all(Array.from({ length: 8 }, (_entry, index) =>
+    const parallelResults = await Promise.allSettled(Array.from({ length: 8 }, (_entry, index) =>
       jsonFetch(`${server.url}/api/boards/${repoId}/cards`, {
         method: "POST",
         headers: {
@@ -786,6 +787,10 @@ test("serializes concurrent API creates and replays idempotent mutations", async
         body: JSON.stringify({ title: `Parallel ${index + 1}`, status: "pending" }),
       }),
     ));
+    assert.deepEqual(
+      parallelResults.filter((result) => result.status === "rejected").map((result) => result.reason),
+      [],
+    );
 
     const afterParallel = await jsonFetch<{
       roadmap: { revision: number; roadmapItems: Array<{ id: string; title: string }> };
