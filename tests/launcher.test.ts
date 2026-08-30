@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   openPlanbanBoardInCodexBrowser,
@@ -10,7 +10,7 @@ import {
 } from "../plugins/planban/scripts/codex-fast-open-planban.mjs";
 import { launchLogPath } from "../plugins/planban/scripts/launch-planban.mjs";
 
-const repoRoot = resolve(new URL("..", import.meta.url).pathname);
+const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function verifiedLaunch(url = "http://localhost:4317/boards/alpha") {
   return {

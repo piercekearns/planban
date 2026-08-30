@@ -1,0 +1,66 @@
+name: Release readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact commit SHA to verify
+        required: true
+        type: string
+      version:
+        description: Expected Planban version
+        required: true
+        type: string
+      from_version:
+        description: Previous public Planban version to upgrade from
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  exact-sha-preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Verify exact commit and version
+        env:
+          EXPECTED_REF: ${{ inputs.ref }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REF"
+          test "$(node -p "require('./package.json').version")" = "$EXPECTED_VERSION"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Release preflight
+        run: npm run release:preflight
+
+      - name: Install the pinned Codex CLI used by the upgrade path
+        run: npm install --global @openai/codex@0.150.1
+
+      - name: Rehearse the previous public release upgrade
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          FROM_VERSION: ${{ inputs.from_version }}
+        run: npm run release:upgrade-rehearsal -- --from-version "$FROM_VERSION" --expected-version "$EXPECTED_VERSION"
+
+      - name: Record verified release identity
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          echo "### Verified Planban v$EXPECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit: \`$(git rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"

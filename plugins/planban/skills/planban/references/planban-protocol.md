@@ -204,6 +204,24 @@ When changing roadmap state:
 - Update linked docs when the work changes the spec or plan.
 - Create a separate plan doc only when the work is complex enough to need one.
 
+### Post-mutation handoff
+
+After a successful user-requested Planban creation or material mutation, wait until
+the complete logical mutation sequence has finished, then resolve the verified Board
+URL once. In Codex Desktop, make one bounded attempt to open or focus that URL
+through the supported Planban browser adapter. Always include the exact verified URL
+as a clickable Markdown link in the final response.
+
+- Do not reopen the Board after every storage write in a multi-step mutation. One
+  presentation attempt belongs to the logical mutation batch.
+- An explicitly headless or background operation may skip browser presentation, but
+  it should still return the verified clickable URL when URL resolution succeeds.
+- Browser-presentation failure does not invalidate a successful mutation. Preserve
+  the mutation result and return the verified link with at most one short degradation
+  reason.
+- Prefer a stable changed-Item URL when Planban supports one. Otherwise use the
+  verified Board URL.
+
 When Planban MCP tools are available, prefer them for structured board, card, and
 document reads/writes. Use shell commands or direct file edits only as a fallback when
 the tools are unavailable or insufficient for the task.

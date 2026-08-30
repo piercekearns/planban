@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createCard, createGroup as createGroupCore, initializeProject, loadState, readDoc, saveRoadmap, setCardStatus, writeDoc } from "../src/core/storage";
 import { PLANBAN_VERSION } from "../src/core/version";
-import { isIgnoredPlanbanWatchPath, planbanWatchPaths, startServer } from "../src/server/server";
+import { isIgnoredPlanbanWatchPath, planbanWatcherOptions, planbanWatchPaths, startServer } from "../src/server/server";
 
 const repoId = "planban-server-test";
 const otherRepoId = "planban-server-test-other";
@@ -27,8 +27,9 @@ function nextPatchVersion(version: string) {
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  assert.equal(response.ok, true, `${url} returned ${response.status}`);
-  return response.json() as Promise<T>;
+  const body = await response.text();
+  assert.equal(response.ok, true, `${url} returned ${response.status}: ${body}`);
+  return JSON.parse(body) as T;
 }
 
 async function freePort() {
@@ -202,6 +203,24 @@ test("bounds filesystem watching when history is large and file descriptors are 
   }
 });
 
+test("uses polling when native file watching is unsafe", () => {
+  const previous = process.env.CHOKIDAR_USEPOLLING;
+  process.env.CHOKIDAR_USEPOLLING = "1";
+
+  try {
+    const options = planbanWatcherOptions();
+    assert.equal(options.usePolling, true);
+    assert.equal(options.interval, 1000);
+  } finally {
+    if (previous === undefined) delete process.env.CHOKIDAR_USEPOLLING;
+    else process.env.CHOKIDAR_USEPOLLING = previous;
+  }
+
+  if (process.platform === "win32") {
+    assert.equal(planbanWatcherOptions().usePolling, true);
+  }
+});
+
 test("handles asynchronous watcher errors without terminating the server", async () => {
   await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
   class FailingWatcher extends EventEmitter {
@@ -331,7 +350,7 @@ test("starts update jobs and records preflight failure for blocked installs", as
     }
 
     assert.equal(finalJob?.status, "failed");
-    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes|development checkout|Missing required command: codex/u);
+    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes|development checkout|Missing required commands?: (?:codex|npm|git)(?:, (?:codex|npm|git))*/u);
   } finally {
     await server.close();
     await new Promise<void>((resolveClose, rejectClose) => {
@@ -758,7 +777,7 @@ test("serializes concurrent API creates and replays idempotent mutations", async
   const server = await startServer({ cwd, port: await freePort(), useVite: false });
 
   try {
-    await Promise.all(Array.from({ length: 8 }, (_entry, index) =>
+    const parallelResults = await Promise.allSettled(Array.from({ length: 8 }, (_entry, index) =>
       jsonFetch(`${server.url}/api/boards/${repoId}/cards`, {
         method: "POST",
         headers: {
@@ -768,6 +787,10 @@ test("serializes concurrent API creates and replays idempotent mutations", async
         body: JSON.stringify({ title: `Parallel ${index + 1}`, status: "pending" }),
       }),
     ));
+    assert.deepEqual(
+      parallelResults.filter((result) => result.status === "rejected").map((result) => result.reason),
+      [],
+    );
 
     const afterParallel = await jsonFetch<{
       roadmap: { revision: number; roadmapItems: Array<{ id: string; title: string }> };

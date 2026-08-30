@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import { buildUpdateCommandPlan } from "../src/core/updateRunner";
 import type { PlanbanUpdatePreflight } from "../src/core/updatePreflight";
 import type { PlanbanUpdateManifest } from "../src/core/version";
 
+const planbanRoot = resolve("/tmp/planban");
+const codexHome = resolve("/tmp/codex-home");
+
 function preflight(overrides: Partial<PlanbanUpdatePreflight>): PlanbanUpdatePreflight {
   return {
     checkedAt: "2026-06-12T00:00:00.000Z",
-    runtimeRoot: "/tmp/planban",
-    codexHome: "/tmp/codex-home",
+    runtimeRoot: planbanRoot,
+    codexHome,
     installShape: "git-marketplace",
     directUpdateAvailable: true,
     prerequisites: {
@@ -19,13 +23,13 @@ function preflight(overrides: Partial<PlanbanUpdatePreflight>): PlanbanUpdatePre
     },
     marketplace: {
       name: "planban",
-      root: "/tmp/planban",
+      root: planbanRoot,
       sourceType: "git",
       source: "https://github.com/piercekearns/planban.git",
     },
     git: {
       isRepo: true,
-      root: "/tmp/planban",
+      root: planbanRoot,
       branch: "main",
       remote: "https://github.com/piercekearns/planban.git",
       head: "abc123",
@@ -68,18 +72,18 @@ test("builds Git-backed marketplace update command plan", () => {
     "verify-install",
   ]);
   assert.deepEqual(plan[0]?.args, ["plugin", "marketplace", "upgrade", "planban"]);
-  assert.equal(plan[1]?.cwd, "/tmp/planban");
-  assert.deepEqual(plan[3]?.env, { CODEX_HOME: "/tmp/codex-home" });
+  assert.equal(plan[1]?.cwd, planbanRoot);
+  assert.deepEqual(plan[3]?.env, { CODEX_HOME: codexHome });
   assert.deepEqual(plan[4]?.args, [
     "--import",
     "tsx/esm",
     "scripts/verify-local-install.mjs",
     "--root",
-    "/tmp/planban",
+    planbanRoot,
     "--expected-version",
     "0.1.6",
     "--codex-home",
-    "/tmp/codex-home",
+    codexHome,
   ]);
 });
 
@@ -88,9 +92,9 @@ test("builds local clone update command plan with target commit", () => {
     installShape: "local-clone",
     marketplace: {
       name: "planban",
-      root: "/tmp/planban",
+      root: planbanRoot,
       sourceType: "local",
-      source: "/tmp/planban",
+      source: planbanRoot,
     },
   }), manifest);
 
@@ -111,13 +115,13 @@ test("cleans generated install artifacts before updating dirty local clone", () 
     installShape: "local-clone",
     marketplace: {
       name: "planban",
-      root: "/tmp/planban",
+      root: planbanRoot,
       sourceType: "local",
-      source: "/tmp/planban",
+      source: planbanRoot,
     },
     git: {
       isRepo: true,
-      root: "/tmp/planban",
+      root: planbanRoot,
       branch: "main",
       remote: "https://github.com/piercekearns/planban.git",
       head: "abc123",
@@ -136,7 +140,7 @@ test("cleans generated install artifacts before updating dirty local clone", () 
     "install-plugin",
     "verify-install",
   ]);
-  assert.deepEqual(plan[0]?.args, ["scripts/prepare-local-update.mjs", "/tmp/planban"]);
+  assert.deepEqual(plan[0]?.args, ["scripts/prepare-local-update.mjs", planbanRoot]);
 });
 
 test("does not build a direct command plan for blocked installs", () => {

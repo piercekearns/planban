@@ -1,6 +1,5 @@
-import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   agentContextPath,
@@ -89,10 +88,12 @@ async function readRegistryFile(): Promise<PlanbanBoardRegistry> {
 
 async function writeRegistryFile(registry: PlanbanBoardRegistry) {
   const path = registryPath();
-  const tempPath = `${path}.${randomUUID()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(tempPath, JSON.stringify(registry, null, 2) + "\n", "utf8");
-  await rename(tempPath, path);
+  await atomicWriteFile(path, JSON.stringify(registry, null, 2) + "\n");
+}
+
+function withRegistryWriteLock<T>(callback: () => Promise<T>): Promise<T> {
+  return withBoardWriteLock(dirname(registryPath()), callback);
 }
 
 export async function listBoards(): Promise<PlanbanBoardRecord[]> {
@@ -114,6 +115,7 @@ export async function registerBoardFromState(
   state: PlanbanResolvedState,
   options: { kind?: PlanbanBoardRecord["kind"] } = {},
 ): Promise<PlanbanBoardRecord> {
+  return withRegistryWriteLock(async () => {
   const timestamp = nowIso();
   const registry = await readRegistryFile();
   const existing = registry.boards.find((board) => board.repoId === state.manifest.repoId);
@@ -139,9 +141,11 @@ export async function registerBoardFromState(
     : [...registry.boards, record];
   await writeRegistryFile({ version: 1, boards });
   return record;
+  });
 }
 
 export async function touchBoard(repoId: string): Promise<void> {
+  return withRegistryWriteLock(async () => {
   const registry = await readRegistryFile();
   const timestamp = nowIso();
   await writeRegistryFile({
@@ -150,9 +154,11 @@ export async function touchBoard(repoId: string): Promise<void> {
       board.repoId === repoId ? { ...board, lastOpenedAt: timestamp } : board,
     ),
   });
+  });
 }
 
 export async function archiveBoard(repoId: string): Promise<PlanbanBoardRecord> {
+  return withRegistryWriteLock(async () => {
   const registry = await readRegistryFile();
   const existing = registry.boards.find((board) => board.repoId === repoId);
   if (!existing) throw new Error(`Planban board not found: ${repoId}`);
@@ -163,9 +169,11 @@ export async function archiveBoard(repoId: string): Promise<PlanbanBoardRecord> 
     boards: registry.boards.map((board) => (board.repoId === repoId ? archived : board)),
   });
   return archived;
+  });
 }
 
 export async function restoreBoard(repoId: string): Promise<PlanbanBoardRecord> {
+  return withRegistryWriteLock(async () => {
   const registry = await readRegistryFile();
   const existing = registry.boards.find((board) => board.repoId === repoId);
   if (!existing) throw new Error(`Planban board not found: ${repoId}`);
@@ -176,6 +184,7 @@ export async function restoreBoard(repoId: string): Promise<PlanbanBoardRecord> 
     boards: registry.boards.map((board) => (board.repoId === repoId ? restored : board)),
   });
   return restored;
+  });
 }
 
 function safeTimestamp(timestamp: string) {
@@ -216,6 +225,7 @@ export async function duplicateBoard(input: {
   repoId?: string | undefined;
   title?: string | undefined;
 }): Promise<{ source: PlanbanBoardRecord; board: PlanbanBoardRecord }> {
+  return withRegistryWriteLock(async () => {
   const registry = await readRegistryFile();
   const source = registry.boards.find((board) => board.repoId === input.sourceRepoId);
   if (!source) throw new Error(`Planban board not found: ${input.sourceRepoId}`);
@@ -314,9 +324,11 @@ export async function duplicateBoard(input: {
     await rm(cwd, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+  });
 }
 
 export async function deleteBoard(repoId: string): Promise<{ repoId: string; backupPath: string | null }> {
+  return withRegistryWriteLock(async () => {
   const registry = await readRegistryFile();
   const existing = registry.boards.find((board) => board.repoId === repoId);
   if (!existing) throw new Error(`Planban board not found: ${repoId}`);
@@ -335,9 +347,11 @@ export async function deleteBoard(repoId: string): Promise<{ repoId: string; bac
     boards: registry.boards.filter((board) => board.repoId !== repoId),
   });
   return { repoId, backupPath };
+  });
 }
 
 export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoardRecord | null> {
+  return withRegistryWriteLock(async () => {
   const cwd = resolve(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest || !manifest.enabled) return null;
@@ -366,6 +380,7 @@ export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoa
     : [...registry.boards, record];
   await writeRegistryFile({ version: 1, boards });
   return record;
+  });
 }
 
 export async function resolveBoardCwd(repoId: string): Promise<string> {

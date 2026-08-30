@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { ensureDemoBoard } from "../src/core/demo";
@@ -684,7 +684,8 @@ test("duplicates whole boards into independent local planning state", async () =
 
   assert.equal(duplicated.source.repoId, repoId);
   assert.equal(duplicated.board.repoId, "planban-storage-test-copy");
-  assert.match(duplicated.board.cwd, /detached\/planban-storage-test-copy$/);
+  assert.equal(basename(duplicated.board.cwd), "planban-storage-test-copy");
+  assert.equal(basename(dirname(duplicated.board.cwd)), "detached");
   assert.equal((await listAllBoards()).some((board) => board.repoId === duplicated.board.repoId), true);
 
   const duplicateState = await loadState(duplicated.board.cwd);

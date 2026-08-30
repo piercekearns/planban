@@ -8,9 +8,11 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const TSX_REGISTER_FLAG = "--import=tsx/esm";
+const SCRIPT_ROOT = resolve(import.meta.dirname, "..");
 
 if (!process.execArgv.includes(TSX_REGISTER_FLAG) && !process.execArgv.includes("--import") && !process.execArgv.includes("tsx/esm")) {
   const child = await execFileAsync(process.execPath, [TSX_REGISTER_FLAG, import.meta.filename, ...process.argv.slice(2)], {
+    cwd: SCRIPT_ROOT,
     env: process.env,
     maxBuffer: 1024 * 1024,
   });
@@ -49,6 +51,25 @@ async function readJson(path) {
 
 async function exists(path) {
   return access(path).then(() => true, () => false);
+}
+
+async function assertPostMutationGuidance(pluginRoot, label) {
+  const linkedUrlPattern = /clickable verified URL|verified URL\s+as a clickable Markdown link/iu;
+  const sources = [
+    resolve(pluginRoot, "skills/planban/SKILL.md"),
+    resolve(pluginRoot, "skills/planban-create/SKILL.md"),
+    resolve(pluginRoot, "skills/planban/references/planban-protocol.md"),
+  ];
+  for (const source of sources) {
+    const markdown = await readFile(source, "utf8");
+    if (!/verified Board\s+URL once/iu.test(markdown) || !linkedUrlPattern.test(markdown)) {
+      throw new Error(`${label} is missing the post-mutation Board handoff contract: ${source}`);
+    }
+  }
+  const createSkill = await readFile(resolve(pluginRoot, "skills/planban-create/SKILL.md"), "utf8");
+  if (!/## Post-creation handoff[\s\S]{0,240}new Planban board or project setup[\s\S]{0,120}one or more Work\s+Items/iu.test(createSkill)) {
+    throw new Error(`${label} does not apply the post-creation handoff to boards, projects, and Work Items`);
+  }
 }
 
 function assertEqual(actual, expected, label) {
@@ -110,6 +131,7 @@ async function main() {
 
   const pluginManifest = await readJson(resolve(root, "plugins/planban/.codex-plugin/plugin.json"));
   assertEqual(pluginManifest.version, expected, "Codex plugin manifest version");
+  await assertPostMutationGuidance(resolve(root, "plugins/planban"), "Planban runtime plugin");
 
   const mcpConfigPath = resolve(root, "plugins/planban/.mcp.json");
   if (!await exists(mcpConfigPath)) throw new Error("Planban MCP config is missing");
@@ -128,12 +150,20 @@ async function main() {
   if (pluginList && !pluginList.includes("planban@planban")) {
     throw new Error("Codex plugin list does not show planban@planban");
   }
+  const installedCacheRoot = options.codexHome
+    ? resolve(options.codexHome, "plugins/cache/planban/planban", expected)
+    : null;
+  const cachedGuidancePresent = Boolean(installedCacheRoot && await exists(resolve(installedCacheRoot, "skills")));
+  if (installedCacheRoot && cachedGuidancePresent) {
+    await assertPostMutationGuidance(installedCacheRoot, "Installed Planban plugin cache");
+  }
 
   process.stdout.write(JSON.stringify({
     ok: true,
     root,
     expectedVersion: expected,
     codexPluginInstalled: pluginList ? pluginList.includes("planban@planban") : null,
+    cachedGuidanceVerified: cachedGuidancePresent,
   }, null, 2) + "\n");
 }
 

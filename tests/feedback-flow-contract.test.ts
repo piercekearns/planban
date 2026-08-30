@@ -34,7 +34,7 @@ test("feedback contracts never recommend a pull request without an implemented a
     readFile(webPath, "utf8"),
   ]);
 
-  assert.match(feedbackSkill, /already:\n\n1\. investigated this specific bug/u);
+  assert.match(feedbackSkill, /already:\r?\n\r?\n1\. investigated this specific bug/u);
   assert.match(feedbackSkill, /implemented a concrete code or documentation change/u);
   assert.match(feedbackSkill, /retested the original failing scenario successfully/u);
   assert.match(feedbackSkill, /Do not recommend that the user ask an agent to file/u);

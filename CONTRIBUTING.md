@@ -90,6 +90,15 @@ For release or install-path changes, also run:
 npm run release:preflight
 ```
 
+Before publishing a release, use the exact candidate commit and rehearse updating
+from the previous public version. For example:
+
+```bash
+npm run release:upgrade-rehearsal -- --from-version 1.1.0 --expected-version 1.1.1
+```
+
+The manual `Release readiness` workflow runs both gates against an exact commit SHA.
+
 ## Privacy
 
 Do not include private board contents, local project paths, logs, screenshots, API
