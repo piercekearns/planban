@@ -13,7 +13,6 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
-  CircleArrowUp,
   Copy,
   ExternalLink,
   FilePenLine,
@@ -2369,7 +2368,7 @@ function UpdateModal({
         {!isPostUpdate && (canDirectUpdate || showAgentUpdateFallback) ? <footer className="feedback-actions">
           {canDirectUpdate ? (
             <button className="primary update-now-action" onClick={runDirectUpdate} disabled={busy !== null || updateInFlight}>
-              {busy === "direct" || updateInFlight ? <Loader2 size={14} className="spin" /> : <CircleArrowUp size={14} />}
+              {busy === "direct" || updateInFlight ? <Loader2 size={14} className="spin" /> : null}
               {busy === "direct" || updateInFlight ? "Updating" : "Update now"}
             </button>
           ) : null}

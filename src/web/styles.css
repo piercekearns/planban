@@ -5149,23 +5149,24 @@ button.content-edit-action:hover {
 }
 
 .feedback-actions .update-now-action {
-  border-color: color-mix(in oklab, var(--accent) 38%, transparent);
-  background: color-mix(in oklab, var(--accent) 10%, transparent);
-  color: var(--accent);
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
   box-shadow: none;
 }
 
 .feedback-actions .update-now-action:hover {
-  border-color: color-mix(in oklab, var(--accent) 52%, transparent);
-  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  border-color: transparent;
+  background: color-mix(in oklab, var(--accent) 88%, #000);
+  color: #fff;
 }
 
 .feedback-actions .update-now-action:disabled,
 .feedback-actions .update-now-action:disabled:hover {
   opacity: 0.72;
-  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
-  background: color-mix(in oklab, var(--accent) 14%, transparent);
-  color: var(--accent);
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
 }
 
 .feedback-actions .board-action-confirm.archive {

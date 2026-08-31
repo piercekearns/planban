@@ -32,6 +32,8 @@ test("the accepted board and detail simplification remains visible in the produc
   assert.match(styles, /\.hidden-cards-state > span\s*\{[^}]*border-radius:\s*999px;/su);
   assert.match(styles, /\.update-available-button\s*\{[^}]*border-radius:\s*999px;[^}]*background:\s*var\(--accent\);[^}]*color:\s*#fff;/su);
   assert.doesNotMatch(web, /<span>Update Available<\/span>\s*<Download/u);
+  assert.match(styles, /\.feedback-actions \.update-now-action\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*var\(--accent\);[^}]*color:\s*#fff;/su);
+  assert.doesNotMatch(web, /<CircleArrowUp/u);
   assert.match(styles, /\.board-list\s*\{[^}]*margin:\s*16px;/su);
 
   assert.doesNotMatch(web, /label="Refresh board from disk"/u);
