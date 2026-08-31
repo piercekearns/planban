@@ -437,8 +437,10 @@ test("starts update jobs and records preflight failure for blocked installs", as
   assert.equal(typeof address, "object");
   process.env.PLANBAN_UPDATE_MANIFEST_URL = `http://127.0.0.1:${address?.port}/latest.json`;
   const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  const originalPath = process.env.PATH;
 
   try {
+    process.env.PATH = "";
     const job = await jsonFetch<{ id: string; status: string }>(`${server.url}/api/update-run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -454,8 +456,9 @@ test("starts update jobs and records preflight failure for blocked installs", as
     }
 
     assert.equal(finalJob?.status, "failed");
-    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes?|development checkout|Missing required commands?: (?:codex|npm|git)(?:, (?:codex|npm|git))*/u);
+    assert.match(finalJob?.error ?? "", /Missing required commands: node, npm, git, codex/u);
   } finally {
+    process.env.PATH = originalPath;
     await server.close();
     await new Promise<void>((resolveClose, rejectClose) => {
       manifestServer.close((error) => error ? rejectClose(error) : resolveClose());
