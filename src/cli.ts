@@ -391,6 +391,7 @@ program
 
 program
   .command("set-card-parent")
+  .description("Deprecated compatibility alias; use move-card --parent or --board")
   .argument("<cardId>")
   .option("--parent <cardId>", "move this Item into a root Group")
   .option("--board", "move to the main board")

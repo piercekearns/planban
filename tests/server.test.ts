@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
-import { createServer as createHttpServer } from "node:http";
+import { Agent as HttpAgent, createServer as createHttpServer, get as httpGet, type IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -43,6 +43,23 @@ async function freePort() {
   });
   assert.equal(typeof address, "object");
   return address.port;
+}
+
+function requestWithAgent(url: string, agent: HttpAgent): Promise<IncomingMessage> {
+  return new Promise((resolveRequest, rejectRequest) => {
+    const request = httpGet(url, { agent }, resolveRequest);
+    request.on("error", rejectRequest);
+  });
+}
+
+async function requestAndDrainWithAgent(url: string, agent: HttpAgent): Promise<IncomingMessage> {
+  const response = await requestWithAgent(url, agent);
+  response.resume();
+  await new Promise<void>((resolveEnd, rejectEnd) => {
+    response.on("end", resolveEnd);
+    response.on("error", rejectEnd);
+  });
+  return response;
 }
 
 test.beforeEach(async () => {
@@ -96,6 +113,82 @@ test("serves the built app and exposes state APIs", async () => {
       writerVersion: 6,
     });
   } finally {
+    await server.close();
+  }
+});
+
+test("publishes ephemeral Work Item activity without changing roadmap state", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+  const before = await loadState(cwd);
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  const headers = { "Content-Type": "application/json" };
+  try {
+    const started = await fetch(`${server.url}/api/boards/${repoId}/activity/start`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ cardId: "alpha", leaseId: "lease-1" }),
+    });
+    assert.equal(started.status, 202);
+    const active = await jsonFetch<{ activities: Array<{ cardId: string; activeCount: number; endedAt: number | null }> }>(
+      `${server.url}/api/boards/${repoId}/activity`,
+    );
+    assert.deepEqual(active.activities.map((activity) => [activity.cardId, activity.activeCount, activity.endedAt]), [["alpha", 1, null]]);
+
+    const live = await jsonFetch<{
+      activityVersion: number;
+      activities: Array<{ cardId: string; activeCount: number }>;
+    }>(`${server.url}/api/live`);
+    assert.ok(live.activityVersion > 0);
+    assert.deepEqual(live.activities.map((activity) => [activity.cardId, activity.activeCount]), [["alpha", 1]]);
+
+    const ended = await fetch(`${server.url}/api/boards/${repoId}/activity/end`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ cardId: "alpha", leaseId: "lease-1" }),
+    });
+    assert.equal(ended.status, 202);
+    const cooling = await jsonFetch<{ activities: Array<{ activeCount: number; endedAt: number | null; removeAt: number | null }> }>(
+      `${server.url}/api/boards/${repoId}/activity`,
+    );
+    assert.equal(cooling.activities[0]?.activeCount, 0);
+    assert.equal(typeof cooling.activities[0]?.endedAt, "number");
+    assert.equal(typeof cooling.activities[0]?.removeAt, "number");
+    assert.equal((await loadState(cwd)).roadmap.revision, before.roadmap.revision);
+
+    const invalid = await fetch(`${server.url}/api/boards/${repoId}/activity/start`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ cardId: "missing", leaseId: "lease-2" }),
+    });
+    assert.equal(invalid.status, 404);
+  } finally {
+    await server.close();
+  }
+});
+
+test("legacy live-update requests cannot starve Board bootstrap connections", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  const agent = new HttpAgent({ keepAlive: true, maxSockets: 6 });
+  const legacyResponses: IncomingMessage[] = [];
+  try {
+    legacyResponses.push(...await Promise.all(
+      Array.from({ length: 6 }, () => requestAndDrainWithAgent(`${server.url}/api/events`, agent)),
+    ));
+    assert.ok(legacyResponses.every((response) => response.statusCode === 204));
+
+    const bootstrap = await Promise.race([
+      requestWithAgent(`${server.url}/api/status`, agent),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("Board bootstrap was starved by retained live-update requests")), 250);
+      }),
+    ]);
+    assert.equal(bootstrap.statusCode, 200);
+    bootstrap.resume();
+  } finally {
+    for (const response of legacyResponses) response.destroy();
+    agent.destroy();
     await server.close();
   }
 });

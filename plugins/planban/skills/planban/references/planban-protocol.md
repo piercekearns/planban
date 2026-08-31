@@ -240,8 +240,8 @@ npm run planban -- get-card <card-id> --cwd /path/to/repo -o json
 npm run planban -- move-card <card-id> --status in-progress --cwd /path/to/repo -o json
 npm run planban -- create-group "Larger outcome" --summary "Outcome these Items achieve together" --item <card-id> --item <card-id> --cwd /path/to/repo -o json
 npm run planban -- update-card <group-id> --summary "Refined Group objective" --cwd /path/to/repo -o json
-npm run planban -- set-card-parent <card-id> --parent <group-id> --cwd /path/to/repo -o json
-npm run planban -- set-card-parent <card-id> --board --cwd /path/to/repo -o json
+npm run planban -- move-card <card-id> --parent <group-id> --cwd /path/to/repo -o json
+npm run planban -- move-card <card-id> --board --cwd /path/to/repo -o json
 npm run planban -- read-doc <card-id> spec --cwd /path/to/repo -o json
 npm run planban -- demo -o json
 ```

@@ -83,22 +83,15 @@ test("Planban MCP server registers focused tools", () => {
     [
       "planban_status",
       "planban_list_boards",
-      "planban_archive_board",
-      "planban_restore_board",
-      "planban_duplicate_board",
-      "planban_delete_board",
       "planban_get_board",
       "planban_query_cards",
       "planban_get_card",
-      "planban_export_flat_v1",
-      "planban_reconstruct_hierarchy",
       "planban_create_card",
       "planban_create_group",
       "planban_create_cards",
       "planban_read_doc",
       "planban_move_card",
       "planban_update_card",
-      "planban_set_card_parent",
       "planban_write_doc",
       "planban_launch_board",
     ],
@@ -106,11 +99,29 @@ test("Planban MCP server registers focused tools", () => {
   const queryProperties = tools.find((tool) => tool.name === "planban_query_cards")?.inputSchema.properties ?? {};
   assert.equal("programmeId" in queryProperties, false);
   assert.equal("programmeRole" in queryProperties, false);
-  const reconstructionProperties = tools.find((tool) => tool.name === "planban_reconstruct_hierarchy")?.inputSchema.properties ?? {};
-  assert.equal("programmes" in reconstructionProperties, false);
   for (const toolName of ["planban_create_card", "planban_create_group", "planban_create_cards", "planban_update_card", "planban_write_doc"]) {
     assert.match(tools.find((tool) => tool.name === toolName)?.description ?? "", /Planban house style/u);
   }
+});
+
+test("Planban MCP exposes administration, maintenance, and legacy tools only through explicit profiles", () => {
+  const responses = runMcpServer([
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+    { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+  ], { PLANBAN_MCP_PROFILE: "admin,maintenance,legacy" });
+  const names = (responses[1].result.tools as Array<{ name: string }>).map((tool) => tool.name);
+  for (const name of [
+    "planban_archive_board",
+    "planban_restore_board",
+    "planban_duplicate_board",
+    "planban_delete_board",
+    "planban_export_flat_v1",
+    "planban_reconstruct_hierarchy",
+    "planban_set_card_parent",
+  ]) assert.equal(names.includes(name), true, `${name} should be advertised by its explicit profile`);
+  const reconstructionProperties = (responses[1].result.tools as Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }>)
+    .find((tool) => tool.name === "planban_reconstruct_hierarchy")?.inputSchema.properties ?? {};
+  assert.equal("programmes" in reconstructionProperties, false);
 });
 
 test("Planban MCP creates structured cards with docs and agent history", async () => {

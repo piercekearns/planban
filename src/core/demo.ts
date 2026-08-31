@@ -10,6 +10,7 @@ const DEMO_TITLE = "Planban Demo";
 
 interface DemoCardSeed {
   title: string;
+  legacyTitles?: string[];
   status: PlanbanStatus;
   summary: string;
   nextAction: string;
@@ -39,30 +40,25 @@ Start here: drag this card into In Progress. The board will save the status and 
 `,
   },
   {
-    title: "Open this roadmap item in Codex",
+    title: "Copy a reference into agent chat",
+    legacyTitles: ["Open this roadmap item in Codex"],
     status: "up-next",
-    summary: "Use a roadmap item to start an agent thread with the right context.",
-    nextAction: "Open this item in Codex, then hit enter to test out the generated prompt.",
-    spec: `# Open This Roadmap Item In Codex
+    summary: "Use a precise Item reference to carry work into any agent surface.",
+    nextAction: "Copy this Item reference and paste it into the agent chat where you want to work.",
+    spec: `# Copy A Reference Into Agent Chat
 
 ## Purpose
 
-Roadmap items can carry enough context for an agent to start work without rediscovering the project.
+Planban Items can be referenced precisely without tying work to one agent host or thread launcher.
 
 ## Current state
 
-This section is authoritative for the tutorial. The generated prompt is ready to test.
+This section is authoritative for the tutorial. The Item is ready to reference.
 
 ## Agent reference
 
-Hit enter to test the prompt.
-
-This demo prompt should open the Planban board, move this roadmap item into In Progress, update the card details, and tell you the new thread was created successfully.
+Use Copy Reference on the card or in its details, then paste the result into the agent chat where you want to continue.
 `,
-    metadata: {
-      demoCodexPrompt: true,
-      demoSuccessMessage: "New thread created successfully. Check the In Progress column in your Planban Demo board.",
-    },
   },
   {
     title: "Mark a card Complete when you are done",
@@ -87,13 +83,13 @@ Agents can run tests and prepare work for review, but your board should only mar
   {
     title: "Send feedback from the toolbar",
     status: "pending",
-    summary: "Feedback is welcome. The toolbar icon is there for bugs, requests, rough edges, or reactions.",
-    nextAction: "If you want to share feedback, select the toolbar icon and let your agent prepare it before anything is filed publicly.",
+    summary: "Feedback is welcome. Feedback / Bug in More is for bugs, requests, rough edges, or reactions.",
+    nextAction: "Open More, choose Feedback / Bug, and let your agent prepare it before anything is filed publicly.",
     spec: `# Send Feedback From The Toolbar
 
 ## Purpose
 
-Planban has a feedback button in the board toolbar.
+Planban keeps Feedback / Bug inside the Board's More menu.
 
 ## Current state
 
@@ -101,17 +97,18 @@ This section is authoritative for the tutorial. The feedback action is available
 
 ## Agent reference
 
-Feedback is welcome. If you find a bug, want a feature, feel confused, or want to share what worked well, use the toolbar icon.
+Feedback is welcome. If you find a bug, want a feature, feel confused, or want to share what worked well, open More and choose Feedback / Bug.
 
-Planban creates a Codex-ready prompt so your agent can turn rough notes into the right feedback format before anything is filed publicly.
+Planban creates an agent-ready prompt that explicitly invokes the installed Planban Feedback skill before anything is filed publicly. In Codex, Planban Feedback is also available from the /planban menu or through /Planban Feedback.
 `,
   },
   {
-    title: "Ask Codex to create roadmap items from your plans",
+    title: "Ask your agent to create roadmap items from your plans",
+    legacyTitles: ["Ask Codex to create roadmap items from your plans"],
     status: "pending",
     summary: "Bring existing project context from docs, issues, Notion, Jira, Linear, or plain notes.",
-    nextAction: "Give Codex your current planning context and ask it to draft Planban roadmap items for review.",
-    spec: `# Ask Codex To Create Roadmap Items From Your Plans
+    nextAction: "Give your agent the current planning context and ask it to draft Planban roadmap items for review.",
+    spec: `# Ask Your Agent To Create Roadmap Items From Your Plans
 
 ## Purpose
 
@@ -136,11 +133,14 @@ async function seedDemoCards(cwd: string): Promise<PlanbanResolvedState> {
   let state = await loadState(cwd);
 
   for (const seed of DEMO_CARDS) {
-    const existing = state.roadmap.roadmapItems.find((item) => item.title === seed.title);
+    const existing = state.roadmap.roadmapItems.find((item) =>
+      item.title === seed.title || seed.legacyTitles?.includes(item.title),
+    );
     if (existing) {
       state = await updateCard({
         cwd,
         cardId: existing.id,
+        title: seed.title,
         summary: seed.summary,
         nextAction: seed.nextAction,
         actor: "system",

@@ -67,6 +67,7 @@ import {
 } from "../core/version";
 import { updatePreflight } from "../core/updatePreflight";
 import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
+import { PlanbanActivityStore } from "../core/activity";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
@@ -434,7 +435,12 @@ export async function startServer(options: ServeOptions) {
   const server = createHttpServer(app);
   let vite: ViteDevServer | null = null;
   let watcher: FSWatcher | null = null;
-  const clients = new Set<express.Response>();
+  let activitySweep: NodeJS.Timeout | null = null;
+  const activityStore = new PlanbanActivityStore();
+  let liveVersion = 0;
+  let stateVersion = 0;
+  let boardsVersion = 0;
+  let activityVersion = 0;
   const currentBoard = await registerBoardFromCwd(cwd).catch(() => null);
 
   app.use(express.json({ limit: "4mb" }));
@@ -448,18 +454,26 @@ export async function startServer(options: ServeOptions) {
     next();
   });
 
-  function sendEvent(event: string, data: unknown) {
-    for (const client of clients) {
-      client.write(`event: ${event}\n`);
-      client.write(`data: ${JSON.stringify(data)}\n\n`);
-    }
+  function sendEvent(event: string, _data: unknown) {
+    liveVersion += 1;
+    if (event === "state") stateVersion += 1;
+    if (event === "boards") boardsVersion += 1;
+    if (event === "activity") activityVersion += 1;
+  }
+
+  function activitySnapshot() {
+    return { activities: activityStore.snapshot() };
+  }
+
+  function sendActivitySnapshot() {
+    sendEvent("activity", activitySnapshot());
   }
 
   async function closeServer() {
-    for (const client of clients) {
-      client.end();
+    if (activitySweep) {
+      clearInterval(activitySweep);
+      activitySweep = null;
     }
-    clients.clear();
     await Promise.race([
       new Promise<void>((resolveClose, reject) => {
         server.close((error) => (error ? reject(error) : resolveClose()));
@@ -549,16 +563,26 @@ export async function startServer(options: ServeOptions) {
     });
   }
 
-  app.get("/api/events", (_req, res) => {
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+  app.get("/api/live", (_req, res) => {
+    res.set("Cache-Control", "no-store").json({
+      liveVersion,
+      stateVersion,
+      boardsVersion,
+      activityVersion,
+      ...activitySnapshot(),
     });
-    res.write("\n");
-    clients.add(res);
-    res.on("close", () => clients.delete(res));
   });
+
+  app.get("/api/events", (_req, res) => {
+    // EventSource reconnects can outlive an in-app browser tab and exhaust its
+    // per-origin connection pool. A 204 tells legacy clients to stop reconnecting.
+    res.status(204).set("Cache-Control", "no-store").end();
+  });
+
+  activitySweep = setInterval(() => {
+    if (activityStore.prune()) sendActivitySnapshot();
+  }, 100);
+  activitySweep.unref?.();
 
   app.get("/api/status", async (_req, res, next) => {
     try {
@@ -871,6 +895,48 @@ export async function startServer(options: ServeOptions) {
     await touchBoard(repoId);
     return board;
   }
+
+  function activityString(value: unknown, name: string) {
+    if (typeof value !== "string" || !value.trim()) throw new PlanbanValidationError(`${name} is required.`);
+    return value.trim();
+  }
+
+  async function validateActivityTarget(repoId: string, cardId: string) {
+    const cwdForBoard = await resolveBoardCwd(repoId);
+    const state = await loadState(cwdForBoard);
+    if (!state.roadmap.roadmapItems.some((item) => item.id === cardId)) {
+      throw new PlanbanNotFoundError(`Planban card ${cardId} was not found.`);
+    }
+  }
+
+  app.get("/api/boards/:repoId/activity", async (req, res, next) => {
+    try {
+      await resolveBoardCwd(req.params.repoId);
+      res.json({ activities: activityStore.snapshot().filter((activity) => activity.repoId === req.params.repoId) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/boards/:repoId/activity/start", async (req, res, next) => {
+    try {
+      const cardId = activityString(req.body?.cardId, "cardId");
+      const leaseId = activityString(req.body?.leaseId, "leaseId");
+      await validateActivityTarget(req.params.repoId, cardId);
+      activityStore.begin({ repoId: req.params.repoId, cardId, leaseId });
+      sendActivitySnapshot();
+      res.status(202).json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/boards/:repoId/activity/end", async (req, res, next) => {
+    try {
+      const cardId = activityString(req.body?.cardId, "cardId");
+      const leaseId = activityString(req.body?.leaseId, "leaseId");
+      await resolveBoardCwd(req.params.repoId);
+      activityStore.end({ repoId: req.params.repoId, cardId, leaseId });
+      sendActivitySnapshot();
+      res.status(202).json({ ok: true });
+    } catch (error) { next(error); }
+  });
 
   app.get("/api/boards/:repoId/state", async (req, res, next) => {
     try {

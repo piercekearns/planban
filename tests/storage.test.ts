@@ -660,18 +660,18 @@ test("creates an idempotent demo board with tutorial cards", async () => {
     demo.roadmap.roadmapItems.map((item) => [item.title, item.status]),
     [
       ["Drag this card to In Progress", "up-next"],
-      ["Open this roadmap item in Codex", "up-next"],
+      ["Copy a reference into agent chat", "up-next"],
       ["Mark a card Complete when you are done", "in-progress"],
       ["Send feedback from the toolbar", "pending"],
-      ["Ask Codex to create roadmap items from your plans", "pending"],
+      ["Ask your agent to create roadmap items from your plans", "pending"],
     ],
   );
-  const codexCard = demo.roadmap.roadmapItems.find((item) => item.id === "open-this-roadmap-item-in-codex");
-  assert.equal(codexCard?.metadata?.demoCodexPrompt, true);
+  const referenceCard = demo.roadmap.roadmapItems.find((item) => item.title === "Copy a reference into agent chat");
+  assert.match(referenceCard?.nextAction ?? "", /Copy this Item reference/u);
 
   const spec = await readDoc({
     cwd: demo.cwd,
-    cardId: "ask-codex-to-create-roadmap-items-from-your-plans",
+    cardId: "ask-your-agent-to-create-roadmap-items-from-your-plans",
     kind: "spec",
   });
   assert.match(spec.markdown, /Notion, Jira, Linear/);
@@ -681,7 +681,7 @@ test("creates an idempotent demo board with tutorial cards", async () => {
     cardId: "send-feedback-from-the-toolbar",
     kind: "spec",
   });
-  assert.match(feedbackSpec.markdown, /feedback button in the board toolbar/);
+  assert.match(feedbackSpec.markdown, /Feedback \/ Bug inside the Board's More menu/);
 
   const second = await ensureDemoBoard();
   assert.equal(second.roadmap.roadmapItems.length, 5);

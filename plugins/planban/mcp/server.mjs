@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { startPlanbanMcpActivity } from "./activity.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -614,8 +615,39 @@ const tools = [
   },
 ];
 
-async function callTool(name, rawArgs) {
-  const args = requireObject(rawArgs ?? {}, "arguments");
+const PROFILE_TOOL_NAMES = {
+  admin: new Set([
+    "planban_archive_board",
+    "planban_restore_board",
+    "planban_duplicate_board",
+    "planban_delete_board",
+  ]),
+  maintenance: new Set([
+    "planban_export_flat_v1",
+    "planban_reconstruct_hierarchy",
+  ]),
+  legacy: new Set([
+    "planban_set_card_parent",
+  ]),
+};
+
+function advertisedTools() {
+  const requested = new Set(
+    String(process.env.PLANBAN_MCP_PROFILE ?? "default")
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if (requested.has("full")) return tools;
+  return tools.filter((tool) => {
+    if (PROFILE_TOOL_NAMES.admin.has(tool.name)) return requested.has("admin");
+    if (PROFILE_TOOL_NAMES.maintenance.has(tool.name)) return requested.has("maintenance");
+    if (PROFILE_TOOL_NAMES.legacy.has(tool.name)) return requested.has("legacy");
+    return true;
+  });
+}
+
+async function callToolImpl(name, args) {
   if (name === "planban_status") {
     const status = await getStatus(await cwdFromArgs(args));
     return textResult(
@@ -889,6 +921,23 @@ async function callTool(name, rawArgs) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
+async function callTool(name, rawArgs) {
+  const args = requireObject(rawArgs ?? {}, "arguments");
+  const activity = await startPlanbanMcpActivity({
+    name,
+    args,
+    resolveBoard: async () => {
+      const status = await getStatus(await cwdFromArgs(args));
+      return status.initialized && "repoId" in status ? { repoId: status.repoId } : null;
+    },
+  });
+  try {
+    return await callToolImpl(name, args);
+  } finally {
+    await activity?.end();
+  }
+}
+
 async function handleRequest(message) {
   const { id, method, params } = message;
 
@@ -898,7 +947,7 @@ async function handleRequest(message) {
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Use Planban tools for structured local roadmap, card, and document operations. Before creating or materially editing owner-facing content, follow the installed Planban protocol and Planban house style. Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review.",
+        "Use Planban tools for structured local roadmap, card, and document operations. Before creating or materially editing owner-facing content, follow the installed Planban protocol and Planban house style. Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review. move_card is the canonical placement operation. Board administration, migration/recovery, and the legacy set_card_parent alias are advertised only through explicit MCP profiles.",
     });
     return;
   }
@@ -909,7 +958,7 @@ async function handleRequest(message) {
   }
 
   if (method === "tools/list") {
-    sendResult(id, { tools });
+    sendResult(id, { tools: advertisedTools() });
     return;
   }
 

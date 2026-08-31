@@ -23,14 +23,16 @@ import {
   FolderPlus,
   FolderTree,
   HelpCircle,
+  History,
+  Home,
   Loader2,
   ListTree,
-  MessageSquareText,
   Minimize2,
+  MoreHorizontal,
+  Pause,
   Pencil,
   Play,
   Plus,
-  RefreshCw,
   RotateCcw,
   Search,
   Send,
@@ -86,7 +88,6 @@ import {
   resolveBoardQueryState,
   type BoardViewPreferences,
 } from "./boardPreferences";
-import { groupAncestryForPrompt } from "./hierarchyPrompt";
 import {
   shouldOfferFirstRunTutorial,
   tutorialExitRepoId,
@@ -94,6 +95,23 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
+import {
+  activityLabIsEnabled,
+  activityVariantForIndex,
+  activityVariantLabels,
+  simulatedActivityBurst,
+  strongestActivityPhase,
+  type ActivityDemoMode,
+  type ActivityPhase,
+  type ActivityPresentation,
+} from "./activityDemo";
+import {
+  activityPhaseAt,
+  PLANBAN_ACTIVITY_HOLD_MS,
+  PLANBAN_ACTIVITY_TAIL_MS,
+  type PlanbanActivitySnapshot,
+} from "../core/activity";
+import { liveRefreshDecision } from "./liveSync";
 import {
   canPlaceItemInside,
   groupPlacementDecision,
@@ -174,6 +192,14 @@ interface BoardRecord {
 interface BoardsPayload {
   currentRepoId: string | null;
   boards: BoardRecord[];
+}
+
+interface LiveSnapshot {
+  liveVersion: number;
+  stateVersion: number;
+  boardsVersion: number;
+  activityVersion: number;
+  activities: PlanbanActivitySnapshot[];
 }
 
 interface VersionInfo {
@@ -449,13 +475,22 @@ const labels: Record<Status, string> = {
   archived: "Archived",
 };
 
-function joinLocalPath(root: string, relativePath: string | null) {
-  if (!relativePath) return null;
-  return `${root.replace(/\/+$/, "")}/${relativePath.replace(/^\/+/, "")}`;
-}
-
 function formatOptionalLine(label: string, value: string | number | null | undefined) {
   return `${label}: ${value === null || value === undefined || value === "" ? "(none)" : value}`;
+}
+
+function buildWorkItemReference(state: PlanbanState, item: RoadmapItem) {
+  const kind = item.isGroup ? "Group" : "Item";
+  return [
+    `Planban ${kind}: “${item.title}”`,
+    `Board: ${state.roadmap.project.title}`,
+    `Local Board ID: ${state.manifest.repoId}`,
+    `${kind} ID: ${item.id}`,
+  ].join("\n");
+}
+
+async function copyWorkItemReference(state: PlanbanState, item: RoadmapItem) {
+  return await writeClipboardText(buildWorkItemReference(state, item));
 }
 
 function getCodexThreadMeta(item: RoadmapItem) {
@@ -475,93 +510,10 @@ function hasPendingCodexThread(item: RoadmapItem) {
   return !getCodexThreadId(item) && meta.status === "pending" && typeof meta.launchToken === "string";
 }
 
-function createLaunchToken(item: RoadmapItem) {
-  const random = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `planban:${item.id}:${random}`;
-}
-
-function buildCodexDraftPrompt(state: PlanbanState, item: RoadmapItem, launchToken: string) {
-  const specPath = joinLocalPath(state.planningRoot, item.specDoc);
-  const planPath = joinLocalPath(state.planningRoot, item.planDoc);
-  const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
-  const demoSuccessMessage = typeof item.metadata?.demoSuccessMessage === "string"
-    ? item.metadata.demoSuccessMessage
-    : "New thread created successfully. Check the In Progress column in your Planban board.";
-  const ancestry = groupAncestryForPrompt(state.roadmap.roadmapItems, item);
-
-  if (item.metadata?.demoCodexPrompt === true) {
-    return [
-      "Test this Planban tutorial prompt.",
-      "",
-      "Use the Planban plugin and protocol if available. Follow the Planban house style before editing owner-facing card fields or documents.",
-      formatOptionalLine("Repo", state.cwd),
-      formatOptionalLine("Board", boardUrl),
-      formatOptionalLine("Card id", item.id),
-      formatOptionalLine("Status", labels[item.status]),
-      formatOptionalLine("Spec", specPath),
-      formatOptionalLine("Launch token", launchToken),
-      "",
-      `Open the board beside this thread, move "${item.title}" to In Progress, update its summary/next action for the tutorial, then reply: ${demoSuccessMessage}`,
-      "",
-      "User prompt:",
-    ].join("\n");
-  }
-
-  return [
-    `Start this Planban roadmap item: "${item.title}".`,
-    "",
-    "Use the Planban plugin and protocol if available. Follow the Planban house style before editing owner-facing card fields or documents.",
-    formatOptionalLine("Repo", state.cwd),
-    formatOptionalLine("Board", boardUrl),
-    formatOptionalLine("Card id", item.id),
-    formatOptionalLine("Status", labels[item.status]),
-    formatOptionalLine("Group ancestry", ancestry),
-    formatOptionalLine("Spec", specPath),
-    formatOptionalLine("Plan", planPath),
-    formatOptionalLine("Launch token", launchToken),
-    "",
-    "Open the board beside this thread, read the linked card docs, then begin from the card's next action. If implementation starts, move it to In Progress; leave completion user-controlled.",
-    "",
-    "User prompt:",
-  ].join("\n");
-}
-
-async function openCodexDraftThread(state: PlanbanState, item: RoadmapItem) {
-  const existingThreadId = getCodexThreadId(item);
-  if (existingThreadId) {
-    await api<{ opened: boolean }>("/api/open-codex-thread", {
-      method: "POST",
-      body: JSON.stringify({ url: `codex://threads/${existingThreadId}` }),
-    });
-    return null;
-  }
-
-  const launchToken = createLaunchToken(item);
-  const url = new URL("codex://threads/new");
-  url.searchParams.set("path", state.cwd);
-  const prompt = buildCodexDraftPrompt(state, item, launchToken);
-  url.searchParams.set("prompt", prompt);
-  try {
-    const result = await api<{ opened: boolean; state?: PlanbanState }>(boardPath(state.manifest.repoId, `/cards/${item.id}/codex-thread/draft`), {
-      method: "POST",
-      body: JSON.stringify({ url: url.toString(), launchToken }),
-    });
-    return result.state ?? null;
-  } catch (error) {
-    await navigator.clipboard?.writeText(prompt).catch(() => undefined);
-    window.alert(
-      error instanceof Error
-        ? `Could not open Codex automatically. The draft prompt has been copied if clipboard access is available.\n\n${error.message}`
-        : "Could not open Codex automatically. The draft prompt has been copied if clipboard access is available.",
-    );
-    return null;
-  }
-}
-
 function buildFeedbackPrompt(state: PlanbanState, feedback: string) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
   return [
-    "Use Planban Feedback to investigate and package this for piercekearns/planban.",
+    "Use the installed Planban Feedback skill (`planban-feedback`) to investigate and package this for piercekearns/planban.",
     "",
     "Draft only. Do not file or post publicly without my explicit approval of the exact destination and text.",
     "Treat this note and available conversation/workspace context as my initial account; do not ask me to repeat facts you can infer or safely inspect.",
@@ -631,24 +583,6 @@ async function writeClipboardText(text: string) {
 
 async function copyFeedbackPrompt(state: PlanbanState, feedback: string) {
   return await writeClipboardText(buildFeedbackPrompt(state, feedback));
-}
-
-function buildTutorialCreatePrompt(state: PlanbanState, planningContext: string) {
-  const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
-  return [
-    "Use Planban Create to turn this rough planning context into reviewable Planban roadmap items.",
-    "",
-    "Follow the installed Planban house style for every drafted card field and document.",
-    "Ask which project/repo to plan if unclear. If no Planban board exists for that project, ask before initializing one.",
-    "Use repo docs, issues, notes, connected context, or the text below. Do not invent private project facts.",
-    "",
-    formatOptionalLine("Current demo board for orientation only", boardUrl),
-    "",
-    "Planning context:",
-    planningContext.trim() || "(The user has not added context yet. Ask one short question to get started.)",
-    "",
-    "User prompt:",
-  ].join("\n");
 }
 
 async function openCodexPromptForState(state: PlanbanState, prompt: string) {
@@ -866,7 +800,7 @@ function hierarchySortingStrategy(
   };
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = {
     "Content-Type": "application/json",
@@ -876,10 +810,29 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (method !== "GET" && method !== "HEAD" && !headers["Idempotency-Key"]) {
     headers["Idempotency-Key"] = `web:${Date.now()}:${crypto.randomUUID()}`;
   }
-  const response = await fetch(path, {
-    ...init,
-    headers,
-  });
+  const timeoutController = timeoutMs ? new AbortController() : null;
+  const timeout = timeoutController
+    ? window.setTimeout(() => timeoutController.abort(new DOMException("Request timed out", "TimeoutError")), timeoutMs)
+    : null;
+  const signals = [init?.signal, timeoutController?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
+  let response: Response;
+  try {
+    const requestInit: RequestInit = {
+      ...init,
+      headers,
+      ...(signals.length > 0 ? { signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0]! } : {}),
+    };
+    response = await fetch(path, {
+      ...requestInit,
+    });
+  } catch (error) {
+    if (timeoutController?.signal.aborted) {
+      throw new Error("Planban took too long to respond. Try loading the Board again.");
+    }
+    throw error;
+  } finally {
+    if (timeout !== null) window.clearTimeout(timeout);
+  }
   const text = await response.text();
   let payload: { error?: string } | T | null = null;
   if (text.trim()) {
@@ -1157,10 +1110,227 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
   );
 }
 
+function AgentActivityEffect({
+  activity,
+  surface = "card",
+}: {
+  activity: ActivityPresentation | null | undefined;
+  surface?: "card" | "header";
+}) {
+  if (!activity) return null;
+  return (
+    <span
+      className={`agent-activity-effect agent-activity-${activity.variant} agent-activity-${activity.phase} agent-activity-${surface}`}
+      aria-hidden="true"
+    >
+      <i /><i /><i /><i /><i />
+    </span>
+  );
+}
+
+function useActivityDemo(enabled: boolean, itemIds: string[]) {
+  const [mode, setModeState] = useState<ActivityDemoMode>("compare");
+  const [phases, setPhases] = useState<Record<string, ActivityPhase>>({});
+  const timersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const phaseTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>[]>());
+  const inFlightRef = useRef(new Map<string, number>());
+  const cadenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const itemIdsRef = useRef(itemIds);
+
+  useEffect(() => {
+    itemIdsRef.current = itemIds;
+  }, [itemIds]);
+
+  const schedule = useCallback((callback: () => void, delayMs: number) => {
+    const timer = setTimeout(() => {
+      timersRef.current.delete(timer);
+      callback();
+    }, delayMs);
+    timersRef.current.add(timer);
+    return timer;
+  }, []);
+
+  const clearCardPhaseTimers = useCallback((cardId: string) => {
+    for (const timer of phaseTimersRef.current.get(cardId) ?? []) {
+      clearTimeout(timer);
+      timersRef.current.delete(timer);
+    }
+    phaseTimersRef.current.delete(cardId);
+  }, []);
+
+  const clearAll = useCallback(() => {
+    for (const timer of timersRef.current) clearTimeout(timer);
+    timersRef.current.clear();
+    phaseTimersRef.current.clear();
+    inFlightRef.current.clear();
+    cadenceTimerRef.current = null;
+  }, []);
+
+  const beginActivity = useCallback((cardId: string) => {
+    clearCardPhaseTimers(cardId);
+    inFlightRef.current.set(cardId, (inFlightRef.current.get(cardId) ?? 0) + 1);
+    setPhases((current) => ({ ...current, [cardId]: "active" }));
+  }, [clearCardPhaseTimers]);
+
+  const endActivity = useCallback((cardId: string) => {
+    const remaining = Math.max(0, (inFlightRef.current.get(cardId) ?? 1) - 1);
+    if (remaining > 0) {
+      inFlightRef.current.set(cardId, remaining);
+      return;
+    }
+    inFlightRef.current.delete(cardId);
+    setPhases((current) => ({ ...current, [cardId]: "cooldown" }));
+    const fadeTimer = schedule(() => {
+      setPhases((current) => current[cardId] ? { ...current, [cardId]: "fading" } : current);
+    }, 420);
+    const removeTimer = schedule(() => {
+      setPhases((current) => {
+        if (!current[cardId]) return current;
+        const next = { ...current };
+        delete next[cardId];
+        return next;
+      });
+      phaseTimersRef.current.delete(cardId);
+    }, 1200);
+    phaseTimersRef.current.set(cardId, [fadeTimer, removeTimer]);
+  }, [schedule]);
+
+  const pulseCard = useCallback((cardId: string) => {
+    const burst = simulatedActivityBurst();
+    burst.operationOffsetsMs.forEach((offset, index) => {
+      schedule(() => {
+        beginActivity(cardId);
+        schedule(() => endActivity(cardId), burst.operationDurationsMs[index] ?? 70);
+      }, offset);
+    });
+    return burst.nextBurstDelayMs;
+  }, [beginActivity, endActivity, schedule]);
+
+  const pulseOne = useCallback(() => {
+    const ids = itemIdsRef.current;
+    if (!enabled || ids.length === 0) return;
+    pulseCard(ids[Math.floor(Math.random() * ids.length)]!);
+  }, [enabled, pulseCard]);
+
+  const pulseAll = useCallback(() => {
+    if (!enabled) return;
+    itemIdsRef.current.forEach((cardId, index) => schedule(() => pulseCard(cardId), index * 70));
+  }, [enabled, pulseCard, schedule]);
+
+  const resetActivity = useCallback(() => {
+    clearAll();
+    setPhases({});
+  }, [clearAll]);
+
+  const setMode = useCallback((nextMode: ActivityDemoMode) => {
+    resetActivity();
+    setModeState(nextMode);
+  }, [resetActivity]);
+
+  const runManualPulse = useCallback((scope: "one" | "all") => {
+    resetActivity();
+    setModeState("paused");
+    requestAnimationFrame(() => {
+      if (scope === "all") pulseAll();
+      else pulseOne();
+    });
+  }, [pulseAll, pulseOne, resetActivity]);
+
+  const runCardPulse = useCallback((cardId: string) => {
+    if (!enabled || !itemIdsRef.current.includes(cardId)) return;
+    resetActivity();
+    setModeState("paused");
+    requestAnimationFrame(() => pulseCard(cardId));
+  }, [enabled, pulseCard, resetActivity]);
+
+  useEffect(() => {
+    if (!enabled || mode !== "live") return;
+    let cancelled = false;
+    const run = () => {
+      if (cancelled || itemIdsRef.current.length === 0) return;
+      const ids = itemIdsRef.current;
+      const cardId = ids[Math.floor(Math.random() * ids.length)]!;
+      const nextDelay = pulseCard(cardId);
+      cadenceTimerRef.current = schedule(run, nextDelay);
+    };
+    cadenceTimerRef.current = schedule(run, 240);
+    return () => {
+      cancelled = true;
+      if (cadenceTimerRef.current) {
+        clearTimeout(cadenceTimerRef.current);
+        timersRef.current.delete(cadenceTimerRef.current);
+        cadenceTimerRef.current = null;
+      }
+    };
+  }, [enabled, mode, pulseCard, schedule]);
+
+  useEffect(() => () => clearAll(), [clearAll]);
+
+  useEffect(() => {
+    if (!enabled) resetActivity();
+  }, [enabled, resetActivity]);
+
+  const phaseForId = useCallback((cardId: string): ActivityPhase | null => {
+    if (!enabled) return null;
+    if (mode === "compare") return "active";
+    return phases[cardId] ?? null;
+  }, [enabled, mode, phases]);
+
+  return { mode, setMode, phaseForId, runManualPulse, runCardPulse };
+}
+
+function ActivityLabPanel({
+  mode,
+  cards,
+  changedCardTitle,
+  onModeChange,
+  onFlashAndChange,
+  onOpenDetail,
+}: {
+  mode: ActivityDemoMode;
+  cards: RoadmapItem[];
+  changedCardTitle: string | null;
+  onModeChange: (mode: ActivityDemoMode) => void;
+  onFlashAndChange: () => void;
+  onOpenDetail: (kind: "item" | "group") => void;
+}) {
+  const status = mode === "compare"
+    ? "All treatments are held active for visual comparison."
+    : mode === "live"
+      ? "Measured micro-bursts are moving between cards automatically."
+      : changedCardTitle
+        ? `Changed “${changedCardTitle}” as its activity effect began.`
+        : "Automatic activity is paused. Use a pulse control to inspect entrances and fades.";
+  return (
+    <section className="activity-lab" aria-label="Agent activity animation lab">
+      <div className="activity-lab-copy">
+        <span className="activity-lab-kicker">Demo only</span>
+        <div><b>Agent activity lab</b><small>{status}</small></div>
+      </div>
+      <div className="activity-lab-modes" role="group" aria-label="Activity lab mode">
+        <button className={mode === "compare" ? "active" : ""} aria-pressed={mode === "compare"} onClick={() => onModeChange("compare")}>Compare</button>
+        <button className={mode === "live" ? "active" : ""} aria-pressed={mode === "live"} onClick={() => onModeChange("live")}><Play size={12} />Live cadence</button>
+        <button className={mode === "paused" ? "active" : ""} aria-pressed={mode === "paused"} onClick={() => onModeChange("paused")}><Pause size={12} />Pause</button>
+      </div>
+      <div className="activity-lab-pulses" role="group" aria-label="Manual activity pulses">
+        <button onClick={onFlashAndChange}><SquarePen size={12} />Flash + change</button>
+        <button onClick={() => onOpenDetail("item")}><FilePenLine size={12} />Item inside</button>
+        <button onClick={() => onOpenDetail("group")}><FolderOpen size={12} />Group inside</button>
+      </div>
+      <div className="activity-lab-legend" aria-label="Animation treatments">
+        {cards.slice(0, 5).map((card, index) => {
+          const variant = activityVariantForIndex(index);
+          return <span key={card.id} title={card.title}><i className={`activity-legend-${variant}`} />{activityVariantLabels[variant]}</span>;
+        })}
+      </div>
+    </section>
+  );
+}
+
 function SortableCard({
   item,
   onSelect,
-  onStartCodex,
+  onCopyReference,
   onMove,
   onDelete,
   readOnly = false,
@@ -1175,10 +1345,11 @@ function SortableCard({
   containmentActive = false,
   receiverDragHeight = null,
   ancestry = [],
+  activity = null,
 }: {
   item: RoadmapItem;
   onSelect: (id: string) => void;
-  onStartCodex: (item: RoadmapItem) => void;
+  onCopyReference: (item: RoadmapItem) => Promise<boolean>;
   onMove: (id: string, status: Status) => void;
   onDelete: (id: string) => void;
   readOnly?: boolean;
@@ -1193,6 +1364,7 @@ function SortableCard({
   containmentActive?: boolean;
   receiverDragHeight?: number | null;
   ancestry?: RoadmapItem[];
+  activity?: ActivityPresentation | null;
 }) {
   const hasDescription = Boolean(item.nextAction || item.summary);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -1207,10 +1379,7 @@ function SortableCard({
     height: isDragging && receiverDragHeight ? containmentSourceFootprint ?? receiverDragHeight : undefined,
     opacity: isDragging ? hierarchyDraggedSourceOpacity(reorderPreview, hideSourceDuringDrag) : 1,
   } as React.CSSProperties;
-  const codexThreadId = getCodexThreadId(item);
-  const codexLabel = codexThreadId
-    ? "Open Codex thread"
-    : "Start in Codex";
+  const [referenceCopied, setReferenceCopied] = useState(false);
 
   return (
     <article
@@ -1242,6 +1411,7 @@ function SortableCard({
           {inlineChildren.map((child) => <div key={child.id}><span>{child.title}</span><small className={`work-status-label status-${child.status}`}>{labels[child.status] ?? "No status"}</small></div>)}
         </div>
       ) : null}
+      <AgentActivityEffect activity={activity} />
       {!readOnly ? (
         <div
           className="card-actions"
@@ -1250,23 +1420,26 @@ function SortableCard({
           }}
         >
           <div className="card-action-group">
-            {ancestry.length > 0 && onOpenGroup ? (
-              <TooltipButton label="Open owning Group" onClick={(event) => { event.stopPropagation(); onOpenGroup(ancestry.at(-1)!.id); }}><ListTree size={14} /></TooltipButton>
-            ) : null}
             {item.isGroup && onOpenGroup ? (
               <>
                 {inlineChildren.some((child) => !rollup?.previews.some((preview) => preview.id === child.id)) && onToggleExpanded ? <TooltipButton label={expanded ? "Hide items" : "Show all items"} onClick={(event) => { event.stopPropagation(); onToggleExpanded(item.id); }}>{expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</TooltipButton> : null}
               </>
             ) : null}
             <TooltipButton
-              label={codexLabel}
-              className={codexThreadId ? "codex-linked" : ""}
+              label={referenceCopied ? `${item.isGroup ? "Group" : "Item"} reference copied` : `Copy ${item.isGroup ? "Group" : "Item"} reference`}
               onClick={(event) => {
                 event.stopPropagation();
-                onStartCodex(item);
+                void onCopyReference(item).then((copied) => {
+                  if (!copied) {
+                    window.alert(`Clipboard access was blocked. Open the ${item.isGroup ? "Group" : "Item"} and copy its title and ID from the detail view.`);
+                    return;
+                  }
+                  setReferenceCopied(true);
+                  window.setTimeout(() => setReferenceCopied(false), 1600);
+                });
               }}
             >
-              <SquarePen size={14} />
+              <Copy size={14} />
             </TooltipButton>
           </div>
           <div className="card-action-group">
@@ -1344,7 +1517,7 @@ function Column({
   onToggleCollapsed,
   onToggleCards,
   onSelect,
-  onStartCodex,
+  onCopyReference,
   onMove,
   onDelete,
   readOnly = false,
@@ -1357,6 +1530,8 @@ function Column({
   crossColumnDropPreview = null,
   receiverDragHeight = null,
   ancestryById,
+  activityForItem,
+  onHideArchived,
 }: {
   status: Status;
   items: RoadmapItem[];
@@ -1366,7 +1541,7 @@ function Column({
   onToggleCollapsed: () => void;
   onToggleCards: () => void;
   onSelect: (id: string) => void;
-  onStartCodex: (item: RoadmapItem) => void;
+  onCopyReference: (item: RoadmapItem) => Promise<boolean>;
   onMove: (id: string, status: Status) => void;
   onDelete: (id: string) => void;
   readOnly?: boolean;
@@ -1379,6 +1554,8 @@ function Column({
   crossColumnDropPreview?: CrossColumnDropPreview | null;
   receiverDragHeight?: number | null;
   ancestryById?: Map<string, RoadmapItem[]>;
+  activityForItem?: (item: RoadmapItem) => ActivityPresentation | null;
+  onHideArchived?: () => void;
 }) {
   const { setNodeRef } = useDroppable({ id: status });
   const destinationPreview = crossColumnDropPreview?.status === status ? crossColumnDropPreview : null;
@@ -1408,6 +1585,11 @@ function Column({
         </button>
         <h2>{labels[status]}</h2>
         <span className="count">{items.length}</span>
+        {status === "archived" && onHideArchived ? (
+          <TooltipButton label="Hide Archive" className="column-archive-toggle" aria-pressed={true} onClick={onHideArchived}>
+            <span className="archive-switch" aria-hidden="true"><span className="archive-switch-knob" /></span>
+          </TooltipButton>
+        ) : null}
         <button onClick={onToggleCollapsed} className="icon-button right">
           <Minimize2 size={14} />
         </button>
@@ -1429,7 +1611,7 @@ function Column({
                   <SortableCard
                     item={item}
                     onSelect={onSelect}
-                    onStartCodex={onStartCodex}
+                    onCopyReference={onCopyReference}
                     onMove={onMove}
                     onDelete={onDelete}
                     readOnly={readOnly}
@@ -1444,6 +1626,7 @@ function Column({
                     containmentActive={dropIntent?.operation === "inside"}
                     receiverDragHeight={receiverDragHeight}
                     ancestry={ancestryById?.get(item.id) ?? []}
+                    activity={activityForItem?.(item) ?? null}
                   />
                   {destinationPreview?.targetId === item.id && destinationPreview.operation === "after" ? previewCard : null}
                 </React.Fragment>
@@ -1453,7 +1636,7 @@ function Column({
             </div>
           </SortableContext>
         ) : (
-          <div className="empty-drop">{items.length} cards hidden</div>
+          <div className="empty-drop hidden-cards-state"><span>{items.length} cards hidden</span></div>
         )}
       </div>
     </section>
@@ -1632,78 +1815,101 @@ function BoardPicker({
   );
 }
 
-function HistoryPicker({
+function BoardMoreMenu({
+  onOpenHistory,
+  onOpenTutorial,
+  onOpenFeedback,
+  hasArchivedCards,
+  showArchived,
+  onToggleArchived,
+}: {
+  onOpenHistory?: () => void;
+  onOpenTutorial: () => void;
+  onOpenFeedback: () => void;
+  hasArchivedCards: boolean;
+  showArchived: boolean;
+  onToggleArchived: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen);
+  const choose = (action: () => void) => {
+    setOpen(false);
+    action();
+  };
+  return (
+    <div ref={containerRef} className="board-more-menu" onKeyDown={onKeyDown}>
+      <TooltipButton
+        label="More Board actions"
+        className={`toolbar-icon-button tooltip-below ${open ? "active" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <MoreHorizontal size={15} />
+      </TooltipButton>
+      {open ? (
+        <div className="board-more-popover" role="menu">
+          {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
+          <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button>
+          <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
+          {hasArchivedCards ? (
+            <button
+              className={`board-more-toggle ${showArchived ? "active" : ""}`}
+              role="menuitemcheckbox"
+              aria-checked={showArchived}
+              onClick={() => choose(onToggleArchived)}
+            >
+              <Archive size={14} />
+              <span>Archive</span>
+              <span className="archive-switch" aria-hidden="true"><span className="archive-switch-knob" /></span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BoardHistoryModal({
   history,
   previewVersion,
   onSelectVersion,
   onReturnToCurrent,
+  onClose,
 }: {
   history: HistoryPayload | null;
   previewVersion: number | null;
   onSelectVersion: (version: number) => void;
   onReturnToCurrent: () => void;
+  onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen);
+  const dialogRef = useDialogFocus<HTMLElement>();
   const currentVersion = history?.currentVersion ?? 1;
-
-  return (
-    <div ref={containerRef} className="history-picker" onKeyDown={onKeyDown}>
-      <button
-        className={`history-trigger ${previewVersion ? "previewing" : ""}`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span>v{previewVersion ?? currentVersion}</span>
-        <ChevronDown size={14} />
-      </button>
-      {open ? (
-        <div className="history-popover" role="listbox" aria-label="Board version history">
-          {previewVersion ? (
-            <button
-              role="option"
-              aria-selected={false}
-              onClick={() => {
-                setOpen(false);
-                onReturnToCurrent();
-              }}
-            >
-              <span>
-                <b>Close preview</b>
-                <small>{versionLabel(currentVersion, currentVersion)}</small>
-              </span>
-            </button>
-          ) : null}
+  return createPortal(
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section ref={dialogRef} className="board-history-modal" role="dialog" aria-modal="true" aria-labelledby="board-history-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+        <header className="feedback-modal-header">
+          <div><p className="eyebrow">Recovery</p><h2 id="board-history-title">Board history</h2></div>
+          <TooltipButton label="Close Board history" className="toolbar-icon-button" onClick={onClose}><X size={14} /></TooltipButton>
+        </header>
+        <div className="board-history-list" role="listbox" aria-label="Board version history">
           {(history?.entries ?? []).map((entry) => {
             const isCurrent = entry.version === currentVersion;
-            const isPreview = entry.version === previewVersion;
+            const isPreview = entry.version === previewVersion || (isCurrent && previewVersion === null);
             return (
-              <button
-                key={entry.version}
-                className={isPreview ? "active" : ""}
-                role="option"
-                aria-selected={isPreview}
-                onClick={() => {
-                  setOpen(false);
-                  if (isCurrent) onReturnToCurrent();
-                  else onSelectVersion(entry.version);
-                }}
-              >
-                <span>
-                  <b>
-                    {versionLabel(entry.version, currentVersion)}
-                  </b>
-                  <small>
-                    {formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}
-                  </small>
-                </span>
+              <button key={entry.version} className={isPreview ? "active" : ""} role="option" aria-selected={isPreview} onClick={() => {
+                if (isCurrent) onReturnToCurrent();
+                else onSelectVersion(entry.version);
+                onClose();
+              }}>
+                <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
               </button>
             );
           })}
         </div>
-      ) : null}
-    </div>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -1788,11 +1994,11 @@ function FeedbackModal({
         </p>
         {status ? <p className="feedback-status">{status}</p> : null}
         <footer className="feedback-actions">
-          <button onClick={copyPrompt} disabled={!canSubmit}>
+          <button className="primary" onClick={copyPrompt} disabled={!canSubmit}>
             {busy === "copy" ? <Loader2 size={14} className="spin" /> : <Copy size={14} />}
             Copy prompt
           </button>
-          <button className="primary" onClick={openInCodex} disabled={!canSubmit}>
+          <button onClick={openInCodex} disabled={!canSubmit}>
             {busy === "open" ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
             Open in Codex
           </button>
@@ -2221,7 +2427,7 @@ const fallbackTutorialItems: RoadmapItem[] = [
     status: "up-next",
     priority: 1,
     summary: "Try the board by moving this card into In Progress.",
-    nextAction: "Move this card, then ask Codex to summarize the board.",
+    nextAction: "Move this card, then ask your agent to summarize the board.",
     tags: [],
     icon: null,
     blockedBy: null,
@@ -2231,12 +2437,12 @@ const fallbackTutorialItems: RoadmapItem[] = [
     updatedAt: null,
   },
   {
-    id: "open-this-roadmap-item-in-codex",
-    title: "Open this roadmap item in Codex",
+    id: "copy-a-reference-into-agent-chat",
+    title: "Copy a reference into agent chat",
     status: "up-next",
     priority: 2,
     summary: "Use a card to start an agent thread with the right context.",
-    nextAction: "Start from a card when you want Codex to pick up the full planning context.",
+    nextAction: "Copy the reference when you want an agent to pick up this exact Item.",
     tags: [],
     icon: null,
     blockedBy: null,
@@ -2251,7 +2457,7 @@ const fallbackTutorialItems: RoadmapItem[] = [
     status: "pending",
     priority: 3,
     summary: "Feedback is handed to your agent before anything is filed publicly.",
-    nextAction: "Use the feedback icon or Planban Feedback when something is rough.",
+    nextAction: "Use More · Feedback / Bug or Planban Feedback when something is rough.",
     tags: [],
     icon: null,
     blockedBy: null,
@@ -2276,12 +2482,12 @@ const fallbackTutorialItems: RoadmapItem[] = [
     updatedAt: null,
   },
   {
-    id: "ask-codex-to-create-roadmap-items-from-your-plans",
-    title: "Ask Codex to create roadmap items from your plans",
+    id: "ask-your-agent-to-create-roadmap-items-from-your-plans",
+    title: "Ask your agent to create roadmap items from your plans",
     status: "pending",
     priority: 4,
     summary: "Bring existing project context from docs, issues, Notion, Jira, Linear, or plain notes.",
-    nextAction: "Give Codex your current planning context and ask it to draft Planban roadmap items for review.",
+    nextAction: "Give your agent the current planning context and ask it to draft Planban roadmap items for review.",
     tags: [],
     icon: null,
     blockedBy: null,
@@ -2647,7 +2853,7 @@ function TutorialLiveBoard({
               onToggleCollapsed={() => undefined}
               onToggleCards={() => undefined}
               onSelect={onSelect}
-              onStartCodex={() => undefined}
+              onCopyReference={async () => true}
               onMove={moveItem}
               onDelete={() => undefined}
               readOnly={!draggable}
@@ -2676,7 +2882,7 @@ function TutorialIntroPreview() {
       </div>
       <ArrowRight size={18} />
       <div>
-        <p className="eyebrow">Codex works</p>
+        <p className="eyebrow">Agent work</p>
         <h3>Start from the same state</h3>
         <p>Your agent can read and update the board, then keep the card status and docs in sync.</p>
       </div>
@@ -2714,7 +2920,7 @@ function TutorialDetailPreview({ item, onBack }: { item: RoadmapItem | null; onB
     <aside className="tutorial-detail-preview revealed">
       <header>
         <div>
-          <p className="eyebrow">Roadmap item</p>
+          <p className="eyebrow">Planban Demo</p>
           <h3>{item?.title ?? "Selected card"}</h3>
         </div>
         {onBack ? <button onClick={onBack}>Back to board</button> : null}
@@ -2726,86 +2932,27 @@ function TutorialDetailPreview({ item, onBack }: { item: RoadmapItem | null; onB
         </div>
         <div>
           <dt>Next action</dt>
-          <dd>{item?.nextAction ?? "Each card can carry the next useful thing for you or Codex to do."}</dd>
+          <dd>{item?.nextAction ?? "Each card can carry the next useful thing for you or your agent to do."}</dd>
         </div>
         <div>
           <dt>Spec</dt>
-          <dd>Specs and plans sit with the card so a new agent thread can start with context.</dd>
+          <dd>Specs and plans sit with the card so any agent surface can start with context.</dd>
         </div>
       </dl>
     </aside>
   );
 }
 
-function TutorialPlanningComposer({
-  state,
-  planningContext,
-  onPlanningContextChange,
-}: {
-  state: PlanbanState | null;
-  planningContext: string;
-  onPlanningContextChange: (value: string) => void;
-}) {
-  const [message, setMessage] = useState<string | null>(null);
-  const prompt = state ? buildTutorialCreatePrompt(state, planningContext) : "";
-  const hasPlanningContext = planningContext.trim().length > 0;
-  const promptDisabledReason = !state
-    ? "The demo board is still loading."
-    : !hasPlanningContext
-      ? "Please provide some context in the box above before copying a prompt or opening a Codex thread."
-      : undefined;
-  const canUsePrompt = Boolean(state) && hasPlanningContext;
-
-  async function copyPrompt() {
-    if (!canUsePrompt) {
-      if (promptDisabledReason) setMessage(promptDisabledReason);
-      return;
-    }
-    await navigator.clipboard?.writeText(prompt).catch(() => undefined);
-    setMessage("Prompt copied. Paste it into Codex when you are ready.");
-  }
-
-  async function openInCodex() {
-    if (!state || !canUsePrompt) {
-      if (promptDisabledReason) setMessage(promptDisabledReason);
-      return;
-    }
-    try {
-      await openCodexPromptForState(state, prompt);
-      setMessage("Opened a Codex draft thread. Your tutorial progress will be here when you come back.");
-    } catch {
-      await navigator.clipboard?.writeText(prompt).catch(() => undefined);
-      setMessage("Could not open Codex automatically, so the prompt was copied if clipboard access was available.");
-    }
-  }
-
+function TutorialAgentGuidance({ kind }: { kind: "reopen" | "planning" }) {
+  const reopen = kind === "reopen";
   return (
-    <section className="tutorial-composer">
-      <p className="eyebrow">Try it with your context</p>
-      <label htmlFor="tutorial-planning-context">
-        Paste a project note, repo summary, issue list, external planning export, or a rough description.
-      </label>
-      <textarea
-        id="tutorial-planning-context"
-        value={planningContext}
-        onChange={(event) => onPlanningContextChange(event.target.value)}
-        placeholder="Example: I have a local project for a small SaaS dashboard. The next work is onboarding, billing settings, and a cleaner release checklist..."
-      />
-      <div className="tutorial-composer-actions">
-        <span className={`tutorial-action-tooltip ${!canUsePrompt ? "blocked" : ""}`} data-tooltip={promptDisabledReason}>
-          <button onClick={copyPrompt} disabled={!canUsePrompt}>
-            <Copy size={14} />
-            Copy prompt
-          </button>
-        </span>
-        <span className={`tutorial-action-tooltip ${!canUsePrompt ? "blocked" : ""}`} data-tooltip={promptDisabledReason}>
-          <button className="primary" onClick={openInCodex} disabled={!canUsePrompt}>
-            <Send size={14} />
-            Open in Codex thread
-          </button>
-        </span>
-      </div>
-      {message ? <p className="tutorial-status">{message}</p> : null}
+    <section className="tutorial-agent-guidance">
+      <p className="eyebrow">Work through your agent</p>
+      <h3>{reopen ? "Bring the Board back whenever you need it" : "Describe the project in ordinary language"}</h3>
+      <p>{reopen
+        ? "Ask your current agent to open Planban or use the Planban command offered by that host. The exact shortcut can differ, but the Board and its planning state stay the same."
+        : "Give your agent rough notes, repo context, issues, or an external planning export and ask it to create or refine Planban Items. Review the result on the Board instead of filling out a planning form."}</p>
+      <code>{reopen ? "Open my Planban Board" : "Turn this context into reviewable Planban Items"}</code>
     </section>
   );
 }
@@ -2814,20 +2961,18 @@ function TutorialFeedbackPreview() {
   return (
     <section className="tutorial-feedback-preview">
       <div className="tutorial-toolbar-preview" aria-hidden="true">
-        <span>v1</span>
-        <button>
-          <MessageSquareText size={15} />
-        </button>
-        <button>
-          <RefreshCw size={15} />
-        </button>
+        <button><MoreHorizontal size={15} /></button>
       </div>
       <div>
-        <p className="eyebrow">Feedback button</p>
+        <p className="eyebrow">More · Feedback / Bug</p>
         <h3>Send rough feedback through your agent</h3>
         <p>
-          Type the bug, request, fix idea, or reaction. Planban turns it into a Codex-ready prompt,
-          then your agent helps prepare the right GitHub draft before anything is public.
+          Type the bug, request, fix idea, or reaction. Copy the agent-ready prompt, then the installed
+          Planban Feedback skill helps prepare the right GitHub draft before anything is public.
+        </p>
+        <p className="tutorial-host-adapter-note">
+          In Codex, choose <b>Planban Feedback</b> from <code>/planban</code>, enter <code>/Planban Feedback</code>,
+          or simply ask your agent to send Planban feedback.
         </p>
       </div>
     </section>
@@ -2837,7 +2982,7 @@ function TutorialFeedbackPreview() {
 const tutorialSteps = [
   {
     title: "Planban keeps planning shared",
-    copy: "Use each Planban board as a project second brain: plans, ideas, rough notes, future features, priorities, and roadmap state that Codex can read and update with you.",
+    copy: "Use each Planban board as a project second brain: plans, ideas, rough notes, future features, priorities, and roadmap state that your agents can read and update with you.",
   },
   {
     title: "Cards move as work changes",
@@ -2845,7 +2990,7 @@ const tutorialSteps = [
   },
   {
     title: "Cards hold the working context",
-    copy: "Click to open a card and see its next action, spec, plan, and the context Codex should use when starting work.",
+    copy: "Click to open a card and see its next action, spec, plan, and the context an agent should use when starting work.",
   },
   {
     title: "Groups keep related outcomes together",
@@ -2853,15 +2998,15 @@ const tutorialSteps = [
   },
   {
     title: "Open Planban from any thread",
-    copy: "Codex browser tabs are thread-local, but Planban can be summoned again from your Codex chat thread with /PB, /Planban, or a plain prompt.",
+    copy: "Ask your current agent to open Planban, or use the verified Planban command offered by that host. The Board is not tied to one chat or browser tab.",
   },
   {
     title: "Create planning from rough context",
-    copy: "Codex can create Planban boards for the projects that need them, then populate those boards from notes, repo docs, GitHub Issues, or connected tools such as Notion, Linear, and Jira.",
+    copy: "Your agent can create and refine Planban Boards from notes, repo docs, issues, or connected tools. Describe the outcome naturally, then review the structured result on the Board.",
   },
   {
     title: "Feedback is agent-native too",
-    copy: "Use the feedback icon on your board or the /planban feedback command in your agent. Your agent packages the right GitHub draft before anything is sent to us.",
+    copy: "Open Feedback/Bug from the Board’s More menu or invoke the Planban Feedback skill in your agent. Nothing is sent publicly until you approve the exact destination and text.",
   },
 ] as const;
 
@@ -2875,7 +3020,6 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
   const [selectedId, setSelectedId] = useState<string | null>("drag-this-card-to-in-progress");
   const [detailRevealed, setDetailRevealed] = useState(false);
   const [stepTwoMoved, setStepTwoMoved] = useState(false);
-  const [planningContext, setPlanningContext] = useState("");
   const step = tutorialSteps[stepIndex]!;
   const selectedItem = tutorialItems.find((item) => item.id === selectedId) ?? tutorialItems[0] ?? null;
   const isFinalStep = stepIndex === tutorialSteps.length - 1;
@@ -2956,14 +3100,13 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
         <header className="tutorial-header">
           <div>
             <p className="eyebrow">{mode === "whats-new" ? "Planban update" : "Welcome to Planban"}</p>
-            <h1>A local board that Codex can work from</h1>
+            <h1>A project board you and your agents can work from</h1>
           </div>
           <div className="tutorial-header-actions">
             <button
               onClick={() => {
                 resetTutorialDemoState();
                 setDetailRevealed(false);
-                setPlanningContext("");
                 goToStep(0);
               }}
             >
@@ -3012,7 +3155,7 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
               <div className="tutorial-step-action">
                 <div>
                   <b>Click any card</b>
-                  <span>Planban cards open into the working context Codex can read.</span>
+                  <span>Planban cards open into working context your agents can read.</span>
                 </div>
               </div>
             ) : null}
@@ -3020,19 +3163,15 @@ function TutorialPage({ onSelectBoard }: { onSelectBoard: (repoId: string | null
             {error ? <p className="tutorial-status">Demo board fallback active: {error}</p> : null}
           </section>
 
-          <section className={`tutorial-stage ${stepIndex === 4 ? "empty" : ""}`}>
+          <section className="tutorial-stage">
             {stepIndex === 0 ? (
               <TutorialIntroPreview />
             ) : stepIndex === 3 ? (
               <TutorialGroupPreview />
             ) : stepIndex === 4 ? (
-              null
+              <TutorialAgentGuidance kind="reopen" />
             ) : stepIndex === 5 ? (
-              <TutorialPlanningComposer
-                state={state}
-                planningContext={planningContext}
-                onPlanningContextChange={setPlanningContext}
-              />
+              <TutorialAgentGuidance kind="planning" />
             ) : stepIndex === 6 ? (
               <TutorialFeedbackPreview />
             ) : stepIndex === 2 && detailRevealed ? (
@@ -3108,79 +3247,79 @@ function isDocHistory(entry: HistoryEntry, cardId: string, kind: DocKind) {
   return entry.affectedDocs.some((doc) => doc.cardId === cardId && doc.kind === kind);
 }
 
-function VersionChangeMenu({
-  label,
-  entries,
+function DetailHistoryMenu({
+  itemEntries,
+  documentEntries,
+  documentKind,
   currentVersion,
   previewVersion,
-  labelPlacement = "inside",
   onSelectVersion,
   onReturnToCurrent,
 }: {
-  label: string;
-  entries: HistoryEntry[];
+  itemEntries: HistoryEntry[];
+  documentEntries: HistoryEntry[];
+  documentKind: DocKind;
   currentVersion: number | null;
   previewVersion: number | null;
-  labelPlacement?: "inside" | "outside";
   onSelectVersion: ((version: number) => void) | undefined;
   onReturnToCurrent: (() => void) | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const { containerRef, onKeyDown } = useListboxPopover(open, setOpen);
+  const hasHistory = itemEntries.length > 0 || documentEntries.length > 0 || previewVersion !== null;
+  if (!hasHistory) return null;
 
-  if (entries.length === 0) return null;
-  const viewedBoardVersion = previewVersion ?? currentVersion;
-  const activeEntry = entries.find((entry) => viewedBoardVersion !== null && entry.version <= viewedBoardVersion) ?? entries[0]!;
-  const activeVersion = activeEntry.version;
+  const select = (version: number) => {
+    setOpen(false);
+    if (version === currentVersion) onReturnToCurrent?.();
+    else onSelectVersion?.(version);
+  };
+  const section = (label: string, entries: HistoryEntry[]) => entries.length > 0 ? (
+    <section className="detail-history-section">
+      <h3>{label}</h3>
+      <div role="listbox" aria-label={label}>
+        {entries.map((entry) => {
+          const active = entry.version === (previewVersion ?? currentVersion);
+          return (
+            <button
+              key={entry.version}
+              className={active ? "active" : ""}
+              role="option"
+              aria-selected={active}
+              disabled={active && previewVersion === null}
+              onClick={() => select(entry.version)}
+            >
+              <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  ) : null;
 
-  const menu = (
-    <div ref={containerRef} className="version-change-menu" onKeyDown={onKeyDown}>
+  return (
+    <div ref={containerRef} className="detail-history-menu" onKeyDown={onKeyDown}>
       <button
-        className={`version-change-trigger ${labelPlacement === "outside" ? "label-outside" : ""} ${previewVersion ? "previewing" : ""}`}
-        aria-haspopup="listbox"
+        className={`detail-history-trigger ${open ? "active" : ""}`}
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {labelPlacement === "inside" ? <span>{label}</span> : null}
-        <b>Viewing {versionLabel(activeVersion, currentVersion)}</b>
-        <ChevronDown size={14} />
+        <History size={14} />
+        <span>History</span>
       </button>
       {open ? (
-        <div className="version-change-popover" role="listbox" aria-label={`${label} changed versions`}>
-          {entries.map((entry) => {
-            const isCurrent = entry.version === currentVersion;
-            const isActive = entry.version === activeVersion;
-            return (
-              <button
-                key={entry.version}
-                className={isActive ? "active" : ""}
-                role="option"
-                aria-selected={isActive}
-                disabled={isCurrent && !previewVersion && isActive}
-                onClick={() => {
-                  setOpen(false);
-                  if (isCurrent) onReturnToCurrent?.();
-                  else onSelectVersion?.(entry.version);
-                }}
-              >
-                <span>
-                  <b>{versionLabel(entry.version, currentVersion)}</b>
-                  <small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small>
-                </span>
-              </button>
-            );
-          })}
+        <div className="detail-history-popover" role="dialog" aria-label="Item and document history">
+          <header>
+            <div><p className="eyebrow">Recovery</p><h2>History</h2></div>
+            {previewVersion !== null ? <button onClick={() => { setOpen(false); onReturnToCurrent?.(); }}>Return to current</button> : null}
+          </header>
+          {section("Item changes", itemEntries)}
+          {section(`${docKindLabel(documentKind)} changes`, documentEntries)}
         </div>
       ) : null}
     </div>
   );
-
-  return labelPlacement === "outside" ? (
-    <div className="planban-select-field version-change-field">
-      <span className="planban-select-field-label">{label}</span>
-      {menu}
-    </div>
-  ) : menu;
 }
 
 interface PlanbanSelectOption<T extends string> {
@@ -3516,6 +3655,8 @@ function DetailView({
   onRestoreCard,
   onRestoreDoc,
   onSelectWorkItem,
+  activity = null,
+  activityDemoControl,
 }: {
   state: PlanbanState;
   item: RoadmapItem;
@@ -3530,6 +3671,11 @@ function DetailView({
   onRestoreCard?: (cardId: string) => void;
   onRestoreDoc?: (cardId: string, kind: DocKind) => void;
   onSelectWorkItem?: (cardId: string) => void;
+  activity?: ActivityPresentation | null;
+  activityDemoControl?: {
+    kind: "item" | "group";
+    onFlashAndChange: () => void;
+  };
 }) {
   const availableDocKinds = useMemo<DocKind[]>(
     () => ["spec", ...(item.planDoc ? (["plan"] as const) : [])],
@@ -3542,6 +3688,7 @@ function DetailView({
   const [objectiveEditing, setObjectiveEditing] = useState(false);
   const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
   const [busy, setBusy] = useState(false);
+  const [referenceCopied, setReferenceCopied] = useState(false);
   const [placementOpen, setPlacementOpen] = useState(false);
   const [placementQuery, setPlacementQuery] = useState("");
   const [placementDestination, setPlacementDestination] = useState<{
@@ -3622,29 +3769,6 @@ function DetailView({
       .filter((entry) => !query || entry.title.toLocaleLowerCase().includes(query) || entry.id.toLocaleLowerCase().includes(query))
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [item.id, placementQuery, state.roadmap.roadmapItems]);
-  const currentScopeItems = useMemo(() => state.roadmap.roadmapItems
-    .filter((entry) => entry.parentId === item.parentId && entry.status === item.status)
-    .sort((a, b) => (workItemRank(a) ?? Number.MAX_SAFE_INTEGER) - (workItemRank(b) ?? Number.MAX_SAFE_INTEGER)),
-  [item.parentId, item.status, state.roadmap.roadmapItems]);
-  const currentScopeSiblings = useMemo(() => currentScopeItems.filter((entry) => entry.id !== item.id), [currentScopeItems, item.id]);
-  const currentScopeIndex = currentScopeItems.findIndex((entry) => entry.id === item.id);
-  const currentPosition: GroupPlacementPosition = currentScopeIndex <= 0
-    ? { kind: "first" }
-    : currentScopeIndex === currentScopeItems.length - 1
-      ? { kind: "last" }
-      : { kind: "after", siblingId: currentScopeItems[currentScopeIndex - 1]!.id };
-  const currentPositionOptions = useMemo<PlanbanSelectOption<string>[]>(() => {
-    if (currentScopeSiblings.length === 0) return [{ value: "first", label: "Only Item", disabled: true }];
-    const value = groupPlacementPositionValue(currentPosition);
-    const lastSiblingId = currentScopeSiblings.at(-1)?.id;
-    return [
-      { value: "first", label: "First", disabled: value === "first" },
-      { value: "last", label: "Last", disabled: value === "last" },
-      ...currentScopeSiblings
-        .filter((entry) => entry.id !== lastSiblingId)
-        .map((entry) => ({ value: `after:${entry.id}`, label: `After ${entry.title}`, disabled: value === `after:${entry.id}` })),
-    ];
-  }, [currentPosition, currentScopeSiblings]);
   const placementSiblings = useMemo(() => {
     if (!placementDestination) return [];
     return state.roadmap.roadmapItems
@@ -3666,23 +3790,6 @@ function DetailView({
       });
       await onStateRefresh();
     } catch (error) { window.alert(error instanceof Error ? error.message : "Status update failed"); }
-    finally { setBusy(false); }
-  }
-
-  async function changePosition(position: GroupPlacementPosition) {
-    const afterId = position.kind === "first"
-      ? null
-      : position.kind === "after"
-        ? position.siblingId
-        : currentScopeSiblings.at(-1)?.id ?? null;
-    setBusy(true);
-    try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
-        method: "POST",
-        body: JSON.stringify({ afterId, baseRevision: state.roadmap.revision }),
-      });
-      await onStateRefresh();
-    } catch (error) { window.alert(error instanceof Error ? error.message : "Position update failed"); }
     finally { setBusy(false); }
   }
 
@@ -3864,6 +3971,10 @@ function DetailView({
   }, [boardId, item.id, previewVersion]);
 
   useEffect(() => {
+    setReferenceCopied(false);
+  }, [boardId, item.id]);
+
+  useEffect(() => {
     setObjectiveEditing(false);
     setObjectiveDraft(item.summary ?? "");
   }, [item.id, item.summary]);
@@ -3948,11 +4059,12 @@ function DetailView({
     <>
     <main className={`detail ${workspaceRoot ? "group-detail" : ""}`}>
       <header className="detail-header">
+        <AgentActivityEffect activity={activity} surface="header" />
         <button onClick={onBack} className="back-button">
           <ArrowLeft size={16} />
         </button>
         <div>
-          <p className="eyebrow">{isPreviewing ? `Historical roadmap item · v${previewVersion}` : "Roadmap item"}</p>
+          <p className="eyebrow">{isPreviewing ? `${state.roadmap.project.title} · Historical v${previewVersion}` : state.roadmap.project.title}</p>
           <h1>{item.title}</h1>
           {previewEntry ? (
             <p className="detail-history-note">
@@ -3961,18 +4073,25 @@ function DetailView({
           ) : null}
         </div>
         <div className="detail-header-actions">
-          <VersionChangeMenu
-            label="Version"
-            entries={cardHistoryEntries}
+          {activityDemoControl ? (
+            <div className="activity-detail-demo" aria-label={`${activityDemoControl.kind} activity preview`}>
+              <span>{activityDemoControl.kind === "group" ? "Group inside" : "Item inside"}</span>
+              <button onClick={activityDemoControl.onFlashAndChange}><SquarePen size={12} />Flash + change</button>
+            </div>
+          ) : null}
+          <DetailHistoryMenu
+            itemEntries={cardHistoryEntries}
+            documentEntries={activeDocHistoryEntries}
+            documentKind={activeTab}
             currentVersion={currentVersion}
             previewVersion={previewVersion}
-            labelPlacement="outside"
             onSelectVersion={onSelectVersion}
             onReturnToCurrent={onReturnToCurrent}
           />
         {isPreviewing ? (
           <div className="detail-history-actions">
-            <button onClick={onReturnToCurrent}>Close preview</button>
+            <span>Viewing v{previewVersion}</span>
+            <button onClick={onReturnToCurrent}>Return to current</button>
             <button className="primary" onClick={() => onRestoreCard?.(item.id)}>
               Restore card details
             </button>
@@ -4123,31 +4242,93 @@ function DetailView({
         ) : null}
         <div className="group-workspace-detail">
 
-      <section className="overview-panel">
+      {item.isGroup ? (
+        <section className={`group-objective-panel ${objectiveEditing ? "editing" : ""} ${item.summary ? "" : "empty"}`}>
+          <span className="group-objective-label">Group objective</span>
+          {objectiveEditing ? (
+            <div className="editor-pane group-objective-editor">
+              <AutoSizingTextarea
+                autoFocus
+                aria-label="Group objective"
+                value={objectiveDraft}
+                disabled={busy}
+                onChange={(event) => setObjectiveDraft(event.target.value)}
+                placeholder="What larger outcome do these Items achieve together?"
+              />
+              <div className="editor-actions group-objective-actions">
+                <button disabled={busy} onClick={() => {
+                  setObjectiveDraft(item.summary ?? "");
+                  setObjectiveEditing(false);
+                }}>Cancel</button>
+                <button
+                  className="primary"
+                  disabled={busy || objectiveDraft.trim() === (item.summary ?? "")}
+                  onClick={() => void saveObjective()}
+                >
+                  {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
+                  Save objective
+                </button>
+              </div>
+            </div>
+          ) : item.summary ? (
+            <div className="group-objective-body editable-content-region">
+              {!isPreviewing ? (
+                <TooltipButton
+                  label="Edit Group objective"
+                  className="content-edit-action"
+                  onClick={() => setObjectiveEditing(true)}
+                >
+                  <FilePenLine size={14} />
+                </TooltipButton>
+              ) : null}
+              <p>{item.summary}</p>
+            </div>
+          ) : isPreviewing ? (
+            <div className="group-objective-empty"><p>No objective recorded.</p></div>
+          ) : (
+            <div className="group-objective-empty">
+              <p>No Group objective yet.</p>
+              <button onClick={() => setObjectiveEditing(true)}>Add objective</button>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      <section className={`overview-panel ${item.isGroup ? "after-group-objective" : ""}`}>
         <div className="meta-grid">
           <div className="workflow-status-summary">
             {isPreviewing ? <><span>Status</span><b>{labels[item.status]}</b></> : (
               <WorkflowStatusMenu status={item.status} busy={busy} onChange={(status) => void changeWorkflowStatus(status)} />
             )}
           </div>
-          {isPreviewing ? (
-            <div className="position-summary"><span>Position</span><b>{workItemRank(item) ? `P${workItemRank(item)}` : "None"}</b></div>
-          ) : (
-            <PlanbanSelectMenu
-              label="Position"
-              value={groupPlacementPositionValue(currentPosition)}
-              options={currentPositionOptions}
-              disabled={busy || currentScopeSiblings.length === 0}
-              disabledReason={currentScopeSiblings.length === 0 ? `This is the only Work Item in ${labels[item.status]}, so its position cannot change.` : undefined}
-              labelPlacement="outside"
-              onChange={(nextPosition) => void changePosition(groupPlacementPositionFromValue(nextPosition))}
-            />
-          )}
-          {!isPreviewing && !item.isGroup ? (
-            <div className="meta-move-cell">
-              <button className="meta-move-button" aria-expanded={placementOpen} onClick={() => setPlacementOpen(true)}>
-                <ArrowRightLeft size={14} /> Move Item
-              </button>
+          {!isPreviewing ? (
+            <div className="detail-item-actions" aria-label={`${item.isGroup ? "Group" : "Item"} actions`}>
+              <TooltipButton
+                label={referenceCopied ? `${item.isGroup ? "Group" : "Item"} reference copied` : `Copy ${item.isGroup ? "Group" : "Item"} reference`}
+                onClick={() => void copyWorkItemReference(state, item).then((copied) => {
+                  if (!copied) {
+                    window.alert(`Clipboard access was blocked. Copy this ${item.isGroup ? "Group" : "Item"} ID manually: ${item.id}`);
+                    return;
+                  }
+                  setReferenceCopied(true);
+                  window.setTimeout(() => setReferenceCopied(false), 1600);
+                })}
+              ><Copy size={14} /></TooltipButton>
+              {!item.isGroup ? (
+                <TooltipButton label="Move Item" aria-expanded={placementOpen} onClick={() => setPlacementOpen(true)}>
+                  <ArrowRightLeft size={14} />
+                </TooltipButton>
+              ) : null}
+              {item.status !== "complete" && item.status !== "archived" ? (
+                <TooltipButton label="Mark complete" disabled={busy} onClick={() => void changeWorkflowStatus("complete")}>
+                  <CheckCircle2 size={14} />
+                </TooltipButton>
+              ) : null}
+              {item.status !== "archived" ? (
+                <TooltipButton label="Archive" disabled={busy} onClick={() => void changeWorkflowStatus("archived")}>
+                  <Archive size={14} />
+                </TooltipButton>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -4284,60 +4465,6 @@ function DetailView({
         document.body,
       ) : null}
 
-      {item.isGroup ? (
-        <section className={`group-objective-panel ${objectiveEditing ? "editing" : ""} ${item.summary ? "" : "empty"}`}>
-          <div className="doc-tabs group-objective-tabs">
-            <span className="group-objective-tab">Group objective</span>
-          </div>
-          {objectiveEditing ? (
-            <div className="editor-pane group-objective-editor">
-              <AutoSizingTextarea
-                autoFocus
-                aria-label="Group objective"
-                value={objectiveDraft}
-                disabled={busy}
-                onChange={(event) => setObjectiveDraft(event.target.value)}
-                placeholder="What larger outcome do these Items achieve together?"
-              />
-              <div className="editor-actions group-objective-actions">
-                <button disabled={busy} onClick={() => {
-                  setObjectiveDraft(item.summary ?? "");
-                  setObjectiveEditing(false);
-                }}>Cancel</button>
-                <button
-                  className="primary"
-                  disabled={busy || objectiveDraft.trim() === (item.summary ?? "")}
-                  onClick={() => void saveObjective()}
-                >
-                  {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
-                  Save objective
-                </button>
-              </div>
-            </div>
-          ) : item.summary ? (
-            <div className="group-objective-body editable-content-region">
-              {!isPreviewing ? (
-                <TooltipButton
-                  label="Edit Group objective"
-                  className="content-edit-action"
-                  onClick={() => setObjectiveEditing(true)}
-                >
-                  <FilePenLine size={14} />
-                </TooltipButton>
-              ) : null}
-              <p>{item.summary}</p>
-            </div>
-          ) : isPreviewing ? (
-            <div className="group-objective-empty"><p>No objective recorded.</p></div>
-          ) : (
-            <div className="group-objective-empty">
-              <p>No Group objective yet.</p>
-              <button onClick={() => setObjectiveEditing(true)}>Add objective</button>
-            </div>
-          )}
-        </section>
-      ) : null}
-
       <section className="doc-shell">
         <div className="doc-tabs">
           <button className={activeTab === "spec" ? "active" : ""} onClick={() => setActiveTab("spec")}>
@@ -4367,22 +4494,12 @@ function DetailView({
             </div>
           ) : doc.exists ? (
             <article className="markdown-body">
-              {activeDocHistoryEntries.length > 0 || canRestoreActiveDoc ? (
-                <div className="doc-version-row">
-                  <VersionChangeMenu
-                    label="Version"
-                    entries={activeDocHistoryEntries}
-                    currentVersion={currentVersion}
-                    previewVersion={previewVersion}
-                    labelPlacement="outside"
-                    onSelectVersion={onSelectVersion}
-                    onReturnToCurrent={onReturnToCurrent}
-                  />
-                  {canRestoreActiveDoc ? (
-                    <button className="primary" onClick={() => onRestoreDoc?.(item.id, activeTab)}>
-                      Restore {docKindLabel(activeTab).toLowerCase()} to latest
-                    </button>
-                  ) : null}
+              {canRestoreActiveDoc ? (
+                <div className="doc-preview-row">
+                  <span>Historical {docKindLabel(activeTab).toLowerCase()}</span>
+                  <button className="primary" onClick={() => onRestoreDoc?.(item.id, activeTab)}>
+                    Restore {docKindLabel(activeTab).toLowerCase()} to latest
+                  </button>
                 </div>
               ) : null}
               <div className="markdown-content-region">
@@ -4400,17 +4517,6 @@ function DetailView({
             </article>
           ) : isPreviewing ? (
             <div className="missing-doc">
-              <div className="doc-version-row">
-                <VersionChangeMenu
-                  label="Version"
-                  entries={activeDocHistoryEntries}
-                  currentVersion={currentVersion}
-                  previewVersion={previewVersion}
-                  labelPlacement="outside"
-                  onSelectVersion={onSelectVersion}
-                  onReturnToCurrent={onReturnToCurrent}
-                />
-              </div>
               <p>No {activeTab} document snapshot exists for this card in v{previewVersion}.</p>
             </div>
           ) : (
@@ -4555,11 +4661,13 @@ function WorkItemSearchModal({
 function BoardView({
   state,
   boards,
+  activities,
   onStateChange,
   onSelectBoard,
 }: {
   state: PlanbanState;
   boards: BoardRecord[];
+  activities: PlanbanActivitySnapshot[];
   onStateChange: (next: PlanbanState) => void;
   onSelectBoard: (repoId: string | null) => void;
 }) {
@@ -4602,6 +4710,7 @@ function BoardView({
   const boardDropRectsRef = useRef(new Map<string, HierarchyDropRect>());
   const [history, setHistory] = useState<HistoryPayload | null>(null);
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
+  const [boardHistoryOpen, setBoardHistoryOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [postUpdateVersion, setPostUpdateVersion] = useState<string | null>(() => {
@@ -4610,12 +4719,108 @@ function BoardView({
   });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload | null>(null);
   const [tutorialProgress, setTutorialProgress] = useState<TutorialProgress>(() => readTutorialProgress());
+  const [activityChangedCardTitle, setActivityChangedCardTitle] = useState<string | null>(null);
+  const [activityDetailKind, setActivityDetailKind] = useState<"item" | "group" | null>(null);
+  const [activityDetailEditSerial, setActivityDetailEditSerial] = useState(0);
+  const activityEditCursorRef = useRef(0);
+  const activityEditSerialRef = useRef(0);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
   const displayState = preview?.state ?? state;
   const previewVersion = preview?.version ?? null;
   const isPreviewing = preview !== null;
   const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
   const isDemoBoard = boardKind === "demo";
+  const isActivityLab = activityLabIsEnabled(boardId, boardKind, window.location.search);
+  const activityLabCards = useMemo(
+    () => items.filter((item) => item.status !== "archived"),
+    [items],
+  );
+  const activityLabRootCards = useMemo(
+    () => activityLabCards.filter((item) => item.parentId === null),
+    [activityLabCards],
+  );
+  const activityLabCardIds = useMemo(() => activityLabCards.map((item) => item.id), [activityLabCards]);
+  const activityVariantById = useMemo(
+    () => new Map(activityLabCards.map((item, index) => [item.id, activityVariantForIndex(index)])),
+    [activityLabCards],
+  );
+  const activityDemo = useActivityDemo(isActivityLab, activityLabCardIds);
+  const [activityNow, setActivityNow] = useState(() => Date.now());
+  const liveActivityById = useMemo(
+    () => new Map(activities.filter((activity) => activity.repoId === boardId).map((activity) => [activity.cardId, activity])),
+    [activities, boardId],
+  );
+  useEffect(() => {
+    setActivityNow(Date.now());
+  }, [activities, boardId]);
+  useEffect(() => {
+    const now = Date.now();
+    const boundaries = activities
+      .filter((activity) => activity.repoId === boardId && activity.endedAt !== null)
+      .flatMap((activity) => [
+        activity.endedAt! + PLANBAN_ACTIVITY_HOLD_MS,
+        activity.removeAt ?? activity.endedAt! + PLANBAN_ACTIVITY_TAIL_MS,
+      ])
+      .filter((boundary) => boundary > now);
+    if (boundaries.length === 0) return undefined;
+    const timer = window.setTimeout(() => setActivityNow(Date.now()), Math.max(0, Math.min(...boundaries) - now + 16));
+    return () => window.clearTimeout(timer);
+  }, [activities, boardId, activityNow]);
+  const activityDetailSource = activityLabRootCards[1] ?? activityLabRootCards[0] ?? null;
+  const flashAndChangeActivityCard = useCallback(() => {
+    const candidates = activityLabRootCards.slice(0, 5);
+    if (!isActivityLab || candidates.length === 0) return;
+    const target = candidates[activityEditCursorRef.current % candidates.length]!;
+    activityEditCursorRef.current += 1;
+    activityEditSerialRef.current += 1;
+    const editSerial = activityEditSerialRef.current;
+    setItems((current) => current.map((item) => item.id === target.id
+      ? { ...item, nextAction: `Agent edit ${editSerial} just replaced this card’s next action.` }
+      : item));
+    setActivityChangedCardTitle(target.title);
+    activityDemo.runCardPulse(target.id);
+  }, [activityDemo.runCardPulse, activityLabRootCards, isActivityLab]);
+  const openActivityDetail = useCallback((kind: "item" | "group") => {
+    if (!isActivityLab || !activityDetailSource) return;
+    setActivityChangedCardTitle(null);
+    setActivityDetailKind(kind);
+    setActivityDetailEditSerial(0);
+    setSelectedId(activityDetailSource.id);
+    activityDemo.runCardPulse(activityDetailSource.id);
+  }, [activityDemo.runCardPulse, activityDetailSource, isActivityLab]);
+  const flashAndChangeActivityDetail = useCallback(() => {
+    if (!isActivityLab || !activityDetailSource || !activityDetailKind) return;
+    activityEditSerialRef.current += 1;
+    const editSerial = activityEditSerialRef.current;
+    setActivityDetailEditSerial(editSerial);
+    if (activityDetailKind === "item") {
+      setItems((current) => current.map((item) => item.id === activityDetailSource.id
+        ? { ...item, nextAction: `Agent edit ${editSerial} just replaced this Item’s next action.` }
+        : item));
+    }
+    activityDemo.runCardPulse(activityDetailSource.id);
+  }, [activityDemo.runCardPulse, activityDetailKind, activityDetailSource, isActivityLab]);
+  const activityForItem = useCallback((item: RoadmapItem): ActivityPresentation | null => {
+    const phases: Array<ActivityPhase | null> = [
+      isActivityLab ? activityDemo.phaseForId(item.id) : null,
+      liveActivityById.get(item.id) ? activityPhaseAt(liveActivityById.get(item.id)!, activityNow) : null,
+    ];
+    if (item.isGroup) {
+      for (const child of items) {
+        if (child.parentId === item.id) {
+          if (isActivityLab) phases.push(activityDemo.phaseForId(child.id));
+          const childActivity = liveActivityById.get(child.id);
+          if (childActivity) phases.push(activityPhaseAt(childActivity, activityNow));
+        }
+      }
+    }
+    const phase = strongestActivityPhase(phases);
+    if (!phase) return null;
+    return {
+      phase,
+      variant: isActivityLab ? activityVariantById.get(item.id) ?? "illumination" : "aurora",
+    };
+  }, [activityDemo, activityNow, activityVariantById, isActivityLab, items, liveActivityById]);
 
   useEffect(() => {
     const preferences = normalizeBoardViewPreferences(readBoardViewPreferences(boardId));
@@ -4630,6 +4835,11 @@ function BoardView({
     setSelectedId(isGroupProjection ? params.get("groupId") ?? params.get("programmeId") : null);
     setGroupId(null);
     setProjection(queryProjection === "flattened" ? "flattened" : "main");
+    setActivityChangedCardTitle(null);
+    setActivityDetailKind(null);
+    setActivityDetailEditSerial(0);
+    activityEditCursorRef.current = 0;
+    activityEditSerialRef.current = 0;
     if (isGroupProjection) {
       const url = new URL(window.location.href);
       url.searchParams.delete("projection");
@@ -4683,7 +4893,35 @@ function BoardView({
     window.history.replaceState({}, "", url.toString());
   }, [postUpdateVersion, updateStatus]);
 
-  const selectedItem = selectedId ? items.find((item) => item.id === selectedId) : null;
+  const activityDetailState = useMemo<PlanbanState>(() => {
+    if (activityDetailKind !== "group" || !activityDetailSource) return displayState;
+    const childIds = new Set(activityLabRootCards
+      .filter((item) => item.id !== activityDetailSource.id)
+      .slice(0, 2)
+      .map((item) => item.id));
+    const previewItems = items.map((item, index) => {
+      if (item.id === activityDetailSource.id) {
+        return {
+          ...item,
+          title: "Agent activity Group preview",
+          summary: activityDetailEditSerial > 0
+            ? `Agent edit ${activityDetailEditSerial} just replaced this Group objective.`
+            : "Coordinate the Items in this Group while keeping agent activity visible at the shared divider.",
+          nextAction: "Review the Group objective and its active Items.",
+          isGroup: true,
+          parentId: null,
+        };
+      }
+      if (childIds.has(item.id)) return { ...item, parentId: activityDetailSource.id, groupRank: index + 1 };
+      return item;
+    });
+    return {
+      ...displayState,
+      roadmap: { ...displayState.roadmap, roadmapItems: previewItems },
+    };
+  }, [activityDetailEditSerial, activityDetailKind, activityDetailSource, activityLabRootCards, displayState, items]);
+  const detailItems = activityDetailKind === "group" ? activityDetailState.roadmap.roadmapItems : items;
+  const selectedItem = selectedId ? detailItems.find((item) => item.id === selectedId) ?? null : null;
   const activeItem = activeId ? items.find((item) => item.id === activeId) : null;
   const activeGroup = groupId ? items.find((item) => item.id === groupId && item.isGroup) ?? null : null;
   const groupWorkspace = useMemo(() => groupId ? groupWorkspaceProjection(items, groupId) : null, [items, groupId]);
@@ -4964,11 +5202,6 @@ function BoardView({
       window.alert(error instanceof Error ? error.message : "Card delete failed");
       await refreshState();
     }
-  }
-
-  async function startCodexThread(item: RoadmapItem) {
-    const nextState = await openCodexDraftThread(state, item);
-    if (nextState) onStateChange(nextState);
   }
 
   function findStatus(id: string): Status | null {
@@ -5255,10 +5488,14 @@ function BoardView({
   if (selectedItem) {
     return (
       <DetailView
-        state={displayState}
+        state={activityDetailKind === "group" ? activityDetailState : displayState}
         item={selectedItem}
         boardId={boardId}
-        onBack={() => setSelectedId(null)}
+        onBack={() => {
+          setSelectedId(null);
+          setActivityDetailKind(null);
+          setActivityDetailEditSerial(0);
+        }}
         onStateRefresh={refreshState}
         history={history}
         previewVersion={previewVersion}
@@ -5268,6 +5505,13 @@ function BoardView({
         onRestoreCard={restoreCardFromPreview}
         onRestoreDoc={restoreDocFromPreview}
         onSelectWorkItem={setSelectedId}
+        activity={activityForItem(selectedItem)}
+        {...(activityDetailKind ? {
+          activityDemoControl: {
+            kind: activityDetailKind,
+            onFlashAndChange: flashAndChangeActivityDetail,
+          },
+        } : {})}
       />
     );
   }
@@ -5276,34 +5520,13 @@ function BoardView({
     <main className="board-screen">
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
-          <div className="board-breadcrumb">
-            <span className="board-breadcrumb-main">
-              <button className="board-breadcrumb-home" onClick={() => onSelectBoard(null)}>Planban</button>
-              <span>/</span>
-              {activeGroup ? <button className="board-breadcrumb-home" onClick={() => leaveGroup(null)}>{state.roadmap.project.title}</button> : <span>{state.roadmap.project.title}</span>}
-              {activeGroup ? <><span>/</span><span>{activeGroup.title}</span></> : null}
-            </span>
+          <div className="board-home-row">
+            <TooltipButton label="All Boards" className="board-home-button" onClick={() => onSelectBoard(null)}>
+              <Home size={15} />
+            </TooltipButton>
           </div>
           <div className="board-title-row">
             <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
-            <div className="board-header-tools" aria-label="Board tools">
-              <TooltipButton
-                label="Search Work Items"
-                className="toolbar-icon-button board-header-tool"
-                aria-haspopup="dialog"
-                onClick={() => setSearchOpen(true)}
-              >
-                <Search size={15} />
-              </TooltipButton>
-              <TooltipButton
-                label={projection === "main" ? "Show All Work Items" : "Return to Main Board"}
-                className={`toolbar-icon-button board-header-tool ${projection === "flattened" ? "active" : ""}`}
-                aria-pressed={projection === "flattened"}
-                onClick={() => selectProjection(projection === "main" ? "flattened" : "main")}
-              >
-                {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
-              </TooltipButton>
-            </div>
           </div>
         </div>
         <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
@@ -5316,51 +5539,63 @@ function BoardView({
                   void loadUpdateStatus().catch(() => undefined);
                 }}
               >
-                <CircleArrowUp size={14} />
                 <span>Update Available</span>
               </button>
             </div>
           ) : null}
           <div className="header-actions">
-            {!isDemoBoard ? (
-              <HistoryPicker
-                history={history}
-                previewVersion={previewVersion}
-                onSelectVersion={previewHistoryVersion}
-                onReturnToCurrent={returnToCurrent}
-              />
-            ) : null}
             <TooltipButton
-              label="Open Planban tutorial"
+              label="Search Work Items"
               className="toolbar-icon-button tooltip-below"
-              onClick={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
+              aria-haspopup="dialog"
+              onClick={() => setSearchOpen(true)}
             >
-              <HelpCircle size={14} />
+              <Search size={15} />
             </TooltipButton>
-            <TooltipButton label="Provide feedback" className="toolbar-icon-button tooltip-below" onClick={() => setFeedbackOpen(true)}>
-              <Bug size={14} />
+            <TooltipButton
+              label={projection === "main" ? "See all Items" : "Return to Main Board"}
+              className={`toolbar-icon-button board-header-tool ${projection === "flattened" ? "active" : ""}`}
+              aria-pressed={projection === "flattened"}
+              onClick={() => selectProjection(projection === "main" ? "flattened" : "main")}
+            >
+              {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
             </TooltipButton>
-            <TooltipButton label="Refresh board from disk" className="toolbar-icon-button tooltip-below" onClick={refreshState}>
-              <RefreshCw size={14} />
-            </TooltipButton>
-            {hasArchivedCards ? (
-              <TooltipButton
-                label={showArchived ? "Hide archived cards" : "Show archived cards"}
-                className={`archive-toggle ${showArchived ? "active" : ""}`}
-                aria-pressed={showArchived}
-                onClick={() => setShowArchived((value) => !value)}
-              >
-                <span>Archive</span>
-                <span className="archive-switch" aria-hidden="true">
-                  <span className="archive-switch-knob" />
-                </span>
-              </TooltipButton>
-            ) : null}
+            <BoardMoreMenu
+              {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
+              onOpenTutorial={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
+              onOpenFeedback={() => setFeedbackOpen(true)}
+              hasArchivedCards={hasArchivedCards}
+              showArchived={showArchived}
+              onToggleArchived={() => setShowArchived((value) => !value)}
+            />
           </div>
         </div>
       </header>
 
+      {isActivityLab ? (
+        <ActivityLabPanel
+          mode={activityDemo.mode}
+          cards={activityLabRootCards}
+          changedCardTitle={activityChangedCardTitle}
+          onModeChange={(mode) => {
+            setActivityChangedCardTitle(null);
+            activityDemo.setMode(mode);
+          }}
+          onFlashAndChange={flashAndChangeActivityCard}
+          onOpenDetail={openActivityDetail}
+        />
+      ) : null}
+
       {feedbackOpen ? <FeedbackModal state={state} onClose={() => setFeedbackOpen(false)} /> : null}
+      {boardHistoryOpen ? (
+        <BoardHistoryModal
+          history={history}
+          previewVersion={previewVersion}
+          onSelectVersion={previewHistoryVersion}
+          onReturnToCurrent={returnToCurrent}
+          onClose={() => setBoardHistoryOpen(false)}
+        />
+      ) : null}
       {updateOpen ? (
         <UpdateModal
           state={state}
@@ -5396,7 +5631,7 @@ function BoardView({
         ) : null;
       })() : null}
 
-      {shouldOfferFirstRunTutorial({ progress: tutorialProgress, boardKind, isPreviewing }) ? (
+      {!isActivityLab && shouldOfferFirstRunTutorial({ progress: tutorialProgress, boardKind, isPreviewing }) ? (
         <FirstRunPrompt onDismiss={() => setTutorialProgress("skipped")} />
       ) : null}
 
@@ -5458,7 +5693,7 @@ function BoardView({
               onToggleCollapsed={() => setCollapsed((value) => ({ ...value, [status]: !value[status] }))}
               onToggleCards={() => setHiddenCards((value) => ({ ...value, [status]: !value[status] }))}
               onSelect={setSelectedId}
-              onStartCodex={startCodexThread}
+              onCopyReference={(item) => copyWorkItemReference(state, item)}
               onMove={moveItem}
               onDelete={deleteItem}
               readOnly={isPreviewing}
@@ -5471,6 +5706,8 @@ function BoardView({
               crossColumnDropPreview={crossColumnDropPreview}
               receiverDragHeight={activeSize?.height ?? null}
               {...(isFlattenedRoot ? { ancestryById: flattened.ancestryById } : {})}
+              activityForItem={activityForItem}
+              {...(status === "archived" && showArchived ? { onHideArchived: () => setShowArchived(false) } : {})}
             />
           ))}
         </div>
@@ -5510,11 +5747,9 @@ function BoardDashboard({
   onBoardsChanged: () => Promise<void>;
 }) {
   const [showArchivedBoards, setShowArchivedBoards] = useState(() => readBoardDashboardPreferences().showArchivedBoards === true);
-  const [pendingAction, setPendingAction] = useState<{ kind: "archive" | "delete" | "duplicate"; board: BoardRecord } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ kind: "archive" | "delete"; board: BoardRecord } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState("");
-  const [duplicateTitle, setDuplicateTitle] = useState("");
-  const [duplicateRepoId, setDuplicateRepoId] = useState("");
-  const [busyAction, setBusyAction] = useState<"archive" | "delete" | "duplicate" | "restore" | null>(null);
+  const [busyAction, setBusyAction] = useState<"archive" | "delete" | "restore" | null>(null);
   const [toast, setToast] = useState<{ tone: "success" | "error"; message: string; detail?: string } | null>(null);
   const boardActionDialogRef = useDialogFocus<HTMLElement>(Boolean(pendingAction));
   const activeBoards = boards.filter((board) => !board.archivedAt);
@@ -5551,23 +5786,10 @@ function BoardDashboard({
   function closeBoardActionModal() {
     setPendingAction(null);
     setDeleteConfirm("");
-    setDuplicateTitle("");
-    setDuplicateRepoId("");
   }
 
-  function nextDuplicateRepoId(board: BoardRecord) {
-    const taken = new Set(boards.map((entry) => entry.repoId));
-    const base = `${board.repoId}-copy`;
-    if (!taken.has(base)) return base;
-    let suffix = 2;
-    while (taken.has(`${base}-${suffix}`)) suffix += 1;
-    return `${base}-${suffix}`;
-  }
-
-  function startBoardAction(kind: "archive" | "delete" | "duplicate", board: BoardRecord) {
+  function startBoardAction(kind: "archive" | "delete", board: BoardRecord) {
     setDeleteConfirm("");
-    setDuplicateTitle(kind === "duplicate" ? `${board.title} Copy` : "");
-    setDuplicateRepoId(kind === "duplicate" ? nextDuplicateRepoId(board) : "");
     setPendingAction({ kind, board });
   }
 
@@ -5604,17 +5826,6 @@ function BoardDashboard({
         });
         await onBoardsChanged();
         setToast({ tone: "success", message: `Archived ${board.title}` });
-      } else if (kind === "duplicate") {
-        const result = await api<{ board: BoardRecord; source: BoardRecord }>(`/api/boards/${encodeURIComponent(board.repoId)}/duplicate`, {
-          method: "POST",
-          body: JSON.stringify({
-            title: duplicateTitle.trim() || undefined,
-            repoId: duplicateRepoId.trim() || undefined,
-          }),
-        });
-        await onBoardsChanged();
-        setToast({ tone: "success", message: `Duplicated ${board.title}`, detail: `Opened ${result.board.title}.` });
-        onSelectBoard(result.board.repoId);
       } else {
         const result = await api<{ repoId: string; backupPath: string | null }>(`/api/boards/${encodeURIComponent(board.repoId)}`, {
           method: "DELETE",
@@ -5633,9 +5844,7 @@ function BoardDashboard({
         tone: "error",
         message: kind === "archive"
           ? `Could not archive ${board.title}`
-          : kind === "duplicate"
-            ? `Could not duplicate ${board.title}`
-            : `Could not delete ${board.title}`,
+          : `Could not delete ${board.title}`,
         detail: error instanceof Error ? error.message : "Board action failed.",
       });
     } finally {
@@ -5656,7 +5865,7 @@ function BoardDashboard({
             aria-pressed={showArchivedBoards}
             onClick={() => setShowArchivedBoards((value) => !value)}
           >
-            <span>{showArchivedBoards ? "Active boards" : "Archived boards"}</span>
+            <span>Archive</span>
             <span className="archive-switch" aria-hidden="true">
               <span className="archive-switch-knob" />
             </span>
@@ -5679,14 +5888,6 @@ function BoardDashboard({
                 <small>{board.repoId}</small>
               </button>
               <span className="board-list-actions">
-                <TooltipButton
-                  label={`Duplicate ${board.title}`}
-                  tooltipPlacement="top"
-                  className="board-list-action-button"
-                  onClick={() => startBoardAction("duplicate", board)}
-                >
-                  <Copy size={14} />
-                </TooltipButton>
                 {board.archivedAt ? (
                   <TooltipButton
                     label={`Restore ${board.title}`}
@@ -5746,18 +5947,14 @@ function BoardDashboard({
                 <p className="eyebrow">
                   {pendingAction.kind === "archive"
                     ? "Archive board"
-                    : pendingAction.kind === "duplicate"
-                      ? "Duplicate board"
-                      : "Delete board"}
+                    : "Delete board"}
                 </p>
                 <h2 id="board-action-title">
                   {pendingAction.kind === "archive"
                     ? pendingAction.board.kind === "demo"
                       ? "Remove this demo board?"
                       : `Archive ${pendingAction.board.title}?`
-                    : pendingAction.kind === "duplicate"
-                      ? `Duplicate ${pendingAction.board.title}?`
-                      : `Delete ${pendingAction.board.title}?`}
+                    : `Delete ${pendingAction.board.title}?`}
                 </h2>
               </div>
               <TooltipButton label="Close" className="toolbar-icon-button" onClick={closeBoardActionModal} disabled={Boolean(busyAction)}>
@@ -5769,35 +5966,6 @@ function BoardDashboard({
                 <>
                   <p>Archive hides this board from your normal board list while keeping its local Planban state intact.</p>
                   <p>You can restore it later from the archived boards view.</p>
-                </>
-              ) : pendingAction.kind === "duplicate" ? (
-                <>
-                  <p>Duplicate creates an independent local Planban board with copied cards and docs.</p>
-                  <div className="board-duplicate-fields">
-                    <label>
-                      <span>Title</span>
-                      <input
-                        autoFocus
-                        value={duplicateTitle}
-                        onChange={(event) => setDuplicateTitle(event.target.value)}
-                        disabled={busyAction === "duplicate"}
-                      />
-                    </label>
-                    <label>
-                      <span>Repo ID</span>
-                      <input
-                        value={duplicateRepoId}
-                        onChange={(event) => setDuplicateRepoId(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" && !busyAction) {
-                            event.preventDefault();
-                            void confirmBoardAction();
-                          }
-                        }}
-                        disabled={busyAction === "duplicate"}
-                      />
-                    </label>
-                  </div>
                 </>
               ) : (
                 <>
@@ -5833,14 +6001,10 @@ function BoardDashboard({
                   ? <Loader2 size={14} className="spin" />
                   : pendingAction.kind === "archive"
                     ? <Archive size={14} />
-                    : pendingAction.kind === "duplicate"
-                      ? <Copy size={14} />
-                      : <Trash2 size={14} />}
+                    : <Trash2 size={14} />}
                 {pendingAction.kind === "archive"
                   ? "Archive"
-                  : pendingAction.kind === "duplicate"
-                    ? "Duplicate"
-                    : "Delete board"}
+                  : "Delete board"}
               </button>
             </footer>
           </section>
@@ -5896,12 +6060,14 @@ function Onboarding({ onReady }: { onReady: (state: PlanbanState) => void }) {
 function App() {
   const [state, setState] = useState<PlanbanState | null>(null);
   const [boards, setBoards] = useState<BoardRecord[]>([]);
-  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(() => repoIdFromPath());
+  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activities, setActivities] = useState<PlanbanActivitySnapshot[]>([]);
   const appLoadRequestRef = useRef(0);
   const boardLoadRequestRef = useRef(0);
   const selectedRepoIdRef = useRef<string | null>(selectedRepoId);
+  const liveVersionRef = useRef<Pick<LiveSnapshot, "stateVersion" | "boardsVersion"> | null>(null);
 
   useEffect(() => {
     selectedRepoIdRef.current = selectedRepoId;
@@ -5915,27 +6081,36 @@ function App() {
     setState(null);
   }, []);
 
-  const loadSelectedBoard = useCallback(async (repoId: string) => {
+  const loadSelectedBoard = useCallback(async (repoId: string, preserveCurrentOnError = false) => {
     const requestId = ++boardLoadRequestRef.current;
-    const nextState = await api<PlanbanState>(boardPath(repoId, "/state"));
-    if (requestId !== boardLoadRequestRef.current) return null;
-    const routeRepoId = repoIdFromPath();
-    if (routeRepoId !== repoId && selectedRepoIdRef.current !== repoId) return null;
-    setState(nextState);
-    return nextState;
+    try {
+      const nextState = await api<PlanbanState>(boardPath(repoId, "/state"), undefined, 5_000);
+      if (requestId !== boardLoadRequestRef.current) return null;
+      const routeRepoId = repoIdFromPath();
+      if (routeRepoId !== repoId && selectedRepoIdRef.current !== repoId) return null;
+      setState(nextState);
+      setError(null);
+      return nextState;
+    } catch (loadError) {
+      if (requestId === boardLoadRequestRef.current && !preserveCurrentOnError) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
+      }
+      return null;
+    }
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (preserveCurrentOnError = false) => {
     const requestId = ++appLoadRequestRef.current;
     try {
       const [status, boardsPayload] = await Promise.all([
-        api<{ initialized: boolean; currentRepoId: string | null }>("/api/status"),
-        api<BoardsPayload>("/api/boards?includeArchived=true"),
+        api<{ initialized: boolean; currentRepoId: string | null }>("/api/status", undefined, 5_000),
+        api<BoardsPayload>("/api/boards?includeArchived=true", undefined, 5_000),
       ]);
       if (requestId !== appLoadRequestRef.current) return;
       setInitialized(status.initialized);
       setBoards(boardsPayload.boards);
       if (isTutorialPath()) {
+        selectedRepoIdRef.current = null;
         setSelectedRepoId(null);
         setState(null);
         return;
@@ -5948,36 +6123,70 @@ function App() {
       if (nextRepoId) {
         if (!activeBoards.some((board) => board.repoId === nextRepoId)) {
           replaceBoardPath(null);
+          selectedRepoIdRef.current = null;
           setSelectedRepoId(null);
           setState(null);
           return;
         }
         replaceBoardPath(nextRepoId);
+        selectedRepoIdRef.current = nextRepoId;
         setSelectedRepoId(nextRepoId);
-        await loadSelectedBoard(nextRepoId);
       } else {
+        selectedRepoIdRef.current = null;
         setSelectedRepoId(null);
         setState(null);
       }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load");
+      if (!preserveCurrentOnError) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load");
+      }
     }
-  }, [loadSelectedBoard]);
+  }, []);
 
   useEffect(() => {
     void load();
-    const events = new EventSource("/api/events");
-    events.addEventListener("state", () => void load());
-    events.addEventListener("boards", () => void load());
-    return () => events.close();
   }, [load]);
+
+  useEffect(() => {
+    if (!state) return;
+    let stopped = false;
+    let pollTimer: number | null = null;
+    const poll = async () => {
+      try {
+        const snapshot = await api<LiveSnapshot>("/api/live", undefined, 3_000);
+        if (stopped) return;
+        setActivities(snapshot.activities);
+        const previous = liveVersionRef.current;
+        liveVersionRef.current = {
+          stateVersion: snapshot.stateVersion,
+          boardsVersion: snapshot.boardsVersion,
+        };
+        const decision = liveRefreshDecision(previous, snapshot);
+        if (decision.refreshBoards) {
+          await load(true);
+        }
+        const currentRepoId = selectedRepoIdRef.current;
+        if (decision.refreshSelectedBoard && currentRepoId) {
+          await loadSelectedBoard(currentRepoId, true);
+        }
+      } catch {
+        // A transient live-update failure must not replace an already loaded Board.
+      } finally {
+        if (!stopped) pollTimer = window.setTimeout(poll, document.hidden ? 750 : 200);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
+    };
+  }, [load, loadSelectedBoard, Boolean(state)]);
 
   useEffect(() => {
     const onPopState = () => {
       const next = repoIdFromPath();
       setSelectedRepoId(next);
       setState(null);
-      if (next) void loadSelectedBoard(next);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -5988,7 +6197,25 @@ function App() {
     void loadSelectedBoard(selectedRepoId);
   }, [loadSelectedBoard, selectedRepoId]);
 
-  if (error) return <main className="error-screen">{error}</main>;
+  if (error) {
+    return (
+      <main className="error-screen">
+        <div className="load-error-card">
+          <p>{error}</p>
+          <button
+            className="primary"
+            onClick={() => {
+              setError(null);
+              setState(null);
+              void load();
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      </main>
+    );
+  }
   if (isTutorialPath()) return <TutorialPage onSelectBoard={selectBoard} />;
   if (!selectedRepoId && boards.length > 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
   if (initialized === false && boards.length === 0) {
@@ -6016,7 +6243,7 @@ function App() {
   }
   if (!selectedRepoId && boards.length === 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
   if (!state) return <main className="loading-screen">Loading Planban...</main>;
-  return <BoardView state={state} boards={boards.filter((board) => !board.archivedAt)} onStateChange={setState} onSelectBoard={selectBoard} />;
+  return <BoardView state={state} boards={boards.filter((board) => !board.archivedAt)} activities={activities} onStateChange={setState} onSelectBoard={selectBoard} />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
