@@ -169,20 +169,19 @@ export function buildUpdateCommandPlan(
     return [
       ...steps,
       {
-        id: "refresh-marketplace",
-        label: "Refresh Planban marketplace snapshot",
-        command: "codex",
-        args: ["plugin", "marketplace", "upgrade", "planban"],
-        env: codexEnv,
-        timeoutMs: 120000,
-      },
-      {
-        id: "install-dependencies",
-        label: "Install Planban dependencies",
-        command: "npm",
-        args: ["install"],
+        id: "refresh-marketplace-runtime",
+        label: "Refresh Planban marketplace runtime",
+        command: "node",
+        args: [
+          "scripts/update-marketplace-runtime.mjs",
+          "--root",
+          root,
+          "--codex-home",
+          preflight.codexHome,
+        ],
         cwd: root,
-        timeoutMs: 180000,
+        env: codexEnv,
+        timeoutMs: 300000,
       },
       {
         id: "configure-plugin",

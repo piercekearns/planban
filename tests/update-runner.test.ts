@@ -65,16 +65,21 @@ const manifest: PlanbanUpdateManifest = {
 test("builds Git-backed marketplace update command plan", () => {
   const plan = buildUpdateCommandPlan(preflight({}), manifest);
   assert.deepEqual(plan.map((step) => step.id), [
-    "refresh-marketplace",
-    "install-dependencies",
+    "refresh-marketplace-runtime",
     "configure-plugin",
     "install-plugin",
     "verify-install",
   ]);
-  assert.deepEqual(plan[0]?.args, ["plugin", "marketplace", "upgrade", "planban"]);
-  assert.equal(plan[1]?.cwd, planbanRoot);
-  assert.deepEqual(plan[3]?.env, { CODEX_HOME: codexHome });
-  assert.deepEqual(plan[4]?.args, [
+  assert.deepEqual(plan[0]?.args, [
+    "scripts/update-marketplace-runtime.mjs",
+    "--root",
+    planbanRoot,
+    "--codex-home",
+    codexHome,
+  ]);
+  assert.equal(plan[0]?.cwd, planbanRoot);
+  assert.deepEqual(plan[2]?.env, { CODEX_HOME: codexHome });
+  assert.deepEqual(plan[3]?.args, [
     "--import",
     "tsx/esm",
     "scripts/verify-local-install.mjs",

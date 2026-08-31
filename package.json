@@ -20,6 +20,7 @@
     "smoke": "npm run build && tsx scripts/smoke.ts",
     "release:preflight": "node scripts/preflight-release.mjs",
     "release:upgrade-rehearsal": "node scripts/rehearse-release-upgrade.mjs",
+    "update:benchmark": "node scripts/rehearse-marketplace-update-performance.mjs",
     "plugin:configure": "node scripts/configure-local-plugin.mjs",
     "planban:demo": "node --import tsx/esm src/cli.ts demo"
   },
