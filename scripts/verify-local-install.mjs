@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { platformInvocation } from "./platform-invocation.mjs";
 
 const execFileAsync = promisify(execFile);
 const TSX_REGISTER_FLAG = "--import=tsx/esm";
@@ -89,7 +90,8 @@ async function assertSamePath(actual, expected, label) {
 async function codexPluginList(codexHome) {
   if (!codexHome) return null;
   try {
-    const result = await execFileAsync("codex", ["plugin", "list"], {
+    const invocation = platformInvocation("codex", ["plugin", "list"]);
+    const result = await execFileAsync(invocation.command, invocation.args, {
       env: { ...process.env, CODEX_HOME: codexHome },
       maxBuffer: 1024 * 1024,
       timeout: 10000,
