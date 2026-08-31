@@ -4,6 +4,8 @@ Planban is a local, Codex-native Kanban board for agent-led planning.
 
 It gives you a simple roadmap board, keeps your planning state local, and helps Codex start work from the right card, spec, and project context.
 
+Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions.
+
 ## What Planban Does
 
 - Opens local project boards from Codex with `/pb` or `/planban`.

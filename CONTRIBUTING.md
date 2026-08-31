@@ -6,6 +6,11 @@ Planban is early. The best contributions right now are small, focused fixes that
 make the local Codex plugin, board UI, docs, install flow, or feedback flow more
 reliable and easier to understand.
 
+Before proposing a feature or materially changing Planban's workflow, domain model,
+or visible information hierarchy, read the [Planban Product Constitution](PRODUCT.md).
+Planban is intentionally designed for individual agentic project work and evaluates
+visible complexity by whether it improves human sight or steering of that work.
+
 ## Contribution Policy
 
 Planban does not use a CLA or enforced DCO at launch.
