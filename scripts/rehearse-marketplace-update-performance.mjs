@@ -11,7 +11,10 @@ const repoRoot = resolve(import.meta.dirname, "..");
 function parseArgs(argv) {
   const options = {
     fromVersion: "1.1.2",
-    expectedVersion: "1.1.3",
+    expectedVersion: null,
+    sourceUrl: "https://github.com/piercekearns/planban.git",
+    targetRef: "main",
+    expectedCommit: null,
     iterations: 3,
     mode: "both",
     keep: false,
@@ -20,12 +23,17 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === "--from-version") options.fromVersion = argv[++index] ?? "";
     else if (arg === "--expected-version") options.expectedVersion = argv[++index] ?? "";
+    else if (arg === "--source-url") options.sourceUrl = argv[++index] ?? "";
+    else if (arg === "--target-ref") options.targetRef = argv[++index] ?? "";
+    else if (arg === "--expected-commit") options.expectedCommit = argv[++index] ?? "";
     else if (arg === "--iterations") options.iterations = Number(argv[++index]);
     else if (arg === "--mode") options.mode = argv[++index] ?? "";
     else if (arg === "--keep") options.keep = true;
     else throw new Error(`Unknown option: ${arg}`);
   }
-  if (!options.fromVersion || !options.expectedVersion) throw new Error("Version arguments cannot be empty");
+  if (!options.fromVersion || !options.sourceUrl || !options.targetRef) {
+    throw new Error("Source, ref, and version arguments cannot be empty");
+  }
   if (!Number.isInteger(options.iterations) || options.iterations < 1) {
     throw new Error("--iterations must be a positive integer");
   }
@@ -78,11 +86,12 @@ async function marketplaceRoot(codexHome, env) {
   return marketplace.root;
 }
 
-async function pointMarketplaceAtMain(codexHome) {
+async function pointMarketplaceAtTarget(codexHome, targetRef) {
   const configPath = join(codexHome, "config.toml");
   const config = await readFile(configPath, "utf8");
-  const updated = config.replace(/^ref\s*=\s*"[^"]+"\s*$/mu, 'ref = "main"');
-  if (updated === config) throw new Error("Could not change isolated marketplace ref to main");
+  const escapedRef = targetRef.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  const updated = config.replace(/^ref\s*=\s*"[^"]+"\s*$/mu, `ref = "${escapedRef}"`);
+  if (updated === config) throw new Error(`Could not change isolated marketplace ref to ${targetRef}`);
   await writeFile(configPath, updated, "utf8");
 }
 
@@ -104,7 +113,7 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
       mkdir(planbanHome, { recursive: true }),
       mkdir(projectRoot, { recursive: true }),
     ]);
-    await run("codex", ["plugin", "marketplace", "add", "https://github.com/piercekearns/planban.git",
+    await run("codex", ["plugin", "marketplace", "add", options.sourceUrl,
       "--ref", `v${options.fromVersion}`], { env });
     const root = await marketplaceRoot(codexHome, env);
     await run("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, env });
@@ -115,7 +124,7 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
     });
     await run("node", ["--import", "tsx/esm", "src/cli.ts", "create-card", "Update proof",
       "--status", "pending", "--cwd", projectRoot, "--output", "json"], { cwd: root, env });
-    await pointMarketplaceAtMain(codexHome);
+    await pointMarketplaceAtTarget(codexHome, options.targetRef);
     const setupDurationMs = performance.now() - setupStartedAt;
 
     const updateStartedAt = performance.now();
@@ -124,6 +133,10 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
       codexHome,
       disableReuse: mode === "baseline",
     });
+    const updatedCommit = (await run("git", ["rev-parse", "HEAD"], { cwd: root, env })).stdout.trim();
+    if (options.expectedCommit && updatedCommit !== options.expectedCommit) {
+      throw new Error(`Updated marketplace commit ${updatedCommit} does not match ${options.expectedCommit}`);
+    }
     const configure = await run("node", ["scripts/configure-local-plugin.mjs", root], { cwd: root, env });
     const plugin = await run("codex", ["plugin", "add", "planban@planban"], { cwd: root, env });
     const verify = await run("node", ["--import", "tsx/esm", "scripts/verify-local-install.mjs",
@@ -149,6 +162,7 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
       sample: sampleNumber,
       setupDurationMs: Math.round(setupDurationMs),
       runtime,
+      updatedCommit,
       postRefreshMs: {
         configure: Math.round(configure.durationMs),
         plugin: Math.round(plugin.durationMs),
@@ -166,6 +180,9 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (!options.expectedVersion) {
+    options.expectedVersion = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")).version;
+  }
   const benchmarkRoot = await mkdtemp(join(tmpdir(), "planban-update-benchmark-"));
   const sharedNpmCache = join(benchmarkRoot, "npm-cache");
   const modes = options.mode === "both" ? ["baseline", "reuse"] : [options.mode];
@@ -194,6 +211,9 @@ async function main() {
       ok: true,
       fromVersion: options.fromVersion,
       expectedVersion: options.expectedVersion,
+      sourceUrl: options.sourceUrl,
+      targetRef: options.targetRef,
+      expectedCommit: options.expectedCommit,
       environment: {
         platform: process.platform,
         architecture: process.arch,
