@@ -222,26 +222,40 @@ async function main() {
     assert.deepEqual(tools, [
       "planban_status",
       "planban_list_boards",
-      "planban_archive_board",
-      "planban_restore_board",
-      "planban_duplicate_board",
-      "planban_delete_board",
       "planban_get_board",
       "planban_query_cards",
       "planban_get_card",
-      "planban_export_flat_v1",
-      "planban_reconstruct_hierarchy",
       "planban_create_card",
       "planban_create_group",
       "planban_create_cards",
       "planban_read_doc",
       "planban_move_card",
       "planban_update_card",
-      "planban_set_card_parent",
       "planban_write_doc",
       "planban_launch_board",
     ]);
-    check("tools/list", `${tools.length} Planban tools exposed`);
+    check("tools/list", `${tools.length} focused Planban tools exposed by default`);
+
+    const profiledResponses = runMcpServer([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+    ], {
+      PLANBAN_HOME: planbanHome,
+      PLANBAN_MCP_PROFILE: "admin,maintenance,legacy",
+    });
+    const profiledTools = responseById(profiledResponses, 2).result.tools.map((tool) => tool.name);
+    for (const tool of [
+      "planban_archive_board",
+      "planban_restore_board",
+      "planban_duplicate_board",
+      "planban_delete_board",
+      "planban_export_flat_v1",
+      "planban_reconstruct_hierarchy",
+      "planban_set_card_parent",
+    ]) {
+      assert.equal(profiledTools.includes(tool), true, `${tool} should be exposed by its explicit profile`);
+    }
+    check("tools/list profiles", `${profiledTools.length} Planban tools exposed with all optional profiles`);
 
     assert.equal(assertNoError(responseById(responses, 3)).initialized, true);
     check("planban_status", "temporary repo initialized");
