@@ -27,7 +27,7 @@ test("later live snapshots refresh only durable resources whose versions changed
 });
 
 test("durable app bootstrap does not await the optional live endpoint", async () => {
-  const web = await readFile(new URL("../src/web/main.tsx", import.meta.url), "utf8");
+  const web = (await readFile(new URL("../src/web/main.tsx", import.meta.url), "utf8")).replace(/\r\n?/gu, "\n");
   const loadStart = web.indexOf("const load = useCallback");
   const loadEnd = web.indexOf("useEffect(() => {\n    void load();", loadStart);
   assert.notEqual(loadStart, -1);

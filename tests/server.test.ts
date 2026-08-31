@@ -454,7 +454,7 @@ test("starts update jobs and records preflight failure for blocked installs", as
     }
 
     assert.equal(finalJob?.status, "failed");
-    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes|development checkout|Missing required commands?: (?:codex|npm|git)(?:, (?:codex|npm|git))*/u);
+    assert.match(finalJob?.error ?? "", /not eligible|not identify|local changes?|development checkout|Missing required commands?: (?:codex|npm|git)(?:, (?:codex|npm|git))*/u);
   } finally {
     await server.close();
     await new Promise<void>((resolveClose, rejectClose) => {
