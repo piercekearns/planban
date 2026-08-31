@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { platformInvocation } from "../../scripts/platform-invocation.mjs";
 import { updatePreflight, type PlanbanUpdatePreflight } from "./updatePreflight";
 import type { PlanbanUpdateManifest } from "./version";
 
@@ -260,7 +261,8 @@ export function buildUpdateCommandPlan(
 
 function runStep(step: UpdateCommandStep) {
   return new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolveRun, rejectRun) => {
-    const child = spawn(step.command, step.args, {
+    const invocation = platformInvocation(step.command, step.args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: step.cwd,
       env: step.env ? { ...process.env, ...step.env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],

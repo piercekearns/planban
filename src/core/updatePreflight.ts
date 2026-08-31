@@ -3,6 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { platformInvocation } from "../../scripts/platform-invocation.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,7 +82,8 @@ interface PreflightOptions {
 
 const defaultRunCommand: RunCommand = async (command, args, options) => {
   try {
-    const result = await execFileAsync(command, args, {
+    const invocation = platformInvocation(command, args);
+    const result = await execFileAsync(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: options.env,
       timeout: options.timeoutMs ?? 5000,

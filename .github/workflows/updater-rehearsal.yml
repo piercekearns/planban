@@ -10,11 +10,14 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/assert-update-performance.mjs"
+      - "scripts/platform-invocation.mjs"
+      - "scripts/platform-invocation.d.mts"
       - "scripts/rehearse-marketplace-update-performance.mjs"
       - "scripts/update-marketplace-runtime.mjs"
       - "src/core/updateRunner.ts"
       - "tests/update-marketplace-runtime.test.ts"
       - "tests/update-performance-assertion.test.ts"
+      - "tests/platform-invocation.test.ts"
   workflow_dispatch:
     inputs:
       from_version:
@@ -70,7 +73,7 @@ jobs:
         run: npm install --global @openai/codex@0.150.1
 
       - name: Run focused cross-platform fallback tests
-        run: node --test --import tsx/esm tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts
+        run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts
 
       - name: Run five clean and five reuse marketplace updates
         run: >-
@@ -129,4 +132,4 @@ jobs:
         run: npm run typecheck
 
       - name: Run updater compatibility tests
-        run: node --test --import tsx/esm tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts tests/update-runner.test.ts
+        run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts tests/update-runner.test.ts

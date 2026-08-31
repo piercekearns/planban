@@ -6,6 +6,7 @@ import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { platformInvocation } from "./platform-invocation.mjs";
 
 const REQUIRED_RUNTIME_SPECIFIERS = ["tsx/esm", "express", "iconv-lite/encodings"];
 const CACHE_DIRECTORY = "planban-marketplace-dependencies";
@@ -94,7 +95,8 @@ function commandFailure(command, args, result) {
 
 export function runCommand(command, args, options = {}) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, {
+    const invocation = platformInvocation(command, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: options.env ? { ...process.env, ...options.env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],

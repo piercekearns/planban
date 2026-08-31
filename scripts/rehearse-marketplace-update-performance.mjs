@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { updateMarketplaceRuntime } from "./update-marketplace-runtime.mjs";
+import { platformInvocation } from "./platform-invocation.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
@@ -46,7 +47,8 @@ function parseArgs(argv) {
 function run(command, args, options = {}) {
   return new Promise((resolveRun, rejectRun) => {
     const startedAt = performance.now();
-    const child = spawn(command, args, {
+    const invocation = platformInvocation(command, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd ?? repoRoot,
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
