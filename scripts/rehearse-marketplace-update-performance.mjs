@@ -11,7 +11,7 @@ const repoRoot = resolve(import.meta.dirname, "..");
 
 function parseArgs(argv) {
   const options = {
-    fromVersion: "1.1.2",
+    fromVersion: "1.1.3",
     expectedVersion: null,
     sourceUrl: "https://github.com/piercekearns/planban.git",
     targetRef: "main",

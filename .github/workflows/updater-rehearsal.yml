@@ -23,7 +23,7 @@ on:
       from_version:
         description: Public Planban version used as the old marketplace
         required: true
-        default: "1.1.2"
+        default: "1.1.3"
         type: string
       target_ref:
         description: Remote branch or tag containing the exact candidate
@@ -46,7 +46,7 @@ jobs:
           - macos-latest
     runs-on: ${{ matrix.os }}
     env:
-      FROM_VERSION: ${{ inputs.from_version || '1.1.2' }}
+      FROM_VERSION: ${{ inputs.from_version || '1.1.3' }}
       TARGET_REF: ${{ inputs.target_ref || github.event.pull_request.head.ref }}
       EXPECTED_COMMIT: ${{ inputs.expected_commit || github.event.pull_request.head.sha }}
     steps:

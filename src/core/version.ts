@@ -1,6 +1,6 @@
-export const PLANBAN_VERSION = "1.1.3";
-export const PLANBAN_PLUGIN_VERSION = "1.1.3";
-export const PLANBAN_MCP_VERSION = "1.1.3";
+export const PLANBAN_VERSION = "1.1.4";
+export const PLANBAN_PLUGIN_VERSION = "1.1.4";
+export const PLANBAN_MCP_VERSION = "1.1.4";
 export const PLANBAN_STORAGE_SCHEMA_VERSION = 2;
 export const PLANBAN_UPDATE_MANIFEST_URL =
   "https://raw.githubusercontent.com/piercekearns/planban/main/release/latest.json";
