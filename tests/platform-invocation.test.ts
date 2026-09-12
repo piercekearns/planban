@@ -36,3 +36,16 @@ test("the installed-runtime verifier uses the shared Windows shim boundary", asy
   assert.match(source, /platformInvocation\("codex", \["plugin", "list"\]\)/u);
   assert.doesNotMatch(source, /execFileAsync\("codex"/u);
 });
+
+test("both cold-start launchers use the shared Windows shim boundary for npm bootstrap", async () => {
+  const [cli, launcher, preflight, rehearsal] = await Promise.all([
+    readFile(new URL("../bin/planban.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../plugins/planban/scripts/launch-planban.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/preflight-release.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/rehearse-release-upgrade.mjs", import.meta.url), "utf8"),
+  ]);
+  assert.match(cli, /platformInvocation\(npmCommand\(\), \["install"\]\)/u);
+  assert.match(launcher, /platformInvocation\(npmCommand\(\), \["install"\]\)/u);
+  assert.match(preflight, /platformInvocation\(command, args\)/u);
+  assert.match(rehearsal, /platformInvocation\(command, args\)/u);
+});

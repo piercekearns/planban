@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { openUrlInCodexBrowser } from "./codex-browser-adapter.mjs";
@@ -18,9 +19,19 @@ export function resolveRuntimeRoot() {
   const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
   if (mcpRuntimeRoot) return mcpRuntimeRoot;
   if (realProcess?.env?.PLANBAN_REPO_ROOT) return resolve(realProcess.env.PLANBAN_REPO_ROOT);
+  const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
+  if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
   const parentRuntimeRoot = resolve(pluginRoot, "../..");
   if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
   return parentRuntimeRoot;
+}
+
+function runtimeRootFromCodexMarketplace() {
+  const codexHome = realProcess?.env?.CODEX_HOME
+    ? resolve(realProcess.env.CODEX_HOME)
+    : join(homedir(), ".codex");
+  const runtimeRoot = resolve(codexHome, ".tmp", "marketplaces", "planban");
+  return existsSync(resolve(runtimeRoot, "bin/planban.mjs")) ? runtimeRoot : null;
 }
 
 function runtimeRootFromMcpConfig(root) {

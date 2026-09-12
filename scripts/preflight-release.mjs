@@ -3,17 +3,20 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { auditReleasePolicy } from "./release-policy.mjs";
+import { platformInvocation } from "./platform-invocation.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
 function run(command, args) {
-  const result = spawnSync(command, args, {
+  const invocation = platformInvocation(command, args);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: "inherit",
   });
-  if (result.status !== 0) {
-    process.stderr.write(`\nRelease preflight failed while running: ${command} ${args.join(" ")}\n`);
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message ? `: ${result.error.message}` : "";
+    process.stderr.write(`\nRelease preflight failed while running: ${command} ${args.join(" ")}${detail}\n`);
     process.exit(result.status ?? 1);
   }
 }

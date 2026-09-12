@@ -163,7 +163,7 @@ test("resolves the default cold-launch log path without PLANBAN_HOME", () => {
   }
 });
 
-test("resolves an installed-cache runtime from adjacent MCP metadata without env or marketplace fallback", async () => {
+test("resolves an installed-cache runtime from adjacent MCP metadata", async () => {
   const root = await mkdtemp(join(tmpdir(), "planban-installed-cache-"));
   const cacheRoot = join(root, "codex-home", "plugins", "cache", "planban", "planban", "1.0.0");
   const scriptsRoot = join(cacheRoot, "scripts");
@@ -187,6 +187,7 @@ test("resolves an installed-cache runtime from adjacent MCP metadata without env
     }), "utf8");
     await cp(join(repoRoot, "plugins/planban/scripts/codex-fast-open-planban.mjs"), join(scriptsRoot, "codex-fast-open-planban.mjs"));
     await cp(join(repoRoot, "plugins/planban/scripts/codex-browser-adapter.mjs"), join(scriptsRoot, "codex-browser-adapter.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts/platform-invocation.mjs"), join(scriptsRoot, "platform-invocation.mjs"));
     await cp(join(repoRoot, "plugins/planban/scripts/launch-planban.mjs"), join(scriptsRoot, "launch-planban.mjs"));
 
     delete process.env.PLANBAN_REPO_ROOT;
@@ -197,6 +198,49 @@ test("resolves an installed-cache runtime from adjacent MCP metadata without env
 
     assert.equal(fastOpen.resolveRuntimeRoot(), runtimeRoot);
     assert.equal(launcher.resolveRuntimeRoot(), runtimeRoot);
+  } finally {
+    if (previousRepoRoot === undefined) delete process.env.PLANBAN_REPO_ROOT;
+    else process.env.PLANBAN_REPO_ROOT = previousRepoRoot;
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("falls back to the standard Codex marketplace runtime when cache MCP metadata is unresolved", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-marketplace-fallback-"));
+  const codexHome = join(root, "codex-home");
+  const cacheRoot = join(codexHome, "plugins", "cache", "planban", "planban", "1.0.0");
+  const scriptsRoot = join(cacheRoot, "scripts");
+  const marketplaceRoot = join(codexHome, ".tmp", "marketplaces", "planban");
+  const previousRepoRoot = process.env.PLANBAN_REPO_ROOT;
+  const previousCodexHome = process.env.CODEX_HOME;
+
+  try {
+    await mkdir(join(marketplaceRoot, "bin"), { recursive: true });
+    await mkdir(scriptsRoot, { recursive: true });
+    await writeFile(join(marketplaceRoot, "bin", "planban.mjs"), "#!/usr/bin/env node\n", "utf8");
+    await writeFile(join(cacheRoot, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        planban: {
+          cwd: "__PLANBAN_REPO_ROOT__",
+          env: { PLANBAN_REPO_ROOT: "__PLANBAN_REPO_ROOT__" },
+        },
+      },
+    }), "utf8");
+    await cp(join(repoRoot, "plugins/planban/scripts/codex-fast-open-planban.mjs"), join(scriptsRoot, "codex-fast-open-planban.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts/codex-browser-adapter.mjs"), join(scriptsRoot, "codex-browser-adapter.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts/platform-invocation.mjs"), join(scriptsRoot, "platform-invocation.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts/launch-planban.mjs"), join(scriptsRoot, "launch-planban.mjs"));
+
+    delete process.env.PLANBAN_REPO_ROOT;
+    process.env.CODEX_HOME = codexHome;
+    const cacheBust = `?test=${Date.now()}`;
+    const fastOpen = await import(`${pathToFileURL(join(scriptsRoot, "codex-fast-open-planban.mjs")).href}${cacheBust}`);
+    const launcher = await import(`${pathToFileURL(join(scriptsRoot, "launch-planban.mjs")).href}${cacheBust}`);
+
+    assert.equal(fastOpen.resolveRuntimeRoot(), marketplaceRoot);
+    assert.equal(launcher.resolveRuntimeRoot(), marketplaceRoot);
   } finally {
     if (previousRepoRoot === undefined) delete process.env.PLANBAN_REPO_ROOT;
     else process.env.PLANBAN_REPO_ROOT = previousRepoRoot;

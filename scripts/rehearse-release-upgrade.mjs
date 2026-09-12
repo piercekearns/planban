@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { platformInvocation } from "./platform-invocation.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
@@ -20,15 +21,17 @@ function parseArgs(argv) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const invocation = platformInvocation(command, args);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: options.cwd ?? repoRoot,
     env: { ...process.env, ...options.env },
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
   });
-  if (result.status !== 0) {
+  if (result.error || result.status !== 0) {
     const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-    throw new Error(`${command} ${args.join(" ")} failed${output ? `:\n${output}` : ""}`);
+    const detail = output || result.error?.message || `exited with code ${result.status}`;
+    throw new Error(`${command} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`);
   }
   return result.stdout.trim();
 }

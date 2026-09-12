@@ -21,9 +21,17 @@ export function resolveRuntimeRoot() {
   const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
   if (mcpRuntimeRoot) return mcpRuntimeRoot;
   if (process.env.PLANBAN_REPO_ROOT) return resolve(process.env.PLANBAN_REPO_ROOT);
+  const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
+  if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
   const parentRuntimeRoot = resolve(pluginRoot, "../..");
   if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
   return parentRuntimeRoot;
+}
+
+function runtimeRootFromCodexMarketplace() {
+  const codexHome = process.env.CODEX_HOME ? resolve(process.env.CODEX_HOME) : join(homedir(), ".codex");
+  const runtimeRoot = resolve(codexHome, ".tmp", "marketplaces", "planban");
+  return existsSync(resolve(runtimeRoot, "bin/planban.mjs")) ? runtimeRoot : null;
 }
 
 function runtimeRootFromMcpConfig(root) {
@@ -56,7 +64,8 @@ async function ensureRuntimeDependencies(runtimeRoot) {
   if (missing.length === 0) return;
 
   await new Promise((resolveInstall, rejectInstall) => {
-    const child = spawn(npmCommand(), ["install"], {
+    const invocation = platformInvocation(npmCommand(), ["install"]);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: runtimeRoot,
       env: process.env,
       stdio: ["ignore", "ignore", "pipe"],
