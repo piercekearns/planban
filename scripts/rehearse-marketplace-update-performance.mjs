@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { updateMarketplaceRuntime } from "./update-marketplace-runtime.mjs";
+import { runCommand, updateMarketplaceRuntime } from "./update-marketplace-runtime.mjs";
 import { retargetMarketplace } from "./marketplace-rehearsal-config.mjs";
-import { platformInvocation } from "./platform-invocation.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
@@ -22,10 +20,12 @@ function parseArgs(argv) {
     iterations: 3,
     mode: "both",
     keep: false,
+    shardId: null,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--from-ref") options.fromRef = argv[++index] ?? "";
+    if (arg === "--shard-id") options.shardId = argv[++index] ?? "";
+    else if (arg === "--from-ref") options.fromRef = argv[++index] ?? "";
     else if (arg === "--from-version") options.fromVersion = argv[++index] ?? "";
     else if (arg === "--expected-version") options.expectedVersion = argv[++index] ?? "";
     else if (arg === "--target-source-url") options.targetSourceUrl = argv[++index] ?? "";
@@ -49,32 +49,23 @@ function parseArgs(argv) {
   return options;
 }
 
-function run(command, args, options = {}) {
-  return new Promise((resolveRun, rejectRun) => {
-    const startedAt = performance.now();
-    const invocation = platformInvocation(command, args);
-    const child = spawn(invocation.command, invocation.args, {
+async function run(command, args, options = {}) {
+  const startedAt = performance.now();
+  process.stderr.write(`  Starting ${command} ${args.join(" ")}\n`);
+  try {
+    const result = await runCommand(command, args, {
+      ...options,
       cwd: options.cwd ?? repoRoot,
-      env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      timeoutMs: options.timeoutMs ?? 180000,
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", rejectRun);
-    child.once("close", (code) => {
-      const result = { exitCode: code ?? 1, stdout, stderr, durationMs: performance.now() - startedAt };
-      if (result.exitCode !== 0 && !options.allowFailure) {
-        const detail = (stderr || stdout).trim();
-        rejectRun(new Error(`${command} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`));
-        return;
-      }
-      resolveRun(result);
-    });
-  });
+    if (result.exitCode !== 0 && !options.allowFailure) {
+      const detail = (result.stderr || result.stdout).trim();
+      throw new Error(`${command} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`);
+    }
+    return { ...result, durationMs: performance.now() - startedAt };
+  } finally {
+    process.stderr.write(`  Finished ${command} after ${Math.round(performance.now() - startedAt)}ms\n`);
+  }
 }
 
 function median(values) {
@@ -136,6 +127,12 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
       root,
       codexHome,
       disableReuse: mode === "baseline",
+      // Keep measured installs on the same cache and isolated homes as setup.
+      runCommand: (command, args, commandOptions = {}) => run(command, args, {
+        ...commandOptions,
+        env: { ...env, ...commandOptions.env },
+        allowFailure: true,
+      }),
     });
     const updatedCommit = (await run("git", ["rev-parse", "HEAD"], { cwd: root, env })).stdout.trim();
     if (options.expectedCommit && updatedCommit !== options.expectedCommit) {
@@ -177,8 +174,12 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
       boardPreserved: true,
     };
   } finally {
-    if (!options.keep) await rm(sampleRoot, { recursive: true, force: true });
-    else process.stderr.write(`Preserved rehearsal at ${sampleRoot}\n`);
+    if (!options.keep) {
+      const cleanupStartedAt = performance.now();
+      process.stderr.write("  Removing sample fixture...\n");
+      await rm(sampleRoot, { recursive: true, force: true });
+      process.stderr.write(`  Removed sample fixture in ${Math.round(performance.now() - cleanupStartedAt)}ms\n`);
+    } else process.stderr.write(`Preserved rehearsal at ${sampleRoot}\n`);
   }
 }
 
@@ -213,6 +214,7 @@ async function main() {
     }));
     process.stdout.write(`${JSON.stringify({
       ok: true,
+      shardId: options.shardId,
       fromVersion: options.fromVersion,
       fromRef: options.fromRef ?? `v${options.fromVersion}`,
       expectedVersion: options.expectedVersion,

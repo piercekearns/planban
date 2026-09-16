@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluateBenchmark } from "../scripts/assert-update-performance.mjs";
+import { combineBenchmarks, evaluateBenchmark } from "../scripts/assert-update-performance.mjs";
 
 function benchmark(reuseMedian = 600) {
   return {
@@ -18,6 +18,28 @@ function benchmark(reuseMedian = 600) {
 }
 
 const options = { iterations: 1, minimumImprovement: 0.2, expectedCommit: "abc" };
+
+test("combines distinct runner shards from raw measurements and rejects incompatible evidence", () => {
+  const shards = Array.from({ length: 5 }, (_, index) => ({
+    ...benchmark(),
+    shardId: String(index + 1),
+    expectedCommit: "abc",
+    samples: benchmark().samples.map((sample) => ({
+      ...sample,
+      endToEndDurationMs: sample.mode === "baseline" ? 1000 + index : 600 + index,
+    })),
+  }));
+  const combined = combineBenchmarks(shards);
+  assert.equal(combined.summary.baseline.medianEndToEndMs, 1002);
+  assert.equal(combined.summary.reuse.medianEndToEndMs, 602);
+  assert.equal(evaluateBenchmark(combined, { ...options, iterations: 5 }).ok, true);
+  assert.equal(evaluateBenchmark(combineBenchmarks(shards.slice(1)), { ...options, iterations: 5 }).ok, false);
+  assert.throws(() => combineBenchmarks([shards[0], shards[0]]), /duplicate/i);
+  assert.throws(() => combineBenchmarks([shards[0], { ...shards[1], expectedCommit: "wrong" }]), /incompatible/i);
+  assert.throws(() => combineBenchmarks([shards[0], { ...shards[1], environment: { platform: "other" } }]), /incompatible/i);
+  assert.throws(() => combineBenchmarks([shards[0], { ...shards[1], ok: false }]), /unsuccessful/i);
+  assert.throws(() => combineBenchmarks([{ ...shards[0], samples: [] }]), /pair/i);
+});
 
 test("accepts a verified relative marketplace speed improvement", () => {
   assert.deepEqual(evaluateBenchmark(benchmark(), options), {

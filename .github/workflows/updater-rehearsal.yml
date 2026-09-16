@@ -39,14 +39,19 @@ on:
 
 jobs:
   marketplace-update:
-    name: Marketplace update (${{ matrix.os }})
+    name: Marketplace update (${{ matrix.os }}, shard ${{ matrix.shard }})
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-24.04
-          - windows-latest
-          - macos-latest
+        include:
+          - { os: ubuntu-24.04, shard: 1, iterations: 5 }
+          - { os: macos-latest, shard: 1, iterations: 5 }
+          - { os: windows-latest, shard: 1, iterations: 1 }
+          - { os: windows-latest, shard: 2, iterations: 1 }
+          - { os: windows-latest, shard: 3, iterations: 1 }
+          - { os: windows-latest, shard: 4, iterations: 1 }
+          - { os: windows-latest, shard: 5, iterations: 1 }
     runs-on: ${{ matrix.os }}
     env:
       FROM_VERSION: ${{ inputs.from_version || '1.1.4' }}
@@ -81,24 +86,27 @@ jobs:
         run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/marketplace-rehearsal-config.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts
 
       - name: Rehearse the previous public version upgrade
+        if: matrix.shard == 1
         shell: bash
         run: |
           node scripts/rehearse-marketplace-update-performance.mjs --from-version "$FROM_VERSION" --source-url "$RELEASE_SOURCE_URL" --target-source-url "$TARGET_SOURCE_URL" --target-ref "$TARGET_REF" --expected-commit "$EXPECTED_COMMIT" --iterations 1 --mode both > upgrade-correctness.json
           node scripts/assert-update-performance.mjs --file upgrade-correctness.json --expected-commit "$EXPECTED_COMMIT" --iterations 1 --correctness-only
 
-      - name: Run five clean and five reuse marketplace updates
+      - name: Run clean and reuse marketplace update samples
         run: >-
           node scripts/rehearse-marketplace-update-performance.mjs
           --from-ref "$TARGET_REF"
           --source-url "$TARGET_SOURCE_URL"
           --target-ref "$TARGET_REF"
           --expected-commit "$EXPECTED_COMMIT"
-          --iterations 5
+          --iterations ${{ matrix.iterations }}
+          --shard-id ${{ matrix.shard }}
           --mode both
           > update-performance.json
         shell: bash
 
       - name: Enforce correctness and relative speed gate
+        if: matrix.os != 'windows-latest'
         run: >-
           node scripts/assert-update-performance.mjs
           --file update-performance.json
@@ -111,11 +119,39 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: updater-rehearsal-${{ matrix.os }}
+          name: updater-rehearsal-${{ matrix.os }}-${{ matrix.shard }}
           path: |
             update-performance.json
             upgrade-correctness.json
           if-no-files-found: warn
+
+  windows-performance-gate:
+    name: Windows five-pair update gate
+    needs: marketplace-update
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_commit || github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-rehearsal-windows-latest-*
+          path: evidence
+      - name: Enforce all five independent Windows pairs
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.event.pull_request.head.sha }}
+        run: |
+          node scripts/assert-update-performance.mjs \
+            --file evidence/updater-rehearsal-windows-latest-1/update-performance.json \
+            --file evidence/updater-rehearsal-windows-latest-2/update-performance.json \
+            --file evidence/updater-rehearsal-windows-latest-3/update-performance.json \
+            --file evidence/updater-rehearsal-windows-latest-4/update-performance.json \
+            --file evidence/updater-rehearsal-windows-latest-5/update-performance.json \
+            --expected-commit "$EXPECTED_COMMIT" --iterations 5 --minimum-improvement 0.2
 
   runtime-compatibility:
     name: Runtime compatibility (${{ matrix.os }}, Node ${{ matrix.node }})
