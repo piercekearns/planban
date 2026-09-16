@@ -10,7 +10,8 @@ const manifest = {
     planban: {
       cwd: repoRoot,
       command: process.execPath,
-      args: ["--import", "tsx/esm", "./plugins/planban/mcp/server.mjs"],
+      args: ["./plugins/planban/scripts/start-planban-mcp.mjs"],
+      startup_timeout_sec: 120,
       env: {
         PLANBAN_REPO_ROOT: repoRoot,
       },

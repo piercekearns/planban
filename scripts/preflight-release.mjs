@@ -84,6 +84,7 @@ run("npm", ["audit", "--audit-level=high"]);
 run("npm", ["run", "build"]);
 run("npm", ["run", "smoke"]);
 run("node", ["scripts/verify-planban-mcp.mjs"]);
+run("node", ["scripts/verify-cold-install.mjs"]);
 run("node", ["scripts/verify-cache-launcher.mjs", "--runtime-root", repoRoot]);
 
 process.stdout.write(JSON.stringify({
@@ -99,6 +100,7 @@ process.stdout.write(JSON.stringify({
     "build",
     "HTTP smoke",
     "MCP verifier",
+    "cold MCP, CLI, and board installation verifier",
     "cache launcher and stale-server repair verifier",
   ],
 }, null, 2) + "\n");

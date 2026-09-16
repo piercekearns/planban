@@ -33,7 +33,7 @@ Planban installs as a Git-backed Codex plugin marketplace. Codex should:
 2. Add the Planban marketplace.
 3. Locate the installed marketplace root.
 4. Run `npm install` there.
-5. Configure the Planban MCP runtime.
+5. For a local-clone install, configure the Planban MCP runtime before installing the plugin. Git-backed marketplace installs can use the shipped relative MCP bootstrap without configuration.
 6. Install the Planban plugin.
 7. Verify the plugin and MCP tools are available.
 8. Open the interactive Planban tutorial in the Codex in-app browser.
@@ -57,6 +57,30 @@ node plugins/planban/scripts/launch-planban.mjs --tutorial
 ```
 
 Then open the printed local tutorial URL. In Codex, ask your agent to open it in the in-app browser.
+
+For a Git-backed marketplace, the shipped plugin can also bootstrap itself: after
+adding the marketplace and installing `planban@planban`, start a new Codex session
+and ask to open Planban. First launch installs missing dependencies in the
+marketplace runtime. Node.js and npm must already be available to Codex. The MCP
+startup allowance is two minutes; if a slow network exceeds that allowance, finish
+`npm install` in the marketplace root and retry. Installer output goes to stderr,
+keeping MCP's JSON-RPC channel clean.
+
+PowerShell manual install:
+
+```powershell
+codex plugin marketplace add piercekearns/planban
+$planbanRuntime = (codex plugin marketplace list --json | ConvertFrom-Json).marketplaces | Where-Object { $_.name -eq 'planban' } | Select-Object -ExpandProperty root
+Set-Location $planbanRuntime
+npm install
+node scripts/configure-local-plugin.mjs "$PWD"
+codex plugin add planban@planban
+node plugins/planban/scripts/launch-planban.mjs --tutorial
+```
+
+If an older cached plugin still contains `__PLANBAN_REPO_ROOT__`, refresh the
+marketplace and reinstall the plugin, then start a new Codex session. Opening a
+Board alone does not refresh an already-running session's MCP configuration.
 
 On Windows, Planban uses polling for its small local planning state directory. This avoids native file-watcher permission failures while keeping board updates live. You can also force polling on other platforms with `CHOKIDAR_USEPOLLING=1`.
 

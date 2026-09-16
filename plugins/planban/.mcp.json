@@ -1,16 +1,12 @@
 {
   "mcpServers": {
     "planban": {
-      "cwd": "__PLANBAN_REPO_ROOT__",
+      "cwd": ".",
       "command": "node",
       "args": [
-        "--import",
-        "tsx/esm",
-        "./plugins/planban/mcp/server.mjs"
+        "./scripts/start-planban-mcp.mjs"
       ],
-      "env": {
-        "PLANBAN_REPO_ROOT": "__PLANBAN_REPO_ROOT__"
-      }
+      "startup_timeout_sec": 120
     }
   }
 }

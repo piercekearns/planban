@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { resolvePlanbanRuntime } from "../plugins/planban/scripts/runtime-root.mjs";
 import { platformInvocation } from "./platform-invocation.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -140,8 +141,13 @@ async function main() {
   const mcpConfig = await readJson(mcpConfigPath);
   const planbanMcp = mcpConfig.mcpServers?.planban;
   if (!planbanMcp) throw new Error("Planban MCP server config is missing");
-  await assertSamePath(planbanMcp.cwd, root, "Planban MCP cwd");
-  await assertSamePath(planbanMcp.env?.PLANBAN_REPO_ROOT ?? "", root, "Planban MCP runtime root");
+  if (planbanMcp.cwd === ".") {
+    assertEqual(planbanMcp.args?.[0], "./scripts/start-planban-mcp.mjs", "Planban MCP bootstrap");
+  } else {
+    await assertSamePath(planbanMcp.cwd, root, "Planban MCP cwd");
+    await assertSamePath(planbanMcp.env?.PLANBAN_REPO_ROOT ?? "", root, "Planban MCP runtime root");
+  }
+  await assertSamePath(resolvePlanbanRuntime(resolve(root, "plugins/planban")), root, "Resolved Planban runtime");
 
   const mcpServer = await import(pathToFileURL(resolve(root, "plugins/planban/mcp/server.mjs")).href);
   if (typeof mcpServer.planbanMcpServerVersion === "function") {

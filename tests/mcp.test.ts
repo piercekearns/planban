@@ -7,14 +7,14 @@ import test from "node:test";
 import { createCard, createGroup as createGroupCore, historyPayload, initializeProject, loadState, readDoc, writeDoc } from "../src/core/storage";
 import { PLANBAN_MCP_VERSION } from "../src/core/version";
 
-const MCP_SERVER = join(process.cwd(), "plugins/planban/mcp/server.mjs");
+const MCP_SERVER = join(process.cwd(), "plugins/planban/scripts/start-planban-mcp.mjs");
 
 function createGroup(input: Omit<Parameters<typeof createGroupCore>[0], "summary"> & { summary?: string }) {
   return createGroupCore({ ...input, summary: input.summary ?? `${input.title} objective` });
 }
 
 function runMcpServer(requests: unknown[], env: NodeJS.ProcessEnv = {}) {
-  const result = spawnSync(process.execPath, ["--import", "tsx/esm", MCP_SERVER], {
+  const result = spawnSync(process.execPath, [MCP_SERVER], {
     encoding: "utf8",
     input: `${requests.map((request) => JSON.stringify(request)).join("\n")}\n`,
     env: {

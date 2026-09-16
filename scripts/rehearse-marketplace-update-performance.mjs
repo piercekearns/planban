@@ -5,16 +5,19 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { updateMarketplaceRuntime } from "./update-marketplace-runtime.mjs";
+import { retargetMarketplace } from "./marketplace-rehearsal-config.mjs";
 import { platformInvocation } from "./platform-invocation.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
 function parseArgs(argv) {
   const options = {
-    fromVersion: "1.1.3",
+    fromVersion: "1.1.4",
+    fromRef: null,
     expectedVersion: null,
     sourceUrl: "https://github.com/piercekearns/planban.git",
     targetRef: "main",
+    targetSourceUrl: null,
     expectedCommit: null,
     iterations: 3,
     mode: "both",
@@ -22,8 +25,10 @@ function parseArgs(argv) {
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--from-version") options.fromVersion = argv[++index] ?? "";
+    if (arg === "--from-ref") options.fromRef = argv[++index] ?? "";
+    else if (arg === "--from-version") options.fromVersion = argv[++index] ?? "";
     else if (arg === "--expected-version") options.expectedVersion = argv[++index] ?? "";
+    else if (arg === "--target-source-url") options.targetSourceUrl = argv[++index] ?? "";
     else if (arg === "--source-url") options.sourceUrl = argv[++index] ?? "";
     else if (arg === "--target-ref") options.targetRef = argv[++index] ?? "";
     else if (arg === "--expected-commit") options.expectedCommit = argv[++index] ?? "";
@@ -88,13 +93,10 @@ async function marketplaceRoot(codexHome, env) {
   return marketplace.root;
 }
 
-async function pointMarketplaceAtTarget(codexHome, targetRef) {
+async function pointMarketplaceAtTarget(codexHome, sourceUrl, targetRef) {
   const configPath = join(codexHome, "config.toml");
   const config = await readFile(configPath, "utf8");
-  const escapedRef = targetRef.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-  const updated = config.replace(/^ref\s*=\s*"[^"]+"\s*$/mu, `ref = "${escapedRef}"`);
-  if (updated === config) throw new Error(`Could not change isolated marketplace ref to ${targetRef}`);
-  await writeFile(configPath, updated, "utf8");
+  await writeFile(configPath, retargetMarketplace(config, sourceUrl, targetRef), "utf8");
 }
 
 async function runSample(options, mode, sampleNumber, sharedNpmCache) {
@@ -116,7 +118,7 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
       mkdir(projectRoot, { recursive: true }),
     ]);
     await run("codex", ["plugin", "marketplace", "add", options.sourceUrl,
-      "--ref", `v${options.fromVersion}`], { env });
+      "--ref", options.fromRef ?? `v${options.fromVersion}`], { env });
     const root = await marketplaceRoot(codexHome, env);
     await run("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, env });
     await run("node", ["--import", "tsx/esm", "src/cli.ts", "init", "--cwd", projectRoot,
@@ -126,7 +128,7 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
     });
     await run("node", ["--import", "tsx/esm", "src/cli.ts", "create-card", "Update proof",
       "--status", "pending", "--cwd", projectRoot, "--output", "json"], { cwd: root, env });
-    await pointMarketplaceAtTarget(codexHome, options.targetRef);
+    await pointMarketplaceAtTarget(codexHome, options.targetSourceUrl ?? options.sourceUrl, options.targetRef);
     const setupDurationMs = performance.now() - setupStartedAt;
 
     const updateStartedAt = performance.now();
@@ -212,9 +214,11 @@ async function main() {
     process.stdout.write(`${JSON.stringify({
       ok: true,
       fromVersion: options.fromVersion,
+      fromRef: options.fromRef ?? `v${options.fromVersion}`,
       expectedVersion: options.expectedVersion,
       sourceUrl: options.sourceUrl,
       targetRef: options.targetRef,
+      targetSourceUrl: options.targetSourceUrl ?? options.sourceUrl,
       expectedCommit: options.expectedCommit,
       environment: {
         platform: process.platform,

@@ -11,8 +11,11 @@ on:
       - "package-lock.json"
       - "scripts/assert-update-performance.mjs"
       - "scripts/platform-invocation.mjs"
+      - "plugins/planban/scripts/**"
       - "scripts/platform-invocation.d.mts"
       - "scripts/rehearse-marketplace-update-performance.mjs"
+      - "scripts/marketplace-rehearsal-config.mjs"
+      - "tests/marketplace-rehearsal-config.test.ts"
       - "scripts/update-marketplace-runtime.mjs"
       - "src/core/updateRunner.ts"
       - "tests/update-marketplace-runtime.test.ts"
@@ -23,7 +26,7 @@ on:
       from_version:
         description: Public Planban version used as the old marketplace
         required: true
-        default: "1.1.3"
+        default: "1.1.4"
         type: string
       target_ref:
         description: Remote branch or tag containing the exact candidate
@@ -46,8 +49,10 @@ jobs:
           - macos-latest
     runs-on: ${{ matrix.os }}
     env:
-      FROM_VERSION: ${{ inputs.from_version || '1.1.3' }}
+      FROM_VERSION: ${{ inputs.from_version || '1.1.4' }}
       TARGET_REF: ${{ inputs.target_ref || github.event.pull_request.head.ref }}
+      RELEASE_SOURCE_URL: https://github.com/${{ github.repository }}.git
+      TARGET_SOURCE_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
       EXPECTED_COMMIT: ${{ inputs.expected_commit || github.event.pull_request.head.sha }}
     steps:
       - name: Check out exact candidate
@@ -73,12 +78,19 @@ jobs:
         run: npm install --global @openai/codex@0.150.1
 
       - name: Run focused cross-platform fallback tests
-        run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts
+        run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/marketplace-rehearsal-config.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts
+
+      - name: Rehearse the previous public version upgrade
+        shell: bash
+        run: |
+          node scripts/rehearse-marketplace-update-performance.mjs --from-version "$FROM_VERSION" --source-url "$RELEASE_SOURCE_URL" --target-source-url "$TARGET_SOURCE_URL" --target-ref "$TARGET_REF" --expected-commit "$EXPECTED_COMMIT" --iterations 1 --mode both > upgrade-correctness.json
+          node scripts/assert-update-performance.mjs --file upgrade-correctness.json --expected-commit "$EXPECTED_COMMIT" --iterations 1 --correctness-only
 
       - name: Run five clean and five reuse marketplace updates
         run: >-
           node scripts/rehearse-marketplace-update-performance.mjs
-          --from-version "$FROM_VERSION"
+          --from-ref "$TARGET_REF"
+          --source-url "$TARGET_SOURCE_URL"
           --target-ref "$TARGET_REF"
           --expected-commit "$EXPECTED_COMMIT"
           --iterations 5
@@ -100,7 +112,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: updater-rehearsal-${{ matrix.os }}
-          path: update-performance.json
+          path: |
+            update-performance.json
+            upgrade-correctness.json
           if-no-files-found: warn
 
   runtime-compatibility:
@@ -132,4 +146,4 @@ jobs:
         run: npm run typecheck
 
       - name: Run updater compatibility tests
-        run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts tests/update-runner.test.ts
+        run: node --test --import tsx/esm tests/platform-invocation.test.ts tests/marketplace-rehearsal-config.test.ts tests/update-marketplace-runtime.test.ts tests/update-performance-assertion.test.ts tests/update-runner.test.ts

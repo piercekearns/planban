@@ -42,3 +42,20 @@ test("rejects a missing reuse path, wrong commit, lost Board, or weak improvemen
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /did not reuse|lost Board|installed wrong|below 20\.0%/u);
 });
+
+test("upgrade correctness allows changed dependencies without weakening the compatible-update speed gate", () => {
+  const input = benchmark(1200);
+  Object.assign(input.samples[1].runtime, {
+    dependencyMode: "clean-install",
+    dependencyReason: "dependency-fingerprint-or-runtime-changed",
+  });
+  assert.equal(evaluateBenchmark(input, { ...options, correctnessOnly: true }).ok, true);
+  assert.equal(evaluateBenchmark(input, options).ok, false);
+  Object.assign(input.samples[1].runtime, { dependencyReason: "reuse-verification-failed" });
+  assert.equal(evaluateBenchmark(input, { ...options, correctnessOnly: true }).ok, false);
+  input.samples[1].boardPreserved = false;
+  input.samples[1].updatedCommit = "wrong";
+  const result = evaluateBenchmark(input, { ...options, correctnessOnly: true });
+  assert.match(result.errors.join("\n"), /lost Board/u);
+  assert.match(result.errors.join("\n"), /installed wrong/u);
+});

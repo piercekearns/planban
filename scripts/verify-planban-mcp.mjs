@@ -8,9 +8,9 @@ import { join, resolve } from "node:path";
 import { terminatePid, assertPortClosed } from "./process-cleanup.mjs";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
-const MCP_SERVER = join(REPO_ROOT, "plugins/planban/mcp/server.mjs");
+const MCP_SERVER = join(REPO_ROOT, "plugins/planban/scripts/start-planban-mcp.mjs");
 function runMcpServer(requests, env = {}) {
-  const result = spawnSync(process.execPath, ["--import", "tsx/esm", MCP_SERVER], {
+  const result = spawnSync(process.execPath, [MCP_SERVER], {
     encoding: "utf8",
     input: `${requests.map((request) => JSON.stringify(request)).join("\n")}\n`,
     env: {

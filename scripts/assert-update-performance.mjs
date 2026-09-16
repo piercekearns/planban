@@ -5,10 +5,11 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 function parseArgs(argv) {
-  const options = { file: null, expectedCommit: null, iterations: 5, minimumImprovement: 0.2 };
+  const options = { file: null, expectedCommit: null, iterations: 5, minimumImprovement: 0.2, correctnessOnly: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--file") options.file = argv[++index] ?? "";
+    if (arg === "--correctness-only") options.correctnessOnly = true;
+    else if (arg === "--file") options.file = argv[++index] ?? "";
     else if (arg === "--expected-commit") options.expectedCommit = argv[++index] ?? "";
     else if (arg === "--iterations") options.iterations = Number(argv[++index]);
     else if (arg === "--minimum-improvement") options.minimumImprovement = Number(argv[++index]);
@@ -41,7 +42,10 @@ export function evaluateBenchmark(benchmark, options) {
     }
   }
   for (const sample of reuse) {
-    if (sample.runtime?.dependencyMode !== "reused") {
+    const changedDependencies = options.correctnessOnly
+      && sample.runtime?.dependencyMode === "clean-install"
+      && sample.runtime?.dependencyReason === "dependency-fingerprint-or-runtime-changed";
+    if (sample.runtime?.dependencyMode !== "reused" && !changedDependencies) {
       errors.push(`reuse sample ${sample.sample} did not reuse verified dependencies`);
     }
   }
@@ -58,7 +62,7 @@ export function evaluateBenchmark(benchmark, options) {
     ? 1 - (reuseMedian / baselineMedian)
     : null;
   if (improvement === null) errors.push("benchmark medians are missing or invalid");
-  else if (improvement < options.minimumImprovement) {
+  else if (!options.correctnessOnly && improvement < options.minimumImprovement) {
     errors.push(`median improvement ${(improvement * 100).toFixed(1)}% is below ${(options.minimumImprovement * 100).toFixed(1)}%`);
   }
 

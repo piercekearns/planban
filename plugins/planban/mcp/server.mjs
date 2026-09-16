@@ -4,18 +4,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolvePlanbanRuntime } from "../scripts/runtime-root.mjs";
 import { startPlanbanMcpActivity } from "./activity.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function resolveRuntimeRoot() {
-  const bundledRuntimeRoot = resolve(PLUGIN_ROOT, "runtime");
-  if (existsSync(resolve(bundledRuntimeRoot, "src/core/storage.ts"))) return bundledRuntimeRoot;
-  if (process.env.PLANBAN_REPO_ROOT) return resolve(process.env.PLANBAN_REPO_ROOT);
-  return resolve(PLUGIN_ROOT, "../..");
-}
-
-const PLANBAN_RUNTIME_ROOT = resolveRuntimeRoot();
+const PLANBAN_RUNTIME_ROOT = resolvePlanbanRuntime(PLUGIN_ROOT);
 const HAS_BUILT_WEB_BUNDLE = existsSync(resolve(PLANBAN_RUNTIME_ROOT, "dist/web/index.html"));
 const storageModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/storage.ts")).href);
 const registryModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/registry.ts")).href);
@@ -977,7 +971,7 @@ async function handleRequest(message) {
   }
 }
 
-function startMcpServer() {
+export function startMcpServer() {
   const lines = readline.createInterface({
     input: process.stdin,
     crlfDelay: Infinity,

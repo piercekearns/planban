@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { resolvePlanbanRuntime } from "./runtime-root.mjs";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { openUrlInCodexBrowser } from "./codex-browser-adapter.mjs";
@@ -13,44 +13,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(scriptDir, "..");
 
 export function resolveRuntimeRoot() {
-  const bundledRuntimeRoot = resolve(pluginRoot, "runtime");
-  if (existsSync(resolve(bundledRuntimeRoot, "bin/planban.mjs"))) return bundledRuntimeRoot;
-  if (existsSync(resolve(pluginRoot, "bin/planban.mjs"))) return pluginRoot;
-  const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
-  if (mcpRuntimeRoot) return mcpRuntimeRoot;
-  if (realProcess?.env?.PLANBAN_REPO_ROOT) return resolve(realProcess.env.PLANBAN_REPO_ROOT);
-  const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
-  if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
-  const parentRuntimeRoot = resolve(pluginRoot, "../..");
-  if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
-  return parentRuntimeRoot;
-}
-
-function runtimeRootFromCodexMarketplace() {
-  const codexHome = realProcess?.env?.CODEX_HOME
-    ? resolve(realProcess.env.CODEX_HOME)
-    : join(homedir(), ".codex");
-  const runtimeRoot = resolve(codexHome, ".tmp", "marketplaces", "planban");
-  return existsSync(resolve(runtimeRoot, "bin/planban.mjs")) ? runtimeRoot : null;
-}
-
-function runtimeRootFromMcpConfig(root) {
-  try {
-    const config = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
-    const rootValue = config?.mcpServers?.planban?.env?.PLANBAN_REPO_ROOT;
-    if (typeof rootValue === "string" && rootValue.trim()) {
-      const runtimeRoot = isAbsolute(rootValue) ? resolve(rootValue) : resolve(root, rootValue);
-      if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
-    }
-    const cwdValue = config?.mcpServers?.planban?.cwd;
-    if (typeof cwdValue === "string" && cwdValue.trim()) {
-      const runtimeRoot = isAbsolute(cwdValue) ? resolve(cwdValue) : resolve(root, cwdValue);
-      if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
-    }
-  } catch {
-    // Not an installed plugin cache, or not enough metadata to resolve a runtime.
-  }
-  return null;
+  return resolvePlanbanRuntime(pluginRoot, realProcess?.env ?? {});
 }
 
 function nodeCommand(explicitNodePath = null) {

@@ -3,89 +3,15 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePlanbanRuntime } from "./runtime-root.mjs";
+import { ensureRuntimeDependencies } from "./runtime-dependencies.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(scriptDir, "..");
-const requiredRuntimePaths = [
-  "node_modules/tsx",
-  "node_modules/express",
-  "node_modules/iconv-lite/encodings/index.js",
-];
-
 export function resolveRuntimeRoot() {
-  const bundledRuntimeRoot = resolve(pluginRoot, "runtime");
-  if (existsSync(resolve(bundledRuntimeRoot, "bin/planban.mjs"))) return bundledRuntimeRoot;
-  if (existsSync(resolve(pluginRoot, "bin/planban.mjs"))) return pluginRoot;
-  const mcpRuntimeRoot = runtimeRootFromMcpConfig(pluginRoot);
-  if (mcpRuntimeRoot) return mcpRuntimeRoot;
-  if (process.env.PLANBAN_REPO_ROOT) return resolve(process.env.PLANBAN_REPO_ROOT);
-  const marketplaceRuntimeRoot = runtimeRootFromCodexMarketplace();
-  if (marketplaceRuntimeRoot) return marketplaceRuntimeRoot;
-  const parentRuntimeRoot = resolve(pluginRoot, "../..");
-  if (existsSync(resolve(parentRuntimeRoot, "bin/planban.mjs"))) return parentRuntimeRoot;
-  return parentRuntimeRoot;
-}
-
-function runtimeRootFromCodexMarketplace() {
-  const codexHome = process.env.CODEX_HOME ? resolve(process.env.CODEX_HOME) : join(homedir(), ".codex");
-  const runtimeRoot = resolve(codexHome, ".tmp", "marketplaces", "planban");
-  return existsSync(resolve(runtimeRoot, "bin/planban.mjs")) ? runtimeRoot : null;
-}
-
-function runtimeRootFromMcpConfig(root) {
-  try {
-    const config = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
-    for (const value of [
-      config?.mcpServers?.planban?.env?.PLANBAN_REPO_ROOT,
-      config?.mcpServers?.planban?.cwd,
-    ]) {
-      if (typeof value !== "string" || !value.trim()) continue;
-      const runtimeRoot = isAbsolute(value) ? resolve(value) : resolve(root, value);
-      if (existsSync(resolve(runtimeRoot, "bin/planban.mjs"))) return runtimeRoot;
-    }
-  } catch {
-    // Not an installed plugin cache, or not enough metadata to resolve a runtime.
-  }
-  return null;
-}
-
-function missingRuntimeDependencies(runtimeRoot) {
-  return requiredRuntimePaths.filter((relativePath) => !existsSync(resolve(runtimeRoot, relativePath)));
-}
-
-function npmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
-async function ensureRuntimeDependencies(runtimeRoot) {
-  const missing = missingRuntimeDependencies(runtimeRoot);
-  if (missing.length === 0) return;
-
-  await new Promise((resolveInstall, rejectInstall) => {
-    const invocation = platformInvocation(npmCommand(), ["install"]);
-    const child = spawn(invocation.command, invocation.args, {
-      cwd: runtimeRoot,
-      env: process.env,
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", rejectInstall);
-    child.on("close", (code) => {
-      if (code === 0) resolveInstall();
-      else rejectInstall(new Error(stderr.trim() || `npm install exited with code ${code}`));
-    });
-  });
-
-  const stillMissing = missingRuntimeDependencies(runtimeRoot);
-  if (stillMissing.length > 0) {
-    throw new Error(`Planban runtime dependencies are missing after npm install: ${stillMissing.join(", ")}`);
-  }
+  return resolvePlanbanRuntime(pluginRoot);
 }
 
 function parseArgs(argv) {

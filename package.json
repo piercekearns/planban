@@ -1,6 +1,6 @@
 {
   "name": "planban",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -55,7 +55,7 @@
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
-    "workerd@1.20260820.1": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "workerd@1.20260915.1": true
   }
 }

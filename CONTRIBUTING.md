@@ -95,6 +95,17 @@ For release or install-path changes, also run:
 npm run release:preflight
 ```
 
+Preflight includes `node scripts/verify-cold-install.mjs`: it copies a fresh
+marketplace and plugin cache without dependencies or configured local paths, then
+executes MCP initialization, Board launch, and CLI startup. Keep bootstrap
+regressions covered by executing these paths, not only matching their source text.
+The Windows CI job runs the same cold-install check with paths containing spaces.
+
+Updater CI separately checks the previous public version upgrade and repeated
+updates of the candidate with unchanged dependencies. Dependency changes must take
+the clean-install fallback; only the unchanged-dependency scenario is required to
+reuse dependencies and meet the relative speed gate.
+
 Before publishing a release, use the exact candidate commit and rehearse updating
 from the previous public version. For example:
 

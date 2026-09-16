@@ -12,6 +12,14 @@ import {
 } from "../plugins/planban/scripts/codex-fast-open-planban.mjs";
 import { launchLogPath } from "../plugins/planban/scripts/launch-planban.mjs";
 
+async function runtimeFixture(root: string) {
+  await mkdir(join(root, "bin"), { recursive: true });
+  await mkdir(join(root, "src/core"), { recursive: true });
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: "planban" }));
+  await writeFile(join(root, "src/cli.ts"), "");
+  await writeFile(join(root, "src/core/storage.ts"), "");
+}
+
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function verifiedLaunch(url = "http://localhost:4317/boards/alpha") {
@@ -172,7 +180,7 @@ test("resolves an installed-cache runtime from adjacent MCP metadata", async () 
   const previousCodexHome = process.env.CODEX_HOME;
 
   try {
-    await mkdir(join(runtimeRoot, "bin"), { recursive: true });
+    await runtimeFixture(runtimeRoot);
     await mkdir(scriptsRoot, { recursive: true });
     await writeFile(join(runtimeRoot, "bin", "planban.mjs"), "#!/usr/bin/env node\n", "utf8");
     await writeFile(join(cacheRoot, ".mcp.json"), JSON.stringify({
@@ -185,10 +193,7 @@ test("resolves an installed-cache runtime from adjacent MCP metadata", async () 
         },
       },
     }), "utf8");
-    await cp(join(repoRoot, "plugins/planban/scripts/codex-fast-open-planban.mjs"), join(scriptsRoot, "codex-fast-open-planban.mjs"));
-    await cp(join(repoRoot, "plugins/planban/scripts/codex-browser-adapter.mjs"), join(scriptsRoot, "codex-browser-adapter.mjs"));
-    await cp(join(repoRoot, "plugins/planban/scripts/platform-invocation.mjs"), join(scriptsRoot, "platform-invocation.mjs"));
-    await cp(join(repoRoot, "plugins/planban/scripts/launch-planban.mjs"), join(scriptsRoot, "launch-planban.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts"), scriptsRoot, { recursive: true });
 
     delete process.env.PLANBAN_REPO_ROOT;
     process.env.CODEX_HOME = join(root, "codex-home");
@@ -217,7 +222,7 @@ test("falls back to the standard Codex marketplace runtime when cache MCP metada
   const previousCodexHome = process.env.CODEX_HOME;
 
   try {
-    await mkdir(join(marketplaceRoot, "bin"), { recursive: true });
+    await runtimeFixture(marketplaceRoot);
     await mkdir(scriptsRoot, { recursive: true });
     await writeFile(join(marketplaceRoot, "bin", "planban.mjs"), "#!/usr/bin/env node\n", "utf8");
     await writeFile(join(cacheRoot, ".mcp.json"), JSON.stringify({
@@ -228,10 +233,7 @@ test("falls back to the standard Codex marketplace runtime when cache MCP metada
         },
       },
     }), "utf8");
-    await cp(join(repoRoot, "plugins/planban/scripts/codex-fast-open-planban.mjs"), join(scriptsRoot, "codex-fast-open-planban.mjs"));
-    await cp(join(repoRoot, "plugins/planban/scripts/codex-browser-adapter.mjs"), join(scriptsRoot, "codex-browser-adapter.mjs"));
-    await cp(join(repoRoot, "plugins/planban/scripts/platform-invocation.mjs"), join(scriptsRoot, "platform-invocation.mjs"));
-    await cp(join(repoRoot, "plugins/planban/scripts/launch-planban.mjs"), join(scriptsRoot, "launch-planban.mjs"));
+    await cp(join(repoRoot, "plugins/planban/scripts"), scriptsRoot, { recursive: true });
 
     delete process.env.PLANBAN_REPO_ROOT;
     process.env.CODEX_HOME = codexHome;
