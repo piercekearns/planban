@@ -146,6 +146,8 @@ claude plugin install planban@planban
 
 Updates: `claude plugin marketplace update planban` then `claude plugin update planban@planban`, and run `npm install` in the marketplace root again when a release changes dependencies.
 
+Claude Code copies the plugin's skills, hooks, and scripts into its plugin cache at install time, while the Planban runtime itself resolves to the marketplace checkout. When developing Planban from a local clone, run the two update commands above after changing anything under `plugins/planban/`, then start a new session; an idle session keeps its plugin server process alive and will not see the change until it restarts.
+
 ### Other hosts
 
 Any host that can run a local stdio MCP server can use Planban's tools without slash commands. Clone the repository, run `npm install`, and point the host's MCP configuration at `node <checkout>/plugins/planban/scripts/start-planban-mcp.mjs` with the environment variable `PLANBAN_REPO_ROOT=<checkout>`. The agent then gets the same tools and the same clickable board URLs; opening the board beside the session depends on what the host offers.
