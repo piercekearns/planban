@@ -1,7 +1,7 @@
 # Planban Protocol
 
-Planban is a local, Codex-native planning board. Use this protocol when the user asks
-Codex to read, create, update, review, move, or complete work tracked in Planban.
+Planban is a local, agent-native planning board. Use this protocol when the user asks
+the agent to read, create, update, review, move, or complete work tracked in Planban.
 
 ## Command-Like Skills
 
@@ -14,8 +14,11 @@ This plugin includes focused command-like skills:
 - `planban-create`: create boards or roadmap items from rough user intent.
 - `planban-feedback`: package Planban feedback.
 
+Codex invokes these as `/pb`, `/planban`, and so on. Claude Code prefixes the plugin
+name: `/planban:pb`, `/planban:planban`, and so on.
+
 Natural prompts remain first-class. Users can still say "Open my Planban board." or
-mention `@planban`.
+mention `@planban` where the host supports plugin mentions.
 
 ## First Reads
 
@@ -108,12 +111,64 @@ Opening a board is the same primary service for `/pb` and `/planban`:
 
 Every successful board-open confirmation must include the exact verified board URL as a clickable Markdown link, regardless of whether in-app browser presentation succeeds. A bare “board opened” acknowledgement is never sufficient. The verified link is part of the durable response contract, while browser presentation is optional.
 
-In Codex Desktop, use the Planban MCP tool as the authority for server lifecycle,
-service health, canonical board URL resolution, and URL verification. Use the Planban
-browser opener module only as a bounded optional adapter for in-app browser visibility,
-fresh-tab navigation, and presentation verification. The Node REPL runtime can be
-sandboxed away from localhost networking, so browser availability must never redefine
-whether the board launched successfully.
+The Planban MCP tool whose name ends in `planban_launch_board` is the authority for
+server lifecycle, service health, canonical board URL resolution, and URL
+verification. Host browser presentation is a bounded optional step; it must never
+redefine whether the board launched successfully.
+
+Critical path:
+
+1. Call `planban_launch_board` for the current `cwd`. A result with
+   `serviceReady: true` and `urlVerified: true` is the successful launch; preserve
+   its URL (also carried in `userReply.markdown`).
+2. Make one bounded in-app presentation attempt through the adapter for this host
+   under **Host adapters**. Hosts without an adapter skip this step.
+3. Reply with the exact clickable verified URL whether or not presentation
+   succeeded: `Planban is open: [Open the verified board](URL)` after a successful
+   presentation, otherwise `Planban is running: [Open the verified board](URL)` plus
+   at most one short degradation reason.
+
+If `planban_launch_board` is not callable, use the host adapter's fallbacks. A host
+without fallbacks runs the bundled launcher and uses the URL it prints:
+
+```bash
+node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo
+```
+
+Default board opening should optimize for the cold-start return-to-work case. The
+Planban server may be stopped, the in-app browser may be closed, or the selected tab
+may be stale, unrelated, or on an error page. Use an open-first flow: resolve the
+board, present it once, and tell the user the board is open with the exact clickable
+verified URL. After the board is visible, continue with a lightweight ready-next
+warm-up for likely follow-up work: load broader Planban context, linked docs, or
+Browser context then when useful. Do not put that work on the critical path. Always
+return the verified URL. If browser presentation fails, also include at most one
+useful reason from the adapter's structured `browser-presentation` diagnostic;
+service/URL failures remain separate `service-url` failures.
+
+For first-run or install verification, create or reuse the demo board:
+
+```bash
+node plugins/planban/scripts/launch-planban.mjs --demo
+```
+
+For first-run onboarding, create or reuse the demo board and open the tutorial:
+
+```bash
+node plugins/planban/scripts/launch-planban.mjs --tutorial
+```
+
+## Host adapters
+
+Use only the subsection for the host you are running in. Each adapter makes at most
+one presentation attempt per board open or logical mutation batch.
+
+### Codex desktop
+
+Use the Planban browser opener module only as a bounded optional adapter for in-app
+browser visibility, fresh-tab navigation, and presentation verification. The Node
+REPL runtime can be sandboxed away from localhost networking, so browser
+availability must never redefine whether the board launched successfully.
 
 ```js
 const mod = await import("/absolute/path/to/codex-fast-open-planban.mjs");
@@ -164,35 +219,32 @@ attempt when the user specifically wants the board visible beside the Codex thre
 The clickable verified URL is not merely a fallback: include it in the final reply
 after every successful resolution, including when the in-app browser opened correctly.
 
-Default board opening should optimize for the cold-start return-to-work case. The
-Planban server may be stopped, the in-app browser may be closed, or the selected tab
-may be stale, unrelated, or on an error page. Use an open-first flow: resolve the
-board, make the in-app browser visible, open a fresh in-app browser tab by default,
-verify the URL, and tell the user the board is open with the exact clickable verified URL. Only reuse the selected tab
-when it is already exactly at the resolved Planban URL. After the board is visible,
-continue with a lightweight ready-next warm-up for likely follow-up work: load broader
-Planban context, linked docs, or Browser context then when useful. Do not put that
-work on the critical path. Always return the verified URL. If browser presentation fails,
-also include at most one useful reason from the adapter's structured `browser-presentation`
-diagnostic; service/URL failures remain separate `service-url` failures.
+Make the in-app browser visible and open a fresh in-app browser tab by default, then
+verify the URL. Only reuse the selected tab when it is already exactly at the
+resolved Planban URL.
 
-For first-run or install verification, create or reuse the demo board:
+### Claude Code desktop
 
-```bash
-node plugins/planban/scripts/launch-planban.mjs --demo
-```
+Open the verified URL in the built-in browser pane with the pane's navigate tool
+(currently `mcp__Claude_Browser__navigate` with `{ "url": "<verified URL>" }`). Tool
+names can change between app versions, so match on that capability.
 
-For first-run onboarding, create or reuse the demo board and open the tutorial:
+- Make one attempt. If the tool is listed as deferred, load it with a single
+  tool-search call first; search no further.
+- If no such tool is in the session, or the call errors, skip presentation and return
+  the link with one short reason.
+- Keep the attempt inside the pane: the OS `open` command and external browsers are
+  not first attempts, and Computer Use is out of scope.
 
-```bash
-node plugins/planban/scripts/launch-planban.mjs --tutorial
-```
+### Other hosts
+
+Make no presentation attempt. Return the link.
 
 ## Roadmap Status Protocol
 
 Follow this protocol exactly:
 
-- Opening or linking a Codex thread is not enough to change status.
+- Opening or linking an agent thread or session is not enough to change status.
 - Planning, reading context, or discussing approach is not enough to change status.
 - If the user asks an agent to start implementation, or you proceed to implementation
   work, move the card to In Progress when it is not already there.
@@ -220,9 +272,11 @@ When changing roadmap state:
 
 After a successful user-requested Planban creation or material mutation, wait until
 the complete logical mutation sequence has finished, then resolve the verified Board
-URL once. In Codex Desktop, make one bounded attempt to open or focus that URL
-through the supported Planban browser adapter. Always include the exact verified URL
-as a clickable Markdown link in the final response.
+URL once: take it from the last mutation result's `userReply`, and call
+`planban_launch_board` once only if that result has `boardUrlVerified: false`. Make
+one bounded attempt to open or focus that URL through the adapter for this host under
+**Host adapters**. Always include the exact verified URL as a clickable Markdown link
+in the final response.
 
 - Do not reopen the Board after every storage write in a multi-step mutation. One
   presentation attempt belongs to the logical mutation batch.
@@ -258,9 +312,10 @@ npm run planban -- read-doc <card-id> spec --cwd /path/to/repo -o json
 npm run planban -- demo -o json
 ```
 
-## Codex Thread Prompts
+## Agent handoff prompts
 
-Planban thread prompts should include enough context to begin without rediscovery:
+Planban handoff prompts for a new agent thread or session should include enough
+context to begin without rediscovery:
 
 - repository path
 - board URL

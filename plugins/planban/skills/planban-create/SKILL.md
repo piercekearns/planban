@@ -62,11 +62,13 @@ Use the Planban domain model deliberately:
 After successfully creating a new Planban board or project setup, or one or more Work
 Items, follow the shared post-mutation handoff in
 `../planban/references/planban-protocol.md`. Resolve the verified Board URL once after
-the complete creation sequence, make one bounded open-or-focus attempt where
-supported unless the user requested headless behavior, and include the verified URL
-as a clickable Markdown link in the final response. Prefer a stable new-Item URL when
-Planban supports one; otherwise use the Board URL. Browser-presentation failure does
-not invalidate a successful creation.
+the complete creation sequence: take it from the last creation result's `userReply`,
+and call `planban_launch_board` once only if that result has `boardUrlVerified: false`.
+Make one bounded in-app presentation attempt through the host adapter in
+`../planban/SKILL.md` unless the user requested headless behavior, and include the
+verified URL as a clickable Markdown link in the final response. Prefer a stable
+new-Item URL when Planban supports one; otherwise use the Board URL.
+Browser-presentation failure does not invalidate a successful creation.
 
 ## Useful Commands
 

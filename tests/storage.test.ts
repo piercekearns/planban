@@ -1466,3 +1466,22 @@ test("deletes archived cards and their local docs only after archive", async () 
   assert.equal(deleted.roadmap.roadmapItems.some((item) => item.id === "alpha"), false);
   await assert.rejects(stat(doc.path));
 });
+
+test("initialized repo guidance names the Board URL, Planban tools, and per-host install route", async () => {
+  await initializeProject({ cwd, title: "Host Guidance", repoId });
+
+  const context = await readFile(join(cwd, ".planban", "agent-context.md"), "utf8");
+  assert.match(context, new RegExp(`http://127\\.0\\.0\\.1:4317/boards/${repoId}`, "u"));
+  assert.match(context, /verify it through `planban_launch_board`/u);
+  assert.match(context, /MCP tools whose names end in `planban_<operation>`/u);
+  assert.match(context, /## If Planban tools are not available in this session/u);
+  assert.match(context, /Planban is not installed for this host/u);
+  assert.match(context, /https:\/\/github\.com\/piercekearns\/planban#install/u);
+  assert.match(context, /bin\/planban\.mjs <command> --cwd <this repo> -o json/u);
+  assert.match(context, /an agent thread or session was opened/u);
+  assert.doesNotMatch(context, /Codex/u);
+
+  const agents = await readFile(join(cwd, "AGENTS.md"), "utf8");
+  assert.match(agents, /Planban tools \(names ending in `planban_<operation>`\) are unavailable in the current host/u);
+  assert.match(agents, /https:\/\/github\.com\/piercekearns\/planban#install/u);
+});

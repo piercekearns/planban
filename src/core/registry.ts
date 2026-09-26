@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
+import { resolvePlanbanProjectDir } from "../../plugins/planban/scripts/project-dir.mjs";
 import {
   agentContextPath,
   boardBackupsRoot,
@@ -273,6 +274,7 @@ export async function duplicateBoard(input: {
       await atomicWriteFile(
         agentContextPath(cwd),
         buildAgentContext({
+          repoId,
           planningRoot,
           roadmapPath: liveRoadmapPath,
           manifestPath: manifestPath(cwd),
@@ -352,7 +354,7 @@ export async function deleteBoard(repoId: string): Promise<{ repoId: string; bac
 
 export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoardRecord | null> {
   return withRegistryWriteLock(async () => {
-  const cwd = resolve(cwdInput);
+  const cwd = resolvePlanbanProjectDir(cwdInput).projectDir;
   const manifest = await readManifest(cwd);
   if (!manifest || !manifest.enabled) return null;
   const planningRoot = resolvePlanningRoot(manifest);

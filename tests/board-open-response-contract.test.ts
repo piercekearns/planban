@@ -23,16 +23,55 @@ function assertAlwaysLinkedContract(markdown: string, source: string) {
   );
 }
 
+const boardOpeningSources = [
+  "plugins/planban/skills/pb/SKILL.md",
+  "plugins/planban/skills/planban/SKILL.md",
+  "plugins/planban/skills/planban-tutorial/SKILL.md",
+  "plugins/planban/skills/planban/references/planban-protocol.md",
+];
+
+function hostAdapters(markdown: string, source: string) {
+  const start = markdown.search(/^#{2,3} Host adapters$/mu);
+  assert.ok(start >= 0, `${source} must have a Host adapters section`);
+  return { before: markdown.slice(0, start), adapters: markdown.slice(start) };
+}
+
 test("all canonical board-opening skills require a clickable URL on success", async () => {
-  const sources = [
+  for (const source of boardOpeningSources) {
+    assertAlwaysLinkedContract(await read(source), source);
+  }
+});
+
+test("board-opening guidance keeps a host-neutral critical path with per-host adapters", async () => {
+  for (const source of boardOpeningSources) {
+    const markdown = await read(source);
+    const { before, adapters } = hostAdapters(markdown, source);
+
+    assert.match(adapters, /^#{3,4} Codex desktop$/mu, `${source} must keep a Codex adapter`);
+    assert.match(adapters, /^#{3,4} Claude Code desktop$/mu, `${source} must have a Claude Code adapter`);
+    assert.match(adapters, /^#{3,4} Other hosts$/mu, `${source} must cover hosts without an adapter`);
+    assert.match(adapters, /built-in browser pane[\s\S]{0,120}navigate tool/u, `${source} must describe the Claude Code capability first`);
+    assert.match(adapters, /mcp__Claude_Browser__navigate/u, `${source} must hint at the current Claude Code tool name`);
+    assert.match(adapters, /Make one attempt/u, `${source} must bound the Claude Code attempt`);
+
+    const genericPath = before.replace(/^Codex invokes these as .*$/mu, "");
+    assert.doesNotMatch(genericPath, /Codex|node_repl|openUrlInCodexBrowser/u, `${source} must keep host names out of the critical path`);
+    assert.match(before, /in-app presentation attempt/u, `${source} must make presentation one bounded adapter step`);
+  }
+});
+
+test("the Codex adapter keeps the existing Node REPL opener rules", async () => {
+  for (const source of [
     "plugins/planban/skills/pb/SKILL.md",
     "plugins/planban/skills/planban/SKILL.md",
-    "plugins/planban/skills/planban-tutorial/SKILL.md",
     "plugins/planban/skills/planban/references/planban-protocol.md",
-  ];
-
-  for (const source of sources) {
-    assertAlwaysLinkedContract(await read(source), source);
+  ]) {
+    const { adapters } = hostAdapters(await read(source), source);
+    const codex = adapters.slice(adapters.search(/^#{3,4} Codex desktop$/mu), adapters.search(/^#{3,4} Claude Code desktop$/mu));
+    assert.match(codex, /openUrlInCodexBrowser/u, `${source} Codex adapter must keep the opener`);
+    assert.match(codex, /at most one tool-discovery (?:call|attempt)/u, `${source} Codex adapter must keep one discovery attempt`);
+    assert.match(codex, /Codex browser\s+bridge\s+(?:as\s+)?unavailable|"Codex browser bridge\s+unavailable"/u, `${source} Codex adapter must keep the bridge-unavailable rule`);
+    assert.match(codex, /openPlanbanBoardInCodexBrowser/u, `${source} Codex adapter must keep its fallbacks`);
   }
 });
 

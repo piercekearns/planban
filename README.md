@@ -1,21 +1,33 @@
 # Planban
 
-Planban is a local, Codex-native Kanban board for agent-led planning.
+Planban is a local, agent-native Kanban board for agent-led planning.
 
-It gives you a simple roadmap board, keeps your planning state local, and helps Codex start work from the right card, spec, and project context.
+It gives you a simple roadmap board, keeps your planning state local, and helps your coding agent start work from the right card, spec, and project context. It installs as a plugin in Codex and in Claude Code, and its MCP server works from any host that can run a local MCP server.
 
 Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions.
 
 ## What Planban Does
 
-- Opens local project boards from Codex with `/pb` or `/planban`.
+- Opens local project boards beside your session with `/pb` or `/planban` in Codex, and `/planban:pb` or `/planban:planban` in Claude Code.
 - Keeps live planning state on your machine, separate from your source repo.
 - Gives agents stable board, card, spec, plan, and next-action context.
 - Organizes related outcomes into root Groups while each owned Item remains independently completable, ranked, documented, and movable.
 - Supports board creation, duplication, archiving, restoring, card movement, docs, history, and feedback flows.
-- Ships CLI, local API, and MCP tools so Codex can work with Planban through structured local actions.
+- Ships CLI, local API, and MCP tools so any agent host can work with Planban through structured local actions.
 
-## Install With Codex
+## Install
+
+Planban is installed separately in each host you use. Each install shares the same device-local boards, so a board you create from Codex is the same board you open from Claude Code.
+
+| Host | Slash commands | Board beside the session | Install |
+| --- | --- | --- | --- |
+| Codex desktop | `/pb`, `/planban`, `/planban-create` | Codex in-app browser | [Install With Codex](#install-with-codex) |
+| Claude Code desktop | `/planban:pb`, `/planban:planban`, `/planban:planban-create` | Claude Code browser pane | [Install With Claude Code](#install-with-claude-code) |
+| Other MCP hosts | none | link only | [Other hosts](#other-hosts) |
+
+When a project uses Planban but Planban is not installed in the host you are working from, the project's `.planban/agent-context.md` tells the agent to say so once and point you here.
+
+### Install With Codex
 
 Ask Codex:
 
@@ -23,7 +35,7 @@ Ask Codex:
 Install Planban from piercekearns/planban. Follow the Install With Codex details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the Codex in-app browser, then ask whether I want to set up Planban for a local project.
 ```
 
-### Install With Codex details
+#### Install With Codex details
 
 These details are written for Codex to follow. If you want to run the commands yourself, use Manual Install below.
 
@@ -39,7 +51,7 @@ Planban installs as a Git-backed Codex plugin marketplace. Codex should:
 8. Open the interactive Planban tutorial in the Codex in-app browser.
 9. Ask whether to set up Planban for one of the user's local projects.
 
-## Manual Install
+#### Manual Install
 
 Use this path only if you prefer to install without asking Codex to perform the setup.
 
@@ -95,6 +107,50 @@ codex plugin marketplace add "$PWD"
 codex plugin add planban@planban
 node plugins/planban/scripts/launch-planban.mjs --tutorial
 ```
+
+### Install With Claude Code
+
+Ask Claude Code:
+
+```text
+Install Planban from piercekearns/planban. Follow the Install With Claude Code details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the browser pane, then ask whether I want to set up Planban for a local project.
+```
+
+#### Install With Claude Code details
+
+Planban installs as a Claude Code plugin marketplace. Node.js `>=22.12.0` and npm must be available. Then:
+
+```bash
+claude plugin marketplace add piercekearns/planban
+PLANBAN_ROOT="$HOME/.claude/plugins/marketplaces/planban"
+cd "$PLANBAN_ROOT"
+npm install
+claude plugin install planban@planban
+claude mcp list
+node plugins/planban/scripts/launch-planban.mjs --tutorial
+```
+
+`claude mcp list` should show `plugin:planban:planban` as connected. Start a new Claude Code session, then type `/planban:pb` in a project to open its board, or `/planban:planban-tutorial` for the tour. Claude Code opens the board in its browser pane when the desktop app provides one, and always replies with the clickable board URL.
+
+Run `npm install` in the marketplace root before the first session. The plugin can install missing dependencies on first launch, but Claude Code allows MCP servers only a short startup window, so a slow network can make the first connection fail until dependencies are present.
+
+Local clone fallback:
+
+```bash
+git clone https://github.com/piercekearns/planban.git
+cd planban
+npm install
+claude plugin marketplace add "$PWD"
+claude plugin install planban@planban
+```
+
+Updates: `claude plugin marketplace update planban` then `claude plugin update planban@planban`, and run `npm install` in the marketplace root again when a release changes dependencies.
+
+Claude Code copies the plugin's skills, hooks, and scripts into its plugin cache at install time, while the Planban runtime itself resolves to the marketplace checkout. `claude plugin update` refreshes that cache only when the plugin version changes, so when developing Planban from a local clone, run `claude plugin uninstall planban@planban` then `claude plugin install planban@planban` after changing anything under `plugins/planban/`, then start a new session; an idle session keeps its plugin server process alive and will not see the change until it restarts.
+
+### Other hosts
+
+Any host that can run a local stdio MCP server can use Planban's tools without slash commands. Clone the repository, run `npm install`, and point the host's MCP configuration at `node <checkout>/plugins/planban/scripts/start-planban-mcp.mjs` with the environment variable `PLANBAN_REPO_ROOT=<checkout>`. The agent then gets the same tools and the same clickable board URLs; opening the board beside the session depends on what the host offers.
 
 ## First Run
 

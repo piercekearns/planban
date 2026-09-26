@@ -1,6 +1,6 @@
 ---
 name: planban-tutorial
-description: Open the interactive Planban tutorial in Codex. Use when the user wants onboarding, first-run guidance, a tour, help learning Planban, or to reopen the tutorial.
+description: Open the interactive Planban tutorial in the host's in-app browser. Use when the user wants onboarding, first-run guidance, a tour, help learning Planban, or to reopen the tutorial.
 ---
 
 # Planban Tutorial
@@ -10,6 +10,32 @@ Open the interactive Planban tutorial quickly.
 After resolving the tutorial URL, every user-facing confirmation must include the exact verified URL as a clickable Markdown link, even when in-app browser presentation succeeds. Never reply only that the tutorial opened.
 
 ## Behavior
+
+1. Resolve the tutorial URL with the helper script:
+
+   ```bash
+   node plugins/planban/scripts/launch-planban.mjs --tutorial
+   ```
+
+   Outside a Planban source checkout, run `scripts/launch-planban.mjs` from the plugin root (two directories above this skill's folder). The script creates or reuses the local Planban Demo board, starts the local app if needed, and prints a URL like:
+
+   ```text
+   http://127.0.0.1:4317/tutorial?mode=first-run
+   ```
+
+2. Make one bounded in-app presentation attempt through the adapter for this host under **Host adapters**. Hosts without an adapter skip this step.
+3. Reply with the clickable tutorial URL in every outcome:
+
+   - Browser verified: `Planban tutorial is open: [Open the tutorial](URL)`
+   - Browser unavailable, failed, or not attempted: `Planban tutorial is running: [Open the tutorial](URL)` and say briefly that automatic in-app opening was unavailable.
+
+Keep the response short. This command is for getting the user into the product tour, not explaining every Planban concept in chat.
+
+## Host adapters
+
+Use only the subsection for the host you are running in.
+
+### Codex desktop
 
 Use the Codex in-app browser when available. If the Browser plugin is available, load its current `browser:control-in-app-browser` skill and navigate to the tutorial URL.
 
@@ -35,23 +61,18 @@ Some Browser APIs expose tab snapshots from `tabs.list()` and full tab handles f
 `tabs.get(id)`. Do not assume a listed tab has navigation methods. Prefer `tab.goto()`
 on a full tab handle, then verify `await tab.url()` matches the tutorial URL.
 
-Prefer the helper script:
-
-```bash
-node plugins/planban/scripts/launch-planban.mjs --tutorial
-```
-
-The script creates or reuses the local Planban Demo board, starts the local app if needed, and prints a URL like:
-
-```text
-http://127.0.0.1:4317/tutorial?mode=first-run
-```
-
 Open that URL in the Codex in-app browser, not an external browser, unless the in-app browser is unavailable.
 
-Do not say the tutorial is open until the in-app browser URL check succeeds. In both outcomes, include the clickable tutorial URL:
+Do not say the tutorial is open until the in-app browser URL check succeeds.
 
-- Browser verified: `Planban tutorial is open: [Open the tutorial](URL)`
-- Browser unavailable or failed: `Planban tutorial is running: [Open the tutorial](URL)` and say briefly that automatic in-app opening was unavailable.
+### Claude Code desktop
 
-Keep the response short. This command is for getting the user into the product tour, not explaining every Planban concept in chat.
+Open the tutorial URL in the built-in browser pane with the pane's navigate tool (currently `mcp__Claude_Browser__navigate` with `{ "url": "<tutorial URL>" }`). Tool names can change between app versions, so match on that capability.
+
+- Make one attempt. If the tool is listed as deferred, load it with a single tool-search call first; search no further.
+- If no such tool is in the session, or the call errors, skip presentation and return the link with one short reason.
+- Keep the attempt inside the pane: the OS `open` command and external browsers are not first attempts, and Computer Use is out of scope.
+
+### Other hosts
+
+Make no presentation attempt. Return the link.

@@ -1,0 +1,16 @@
+{
+  "description": "Orient the session when the current project tracks its work in Planban.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/claude-session-context.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolvePlanbanRuntime } from "./runtime-root.mjs";
+import { planbanProjectDir } from "./project-dir.mjs";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { openUrlInCodexBrowser } from "./codex-browser-adapter.mjs";
@@ -137,7 +138,7 @@ export async function verifiedWebSurface(url, timeoutMs = 1200) {
 
 function repoIdFromCwd(cwd) {
   try {
-    const manifest = JSON.parse(readFileSync(resolve(cwd, ".planban/project.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(resolve(planbanProjectDir(cwd), ".planban/project.json"), "utf8"));
     return typeof manifest.repoId === "string" && manifest.repoId.trim() ? manifest.repoId.trim() : null;
   } catch {
     return null;

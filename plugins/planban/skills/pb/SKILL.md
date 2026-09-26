@@ -1,11 +1,11 @@
 ---
 name: pb
-description: Fast Planban opener. Use when the user invokes pb, /pb, asks to quickly open Planban, or wants the best matching Planban board visible in Codex.
+description: Fast Planban opener. Use when the user invokes pb, /pb, asks to quickly open Planban, or wants the best matching Planban board visible in the host's in-app browser.
 ---
 
 # PB
 
-Resolve the best matching Planban board immediately and open it in the Codex in-app browser when that optional presentation capability is available.
+Resolve the best matching Planban board immediately, show it in the host's in-app browser when the host adapter below supports that, and return the verified link.
 
 ## Non-negotiable response contract
 
@@ -14,10 +14,38 @@ After any successful board URL resolution, the user-facing reply **must include 
 Critical path for a plain `/pb` request:
 
 1. Do not explain, inspect docs, read card state, or load Browser docs first.
-2. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover and verify the board URL.
-3. Treat `serviceReady: true` and `urlVerified: true` as a successful launch. Preserve its URL before browser work.
-4. Use the browser-only opener below once to make that URL visible in the Codex in-app browser.
-5. Reply with the preserved clickable verified URL whether browser presentation succeeds or fails. If browser setup, visibility, tab creation, navigation, or verification is unavailable or fails, stop browser work and add at most one short degradation reason. The board remains successfully launched.
+2. Call the Planban MCP tool whose name ends in `planban_launch_board` for the current `cwd` to start/discover and verify the board URL. Treat `serviceReady: true` and `urlVerified: true` as a successful launch. Preserve its URL (also carried in `userReply.markdown`) before browser work.
+3. Make one bounded in-app presentation attempt through the adapter for this host under **Host adapters**. Hosts without an adapter skip this step.
+4. Reply with the preserved clickable verified URL whether browser presentation succeeds, fails, or is skipped. If browser setup, visibility, tab creation, navigation, or verification is unavailable or fails, stop browser work and add at most one short degradation reason. The board remains successfully launched.
+
+Use the current workspace path for `cwd`.
+
+If no `planban_launch_board` tool is callable, use the host adapter's fallbacks. A host without fallbacks runs `node <plugin-root>/scripts/launch-planban.mjs --cwd /path/to/repo`, where `<plugin-root>` is two directories above this skill's folder, and uses the URL it prints.
+
+Expected URL resolution is handled by `planban_launch_board` or the bounded fallback launcher:
+
+- current repo board if `.planban/project.json` maps to a registered board
+- exactly one board if only one exists
+- otherwise `/boards`
+
+After `/pb` opens a board, treat near-term ambiguous follow-ups like "work on this",
+"do the next thing", or "start this card" as likely Planban-related. Load the broader
+Planban protocol only then, before reading or mutating roadmap/card state.
+
+## Response
+
+Every successful response includes the exact verified URL:
+
+- Browser opened: `Planban is open: [Open the verified board](URL)`
+- Browser unavailable, failed, or not attempted: `Planban is running: [Open the verified board](URL)` plus, at most, one short browser-degradation reason from the structured diagnostics.
+
+Do not replace either response with an unlinked statement such as “Planban is open” or “Board opened.”
+
+## Host adapters
+
+Use only the subsection for the host you are running in. Each adapter makes at most one presentation attempt and never turns a presentation failure into a launch failure.
+
+### Codex desktop
 
 Browser opener, preferred in Codex Desktop after `planban_launch_board` returns a URL:
 
@@ -65,8 +93,6 @@ The opener is an optional presentation adapter. It returns `browserOpened: false
 verified `url`, and a structured `diagnostics` entry when browser presentation
 degrades; do not turn that into a Planban launch failure.
 
-Use the current workspace path for `cwd`.
-
 If the `node_repl` `js` tool is not callable, make at most one tool-discovery call for
 `node_repl js execute JavaScript`, then run the browser opener. Do not call `js_reset`,
 `js_add_node_module_dir`, Browser docs, or broad Planban context on the open path.
@@ -86,21 +112,14 @@ Fallbacks:
 3. Otherwise run `node plugins/planban/scripts/launch-planban.mjs --cwd /path/to/repo` to resolve/start the board, then attempt the single browser opener above if `node_repl` is available.
 4. Always return the clickable verified URL; use `browserOpened` only to choose the short success or degradation wording.
 
-Expected URL resolution is handled by `planban_launch_board` or the bounded fallback launcher:
+### Claude Code desktop
 
-- current repo board if `.planban/project.json` maps to a registered board
-- exactly one board if only one exists
-- otherwise `/boards`
+Open the verified URL in the built-in browser pane with the pane's navigate tool (currently `mcp__Claude_Browser__navigate` with `{ "url": "<verified URL>" }`). Tool names can change between app versions, so match on that capability.
 
-After `/pb` opens a board, treat near-term ambiguous follow-ups like "work on this",
-"do the next thing", or "start this card" as likely Planban-related. Load the broader
-Planban protocol only then, before reading or mutating roadmap/card state.
+- Make one attempt. If the tool is listed as deferred, load it with a single tool-search call first; search no further.
+- If no such tool is in the session, or the call errors, skip presentation and return the link with one short reason.
+- Keep the attempt inside the pane: the OS `open` command and external browsers are not first attempts, and Computer Use is out of scope.
 
-## Response
+### Other hosts
 
-Every successful response includes the exact verified URL:
-
-- Browser opened: `Planban is open: [Open the verified board](URL)`
-- Browser unavailable or failed: `Planban is running: [Open the verified board](URL)` plus, at most, one short browser-degradation reason from the structured diagnostics.
-
-Do not replace either response with an unlinked statement such as “Planban is open” or “Board opened.”
+Make no presentation attempt. Return the link.
