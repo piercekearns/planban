@@ -27,8 +27,19 @@ test("generated agent context invokes the installed policy without copying it", 
     planningRoot: "/tmp/planban/repos/example",
     roadmapPath: "/tmp/planban/repos/example/roadmap.json",
     manifestPath: "/tmp/example/.planban/project.json",
+    repoId: "example",
   });
 
   assert.match(context, /installed Planban protocol and Planban house style/u);
   assert.doesNotMatch(context, /Information locations and ownership/u);
+});
+
+test("generated agent context falls back to the planning root name for the Board URL", () => {
+  const context = buildAgentContext({
+    planningRoot: "/tmp/planban/repos/fallback-board",
+    roadmapPath: "/tmp/planban/repos/fallback-board/roadmap.json",
+    manifestPath: "/tmp/fallback/.planban/project.json",
+  });
+
+  assert.match(context, /http:\/\/127\.0\.0\.1:4317\/boards\/fallback-board/u);
 });

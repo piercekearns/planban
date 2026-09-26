@@ -7,17 +7,48 @@ function readJson(path) {
 }
 
 function runtimeAt(root) {
-  return readJson(join(root, "package.json"))?.name === "planban"
+  return typeof root === "string"
+    && readJson(join(root, "package.json"))?.name === "planban"
     && ["bin/planban.mjs", "src/cli.ts", "src/core/storage.ts"].every((path) => existsSync(join(root, path)));
 }
 
 function configuredPath(value, base) {
-  if (typeof value !== "string" || !value.trim() || value.includes("__PLANBAN_REPO_ROOT__")) return null;
+  if (typeof value !== "string" || !value.trim() || value.includes("__PLANBAN_REPO_ROOT__") || value.includes("${")) return null;
   return isAbsolute(value) ? resolve(value) : resolve(base, value);
 }
 
 function canonicalPath(path) {
   try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+// Split an installed plugin cache path into its host marketplace and plugin names.
+// Both Codex and Claude Code copy installed plugins to <home>/plugins/cache/<marketplace>/<plugin>/<version>.
+function installedCacheParts(hostHome, pluginRoot) {
+  const parts = relative(canonicalPath(join(hostHome, "plugins/cache")), canonicalPath(pluginRoot)).split(sep);
+  if (parts.length !== 3 || parts[0] === ".." || parts[1] !== "planban") return null;
+  return { marketplace: parts[0], plugin: parts[1], version: parts[2] };
+}
+
+function codexMarketplaceRuntime(env, pluginRoot) {
+  const codexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homedir(), ".codex");
+  if (!installedCacheParts(codexHome, pluginRoot)) return null;
+  const marketplaceRoot = join(codexHome, ".tmp/marketplaces/planban");
+  return runtimeAt(marketplaceRoot) ? marketplaceRoot : null;
+}
+
+// Claude Code records each marketplace's checkout (or, for directory sources, the source directory itself)
+// in plugins/known_marketplaces.json. Fall back to the conventional clone location when that registry is missing.
+function claudeMarketplaceRuntime(env, pluginRoot) {
+  const claudeHome = env.CLAUDE_CONFIG_DIR ? resolve(env.CLAUDE_CONFIG_DIR) : join(homedir(), ".claude");
+  const cache = installedCacheParts(claudeHome, pluginRoot);
+  if (!cache) return null;
+  const registered = readJson(join(claudeHome, "plugins/known_marketplaces.json"))?.[cache.marketplace];
+  const candidates = [
+    configuredPath(registered?.installLocation, claudeHome),
+    configuredPath(registered?.source?.path, claudeHome),
+    join(claudeHome, "plugins/marketplaces", cache.marketplace),
+  ];
+  return candidates.find((candidate) => runtimeAt(candidate)) ?? null;
 }
 
 // Keep installed, configured, and source entry points on the same runtime.
@@ -38,10 +69,7 @@ export function resolvePlanbanRuntime(pluginRoot, env = process.env) {
   const parentRoot = resolve(pluginRoot, "../..");
   if (runtimeAt(parentRoot)) return parentRoot;
 
-  const codexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homedir(), ".codex");
-  const cacheParts = relative(canonicalPath(join(codexHome, "plugins/cache")), canonicalPath(pluginRoot)).split(sep);
-  const installedCache = cacheParts.length === 3 && cacheParts[0] !== ".." && cacheParts[1] === "planban";
-  const marketplaceRoot = join(codexHome, ".tmp/marketplaces/planban");
-  if (installedCache && runtimeAt(marketplaceRoot)) return marketplaceRoot;
-  throw new Error("Planban runtime not found. Reinstall the Planban marketplace, or run scripts/configure-local-plugin.mjs from a complete Planban checkout and reinstall the plugin.");
+  const marketplaceRuntime = codexMarketplaceRuntime(env, pluginRoot) ?? claudeMarketplaceRuntime(env, pluginRoot);
+  if (marketplaceRuntime) return marketplaceRuntime;
+  throw new Error("Planban runtime not found. Reinstall the Planban marketplace in your host (codex plugin marketplace add / claude plugin marketplace add), or run scripts/configure-local-plugin.mjs from a complete Planban checkout and reinstall the plugin.");
 }

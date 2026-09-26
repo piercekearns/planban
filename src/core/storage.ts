@@ -25,7 +25,7 @@ import {
   roadmapPath,
 } from "./paths";
 import { appendLineDurably, atomicWriteFile, withBoardWriteLock } from "./persistence";
-import { buildAgentContext } from "./protocol";
+import { buildAgentContext, PLANBAN_INSTALL_URL } from "./protocol";
 import { registerBoardFromState } from "./registry";
 import { manifestSchema, roadmapSchema } from "./schema";
 import type {
@@ -291,6 +291,7 @@ Canonical live planning state for this device is not branch-local.
 Read \`.planban/project.json\` and \`.planban/agent-context.md\` before making roadmap or plan updates.
 If the user asks to update the roadmap, follow the Planban protocol described there.
 If an agent starts implementation work on a roadmap item, move it to In Progress if needed; leave completed agent work In Progress with a review/testing next action until the user explicitly asks to mark it Complete or confirms completion.
+If Planban tools (names ending in \`planban_<operation>\`) are unavailable in the current host, tell the user once that Planban is not installed for this host, link ${PLANBAN_INSTALL_URL}, then continue.
 
 ${AGENTS_BLOCK_END}`;
 }
@@ -338,6 +339,7 @@ export async function initializeProject(input: {
       planningRoot,
       roadmapPath: liveRoadmapPath,
       manifestPath: manifestPath(cwd),
+      repoId,
     }),
   );
 

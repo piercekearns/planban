@@ -1,0 +1,18 @@
+{
+  "name": "planban",
+  "owner": {
+    "name": "Planban"
+  },
+  "metadata": {
+    "description": "Local, agent-native Kanban boards for agent-led planning.",
+    "version": "1.1.5"
+  },
+  "plugins": [
+    {
+      "name": "planban",
+      "source": "./plugins/planban",
+      "description": "Open local Planban boards beside your session and keep roadmap items current with the Planban protocol.",
+      "category": "productivity"
+    }
+  ]
+}

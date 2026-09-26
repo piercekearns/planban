@@ -1,0 +1,26 @@
+{
+  "name": "planban",
+  "version": "1.1.5",
+  "description": "Local Planban roadmap boards for agent-led planning: open the board beside your session, read card specs and plans, and update roadmap items with the Planban status protocol.",
+  "author": {
+    "name": "Planban"
+  },
+  "homepage": "https://github.com/piercekearns/planban",
+  "repository": "https://github.com/piercekearns/planban",
+  "license": "MIT",
+  "keywords": [
+    "planning",
+    "kanban",
+    "roadmap",
+    "local-first",
+    "mcp"
+  ],
+  "mcpServers": {
+    "planban": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/start-planban-mcp.mjs"
+      ]
+    }
+  }
+}

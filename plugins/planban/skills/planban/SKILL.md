@@ -1,6 +1,6 @@
 ---
 name: planban
-description: Use when the user invokes /planban, asks to open Planban, mentions a Planban board, roadmap item, card, spec, plan, docs, or wants Codex to work with Planban state.
+description: Use when the user invokes /planban, asks to open Planban, mentions a Planban board, roadmap item, card, spec, plan, docs, or wants the agent to work with Planban state.
 ---
 
 # Planban
@@ -10,8 +10,8 @@ rough edge, or confusing behavior, use `planban-feedback` instead of opening the
 board by default. Let that skill reconstruct, investigate, and route the report.
 
 For a plain open request (`/planban`, "open Planban", or selecting Planban from the
-slash menu), behave like `/pb`: open the best matching Planban board in the Codex
-in-app browser before doing anything else.
+slash menu), behave like `/pb`: open the best matching Planban board in the host's
+in-app browser, when the host adapter supports one, before doing anything else.
 
 ## Non-negotiable response contract
 
@@ -22,11 +22,60 @@ Critical open path:
 1. No pre-open explanation.
 2. Do not read linked docs, inspect board state, load Browser docs, or load the full
    Planban protocol before the board is visible.
-3. Use Planban MCP `planban_launch_board` for the current `cwd` to start/discover and
-   verify the board URL. A result with `serviceReady: true` and `urlVerified: true` is
-   the authoritative successful launch; preserve its URL before browser work.
-4. Open the returned URL with the installed browser-only adapter in one Node REPL `js`
-   call, unless the Codex browser bridge itself is unavailable:
+3. Call the Planban MCP tool whose name ends in `planban_launch_board` for the current
+   `cwd` to start/discover and verify the board URL. A result with
+   `serviceReady: true` and `urlVerified: true` is the authoritative successful
+   launch; preserve its URL (also carried in `userReply.markdown`) before browser work.
+4. Make one bounded in-app presentation attempt through the adapter for this host
+   under **Host adapters**. Hosts without an adapter skip this step.
+5. Reply with the preserved clickable verified URL whether presentation succeeds,
+   fails, or is skipped.
+
+If no `planban_launch_board` tool is callable, use the host adapter's fallbacks. A
+host without fallbacks runs `node <plugin-root>/scripts/launch-planban.mjs --cwd /path/to/repo`,
+where `<plugin-root>` is two directories above this skill's folder, and uses the URL
+it prints.
+
+Keep the response short, but always include the exact verified URL:
+
+- Browser opened: `Planban is open: [Open the verified board](URL)`
+- Browser unavailable, failed, or not attempted: `Planban is running: [Open the verified board](URL)` plus at most one short reason from the structured browser diagnostics.
+
+Do not replace either response with an unlinked statement such as “Planban is open” or “Board opened.”
+
+## Broader Planban Work
+
+Opening a board is not a roadmap mutation.
+
+For roadmap, card, spec, plan, docs, status, creation, review, completion, or other
+Planban state work, read `references/planban-protocol.md` before changing Planban
+state.
+
+After a successful user-requested Planban creation or material mutation, follow the
+shared protocol's post-mutation handoff. Resolve the verified Board URL once after
+the complete logical mutation sequence: take it from the last mutation result's
+`userReply`, and call `planban_launch_board` once only if that result has
+`boardUrlVerified: false`. Make one bounded in-app presentation attempt through the
+host adapter unless the user requested headless behavior, and include the
+clickable verified URL in the final response. Do not reopen the Board after every
+individual write in a multi-step mutation.
+
+After `/planban` or `/pb` opens a board in the current thread, treat near-term
+ambiguous follow-ups like "work on this", "do the next thing", "start this card", or
+"continue from here" as likely Planban-related when the in-app browser is showing a
+Planban board or card. Load the broader protocol then, before reading or mutating
+roadmap/card state. If the target card is unclear, ask a short clarifying question.
+
+## Host adapters
+
+Use only the subsection for the host you are running in. Each adapter makes at most
+one presentation attempt and never turns a presentation failure into a launch or
+mutation failure.
+
+### Codex desktop
+
+Open the returned URL with the installed browser-only adapter in one Node REPL `js`
+call, unless the Codex browser bridge itself is unavailable:
 
 ```js
 {
@@ -96,30 +145,19 @@ Fallbacks:
    `node_repl` is available.
 4. Always return the clickable verified URL; use `browserOpened` only to choose the short success or degradation wording.
 
-Keep the response short, but always include the exact verified URL:
+### Claude Code desktop
 
-- Browser opened: `Planban is open: [Open the verified board](URL)`
-- Browser unavailable or failed: `Planban is running: [Open the verified board](URL)` plus at most one short reason from the structured browser diagnostics.
+Open the verified URL in the built-in browser pane with the pane's navigate tool
+(currently `mcp__Claude_Browser__navigate` with `{ "url": "<verified URL>" }`). Tool
+names can change between app versions, so match on that capability.
 
-Do not replace either response with an unlinked statement such as “Planban is open” or “Board opened.”
+- Make one attempt. If the tool is listed as deferred, load it with a single
+  tool-search call first; search no further.
+- If no such tool is in the session, or the call errors, skip presentation and return
+  the link with one short reason.
+- Keep the attempt inside the pane: the OS `open` command and external browsers are
+  not first attempts, and Computer Use is out of scope.
 
-## Broader Planban Work
+### Other hosts
 
-Opening a board is not a roadmap mutation.
-
-For roadmap, card, spec, plan, docs, status, creation, review, completion, or other
-Planban state work, read `references/planban-protocol.md` before changing Planban
-state.
-
-After a successful user-requested Planban creation or material mutation, follow the
-shared protocol's post-mutation handoff. Resolve the verified Board URL once after
-the complete logical mutation sequence, make one bounded in-app presentation
-attempt where supported unless the user requested headless behavior, and include
-the clickable verified URL in the final response. Do not reopen the Board after
-every individual write in a multi-step mutation.
-
-After `/planban` or `/pb` opens a board in the current thread, treat near-term
-ambiguous follow-ups like "work on this", "do the next thing", "start this card", or
-"continue from here" as likely Planban-related when the in-app browser is showing a
-Planban board or card. Load the broader protocol then, before reading or mutating
-roadmap/card state. If the target card is unclear, ask a short clarifying question.
+Make no presentation attempt. Return the link.

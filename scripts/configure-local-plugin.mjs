@@ -23,8 +23,14 @@ await writeFile(mcpPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 
 process.stdout.write(`Configured Planban plugin MCP runtime for ${repoRoot}
 
-Next:
+Next, in Codex:
   codex plugin marketplace add "${repoRoot}"
   codex plugin add planban@planban
+
+Or in Claude Code:
+  claude plugin marketplace add "${repoRoot}"
+  claude plugin install planban@planban
+
+Then:
   node plugins/planban/scripts/launch-planban.mjs --tutorial
 `);

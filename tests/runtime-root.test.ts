@@ -52,3 +52,46 @@ test("marketplace recovery requires an installed cache and a complete runtime", 
     assert.throws(() => resolvePlanbanRuntime(cache, { ...env, PLANBAN_REPO_ROOT: join(root, "missing") }), /PLANBAN_REPO_ROOT/u);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("Claude Code installs resolve the marketplace runtime through the known-marketplaces registry or the conventional clone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-runtime-"));
+  try {
+    const home = join(root, "claude");
+    const cache = join(home, "plugins/cache/planban/planban/1.1.5");
+    await mkdir(cache, { recursive: true });
+    const env = { CLAUDE_CONFIG_DIR: home, CODEX_HOME: join(root, "codex") };
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+
+    const clone = await runtime(join(home, "plugins/marketplaces/planban"));
+    assert.equal(resolvePlanbanRuntime(cache, env), clone);
+
+    const directorySource = await runtime(join(root, "source checkout"));
+    await mkdir(join(home, "plugins"), { recursive: true });
+    await writeFile(
+      join(home, "plugins/known_marketplaces.json"),
+      JSON.stringify({ planban: { source: { source: "directory", path: directorySource }, installLocation: directorySource } }),
+    );
+    assert.equal(resolvePlanbanRuntime(cache, env), directorySource);
+
+    const otherMarketplace = join(home, "plugins/cache/other/planban/1.1.5");
+    await mkdir(otherMarketplace, { recursive: true });
+    assert.throws(() => resolvePlanbanRuntime(otherMarketplace, env), /runtime not found/u);
+    await writeFile(
+      join(home, "plugins/known_marketplaces.json"),
+      JSON.stringify({ other: { source: { source: "github", repo: "x/y" }, installLocation: join(home, "plugins/marketplaces/other") } }),
+    );
+    await runtime(join(home, "plugins/marketplaces/other"));
+    assert.equal(resolvePlanbanRuntime(otherMarketplace, env), join(home, "plugins/marketplaces/other"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("unexpanded host template variables in .mcp.json are ignored", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-runtime-"));
+  try {
+    const local = await runtime(join(root, "checkout"));
+    const plugin = join(local, "plugins/planban");
+    await mkdir(plugin, { recursive: true });
+    await writeFile(join(plugin, ".mcp.json"), JSON.stringify({ mcpServers: { planban: { cwd: "${CLAUDE_PLUGIN_ROOT}", env: { PLANBAN_REPO_ROOT: "${CLAUDE_PLUGIN_ROOT}/runtime" } } } }));
+    assert.equal(resolvePlanbanRuntime(plugin, { CODEX_HOME: join(root, "codex"), CLAUDE_CONFIG_DIR: join(root, "claude") }), local);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

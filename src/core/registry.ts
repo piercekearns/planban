@@ -273,6 +273,7 @@ export async function duplicateBoard(input: {
       await atomicWriteFile(
         agentContextPath(cwd),
         buildAgentContext({
+          repoId,
           planningRoot,
           roadmapPath: liveRoadmapPath,
           manifestPath: manifestPath(cwd),

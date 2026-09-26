@@ -5,7 +5,7 @@ import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolvePlanbanRuntime } from "../scripts/runtime-root.mjs";
-import { startPlanbanMcpActivity } from "./activity.mjs";
+import { planbanActivityBaseUrl, startPlanbanMcpActivity } from "./activity.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,6 +26,18 @@ const { ensureDemoBoard } = demoModule;
 const { PLANBAN_MCP_VERSION } = versionModule;
 
 const SERVER_NAME = "Planban MCP";
+const PLANBAN_MCP_INSTRUCTIONS = [
+  "Prefer these Planban tools for all Planban board, card, and document reads and writes.",
+  "Pass cwd as the absolute repository path, or repoId for a registered board.",
+  "Before creating or materially editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style when installed.",
+  "Serialize writes: one mutation at a time per board.",
+  "Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review.",
+  "move_card is the canonical placement operation.",
+  "After a successful open, or after the complete logical mutation batch, include the exact clickable Board URL from the result's userReply.markdown in the final reply.",
+  "If the host has an in-app browser, make at most one bounded attempt to show that URL there; never reopen the board after every write.",
+  "If boardUrlVerified is false, call planban_launch_board once to verify the URL before presenting it.",
+  "Board administration, migration/recovery, and the legacy set_card_parent alias are advertised only through explicit profiles.",
+].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
@@ -168,6 +180,67 @@ function summarizeBoard(state) {
     columns: state.roadmap.columns,
     roadmapItems: state.roadmap.roadmapItems,
   };
+}
+
+function compactBoardSummary(state) {
+  const { roadmapItems, ...summary } = summarizeBoard(state);
+  return { ...summary, itemCount: roadmapItems.length };
+}
+
+const DEFAULT_BOARD_ORIGIN = "http://127.0.0.1:4317";
+const BOARD_URL_PROBE_TIMEOUT_MS = 600;
+
+function boardOrigin() {
+  try {
+    return planbanActivityBaseUrl(process.env);
+  } catch {
+    return DEFAULT_BOARD_ORIGIN;
+  }
+}
+
+async function probeBoardHealth(origin, repoId, timeoutMs = BOARD_URL_PROBE_TIMEOUT_MS) {
+  const fetchImpl = globalThis.fetch;
+  if (typeof fetchImpl !== "function") return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const response = await fetchImpl(`${origin}/api/boards/${encodeURIComponent(repoId)}/health`, { signal: controller.signal });
+    if (!response?.ok) {
+      await response?.body?.cancel?.().catch(() => {});
+      return false;
+    }
+    const payload = await response.json().catch(() => null);
+    return payload?.ok === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Best-effort Board URL handoff for read and mutation results. Never starts the
+// service and never throws; an unverified URL points agents at planban_launch_board.
+async function boardHandoff(repoId) {
+  const origin = boardOrigin();
+  const url = `${origin}/boards/${encodeURIComponent(repoId)}`;
+  const verified = await probeBoardHealth(origin, repoId).catch(() => false);
+  return {
+    boardUrl: url,
+    boardUrlVerified: verified,
+    userReply: verified
+      ? { urlRequired: true, url, markdown: `[Open the verified board](${url})` }
+      : { urlRequired: true, url, markdown: `[Open the board](${url})`, verifyWith: "planban_launch_board" },
+  };
+}
+
+async function boardResult(text, repoId, structuredContent) {
+  if (typeof repoId !== "string" || !repoId) return textResult(text, structuredContent);
+  const handoff = await boardHandoff(repoId);
+  const line = handoff.boardUrlVerified
+    ? `Board URL: ${handoff.boardUrl}`
+    : `Board URL: ${handoff.boardUrl} - verify with planban_launch_board before presenting.`;
+  return textResult(`${text}\n${line}`, { ...structuredContent, ...handoff });
 }
 
 function findCard(state, cardId) {
@@ -599,7 +672,7 @@ const tools = [
     name: "planban_launch_board",
     title: "Launch Planban Board",
     description:
-      "Start or discover the local Planban web app and return the verified board URL. Pass demo true to create/reuse the Planban Demo board. Use the Browser plugin/in-app browser to open the returned URL when the user wants the board visible. Every successful user-facing confirmation must still include the exact clickable URL, even when browser opening succeeds.",
+      "Start or discover the local Planban web app and return the verified board URL. Pass demo true to create/reuse the Planban Demo board. Open the returned URL in the host's in-app browser when one is available and the user wants the board visible. Every successful user-facing confirmation must still include the exact clickable URL, even when browser opening succeeds.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       demo: { type: "boolean", description: "Create or reuse the Planban Demo board instead of launching a specific repo board." },
@@ -644,8 +717,9 @@ function advertisedTools() {
 async function callToolImpl(name, args) {
   if (name === "planban_status") {
     const status = await getStatus(await cwdFromArgs(args));
-    return textResult(
+    return await boardResult(
       status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`,
+      status.initialized ? status.repoId : null,
       status,
     );
   }
@@ -690,7 +764,7 @@ async function callToolImpl(name, args) {
   if (name === "planban_get_board") {
     const cwd = await cwdFromArgs(args);
     const state = await loadState(cwd);
-    return textResult(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, summarizeBoard(state));
+    return await boardResult(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, state.manifest.repoId, summarizeBoard(state));
   }
 
   if (name === "planban_query_cards") {
@@ -750,7 +824,7 @@ async function callToolImpl(name, args) {
       }),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
     });
-    return textResult(`Reconstructed ${groups.length} Group mappings.`, { ...summarizeBoard(result), cards: result.cards });
+    return await boardResult(`Reconstructed ${groups.length} Group mappings.`, result.manifest.repoId, { ...compactBoardSummary(result), cards: result.cards });
   }
 
   if (name === "planban_read_doc") {
@@ -784,8 +858,8 @@ async function callToolImpl(name, args) {
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
     });
-    return textResult(`Created Planban card ${state.createdCard.id}.`, {
-      ...summarizeBoard(state),
+    return await boardResult(`Created Planban card ${state.createdCard.id}.`, state.manifest.repoId, {
+      ...compactBoardSummary(state),
       card: state.createdCard,
     });
   }
@@ -799,7 +873,7 @@ async function callToolImpl(name, args) {
       parentId: optionalString(args.parentId, "parentId"),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
     });
-    return textResult(`Created ${state.createdCards.length} Planban cards.`, { ...summarizeBoard(state), cards: state.createdCards });
+    return await boardResult(`Created ${state.createdCards.length} Planban cards.`, state.manifest.repoId, { ...compactBoardSummary(state), cards: state.createdCards });
   }
 
   if (name === "planban_create_group" || name === "planban_create_programme") {
@@ -819,8 +893,8 @@ async function callToolImpl(name, args) {
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
     });
-    return textResult(`Created Group ${state.createdGroup.id} with ${itemIds.length} Items.`, {
-      ...summarizeBoard(state),
+    return await boardResult(`Created Group ${state.createdGroup.id} with ${itemIds.length} Items.`, state.manifest.repoId, {
+      ...compactBoardSummary(state),
       group: state.createdGroup,
     });
   }
@@ -845,8 +919,8 @@ async function callToolImpl(name, args) {
       actor: "agent",
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
-    return textResult(`Moved Planban card ${card.id} to ${card.status}.`, {
-      ...summarizeBoard(state),
+    return await boardResult(`Moved Planban card ${card.id} to ${card.status}.`, state.manifest.repoId, {
+      ...compactBoardSummary(state),
       card,
     });
   }
@@ -865,8 +939,8 @@ async function callToolImpl(name, args) {
       actor: "agent",
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
-    return textResult(`Updated Planban card ${card.id}.`, {
-      ...summarizeBoard(state),
+    return await boardResult(`Updated Planban card ${card.id}.`, state.manifest.repoId, {
+      ...compactBoardSummary(state),
       card,
     });
   }
@@ -879,16 +953,17 @@ async function callToolImpl(name, args) {
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
     });
     const card = findCard(state, cardId);
-    return textResult(parentId ? `Moved ${card.id} into ${parentId}.` : `Moved ${card.id} to the main board.`, {
-      ...summarizeBoard(state), card, ancestry: cardAncestry(state.roadmap, cardId),
+    return await boardResult(parentId ? `Moved ${card.id} into ${parentId}.` : `Moved ${card.id} to the main board.`, state.manifest.repoId, {
+      ...compactBoardSummary(state), card, ancestry: cardAncestry(state.roadmap, cardId),
     });
   }
 
   if (name === "planban_write_doc") {
     const cardId = requireString(args.cardId, "cardId");
     const kind = requireDocKind(args.kind);
+    const cwd = await cwdFromArgs(args);
     const payload = await writeDoc({
-      cwd: await cwdFromArgs(args),
+      cwd,
       cardId,
       kind,
       markdown: requireText(args.markdown, "markdown"),
@@ -901,7 +976,7 @@ async function callToolImpl(name, args) {
         affectedDocs: [{ cardId, kind, path: `items/${cardId}/${kind}.md` }],
       },
     });
-    return textResult(`Wrote ${payload.kind} document for ${payload.cardId}.`, payload);
+    return await boardResult(`Wrote ${payload.kind} document for ${payload.cardId}.`, repoIdFromCwd(cwd), payload);
   }
 
   if (name === "planban_launch_board") {
@@ -940,8 +1015,7 @@ async function handleRequest(message) {
       protocolVersion: params?.protocolVersion ?? "2025-11-25",
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-      instructions:
-        "Use Planban tools for structured local roadmap, card, and document operations. Before creating or materially editing owner-facing content, follow the installed Planban protocol and Planban house style. Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review. move_card is the canonical placement operation. Board administration, migration/recovery, and the legacy set_card_parent alias are advertised only through explicit MCP profiles.",
+      instructions: PLANBAN_MCP_INSTRUCTIONS,
     });
     return;
   }

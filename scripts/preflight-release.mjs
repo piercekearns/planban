@@ -29,6 +29,8 @@ const packageJson = await readJson("package.json");
 const packageLock = await readJson("package-lock.json");
 const releaseManifest = await readJson("release/latest.json");
 const pluginManifest = await readJson("plugins/planban/.codex-plugin/plugin.json");
+const claudePluginManifest = await readJson("plugins/planban/.claude-plugin/plugin.json");
+const claudeMarketplace = await readJson(".claude-plugin/marketplace.json");
 const versionSource = await readFile(join(repoRoot, "src/core/version.ts"), "utf8");
 const workflowSources = Object.fromEntries(await Promise.all([
   ".github/workflows/ci.yml",
@@ -48,6 +50,15 @@ if (packageLock.version !== releaseManifest.version || packageLock.packages?.[""
 }
 if (pluginManifest.version !== releaseManifest.pluginVersion) {
   findings.push(`plugin manifest ${pluginManifest.version} does not match pluginVersion ${releaseManifest.pluginVersion}`);
+}
+if (claudePluginManifest.version !== releaseManifest.pluginVersion) {
+  findings.push(`Claude Code plugin manifest ${claudePluginManifest.version} does not match pluginVersion ${releaseManifest.pluginVersion}`);
+}
+if (claudeMarketplace.metadata?.version !== releaseManifest.pluginVersion) {
+  findings.push(`Claude Code marketplace version ${claudeMarketplace.metadata?.version} does not match pluginVersion ${releaseManifest.pluginVersion}`);
+}
+if (claudePluginManifest.name !== pluginManifest.name || claudeMarketplace.plugins?.[0]?.name !== pluginManifest.name) {
+  findings.push("Codex and Claude Code plugin manifests must share the plugin name");
 }
 if (releaseManifest.version !== releaseManifest.pluginVersion || releaseManifest.version !== releaseManifest.mcpVersion) {
   findings.push("release version, pluginVersion, and mcpVersion must match");
