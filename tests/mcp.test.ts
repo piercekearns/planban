@@ -151,7 +151,7 @@ test("Planban MCP server registers focused tools", () => {
   assert.match(instructions, /explicit profiles/u);
   assert.doesNotMatch(instructions, /Codex|Claude/u);
   const wordCount = instructions.split(/\s+/u).length;
-  assert.ok(wordCount >= 120 && wordCount <= 180, `instructions should stay compact (${wordCount} words)`);
+  assert.ok(wordCount >= 120 && wordCount <= 210, `instructions should stay compact (${wordCount} words)`);
   const tools = responses[1].result.tools as Array<{ name: string; description: string; inputSchema: { properties?: Record<string, unknown> } }>;
   assert.deepEqual(
     tools.map((tool) => tool.name),

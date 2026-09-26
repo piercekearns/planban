@@ -73,6 +73,7 @@ import {
   type Status,
 } from "./boardOrdering";
 import { mainBoardProjection, itemsInGroup, groupProgressSegments, groupRollup, workItemRank, type GroupRollup } from "./mainBoardProjection";
+import { buildWorkItemReference } from "./workItemReference";
 import { groupWorkspaceProjection } from "./groupWorkspaceProjection";
 import { flattenedExecutionMoveForDrop, flattenedExecutionProjection } from "./flattenedExecutionProjection";
 import {
@@ -479,18 +480,8 @@ function formatOptionalLine(label: string, value: string | number | null | undef
   return `${label}: ${value === null || value === undefined || value === "" ? "(none)" : value}`;
 }
 
-function buildWorkItemReference(state: PlanbanState, item: RoadmapItem) {
-  const kind = item.isGroup ? "Group" : "Item";
-  return [
-    `Planban ${kind}: “${item.title}”`,
-    `Board: ${state.roadmap.project.title}`,
-    `Local Board ID: ${state.manifest.repoId}`,
-    `${kind} ID: ${item.id}`,
-  ].join("\n");
-}
-
 async function copyWorkItemReference(state: PlanbanState, item: RoadmapItem) {
-  return await writeClipboardText(buildWorkItemReference(state, item));
+  return await writeClipboardText(buildWorkItemReference(state.manifest.repoId, item));
 }
 
 function getCodexThreadMeta(item: RoadmapItem) {
