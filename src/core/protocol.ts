@@ -32,7 +32,7 @@ Board URL (the port can differ; verify it through \`planban_launch_board\` befor
 
 ## Planban tools
 
-Planban is exposed as MCP tools whose names end in \`planban_<operation>\`: status, launch_board, get_board, query_cards, get_card, read_doc, create_card, create_cards, create_group, move_card, update_card, write_doc. Pass \`cwd\` as this repo's absolute path.
+Planban is exposed as MCP tools whose names end in \`planban_<operation>\`: status, launch_board, get_board, query_cards, get_card, read_doc, create_card, create_cards, create_group, move_card, update_card, write_doc. Pass \`cwd\` as this repo's absolute path. Linked git worktrees resolve to the main checkout's board automatically, so pass the worktree path when working in one.
 
 ## If Planban tools are not available in this session
 

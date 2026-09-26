@@ -45,12 +45,13 @@ test("the Claude Code session hook only orients sessions in projects that use Pl
   assert.equal(sessionStart.length, 1);
   assert.match(sessionStart[0].hooks[0].command, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/claude-session-context\.mjs/u);
   const { planbanSessionContext } = await import("../plugins/planban/scripts/claude-session-context.mjs");
-  assert.equal(planbanSessionContext({ projectDir: repoRoot }), null);
   const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const project = await mkdtemp(join(tmpdir(), "planban-hook-"));
   try {
+    await mkdir(join(project, ".git"));
+    assert.equal(planbanSessionContext({ projectDir: project }), null, "a repo without a board gets no orientation");
     await mkdir(join(project, ".planban"));
     await writeFile(join(project, ".planban/project.json"), JSON.stringify({ version: 1, repoId: "demo board", enabled: true }));
     const context = planbanSessionContext({ projectDir: project });

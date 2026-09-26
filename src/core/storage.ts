@@ -26,6 +26,7 @@ import {
 } from "./paths";
 import { appendLineDurably, atomicWriteFile, withBoardWriteLock } from "./persistence";
 import { buildAgentContext, PLANBAN_INSTALL_URL } from "./protocol";
+import { resolvePlanbanProjectDir } from "../../plugins/planban/scripts/project-dir.mjs";
 import { registerBoardFromState } from "./registry";
 import { manifestSchema, roadmapSchema } from "./schema";
 import type {
@@ -238,8 +239,12 @@ export function resolvePlanningRoot(manifest: PlanbanProjectManifest): string {
     : defaultPlanningRoot(manifest.repoId);
 }
 
+export function resolveProjectCwd(cwdInput: string): string {
+  return resolvePlanbanProjectDir(cwdInput).projectDir;
+}
+
 export async function withRoadmapWriteLock<T>(cwdInput: string, callback: () => Promise<T>): Promise<T> {
-  const cwd = resolve(cwdInput);
+  const cwd = resolveProjectCwd(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest || !manifest.enabled) {
     throw new Error(`Planban is not initialized in ${cwd}`);
@@ -254,7 +259,7 @@ export async function readManifest(cwd: string): Promise<PlanbanProjectManifest 
 }
 
 export async function loadState(cwdInput: string): Promise<PlanbanResolvedState> {
-  const cwd = resolve(cwdInput);
+  const cwd = resolveProjectCwd(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest || !manifest.enabled) {
     throw new Error(`Planban is not initialized in ${cwd}`);
@@ -1408,7 +1413,8 @@ export async function restoreDocVersion(input: {
 }
 
 export async function getStatus(cwdInput: string) {
-  const cwd = resolve(cwdInput);
+  const discovery = resolvePlanbanProjectDir(cwdInput);
+  const cwd = discovery.projectDir;
   const manifest = await readManifest(cwd);
   if (!manifest) {
     return {
@@ -1423,6 +1429,8 @@ export async function getStatus(cwdInput: string) {
   return {
     initialized: true,
     cwd,
+    requestedCwd: discovery.via === "cwd" ? undefined : discovery.requestedCwd,
+    discoveredVia: discovery.via === "cwd" ? undefined : discovery.via,
     manifestPath: manifestPath(cwd),
     agentContextPath: agentContextPath(cwd),
     planningRoot,

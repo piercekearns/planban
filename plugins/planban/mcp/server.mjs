@@ -5,6 +5,7 @@ import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolvePlanbanRuntime } from "../scripts/runtime-root.mjs";
+import { planbanProjectDir } from "../scripts/project-dir.mjs";
 import { planbanActivityBaseUrl, startPlanbanMcpActivity } from "./activity.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -251,7 +252,7 @@ function findCard(state, cardId) {
 
 function repoIdFromCwd(cwd) {
   try {
-    const manifest = JSON.parse(readFileSync(resolve(cwd, ".planban/project.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(resolve(planbanProjectDir(cwd), ".planban/project.json"), "utf8"));
     return typeof manifest.repoId === "string" && manifest.repoId.trim() ? manifest.repoId.trim() : null;
   } catch {
     return null;

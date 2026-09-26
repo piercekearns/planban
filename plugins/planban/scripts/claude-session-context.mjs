@@ -3,6 +3,7 @@
 // Output goes to stdout, which Claude Code adds as context. Never fail the session: exit 0 on any error.
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { resolvePlanbanProjectDir } from "./project-dir.mjs";
 
 function readStdinJson() {
   try {
@@ -13,7 +14,9 @@ function readStdinJson() {
   }
 }
 
-export function planbanSessionContext({ projectDir, port = 4317 }) {
+export function planbanSessionContext({ projectDir: requestedDir, port = 4317 }) {
+  const discovery = resolvePlanbanProjectDir(requestedDir);
+  const projectDir = discovery.projectDir;
   const manifestPath = join(projectDir, ".planban/project.json");
   if (!existsSync(manifestPath)) return null;
   let repoId = null;
@@ -25,8 +28,11 @@ export function planbanSessionContext({ projectDir, port = 4317 }) {
   }
   if (!repoId) return null;
   const boardUrl = `http://127.0.0.1:${port}/boards/${encodeURIComponent(repoId)}`;
+  const where = discovery.via === "worktree"
+    ? ` This session runs in a linked git worktree; the board belongs to the main checkout at ${projectDir}, and Planban resolves it automatically when you pass this worktree's path as \`cwd\`.`
+    : "";
   return [
-    `This project tracks its work in Planban (board \`${repoId}\`, usually ${boardUrl}).`,
+    `This project tracks its work in Planban (board \`${repoId}\`, usually ${boardUrl}).${where}`,
     "Read `.planban/agent-context.md` before reading or changing roadmap state, and use the Planban MCP tools (`planban_*`) with this repo's absolute path as `cwd`.",
     "After opening the board or finishing a batch of Planning changes, include the clickable verified board URL from the tool result in your reply.",
   ].join("\n");

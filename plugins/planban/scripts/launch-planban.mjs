@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolvePlanbanRuntime } from "./runtime-root.mjs";
+import { planbanProjectDir } from "./project-dir.mjs";
 import { ensureRuntimeDependencies } from "./runtime-dependencies.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -226,7 +227,7 @@ async function terminatePortListeners(port) {
 
 function repoIdFromCwd(cwd) {
   try {
-    const manifest = JSON.parse(readFileSync(resolve(cwd, ".planban/project.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(resolve(planbanProjectDir(cwd), ".planban/project.json"), "utf8"));
     return typeof manifest.repoId === "string" && manifest.repoId.trim() ? manifest.repoId.trim() : null;
   } catch {
     return null;
