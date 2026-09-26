@@ -146,7 +146,7 @@ claude plugin install planban@planban
 
 Updates: `claude plugin marketplace update planban` then `claude plugin update planban@planban`, and run `npm install` in the marketplace root again when a release changes dependencies.
 
-Claude Code copies the plugin's skills, hooks, and scripts into its plugin cache at install time, while the Planban runtime itself resolves to the marketplace checkout. When developing Planban from a local clone, run the two update commands above after changing anything under `plugins/planban/`, then start a new session; an idle session keeps its plugin server process alive and will not see the change until it restarts.
+Claude Code copies the plugin's skills, hooks, and scripts into its plugin cache at install time, while the Planban runtime itself resolves to the marketplace checkout. `claude plugin update` refreshes that cache only when the plugin version changes, so when developing Planban from a local clone, run `claude plugin uninstall planban@planban` then `claude plugin install planban@planban` after changing anything under `plugins/planban/`, then start a new session; an idle session keeps its plugin server process alive and will not see the change until it restarts.
 
 ### Other hosts
 
