@@ -1,10 +1,10 @@
 # Planban
 
-Planban is a local, agent-native Kanban board for agent-led planning.
+Planban is a local-first, agent-native Kanban board that installs as a plugin in Codex and Claude Code, so your agents keep the plan current and you see the whole project at a glance.
 
-It gives you a simple roadmap board, keeps your planning state local, and helps your coding agent start work from the right card, spec, and project context. It installs as a plugin in Codex and in Claude Code, and its MCP server works from any host that can run a local MCP server.
+It gives you a simple roadmap board, keeps your planning state local, and helps your coding agent start work from the right card, spec, and project context. Its MCP server also works from any host that can run a local MCP server.
 
-Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions.
+Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions. Learn more at https://planban.ai/.
 
 ## What Planban Does
 
