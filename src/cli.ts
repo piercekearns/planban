@@ -100,7 +100,7 @@ async function readStdin(): Promise<string> {
 }
 
 const program = new Command();
-program.name("planban").description("Codex-native local planning board").version(PLANBAN_VERSION);
+program.name("planban").description("Local, agent-native planning board for Codex and Claude Code").version(PLANBAN_VERSION);
 
 program
   .command("init")
