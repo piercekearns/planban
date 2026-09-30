@@ -3,7 +3,7 @@
 Thanks for taking a look at Planban.
 
 Planban is early. The best contributions right now are small, focused fixes that
-make the local Codex plugin, board UI, docs, install flow, or feedback flow more
+make the local Codex and Claude Code plugins, board UI, docs, install flow, or feedback flow more
 reliable and easier to understand.
 
 Before proposing a feature or materially changing Planban's workflow, domain model,
@@ -32,7 +32,7 @@ the MIT License.
 Please open an issue before working on:
 
 - new product features;
-- host support beyond Codex;
+- host support beyond Codex and Claude Code;
 - broad refactors;
 - storage or migration changes;
 - public API, MCP, or CLI contract changes;
@@ -114,6 +114,10 @@ npm run release:upgrade-rehearsal -- --from-version 1.1.0 --expected-version 1.1
 ```
 
 The manual `Release readiness` workflow runs both gates against an exact commit SHA.
+
+In release notes, write Planban CLI examples as `node "$PLANBAN_ROOT/bin/planban.mjs" <command>`.
+Planban is not published to npm, so users do not have a bare `planban` command on
+their `PATH`.
 
 ## Privacy
 

@@ -1,7 +1,7 @@
 # Security Policy
 
 Planban runs locally and can interact with project planning state through Codex,
-CLI, local API, and MCP tools. Please avoid posting sensitive details publicly.
+Claude Code, CLI, local API, and MCP tools. Please avoid posting sensitive details publicly.
 
 ## Reporting a Vulnerability
 
