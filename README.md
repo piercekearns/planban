@@ -1,10 +1,10 @@
 # Planban
 
-Planban is a local, agent-native Kanban board for agent-led planning.
+Planban is a local-first, agent-native Kanban board that installs as a plugin in Codex and Claude Code, so your agents keep the plan current and you see the whole project at a glance.
 
-It gives you a simple roadmap board, keeps your planning state local, and helps your coding agent start work from the right card, spec, and project context. It installs as a plugin in Codex and in Claude Code, and its MCP server works from any host that can run a local MCP server.
+It gives you a simple roadmap board, keeps your planning state local, and helps your coding agent start work from the right card, spec, and project context. Its MCP server also works from any host that can run a local MCP server.
 
-Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions.
+Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions. Learn more at https://planban.ai/.
 
 ## What Planban Does
 
@@ -158,25 +158,25 @@ Planban opens a short local tutorial and creates a `Planban Demo` board so you c
 
 Use it to:
 
-- learn how `/PB`, `/Planban`, and `Planban Tutorial` work inside Codex
+- learn how `/pb`, `/planban`, and `/planban-tutorial` work in Codex, or `/planban:pb`, `/planban:planban`, and `/planban:planban-tutorial` in Claude Code
 - drag cards between columns
 - drag one Item onto another to create a Group, or move an Item into an existing Group
 - open a Group to review its objective, progress, and status-ranked Items together
-- open a roadmap item in Codex
+- open a roadmap item with your agent
 - inspect roadmap item details and specs
 - mark a card Complete when you are done
 - send feedback from the toolbar
-- ask Codex to create roadmap items from your existing plans
+- ask your agent to create roadmap items from your existing plans
 
-When you are ready to use Planban with a real project, ask Codex:
+When you are ready to use Planban with a real project, ask your agent in Codex or Claude Code:
 
 ```text
 Set up Planban for my local project at /path/to/project. If it is not initialized yet, ask me before initializing it. Then open the board and help me create roadmap items from the current repo docs, issues, notes, or my description of what I am building.
 ```
 
-You can also give Codex planning context from Notion, Jira, Linear, GitHub Issues, copied notes, or a plain-language project update. Ask it to turn that context into draft Planban roadmap items for review.
+You can also give your agent planning context from Notion, Jira, Linear, GitHub Issues, copied notes, or a plain-language project update. Ask it to turn that context into draft Planban roadmap items for review.
 
-## Feedback With Codex
+## Feedback With Your Agent
 
 Planban uses GitHub Issues for bugs, feature requests, and product feedback.
 
@@ -184,7 +184,7 @@ Feedback is welcome. If you want to share a bug, request, rough edge, or reactio
 
 For bugs, Planban Feedback normally prepares a new issue or a useful comment on an existing issue. It recommends a pull request only when it can verify that you or your agent already implemented and validated a focused fix for the same failure. Reporting a bug does not by itself create or recommend a PR.
 
-Ask Codex:
+You can also start from a chat: use `/planban-feedback` in Codex or `/planban:planban-feedback` in Claude Code, or ask your agent:
 
 ```text
 I want to give feedback on Planban. Use the current conversation and safely discoverable Planban context so I do not have to repeat details. Investigate the report, search existing issues and fixes, then recommend and draft the best route for piercekearns/planban. Do not recommend a PR unless you verify that my agent already implemented and validated the fix. Do not include private repo paths, board contents, logs, screenshots, or personal project details unless I explicitly approve them.
@@ -193,7 +193,7 @@ Feedback:
 <paste your feedback here>
 ```
 
-Codex can then help you review the issue draft and file it through GitHub. You can also open the issue chooser directly:
+Your agent can then help you review the issue draft and file it through GitHub. You can also open the issue chooser directly:
 
 https://github.com/piercekearns/planban/issues/new/choose
 
@@ -214,9 +214,35 @@ Planban checks public version metadata from GitHub while the local board is open
 
 When Planban can prove your install is safe to update directly, choose `Update now`. Planban will show progress, refresh the local install, restart the local server, and reopen the board you were viewing.
 
-If the install shape is ambiguous, dependencies are missing, a migration is needed, or local files make direct update unsafe, choose `Update with Codex` instead. That opens a draft prompt asking your agent to inspect the install, update Planban safely, verify the plugin and MCP tools, and open the right post-update surface.
+If the install shape is ambiguous, dependencies are missing, a migration is needed, or local files make direct update unsafe, the board shows the `Update with Codex` panel instead. It prepares a prompt asking your agent to inspect the install, update Planban safely, verify the plugin and MCP tools, and open the right post-update surface. Open it as a Codex draft, or copy it into an agent session.
 
-For this first public release, fresh installs should start with the interactive tutorial in the Codex in-app browser. If you used an earlier private or preview build, use Codex-guided update or reinstall from this public repository so your local plugin marketplace points at the clean public release.
+Fresh installs start with the interactive tutorial, which opens in the Codex in-app browser or the Claude Code browser pane. If you used an earlier private or preview build, use the agent-guided update or reinstall from this public repository so your local plugin marketplace points at the clean public release.
+
+### Manual updates
+
+Codex, for the recommended Git-backed marketplace install:
+
+```bash
+codex plugin marketplace upgrade planban
+PLANBAN_ROOT="$(codex plugin marketplace list | awk '$1 == "planban" { print $2 }')"
+cd "$PLANBAN_ROOT"
+npm install
+node scripts/configure-local-plugin.mjs
+codex plugin add planban@planban
+```
+
+For a local clone install, run `git pull` in the clone instead of the marketplace upgrade, then the same remaining commands.
+
+Claude Code:
+
+```bash
+claude plugin marketplace update planban
+claude plugin update planban@planban
+```
+
+Run `npm install` in the marketplace root again when a release changes dependencies.
+
+After a manual update, start a new session so the host loads the updated plugin and MCP server.
 
 Planban does not silently update itself and does not send private board contents, repo paths, logs, or project details as part of update checks.
 
@@ -228,7 +254,7 @@ Planban keeps live planning state on your machine:
 - local board state: `~/.planban/repos/<repo-id>/roadmap.json`
 - local card docs: `~/.planban/repos/<repo-id>/items/<card-id>/spec.md` and `plan.md`
 
-Do not commit `~/.planban` state to your project repo.
+Do not commit `~/.planban` state to your project repo. We recommend adding `.planban/` to your project's `.gitignore`: `planban init` does not do this for you, and `.planban/agent-context.md` contains absolute paths from your machine.
 
 ## License
 
