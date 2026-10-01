@@ -3855,6 +3855,54 @@ h1 {
 .detail-item-actions > button:hover,
 .detail-item-actions > button:focus-visible { background: var(--surface-subtle); color: var(--text); }
 
+.copy-reference-button {
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.copy-reference-icon {
+  position: relative;
+  display: grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+}
+
+.copy-reference-icon > svg {
+  grid-area: 1 / 1;
+  transition: opacity 140ms ease, transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.copy-reference-icon-success {
+  color: var(--green-500);
+  opacity: 0;
+  transform: scale(0.55) rotate(-10deg);
+}
+
+.copy-reference-button.is-copied,
+.copy-reference-button.is-copied:hover,
+.copy-reference-button.is-copied:focus-visible {
+  border-color: color-mix(in oklab, var(--green-500) 26%, transparent);
+  background: color-mix(in oklab, var(--green-500) 11%, transparent);
+  color: var(--green-500);
+}
+
+.copy-reference-button.is-copied .copy-reference-icon-default {
+  opacity: 0;
+  transform: scale(0.65) rotate(8deg);
+}
+
+.copy-reference-button.is-copied .copy-reference-icon-success {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-reference-button,
+  .copy-reference-icon > svg {
+    transition: none;
+  }
+}
+
 .workflow-status-summary > span,
 .position-summary > span {
   display: block;
