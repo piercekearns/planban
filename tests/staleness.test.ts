@@ -192,10 +192,10 @@ test("wip is reported above twelve In Progress Items, and attention is capped an
 });
 
 test("chip labels are short", () => {
-  assert.equal(stalenessChipLabel({ kind: "merged", detail: "#267 merged 25 Sep", since: iso(NOW) }, NOW), "stale: #267 merged 25 Sep");
-  assert.equal(stalenessChipLabel({ kind: "quiet", detail: "", since: iso(NOW - 6 * DAY - 5) }, NOW), "quiet 6d");
-  assert.equal(stalenessChipLabel({ kind: "doc-edited", detail: "", since: iso(NOW) }, NOW), "doc edited");
-  assert.equal(stalenessChipLabel({ kind: "awaiting-owner", detail: "", since: iso(NOW) }, NOW), "awaiting you");
+  assert.equal(stalenessChipLabel({ kind: "merged", detail: "#267 merged 25 Sep", since: iso(NOW) }, NOW), "#267 merged after this card was last updated");
+  assert.equal(stalenessChipLabel({ kind: "quiet", detail: "", since: iso(NOW - 6 * DAY - 5) }, NOW), "No updates for 6 days");
+  assert.equal(stalenessChipLabel({ kind: "doc-edited", detail: "", since: iso(NOW) }, NOW), "Spec changed after this card was last updated");
+  assert.equal(stalenessChipLabel({ kind: "awaiting-owner", detail: "", since: iso(NOW) }, NOW), "Waiting on you");
 });
 
 function git(cwd: string, ...args: string[]) {

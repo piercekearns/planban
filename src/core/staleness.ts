@@ -249,11 +249,11 @@ export function stalenessLine(attention: StalenessAttention): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
-/** Short grey chip text for the board, from the most relevant signal. */
+/** Plain-language note shown under a card's title on the board, from the most relevant signal. */
 export function stalenessChipLabel(signal: StalenessSignal, now: number): string {
-  if (signal.kind === "merged") return `stale: ${signal.detail}`;
-  if (signal.kind === "doc-edited") return "doc edited";
-  if (signal.kind === "quiet") return `quiet ${Math.max(1, Math.floor((now - Date.parse(signal.since)) / DAY_MS))}d`;
-  if (signal.kind === "group-behind") return "group behind";
-  return "awaiting you";
+  if (signal.kind === "merged") return `${signal.detail.replace(/ merged .*$/, "")} merged after this card was last updated`;
+  if (signal.kind === "doc-edited") return `${/^Plan/.test(signal.detail) ? "Plan" : "Spec"} changed after this card was last updated`;
+  if (signal.kind === "quiet") return `No updates for ${Math.max(1, Math.floor((now - Date.parse(signal.since)) / DAY_MS))} days`;
+  if (signal.kind === "group-behind") return "Its Items changed after this summary was written";
+  return "Waiting on you";
 }

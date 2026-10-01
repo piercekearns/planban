@@ -1053,7 +1053,7 @@ const StalenessContext = React.createContext<Record<string, StalenessSignal[]>>(
 function StalenessChip({ itemId }: { itemId: string }) {
   const signal = React.useContext(StalenessContext)[itemId]?.[0];
   if (!signal) return null;
-  return <span className="staleness-chip" title={signal.detail}>{stalenessChipLabel(signal, Date.now())}</span>;
+  return <p className="staleness-note" title={signal.detail}>{stalenessChipLabel(signal, Date.now())}</p>;
 }
 
 function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined; ancestry?: RoadmapItem[]; expanded?: boolean }) {
@@ -1070,9 +1070,9 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {item.icon ? <span className="card-title-icon">{item.icon}</span> : null}
           {item.title}
         </p>
-        <StalenessChip itemId={item.id} />
         {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
       </div>
+      <StalenessChip itemId={item.id} />
       {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
       {description ? <p className="card-copy">{description}</p> : null}
       {rollup ? (
