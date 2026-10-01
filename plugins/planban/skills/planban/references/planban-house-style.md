@@ -83,6 +83,7 @@ Answer these questions in order when relevant:
 
 - For active work, identify the immediate action, relevant actor when needed, gate, and stopping condition.
 - For owner-gated work, identify what the owner is reviewing and what happens after acceptance or rejection.
+- When the next step is the owner's, start the Next action with `Owner:`, and use that prefix only then. The board shows these Items as needing the owner.
 - A trigger-gated Item may truthfully say `Do not start work until X; then activate one bounded Item or slice`. Do not invent immediate work. If the Item has no continuing coordination role while it waits, consider Pending instead of In Progress.
 - Keep one executable path. Split unrelated outcomes into separate Items or deeper reference.
 - For completed work, do not manufacture an active action. State a scoped reopening or monitoring condition only when it is genuinely useful.
