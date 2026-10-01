@@ -18,6 +18,8 @@ const typesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "sr
 const queryModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/workItemQuery.ts")).href);
 const demoModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/demo.ts")).href);
 const versionModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/version.ts")).href);
+const stalenessModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/staleness.ts")).href);
+const stalenessSourcesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/stalenessSources.ts")).href);
 
 const { cardAncestry, createCard, createCards, createGroup, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
@@ -25,6 +27,8 @@ const { PLANBAN_STATUSES } = typesModule;
 const { queryWorkItems } = queryModule;
 const { ensureDemoBoard } = demoModule;
 const { PLANBAN_MCP_VERSION } = versionModule;
+const { stalenessAttention, stalenessLine } = stalenessModule;
+const { collectStaleness, projectStaleness } = stalenessSourcesModule;
 
 const SERVER_NAME = "Planban MCP";
 const PLANBAN_MCP_INSTRUCTIONS = [
@@ -242,6 +246,28 @@ async function boardResult(text, repoId, structuredContent) {
     ? `Board URL: ${handoff.boardUrl}`
     : `Board URL: ${handoff.boardUrl} - verify with planban_launch_board before presenting.`;
   return textResult(`${text}\n${line}`, { ...structuredContent, ...handoff });
+}
+
+// Stale signals are advisory: they never block or fail a read.
+async function boardStaleness(state) {
+  return await collectStaleness({ cwd: state.cwd, planningRoot: state.planningRoot, items: state.roadmap.roadmapItems });
+}
+
+function withLine(text, line) {
+  return line ? `${text}\n${line}` : text;
+}
+
+function signalsLine(signals) {
+  if (!signals?.length) return null;
+  return `Stale signals: ${signals.map((signal) => `${signal.kind} (${signal.detail})`).join("; ")}. Re-read and fix the card in the same mutation batch if you own or touch it.`;
+}
+
+const METADATA_NOTE_BYTES = 4096;
+
+function metadataNotes(card) {
+  const bytes = card?.metadata ? Buffer.byteLength(JSON.stringify(card.metadata), "utf8") : 0;
+  if (bytes <= METADATA_NOTE_BYTES) return [];
+  return [`Metadata is ${Math.round(bytes / 1024)} KB. Consider moving evidence and ledgers into the Spec, Plan or a document in the Item folder.`];
 }
 
 function findCard(state, cardId) {
@@ -718,10 +744,12 @@ function advertisedTools() {
 async function callToolImpl(name, args) {
   if (name === "planban_status") {
     const status = await getStatus(await cwdFromArgs(args));
+    const board = status.initialized ? await projectStaleness(status.cwd) : null;
+    const attention = board ? stalenessAttention(board.staleness, board.items) : null;
     return await boardResult(
-      status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`,
+      withLine(status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`, attention && stalenessLine(attention)),
       status.initialized ? status.repoId : null,
-      status,
+      attention ? { ...status, attention } : status,
     );
   }
 
@@ -765,7 +793,12 @@ async function callToolImpl(name, args) {
   if (name === "planban_get_board") {
     const cwd = await cwdFromArgs(args);
     const state = await loadState(cwd);
-    return await boardResult(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, state.manifest.repoId, summarizeBoard(state));
+    const attention = stalenessAttention(await boardStaleness(state), state.roadmap.roadmapItems);
+    return await boardResult(
+      withLine(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, stalenessLine(attention)),
+      state.manifest.repoId,
+      { ...summarizeBoard(state), attention },
+    );
   }
 
   if (name === "planban_query_cards") {
@@ -784,11 +817,18 @@ async function callToolImpl(name, args) {
       blocked: optionalString(args.blocked, "blocked"),
       tags: optionalStringArray(args.tags, "tags"),
     });
-    return textResult(`Matched ${result.matches.length} Planban Work Items at revision ${state.roadmap.revision}.`, {
+    const board = await boardStaleness(state);
+    const staleness = Object.fromEntries(result.matches.flatMap((entry) => board.cards[entry.item.id] ? [[entry.item.id, board.cards[entry.item.id]]] : []));
+    const staleCount = Object.keys(staleness).length;
+    return textResult(withLine(
+      `Matched ${result.matches.length} Planban Work Items at revision ${state.roadmap.revision}.`,
+      staleCount ? `${staleCount} matched Item${staleCount === 1 ? " has" : "s have"} stale signals (see staleness).` : null,
+    ), {
       cwd: state.cwd,
       repoId: state.manifest.repoId,
       revision: state.roadmap.revision,
       ...result,
+      staleness,
     });
   }
 
@@ -797,13 +837,15 @@ async function callToolImpl(name, args) {
     const cardId = requireString(args.cardId, "cardId");
     const state = await loadState(cwd);
     const card = findCard(state, cardId);
-    return textResult(`Loaded Planban card ${card.id}.`, {
+    const staleness = (await boardStaleness(state)).cards[card.id] ?? [];
+    return textResult(withLine(`Loaded Planban card ${card.id}.`, signalsLine(staleness)), {
       cwd: state.cwd,
       repoId: state.manifest.repoId,
       revision: state.roadmap.revision,
       planningRoot: state.planningRoot,
       card,
       ancestry: cardAncestry(state.roadmap, cardId),
+      staleness,
     });
   }
 
@@ -859,9 +901,11 @@ async function callToolImpl(name, args) {
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
     });
-    return await boardResult(`Created Planban card ${state.createdCard.id}.`, state.manifest.repoId, {
+    const notes = metadataNotes(state.createdCard);
+    return await boardResult(withLine(`Created Planban card ${state.createdCard.id}.`, notes[0]), state.manifest.repoId, {
       ...compactBoardSummary(state),
       card: state.createdCard,
+      ...(notes.length ? { notes } : {}),
     });
   }
 
@@ -940,9 +984,11 @@ async function callToolImpl(name, args) {
       actor: "agent",
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
-    return await boardResult(`Updated Planban card ${card.id}.`, state.manifest.repoId, {
+    const notes = metadataNotes(card);
+    return await boardResult(withLine(`Updated Planban card ${card.id}.`, notes[0]), state.manifest.repoId, {
       ...compactBoardSummary(state),
       card,
+      ...(notes.length ? { notes } : {}),
     });
   }
 

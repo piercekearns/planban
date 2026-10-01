@@ -267,6 +267,8 @@ When changing roadmap state:
   phase of work.
 - Update linked docs when the work changes the spec or plan.
 - Create a separate plan doc only when the work is complex enough to need one.
+- If a tool result shows stale signals for a card you own or touch, re-read it and fix
+  it in the same mutation batch.
 
 ### Post-mutation handoff
 
