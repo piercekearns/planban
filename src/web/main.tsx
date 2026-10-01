@@ -341,6 +341,7 @@ interface HistoryPayload {
     boardVersions: number;
     cardVersions: number;
     documentVersions: number;
+    hourlyDays: number;
     maxAgeDays: number;
   };
   entries: HistoryEntry[];

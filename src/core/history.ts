@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 import {
   historyDocPath,
@@ -27,8 +27,17 @@ const HISTORY_RETENTION = {
   boardVersions: 100,
   cardVersions: 25,
   documentVersions: 25,
+  hourlyDays: 2,
   maxAgeDays: 90,
 };
+
+// Removing a large backlog of snapshots can take long enough to outlive the
+// stale-lock window, so each write removes at most this many directories and
+// later writes finish the sweep.
+const MAX_HISTORY_DELETIONS_PER_WRITE = 500;
+const HISTORY_VERSION_DIR = /^v(\d+)$/;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 export interface PlanbanHistoryMeta {
   actor?: PlanbanHistoryActor | undefined;
@@ -178,24 +187,57 @@ async function writeVersionFiles(
   for (const doc of docs) await copyHistoryDoc(state, version, doc, strictDocs);
 }
 
-async function pruneHistory(planningRoot: string, index: PlanbanHistoryIndex): Promise<PlanbanHistoryIndex> {
-  const cutoff = Date.now() - index.retention.maxAgeDays * 24 * 60 * 60 * 1000;
-  const byVersionDesc = [...index.entries].sort((a, b) => b.version - a.version);
-  const kept = byVersionDesc
-    .filter((entry, position) => position < index.retention.boardVersions || Date.parse(entry.createdAt) >= cutoff)
-    .sort((a, b) => a.version - b.version);
-  const keptVersions = new Set(kept.map((entry) => entry.version));
+/**
+ * Tiered retention: the newest `boardVersions` entries are always kept; older
+ * entries keep the last version per hour for `hourlyDays`, then the last
+ * version per day up to `maxAgeDays`. Buckets use UTC calendar hours and days
+ * so the kept set does not depend on the host time zone or DST changes.
+ */
+export function retainedHistoryEntries(
+  entries: PlanbanHistoryEntry[],
+  retention: PlanbanHistoryIndex["retention"],
+  now = Date.now(),
+): PlanbanHistoryEntry[] {
+  const hourlyCutoff = now - retention.hourlyDays * DAY_MS;
+  const dailyCutoff = now - retention.maxAgeDays * DAY_MS;
+  const byVersionDesc = [...entries].sort((a, b) => b.version - a.version);
+  const seenBuckets = new Set<string>();
+  const kept = byVersionDesc.filter((entry, position) => {
+    if (position < retention.boardVersions) return true;
+    const createdAt = Date.parse(entry.createdAt);
+    if (!(createdAt >= dailyCutoff)) return false;
+    const iso = new Date(createdAt).toISOString();
+    const bucket = createdAt >= hourlyCutoff ? `h${iso.slice(0, 13)}` : `d${iso.slice(0, 10)}`;
+    // Entries are visited newest first, so the first one seen is the bucket's last.
+    if (seenBuckets.has(bucket)) return false;
+    seenBuckets.add(bucket);
+    return true;
+  });
+  return kept.sort((a, b) => a.version - b.version);
+}
 
-  for (const entry of index.entries) {
-    if (!keptVersions.has(entry.version)) {
-      await rm(historyVersionRoot(planningRoot, entry.version), { recursive: true, force: true });
-    }
-  }
+async function pruneHistory(
+  planningRoot: string,
+  index: PlanbanHistoryIndex,
+): Promise<{ index: PlanbanHistoryIndex; removeVersions: number[] }> {
+  const kept = retainedHistoryEntries(index.entries, index.retention);
+  const keptVersions = new Set(kept.map((entry) => entry.version));
+  const onDisk = await readdir(historyRoot(planningRoot)).catch(() => [] as string[]);
+  const removeVersions = onDisk
+    .map((name) => HISTORY_VERSION_DIR.exec(name)?.[1])
+    .filter((digits): digits is string => digits !== undefined)
+    .map(Number)
+    .filter((version) => !keptVersions.has(version))
+    .sort((a, b) => a - b)
+    .slice(0, MAX_HISTORY_DELETIONS_PER_WRITE);
 
   return {
-    ...index,
-    latestVersion: kept.at(-1)?.version ?? 0,
-    entries: kept,
+    index: {
+      ...index,
+      latestVersion: kept.at(-1)?.version ?? 0,
+      entries: kept,
+    },
+    removeVersions,
   };
 }
 
@@ -266,8 +308,13 @@ export async function recordHistoryVersion(
     latestVersion: nextVersion,
     entries: [...index.entries, entry],
   };
-  index = await pruneHistory(state.planningRoot, index);
-  await writeHistoryIndex(state.planningRoot, index);
+  const pruned = await pruneHistory(state.planningRoot, index);
+  // Write the index before removing directories: a crash then leaves orphan
+  // directories for the next sweep, never index entries without snapshots.
+  await writeHistoryIndex(state.planningRoot, pruned.index);
+  for (const version of pruned.removeVersions) {
+    await rm(historyVersionRoot(state.planningRoot, version), { recursive: true, force: true });
+  }
   return entry;
   });
 }
