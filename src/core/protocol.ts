@@ -62,5 +62,6 @@ Roadmap status protocol for agent work:
 - when the agent finishes its own implementation and verification, leave the card In Progress and update summary and next action to say it is ready for user review/testing
 - move a card to Complete only when the user explicitly asks, manually confirms completion after testing/review, or clearly waives user-side verification
 - agent-side tests and verification are enough to update the next action for user review/testing; they are not enough by themselves to self-complete the roadmap item
+- a landing is a card event: whoever merges a PR, pushes to a release branch or retires a branch updates every In Progress Item that names it, before reporting the landing
 `;
 }

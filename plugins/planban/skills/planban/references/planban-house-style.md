@@ -90,6 +90,14 @@ Answer these questions in order when relevant:
 - When related work belongs to another Item, name its stable Item identifier where available and state that this Item grants no authority to act on it.
 - Distinguish routine observation from unfinished implementation.
 
+### Volatile facts in Summary and Next action
+
+- Do not put volatile facts in the Summary or Next action: preview or environment URLs, branch, thread, or session names, SHAs, and merge or deploy state such as `not merged` or `PR 275 open`. The exception is an Item that owns that environment. These facts change on another thread's schedule and go wrong silently.
+- PR numbers may appear as references, such as `see PR #275`. Statements about their state may not.
+- When the work depends on a landing owned elsewhere, name the coordinating Item (`planban:<board>/<item>`) and state the condition, not the current state.
+- Write the card after the event when possible. Otherwise, phrase it conditionally.
+- Keep exact IDs, SHAs, releases, and test counts out of the opening of either field unless they explain current state, rollback, or a decision.
+
 ### Spec
 
 Use lifecycle-appropriate sections:
@@ -131,13 +139,17 @@ Then provide the agent runbook:
 
 Do not repeat the Spec's purpose, target outcome, product decisions, or acceptance criteria unless the Plan must operate safely without a Spec.
 
+### Tags and metadata
+
+- Use metadata for small, stable identifiers. Put evidence, ledgers, and environment state in the Plan or an evidence document.
+
 ## Recommended rules
 
 - Put the most decision-relevant sentence first.
 - Prefer one primary idea per sentence when it improves comprehension.
 - Prefer active voice when the actor or authority matters.
 - Use bullets for parallel facts, criteria, and steps; use prose for reasoning and trade-offs.
-- Keep exact IDs, SHAs, releases, and test counts out of the opening unless they explain current state, rollback, or a decision.
+- Keep exact IDs, SHAs, releases, and test counts out of the opening unless they explain current state, rollback, or a decision. For the Summary and Next action, this rule is Required.
 - Summarize extensive evidence and retain the exact record in existing history, Spec or Plan reference sections, or linked authoritative sources. A future evidence ledger is optional.
 - Treat deployment identities, test results, and environment checks as dated evidence. Require fresh verification before later operational action when current external state matters.
 - Let short, simple Items use proportionally short Specs and Plans.
