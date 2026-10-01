@@ -53,6 +53,7 @@ When the user asks to update the roadmap:
 - update the card summary and next action so they match the current phase of work
 - update linked specs, and only create or update separate implementation plans when the work is complex enough to need one
 - before creating or materially editing owner-facing Planban content, follow the installed Planban protocol and Planban house style
+- if a tool result shows stale signals for a card you own or touch, re-read it and fix it in the same mutation batch
 - do not create or prefer ROADMAP.md
 
 Roadmap status protocol for agent work:
