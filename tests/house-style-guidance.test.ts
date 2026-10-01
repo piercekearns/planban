@@ -31,7 +31,7 @@ test("the house style keeps volatile facts out of Summary and Next action", () =
   assert.match(required, /PR numbers may appear as references/u);
   assert.match(required, /name the coordinating Item \(`planban:<board>\/<item>`\)/u);
   assert.match(required, /Keep exact IDs, SHAs, releases, and test counts out of the opening of either field/u);
-  assert.match(required, /### Tags and metadata\n\n- Use metadata for small, stable identifiers\./u);
+  assert.match(required, /### Tags and metadata\r?\n\r?\n- Use metadata for small, stable identifiers\./u);
 });
 
 test("the status protocol makes a landing a card event", () => {
