@@ -1051,9 +1051,10 @@ function GroupIcon({
 const StalenessContext = React.createContext<Record<string, StalenessSignal[]>>({});
 
 function StalenessChip({ itemId }: { itemId: string }) {
-  const signal = React.useContext(StalenessContext)[itemId]?.[0];
+  // Agent-maintenance signals stay in tool results; the board shows only what needs the owner.
+  const signal = React.useContext(StalenessContext)[itemId]?.find((entry) => stalenessChipLabel(entry));
   if (!signal) return null;
-  return <p className="staleness-note" title={signal.detail}>{stalenessChipLabel(signal, Date.now())}</p>;
+  return <p className="staleness-note">{stalenessChipLabel(signal)}</p>;
 }
 
 function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined; ancestry?: RoadmapItem[]; expanded?: boolean }) {

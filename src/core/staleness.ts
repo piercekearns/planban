@@ -50,13 +50,8 @@ export const STALENESS_KIND_ORDER: StalenessKind[] = ["merged", "doc-edited", "q
 // Kinds an agent can fix by editing the card; awaiting-owner waits on the human instead.
 export const STALE_KINDS = new Set<StalenessKind>(["merged", "doc-edited", "quiet", "group-behind"]);
 
-// The next step is the owner's: it leads with "Owner", says "awaiting owner", or names an owner
-// confirm/review/accept/decide step ("Owner: review …", "owner to confirm"). "until the owner accepts" is not enough.
-const AWAITING_OWNER = [
-  /^\s*owner\b/iu,
-  /\bawaiting (?:the )?owner\b/iu,
-  /\bowner\s*(?::|-|–|—|\sto\b|\smust\b|\sshould\b|\sneeds to\b)\s*(?:confirm|review|accept|decide)/iu,
-];
+// The next step is the owner's when Next action starts with "Owner:", the house-style convention.
+const AWAITING_OWNER = [/^\s*Owner:/u];
 
 function time(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -249,11 +244,7 @@ export function stalenessLine(attention: StalenessAttention): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
-/** Plain-language note shown under a card's title on the board, from the most relevant signal. */
-export function stalenessChipLabel(signal: StalenessSignal, now: number): string {
-  if (signal.kind === "merged") return `${signal.detail.replace(/ merged .*$/, "")} merged after this card was last updated`;
-  if (signal.kind === "doc-edited") return `${/^Plan/.test(signal.detail) ? "Plan" : "Spec"} changed after this card was last updated`;
-  if (signal.kind === "quiet") return `No updates for ${Math.max(1, Math.floor((now - Date.parse(signal.since)) / DAY_MS))} days`;
-  if (signal.kind === "group-behind") return "Its Items changed after this summary was written";
-  return "Waiting on you";
+/** Short note shown under a card's title on the board. Only signals that need the owner are shown there. */
+export function stalenessChipLabel(signal: StalenessSignal): string | null {
+  return signal.kind === "awaiting-owner" ? "Needs you" : null;
 }

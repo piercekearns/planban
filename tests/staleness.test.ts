@@ -141,15 +141,15 @@ test("quiet: In Progress Items with no activity for more than five days", () => 
   assert.equal(result.cards.fresh, undefined);
 });
 
-test("awaiting-owner: next actions that wait on the owner", () => {
-  const waiting = [
-    "Owner: review PR #380 and the verification record.",
+test("awaiting-owner: next actions that start with Owner:", () => {
+  const waiting = ["Owner: review PR #380 and the verification record.", "  Owner: pick the next garment work."];
+  const notWaiting = [
+    "Owner-approved timing change: this moves ahead of 7F.",
+    "Owner deferred sending the drafted report.",
     "Agent done. owner to confirm the copy.",
-    "Owner decides whether to test the texture.",
-    "Awaiting owner acceptance in the 7B retest.",
-    "Ship it. OWNER: ACCEPT or flag.",
+    "Keep this card In Progress until the owner accepts it.",
+    "",
   ];
-  const notWaiting = ["Keep this card In Progress until the owner accepts it.", "Agent: build the owner dashboard review screen.", ""];
   const result = compute({
     items: [
       ...waiting.map((nextAction, index) => item({ id: `w${index}`, nextAction, updatedAt: iso(NOW - DAY) })),
@@ -192,10 +192,10 @@ test("wip is reported above twelve In Progress Items, and attention is capped an
 });
 
 test("chip labels are short", () => {
-  assert.equal(stalenessChipLabel({ kind: "merged", detail: "#267 merged 25 Sep", since: iso(NOW) }, NOW), "#267 merged after this card was last updated");
-  assert.equal(stalenessChipLabel({ kind: "quiet", detail: "", since: iso(NOW - 6 * DAY - 5) }, NOW), "No updates for 6 days");
-  assert.equal(stalenessChipLabel({ kind: "doc-edited", detail: "", since: iso(NOW) }, NOW), "Spec changed after this card was last updated");
-  assert.equal(stalenessChipLabel({ kind: "awaiting-owner", detail: "", since: iso(NOW) }, NOW), "Waiting on you");
+  assert.equal(stalenessChipLabel({ kind: "awaiting-owner", detail: "", since: iso(NOW) }), "Needs you");
+  for (const kind of ["merged", "doc-edited", "quiet", "group-behind"] as const) {
+    assert.equal(stalenessChipLabel({ kind, detail: "", since: iso(NOW) }), null, kind);
+  }
 });
 
 function git(cwd: string, ...args: string[]) {

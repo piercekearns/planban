@@ -682,7 +682,7 @@ test("Planban MCP keeps a mutation result compact on a large board", async () =>
 
 test("Planban MCP reports stale signals on card and board reads, and notes oversized metadata", async () => {
   await withPlanbanProject(async ({ cwd, planbanHome, cardId }) => {
-    await createCard({ cwd, title: "Cart Drawer", status: "in-progress", nextAction: "Merge PR 267, then Owner: review the drawer." });
+    await createCard({ cwd, title: "Cart Drawer", status: "in-progress", nextAction: "Owner: review the drawer once PR 267 merges." });
     await new Promise((resolveWait) => setTimeout(resolveWait, 1_100));
     const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
     for (const args of [["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "Merge pull request #267 from o/cart"], ["update-ref", "refs/remotes/origin/main", "HEAD"]]) {
