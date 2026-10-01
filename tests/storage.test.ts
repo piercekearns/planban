@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { promisify } from "node:util";
 import { ensureDemoBoard } from "../src/core/demo";
-import { eventsPath, historyRoot, registryPath } from "../src/core/paths";
+import { retainedHistoryEntries } from "../src/core/history";
+import { eventsPath, historyIndexPath, historyRoadmapPath, historyRoot, historyVersionRoot, registryPath } from "../src/core/paths";
 import { roadmapV1Schema } from "../src/core/schema";
+import type { PlanbanHistoryEntry, PlanbanHistoryIndex } from "../src/core/types";
 import { queryWorkItems } from "../src/core/workItemQuery";
 import { groupRollup } from "../src/web/mainBoardProjection";
 import { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, restoreBoard } from "../src/core/registry";
@@ -1410,6 +1412,130 @@ test("finds historical docs after many unrelated board-only document versions", 
   });
   assert.equal(historicalDoc.exists, true);
   assert.match(historicalDoc.markdown, /Original retained doc/);
+});
+
+function syntheticHistoryEntry(version: number, createdAt: string): PlanbanHistoryEntry {
+  return {
+    version,
+    roadmapRevision: 1,
+    createdAt,
+    actor: "agent",
+    operation: "card.update",
+    summary: `Synthetic v${version}`,
+    affectedCards: [],
+    affectedDocs: [],
+  };
+}
+
+async function historyVersionsOnDisk(): Promise<number[]> {
+  return (await readdir(historyRoot(planningRoot)))
+    .map((name) => /^v(\d+)$/.exec(name)?.[1])
+    .filter((digits): digits is string => digits !== undefined)
+    .map(Number)
+    .sort((a, b) => a - b);
+}
+
+test("keeps the newest board versions, then one per hour, then one per day", () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  const entries = [
+    syntheticHistoryEntry(1, "2026-09-27T12:00:00Z"),
+    syntheticHistoryEntry(2, "2026-09-28T09:00:00Z"),
+    syntheticHistoryEntry(3, "2026-09-28T20:00:00Z"),
+    syntheticHistoryEntry(4, "2026-09-30T08:00:00Z"),
+    syntheticHistoryEntry(5, "2026-09-30T13:05:00Z"),
+    syntheticHistoryEntry(6, "2026-09-30T13:55:00Z"),
+    syntheticHistoryEntry(7, "2026-10-01T09:10:00Z"),
+    syntheticHistoryEntry(8, "2026-10-01T09:50:00Z"),
+    syntheticHistoryEntry(9, "not a date"),
+    syntheticHistoryEntry(10, "2026-10-01T11:00:00Z"),
+    syntheticHistoryEntry(11, "2026-10-01T11:01:00Z"),
+  ];
+  const retention = { boardVersions: 2, cardVersions: 25, documentVersions: 25, hourlyDays: 1, maxAgeDays: 3 };
+
+  const kept = retainedHistoryEntries([...entries].reverse(), retention, now);
+
+  // v1 is past maxAgeDays; v2, v5 and v7 are superseded in their day or hour; v9 has no usable time.
+  assert.deepEqual(kept.map((entry) => entry.version), [3, 4, 6, 8, 10, 11]);
+});
+
+test("prunes board history to tiered retention and sweeps orphan snapshot directories", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  const baselineRoadmap = historyRoadmapPath(planningRoot, 1);
+  const now = Date.now();
+  const minute = 60 * 1000;
+  const day = 24 * 60 * minute;
+  // 20 versions older than maxAgeDays, then one every 15 minutes for about 7 days.
+  // The 7-minute offset keeps every entry clear of the hourlyDays boundary while the write runs.
+  const entries: PlanbanHistoryEntry[] = [];
+  for (let version = 1; version <= 720; version += 1) {
+    const createdAt = version <= 20
+      ? now - 100 * day + version * minute
+      : now - (720 - version + 1) * 15 * minute + 7 * minute;
+    entries.push(syntheticHistoryEntry(version, new Date(createdAt).toISOString()));
+  }
+  for (const entry of entries) {
+    if (entry.version === 1) continue;
+    await mkdir(historyVersionRoot(planningRoot, entry.version), { recursive: true });
+    await cp(baselineRoadmap, historyRoadmapPath(planningRoot, entry.version));
+  }
+  // Orphans: directories the index no longer lists.
+  const orphanVersions = [3, 150];
+  const indexedEntries = entries.filter((entry) => !orphanVersions.includes(entry.version));
+  const { hourlyDays: _omitted, ...legacyRetention } = { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90 };
+  await writeFile(historyIndexPath(planningRoot), JSON.stringify({
+    version: 1,
+    latestVersion: 720,
+    retention: legacyRetention,
+    entries: indexedEntries,
+  }, null, 2) + "\n");
+
+  const legacy = await historyPayload(cwd);
+  assert.equal(legacy.retention.hourlyDays, 2);
+  assert.equal(legacy.entries.length, indexedEntries.length);
+
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+
+  const index = JSON.parse(await readFile(historyIndexPath(planningRoot), "utf8")) as PlanbanHistoryIndex;
+  const keptVersions = index.entries.map((entry) => entry.version);
+  assert.equal(index.latestVersion, 721);
+  assert.equal(index.entries.at(-1)?.operation, "card.create");
+  assert.ok(index.entries.at(-1)?.affectedDocs.length);
+  // The newest 100 survive unconditionally.
+  assert.deepEqual(keptVersions.slice(-100), Array.from({ length: 100 }, (_, offset) => 622 + offset));
+  // Older entries: one per UTC hour inside hourlyDays, one per UTC day up to maxAgeDays.
+  const older = index.entries.slice(0, -100);
+  const buckets = older.map((entry) => {
+    const createdAt = Date.parse(entry.createdAt);
+    assert.ok(createdAt >= now - 90 * day, `v${entry.version} is past maxAgeDays`);
+    return createdAt >= now - 2 * day ? `h${entry.createdAt.slice(0, 13)}` : `d${entry.createdAt.slice(0, 10)}`;
+  });
+  assert.equal(new Set(buckets).size, buckets.length);
+  for (const [position, entry] of older.entries()) {
+    const later = indexedEntries.find((candidate) => candidate.version === entry.version + 1);
+    if (!later || later.version >= 622) continue;
+    const laterCreatedAt = Date.parse(later.createdAt);
+    const laterBucket = laterCreatedAt >= now - 2 * day ? `h${later.createdAt.slice(0, 13)}` : `d${later.createdAt.slice(0, 10)}`;
+    assert.notEqual(laterBucket, buckets[position], `v${entry.version} is not the last in its bucket`);
+  }
+  const expectedBuckets = new Set(indexedEntries
+    .filter((entry) => entry.version < 622 && Date.parse(entry.createdAt) >= now - 90 * day)
+    .map((entry) => Date.parse(entry.createdAt) >= now - 2 * day ? `h${entry.createdAt.slice(0, 13)}` : `d${entry.createdAt.slice(0, 10)}`));
+  assert.deepEqual(new Set(buckets), expectedBuckets);
+
+  // At most 500 directories go per write; the next write finishes the sweep.
+  const removable = 720 - (keptVersions.length - 1);
+  assert.equal((await historyVersionsOnDisk()).length, 721 - Math.min(500, removable));
+  assert.equal((await historyVersionsOnDisk()).includes(3), false);
+  await createCard({ cwd, title: "Beta", status: "pending" });
+  const finalIndex = JSON.parse(await readFile(historyIndexPath(planningRoot), "utf8")) as PlanbanHistoryIndex;
+  assert.deepEqual(await historyVersionsOnDisk(), finalIndex.entries.map((entry) => entry.version));
+  assert.equal(finalIndex.latestVersion, 722);
+
+  await assert.rejects(restoreBoardVersion({ cwd, version: 2 }), /History version not found: v2/);
+  const keptOlder = finalIndex.entries[0]!.version;
+  assert.ok(keptOlder < 622);
+  const restored = await restoreBoardVersion({ cwd, version: keptOlder });
+  assert.equal(restored.roadmap.roadmapItems.length, 0);
 });
 
 test("rejects stale roadmap and markdown saves", async () => {
