@@ -70,6 +70,7 @@ Use specific Planban wording so the agent does not have to guess:
 - `Show all my Planban boards.`
 - `Summarize this project's Planban roadmap state.`
 - `Start work on the Planban roadmap item called <title or id>.`
+- Paste a copied reference such as `“Title” · planban:<board>/<item>` and say what to do with it; the `planban:` token identifies the Item exactly.
 - `Create Planban roadmap items from these notes: <notes>.`
 - `Send Planban feedback: <feedback>.`
 - `Check whether Planban has updates.`

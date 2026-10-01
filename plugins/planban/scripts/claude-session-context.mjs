@@ -33,7 +33,7 @@ export function planbanSessionContext({ projectDir: requestedDir, port = 4317 })
     : "";
   return [
     `This project tracks its work in Planban (board \`${repoId}\`, usually ${boardUrl}).${where}`,
-    "Read `.planban/agent-context.md` before reading or changing roadmap state, and use the Planban MCP tools (`planban_*`) with this repo's absolute path as `cwd`.",
+    `Read \`${join(projectDir, ".planban/agent-context.md")}\` before reading or changing roadmap state, and use the Planban MCP tools (\`planban_*\`) with this repo's absolute path as \`cwd\`.`,
     "After opening the board or finishing a batch of Planning changes, include the clickable verified board URL from the tool result in your reply.",
   ].join("\n");
 }

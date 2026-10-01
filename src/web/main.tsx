@@ -9,6 +9,7 @@ import {
   ArrowRight,
   ArrowRightLeft,
   Bug,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -73,6 +74,7 @@ import {
   type Status,
 } from "./boardOrdering";
 import { mainBoardProjection, itemsInGroup, groupProgressSegments, groupRollup, workItemRank, type GroupRollup } from "./mainBoardProjection";
+import { buildWorkItemReference } from "./workItemReference";
 import { groupWorkspaceProjection } from "./groupWorkspaceProjection";
 import { flattenedExecutionMoveForDrop, flattenedExecutionProjection } from "./flattenedExecutionProjection";
 import {
@@ -479,18 +481,41 @@ function formatOptionalLine(label: string, value: string | number | null | undef
   return `${label}: ${value === null || value === undefined || value === "" ? "(none)" : value}`;
 }
 
-function buildWorkItemReference(state: PlanbanState, item: RoadmapItem) {
-  const kind = item.isGroup ? "Group" : "Item";
-  return [
-    `Planban ${kind}: “${item.title}”`,
-    `Board: ${state.roadmap.project.title}`,
-    `Local Board ID: ${state.manifest.repoId}`,
-    `${kind} ID: ${item.id}`,
-  ].join("\n");
+async function copyWorkItemReference(state: PlanbanState, item: RoadmapItem) {
+  return await writeClipboardText(buildWorkItemReference(state.manifest.repoId, item));
 }
 
-async function copyWorkItemReference(state: PlanbanState, item: RoadmapItem) {
-  return await writeClipboardText(buildWorkItemReference(state, item));
+function useTransientConfirmation(resetKey: string, durationMs = 1800) {
+  const [confirmed, setConfirmed] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  const clearConfirmation = useCallback(() => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+    setConfirmed(false);
+  }, []);
+
+  const showConfirmation = useCallback(() => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    setConfirmed(true);
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
+      setConfirmed(false);
+    }, durationMs);
+  }, [durationMs]);
+
+  useEffect(() => clearConfirmation, [clearConfirmation, resetKey]);
+
+  return [confirmed, showConfirmation] as const;
+}
+
+function CopyConfirmationIcon({ confirmed }: { confirmed: boolean }) {
+  return (
+    <span className="copy-reference-icon" data-state={confirmed ? "confirmed" : "idle"} aria-hidden="true">
+      <Copy className="copy-reference-icon-default" size={14} />
+      <Check className="copy-reference-icon-success" size={15} strokeWidth={2.6} />
+    </span>
+  );
 }
 
 function getCodexThreadMeta(item: RoadmapItem) {
@@ -1379,7 +1404,7 @@ function SortableCard({
     height: isDragging && receiverDragHeight ? containmentSourceFootprint ?? receiverDragHeight : undefined,
     opacity: isDragging ? hierarchyDraggedSourceOpacity(reorderPreview, hideSourceDuringDrag) : 1,
   } as React.CSSProperties;
-  const [referenceCopied, setReferenceCopied] = useState(false);
+  const [referenceCopied, showReferenceCopied] = useTransientConfirmation(item.id);
 
   return (
     <article
@@ -1426,6 +1451,7 @@ function SortableCard({
               </>
             ) : null}
             <TooltipButton
+              className={`copy-reference-button ${referenceCopied ? "is-copied" : ""}`}
               label={referenceCopied ? `${item.isGroup ? "Group" : "Item"} reference copied` : `Copy ${item.isGroup ? "Group" : "Item"} reference`}
               onClick={(event) => {
                 event.stopPropagation();
@@ -1434,12 +1460,11 @@ function SortableCard({
                     window.alert(`Clipboard access was blocked. Open the ${item.isGroup ? "Group" : "Item"} and copy its title and ID from the detail view.`);
                     return;
                   }
-                  setReferenceCopied(true);
-                  window.setTimeout(() => setReferenceCopied(false), 1600);
+                  showReferenceCopied();
                 });
               }}
             >
-              <Copy size={14} />
+              <CopyConfirmationIcon confirmed={referenceCopied} />
             </TooltipButton>
           </div>
           <div className="card-action-group">
@@ -3688,7 +3713,7 @@ function DetailView({
   const [objectiveEditing, setObjectiveEditing] = useState(false);
   const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
   const [busy, setBusy] = useState(false);
-  const [referenceCopied, setReferenceCopied] = useState(false);
+  const [referenceCopied, showReferenceCopied] = useTransientConfirmation(`${boardId}:${item.id}`);
   const [placementOpen, setPlacementOpen] = useState(false);
   const [placementQuery, setPlacementQuery] = useState("");
   const [placementDestination, setPlacementDestination] = useState<{
@@ -3969,10 +3994,6 @@ function DetailView({
     setPlacementPosition({ kind: "last" });
     setGroupOptimisticItems(null);
   }, [boardId, item.id, previewVersion]);
-
-  useEffect(() => {
-    setReferenceCopied(false);
-  }, [boardId, item.id]);
 
   useEffect(() => {
     setObjectiveEditing(false);
@@ -4304,16 +4325,16 @@ function DetailView({
           {!isPreviewing ? (
             <div className="detail-item-actions" aria-label={`${item.isGroup ? "Group" : "Item"} actions`}>
               <TooltipButton
+                className={`copy-reference-button ${referenceCopied ? "is-copied" : ""}`}
                 label={referenceCopied ? `${item.isGroup ? "Group" : "Item"} reference copied` : `Copy ${item.isGroup ? "Group" : "Item"} reference`}
                 onClick={() => void copyWorkItemReference(state, item).then((copied) => {
                   if (!copied) {
                     window.alert(`Clipboard access was blocked. Copy this ${item.isGroup ? "Group" : "Item"} ID manually: ${item.id}`);
                     return;
                   }
-                  setReferenceCopied(true);
-                  window.setTimeout(() => setReferenceCopied(false), 1600);
+                  showReferenceCopied();
                 })}
-              ><Copy size={14} /></TooltipButton>
+              ><CopyConfirmationIcon confirmed={referenceCopied} /></TooltipButton>
               {!item.isGroup ? (
                 <TooltipButton label="Move Item" aria-expanded={placementOpen} onClick={() => setPlacementOpen(true)}>
                   <ArrowRightLeft size={14} />

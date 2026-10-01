@@ -37,6 +37,7 @@ const PLANBAN_MCP_INSTRUCTIONS = [
   "After a successful open, or after the complete logical mutation batch, include the exact clickable Board URL from the result's userReply.markdown in the final reply.",
   "If the host has an in-app browser, make at most one bounded attempt to show that URL there; never reopen the board after every write.",
   "If boardUrlVerified is false, call planban_launch_board once to verify the URL before presenting it.",
+  "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card using repoId and cardId; the id is the identity and any quoted title beside it is display context only.",
   "Board administration, migration/recovery, and the legacy set_card_parent alias are advertised only through explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;

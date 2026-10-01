@@ -19,6 +19,10 @@ test("the accepted board and detail simplification remains visible in the produc
   assert.match(web, />Board history</u);
   assert.match(web, />Feedback \/ Bug</u);
   assert.match(web, /Copy \$\{item\.isGroup \? "Group" : "Item"\} reference/u);
+  assert.match(web, /function CopyConfirmationIcon/u);
+  assert.match(web, /copy-reference-button \$\{referenceCopied \? "is-copied" : ""\}/u);
+  assert.match(styles, /\.copy-reference-button\.is-copied[\s\S]*?var\(--green-500\)/u);
+  assert.match(styles, /\.copy-reference-button\.is-copied \.copy-reference-icon-success\s*\{[^}]*opacity:\s*1;/su);
   assert.match(web, /function DetailHistoryMenu/u);
   assert.match(web, /className="detail-history-popover"/u);
   assert.match(styles, /\.detail-header\s*\{[^}]*position:\s*sticky;/su);

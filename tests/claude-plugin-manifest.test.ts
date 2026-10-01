@@ -57,7 +57,7 @@ test("the Claude Code session hook only orients sessions in projects that use Pl
     const context = planbanSessionContext({ projectDir: project });
     assert.match(context ?? "", /board `demo board`/u);
     assert.match(context ?? "", /http:\/\/127\.0\.0\.1:4317\/boards\/demo%20board/u);
-    assert.match(context ?? "", /\.planban\/agent-context\.md/u);
+    assert.match(context ?? "", /\.planban[\\/]agent-context\.md/u);
   } finally {
     await rm(project, { recursive: true, force: true });
   }
