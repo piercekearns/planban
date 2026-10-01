@@ -68,6 +68,7 @@ import {
 import { updatePreflight } from "../core/updatePreflight";
 import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
 import { PlanbanActivityStore } from "../core/activity";
+import { collectStaleness } from "../core/stalenessSources";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
@@ -940,7 +941,10 @@ export async function startServer(options: ServeOptions) {
 
   app.get("/api/boards/:repoId/state", async (req, res, next) => {
     try {
-      res.json(await loadState(await boardCwd(req.params.repoId)));
+      const state = await loadState(await boardCwd(req.params.repoId));
+      // Advisory stale signals for the board chip; the git merge log and history index are cached in core.
+      const staleness = await collectStaleness({ cwd: state.cwd, planningRoot: state.planningRoot, items: state.roadmap.roadmapItems });
+      res.json({ ...state, staleness: { cards: staleness.cards } });
     } catch (error) {
       next(error);
     }

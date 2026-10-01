@@ -111,6 +111,7 @@ import {
   type PlanbanActivitySnapshot,
 } from "../core/activity";
 import { liveRefreshDecision } from "./liveSync";
+import { stalenessChipLabel, type StalenessSignal } from "../core/staleness";
 import {
   canPlaceItemInside,
   groupPlacementDecision,
@@ -163,6 +164,7 @@ interface RoadmapItem {
 }
 
 interface PlanbanState {
+  staleness?: { cards: Record<string, StalenessSignal[]> };
   cwd: string;
   manifest: { repoId: string };
   manifestPath: string;
@@ -1045,6 +1047,15 @@ function GroupIcon({
   );
 }
 
+// Stale signals by card id, from the board state API. Mutation responses omit them, so the board keeps the last set.
+const StalenessContext = React.createContext<Record<string, StalenessSignal[]>>({});
+
+function StalenessChip({ itemId }: { itemId: string }) {
+  const signal = React.useContext(StalenessContext)[itemId]?.[0];
+  if (!signal) return null;
+  return <span className="staleness-chip" title={signal.detail}>{stalenessChipLabel(signal, Date.now())}</span>;
+}
+
 function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined; ancestry?: RoadmapItem[]; expanded?: boolean }) {
   const description = item.nextAction || item.summary || "";
   const progressSegments = rollup ? groupProgressSegments(rollup) : [];
@@ -1059,6 +1070,7 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {item.icon ? <span className="card-title-icon">{item.icon}</span> : null}
           {item.title}
         </p>
+        <StalenessChip itemId={item.id} />
         {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
       </div>
       {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
@@ -4671,6 +4683,10 @@ function BoardView({
   onSelectBoard: (repoId: string | null) => void;
 }) {
   const boardId = state.manifest.repoId;
+  const lastStalenessRef = useRef<{ boardId: string; cards: Record<string, StalenessSignal[]> }>({ boardId, cards: {} });
+  if (state.staleness) lastStalenessRef.current = { boardId, cards: state.staleness.cards };
+  else if (lastStalenessRef.current.boardId !== boardId) lastStalenessRef.current = { boardId, cards: {} };
+  const stalenessCards = lastStalenessRef.current.cards;
   const [items, setItems] = useState<RoadmapItem[]>(state.roadmap.roadmapItems);
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -5516,6 +5532,7 @@ function BoardView({
   }
 
   return (
+    <StalenessContext.Provider value={stalenessCards}>
     <main className="board-screen">
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
@@ -5733,6 +5750,7 @@ function BoardView({
         </DragOverlay>
       </DndContext>}
     </main>
+    </StalenessContext.Provider>
   );
 }
 

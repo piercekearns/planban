@@ -216,6 +216,18 @@ test("atomically creates multiple Group children through the board API", async (
   } finally { await server.close(); }
 });
 
+test("board state carries advisory stale signals for the board chip", async () => {
+  await initializeProject({ cwd, title: "Signals", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Awaiting Review", status: "in-progress", nextAction: "Owner: review the drawer." });
+  await createCard({ cwd, title: "Plain Work", status: "in-progress", nextAction: "Agent: build the drawer." });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  try {
+    const state = await jsonFetch<{ staleness: { cards: Record<string, Array<{ kind: string }>> } }>(`${server.url}/api/boards/${repoId}/state`);
+    assert.deepEqual(Object.keys(state.staleness.cards), ["awaiting-review"]);
+    assert.equal(state.staleness.cards["awaiting-review"]?.[0]?.kind, "awaiting-owner");
+  } finally { await server.close(); }
+});
+
 test("queries Group Items through HTTP without changing roadmap state", async () => {
   await initializeProject({ cwd, title: "MIMEeq", repoId, updateAgents: false });
   await createGroup({ cwd, title: "MIMEeq Capability", status: "in-progress" });
