@@ -495,6 +495,33 @@ test("lists registered boards and serves board-specific state APIs", async () =>
   }
 });
 
+test("reading a board does not keep advancing the live state version", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  const liveState = async () => (await jsonFetch<{ stateVersion: number }>(`${server.url}/api/live`)).stateVersion;
+  const settle = () => new Promise((resolveWait) => setTimeout(resolveWait, 750));
+
+  try {
+    // Let any watcher events from setup arrive before taking the baseline.
+    let baseline = await liveState();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await settle();
+      const next = await liveState();
+      if (next === baseline) break;
+      baseline = next;
+    }
+
+    for (let read = 0; read < 3; read += 1) {
+      await jsonFetch(`${server.url}/api/boards/${repoId}/state`);
+      await settle();
+    }
+
+    assert.equal(await liveState(), baseline);
+  } finally {
+    await server.close();
+  }
+});
+
 test("duplicates, archives, restores, and deletes whole boards through the board API", async () => {
   await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
   await createCard({ cwd, title: "Alpha", status: "pending" });
