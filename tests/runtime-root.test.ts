@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { codexMarketplaceConfig, resolvePlanbanRuntime } from "../plugins/planban/scripts/runtime-root.mjs";
-import { codexConfigCases } from "./codex-config-fixtures.ts";
+import { resolvePlanbanRuntime } from "../plugins/planban/scripts/runtime-root.mjs";
 
 async function runtime(root: string) {
   for (const file of ["bin/planban.mjs", "src/cli.ts", "src/core/storage.ts"]) {
@@ -14,6 +14,47 @@ async function runtime(root: string) {
   }
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "planban" }));
   return root;
+}
+
+// An environment whose PATH holds only `bin`, so tests never reach a real Codex.
+function codexEnv(bin: string, codexHome: string) {
+  const env: Record<string, string | undefined> = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !/^(path|planban_repo_root|codex_home)$/iu.test(key)),
+  );
+  return { ...env, PATH: bin, CODEX_HOME: codexHome };
+}
+
+type FakeCodexBehaviour = { stdout?: string; stderr?: string; status?: number; sleepMs?: number };
+
+// A fake `codex` executable that records how it was called and then behaves as told.
+async function fakeCodex(bin: string, behaviour: FakeCodexBehaviour) {
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, "behaviour.json"), JSON.stringify(behaviour));
+  await writeFile(join(bin, "codex.mjs"), `
+import { readFileSync, writeFileSync } from "node:fs";
+const here = new URL(".", import.meta.url);
+writeFileSync(new URL("call.json", here), JSON.stringify({ args: process.argv.slice(2), codexHome: process.env.CODEX_HOME }));
+const behaviour = JSON.parse(readFileSync(new URL("behaviour.json", here), "utf8"));
+if (behaviour.sleepMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, behaviour.sleepMs);
+process.stdout.write(behaviour.stdout ?? "");
+process.stderr.write(behaviour.stderr ?? "");
+process.exitCode = behaviour.status ?? 0;
+`);
+  if (process.platform === "win32") {
+    await writeFile(join(bin, "codex.cmd"), `@"${process.execPath}" "%~dp0codex.mjs" %*\r\n`);
+  } else {
+    await writeFile(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "\${0%/*}/codex.mjs" "$@"\n`);
+    await chmod(join(bin, "codex"), 0o755);
+  }
+  return {
+    call: async () => existsSync(join(bin, "call.json")) ? JSON.parse(await readFile(join(bin, "call.json"), "utf8")) : null,
+    listing: (root: unknown) => JSON.stringify({
+      marketplaces: [
+        { name: "paper", root: "/elsewhere", marketplaceSource: { sourceType: "git", source: "https://example.com/paper.git" } },
+        { name: "planban", root, marketplaceSource: { sourceType: "local", source: root } },
+      ],
+    }),
+  };
 }
 
 test("source checkout wins over marketplace, while configured and bundled runtimes retain precedence", async () => {
@@ -45,7 +86,7 @@ test("marketplace recovery requires an installed cache and a complete runtime", 
     const marketplace = join(home, ".tmp/marketplaces/planban");
     await mkdir(join(marketplace, "bin"), { recursive: true });
     await writeFile(join(marketplace, "bin/planban.mjs"), "");
-    const env = { CODEX_HOME: home };
+    const env = codexEnv(join(root, "empty bin"), home);
     assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
     await runtime(marketplace);
     assert.equal(resolvePlanbanRuntime(cache, env), marketplace);
@@ -54,68 +95,55 @@ test("marketplace recovery requires an installed cache and a complete runtime", 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("Codex local-folder marketplaces resolve through config.toml after the Git marketplace clone", async () => {
+test("Codex local-folder marketplaces resolve through Codex's own marketplace list", async () => {
   const root = await mkdtemp(join(tmpdir(), "planban-runtime-"));
   try {
     const home = join(root, "custom codex home");
     const cache = join(home, "plugins/cache/planban/planban/1.1.6");
     await mkdir(cache, { recursive: true });
-    const env = { CODEX_HOME: home };
+    const bin = join(root, "bin");
+    const env = codexEnv(bin, home);
     const folder = await runtime(join(root, "release folder"));
-    const config = (sourceType: string, source: string) => writeFile(
-      join(home, "config.toml"),
-      `model = "x"\n\n[marketplaces.planban]\nsource_type = "${sourceType}"\nsource = ${source}\n\n[marketplaces.paper]\nsource_type = "local"\nsource = ${JSON.stringify(join(root, "elsewhere"))}\n`,
-    );
+    const codex = await fakeCodex(bin, {});
+    await writeFile(join(bin, "behaviour.json"), JSON.stringify({ stdout: codex.listing(folder) }));
 
-    // Missing config, then a config that does not name a complete runtime, keep the existing error.
-    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
-    await writeFile(join(home, "config.toml"), "[marketplaces.planban\nsource_type = \"local\"\n");
-    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
-    await config("local", JSON.stringify(join(root, "missing")));
-    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
-    await config("git", JSON.stringify(folder));
-    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
-    // Declaring the table twice is invalid TOML, so even a complete runtime in the second declaration is not used.
-    const decoy = await runtime(join(root, "decoy"));
-    await writeFile(join(home, "config.toml"), `[marketplaces.planban]\nsource_type = "local"\n\n[marketplaces.planban]\nsource = ${JSON.stringify(decoy)}\n`);
-    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
-
-    await config("local", JSON.stringify(folder));
     assert.equal(resolvePlanbanRuntime(cache, env), folder);
-    await config("local", `'${folder}'  # literal string`);
-    assert.equal(resolvePlanbanRuntime(cache, env), folder);
+    assert.deepEqual(await codex.call(), { args: ["plugin", "marketplace", "list", "--json"], codexHome: home });
 
-    // Codex stores local sources as absolute paths, so a relative source is ignored rather than guessed at.
-    await config("local", JSON.stringify("../release folder"));
-    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
-    await config("local", JSON.stringify(folder));
-
-    // CODEX_HOME is respected: the same layout under another home is not consulted.
-    assert.throws(() => resolvePlanbanRuntime(cache, { CODEX_HOME: join(root, "other") }), /runtime not found/u);
-
-    // A Git marketplace clone still takes precedence.
+    // A Git marketplace clone still wins, without asking Codex.
+    await rm(join(bin, "call.json"));
     const clone = await runtime(join(home, ".tmp/marketplaces/planban"));
     assert.equal(resolvePlanbanRuntime(cache, env), clone);
+    assert.equal(await codex.call(), null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("Codex marketplace config is read from every TOML form, never from inside strings or arrays", () => {
-  for (const { name, toml, expected } of codexConfigCases) {
-    const config = codexMarketplaceConfig(toml, "planban");
-    const settings = config && Object.fromEntries(["source_type", "source"].filter((key) => key in config).map((key) => [key, config[key]]));
-    assert.deepEqual(settings, expected, name);
-  }
-});
-
-test("Codex local marketplace sources expand a leading ~", async () => {
-  const root = await mkdtemp(join(homedir(), ".planban-runtime-test-"));
+test("Codex marketplace lookups that fail keep the existing error, with a reason", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-runtime-"));
   try {
     const home = join(root, "codex");
     const cache = join(home, "plugins/cache/planban/planban/1.1.6");
     await mkdir(cache, { recursive: true });
-    const folder = await runtime(join(root, "release"));
-    await writeFile(join(home, "config.toml"), `[marketplaces.planban]\nsource_type = "local"\nsource = ${JSON.stringify(`~/${relative(homedir(), folder).split(sep).join("/")}`)}\n`);
-    assert.equal(resolvePlanbanRuntime(cache, { CODEX_HOME: home }), folder);
+    const bin = join(root, "bin");
+    const env = codexEnv(bin, home);
+    const notFound = (reason: RegExp) => new RegExp(`runtime not found \\(.*${reason.source}.*\\)`, "u");
+
+    assert.throws(() => resolvePlanbanRuntime(cache, env), process.platform === "win32" ? /runtime not found \(/u : notFound(/not found on PATH/u));
+
+    const codex = await fakeCodex(bin, {});
+    const cases: Array<[FakeCodexBehaviour, RegExp]> = [
+      [{ status: 2, stdout: codex.listing(await runtime(join(root, "unused"))) }, /exited with 2/u],
+      [{ status: 1, stderr: "Error: failed to load marketplace(s):\n- `paper`: broken\n" }, /exited with 1: Error: failed to load marketplace\(s\): - `paper`: broken/u],
+      [{ stdout: "not json" }, /invalid JSON/u],
+      [{ stdout: JSON.stringify({ marketplaces: [] }) }, /no planban marketplace/u],
+      [{ stdout: codex.listing("relative/release") }, /not an absolute path/u],
+      [{ stdout: codex.listing(join(root, "missing")) }, /no complete Planban runtime/u],
+      [{ stdout: codex.listing(await runtime(join(root, "late"))), sleepMs: 3000 }, /timed out/u],
+    ];
+    for (const [behaviour, reason] of cases) {
+      await writeFile(join(bin, "behaviour.json"), JSON.stringify(behaviour));
+      assert.throws(() => resolvePlanbanRuntime(cache, env, { codexTimeoutMs: 500 }), notFound(reason));
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

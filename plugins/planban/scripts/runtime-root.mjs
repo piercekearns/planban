@@ -1,7 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isTomlTable, parseToml } from "./toml.mjs";
+import { platformInvocation } from "./platform-invocation.mjs";
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
@@ -30,37 +31,43 @@ function installedCacheParts(hostHome, pluginRoot) {
   return { marketplace: parts[0], plugin: parts[1], version: parts[2] };
 }
 
-// Return the string settings of Codex's [marketplaces.<name>] entry, however config.toml spells it
-// (a table, dotted keys or an inline table), or null when the file is not valid TOML or has no such entry.
-export function codexMarketplaceConfig(configText, name) {
-  let config;
-  try { config = parseToml(configText); } catch { return null; }
-  const marketplaces = config.marketplaces;
-  const entry = isTomlTable(marketplaces) && Object.hasOwn(marketplaces, name) ? marketplaces[name] : null;
-  if (!isTomlTable(entry)) return null;
-  return Object.fromEntries(Object.entries(entry).filter(([, value]) => typeof value === "string"));
+// Ask Codex where it keeps the planban marketplace, so its own config parser decides. Codex puts its own directory
+// first on PATH when it starts MCP servers, so `codex` here is the Codex that launched Planban.
+// Returns { root } or, when Codex cannot answer, { reason }.
+function codexListedMarketplaceRoot(env, timeoutMs) {
+  const invocation = platformInvocation("codex", ["plugin", "marketplace", "list", "--json"]);
+  const result = spawnSync(invocation.command, invocation.args, {
+    env,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  if (result.error?.code === "ENOENT") return { reason: "codex was not found on PATH" };
+  if (result.error?.code === "ETIMEDOUT") return { reason: "codex plugin marketplace list timed out" };
+  if (result.error) return { reason: `codex plugin marketplace list failed: ${result.error.message}` };
+  if (result.status !== 0) {
+    // Codex fails the whole list when any configured marketplace cannot load, so show what it said.
+    const said = String(result.stderr ?? "").replace(/\s+/gu, " ").trim().slice(0, 300);
+    return { reason: `codex plugin marketplace list exited with ${result.status ?? result.signal}${said ? `: ${said}` : ""}` };
+  }
+  let listed;
+  try { listed = JSON.parse(result.stdout); } catch { return { reason: "codex plugin marketplace list printed invalid JSON" }; }
+  const entry = Array.isArray(listed?.marketplaces) ? listed.marketplaces.find((marketplace) => marketplace?.name === "planban") : null;
+  if (!entry) return { reason: "Codex lists no planban marketplace" };
+  if (typeof entry.root !== "string" || !isAbsolute(entry.root)) return { reason: "Codex listed a planban marketplace root that is not an absolute path" };
+  if (!runtimeAt(entry.root)) return { reason: `Codex's planban marketplace root has no complete Planban runtime: ${entry.root}` };
+  return { root: resolve(entry.root) };
 }
 
-// Codex stores local marketplace sources as absolute paths; a leading ~ is expanded, anything else relative is ignored.
-function codexLocalSource(value) {
-  if (typeof value !== "string") return null;
-  const expanded = value === "~" || value.startsWith("~/") || value.startsWith("~\\") ? join(homedir(), value.slice(1)) : value;
-  return isAbsolute(expanded) ? resolve(expanded) : null;
-}
-
-// Codex clones Git marketplaces to .tmp/marketplaces/planban; a local marketplace stays in the folder
-// recorded as `source` in config.toml's [marketplaces.planban] table.
-function codexMarketplaceRuntime(env, pluginRoot) {
+// Codex clones Git marketplaces to .tmp/marketplaces/planban; for other sources, such as a local folder, ask Codex.
+function codexMarketplaceRuntime(env, pluginRoot, timeoutMs) {
   const codexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homedir(), ".codex");
-  if (!installedCacheParts(codexHome, pluginRoot)) return null;
+  if (!installedCacheParts(codexHome, pluginRoot)) return {};
   const marketplaceRoot = join(codexHome, ".tmp/marketplaces/planban");
-  if (runtimeAt(marketplaceRoot)) return marketplaceRoot;
-  let configText;
-  try { configText = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { return null; }
-  const configured = codexMarketplaceConfig(configText, "planban");
-  if (configured?.source_type !== "local") return null;
-  const localRoot = codexLocalSource(configured.source);
-  return localRoot && runtimeAt(localRoot) ? localRoot : null;
+  if (runtimeAt(marketplaceRoot)) return { root: marketplaceRoot };
+  return codexListedMarketplaceRoot(env, timeoutMs);
 }
 
 // Claude Code records each marketplace's checkout (or, for directory sources, the source directory itself)
@@ -79,7 +86,7 @@ function claudeMarketplaceRuntime(env, pluginRoot) {
 }
 
 // Keep installed, configured, and source entry points on the same runtime.
-export function resolvePlanbanRuntime(pluginRoot, env = process.env) {
+export function resolvePlanbanRuntime(pluginRoot, env = process.env, { codexTimeoutMs = 5000 } = {}) {
   for (const root of [resolve(pluginRoot, "runtime"), pluginRoot]) {
     if (runtimeAt(root)) return root;
   }
@@ -96,7 +103,9 @@ export function resolvePlanbanRuntime(pluginRoot, env = process.env) {
   const parentRoot = resolve(pluginRoot, "../..");
   if (runtimeAt(parentRoot)) return parentRoot;
 
-  const marketplaceRuntime = codexMarketplaceRuntime(env, pluginRoot) ?? claudeMarketplaceRuntime(env, pluginRoot);
+  const codex = codexMarketplaceRuntime(env, pluginRoot, codexTimeoutMs);
+  const marketplaceRuntime = codex.root ?? claudeMarketplaceRuntime(env, pluginRoot);
   if (marketplaceRuntime) return marketplaceRuntime;
-  throw new Error("Planban runtime not found. Reinstall the Planban marketplace in your host (codex plugin marketplace add / claude plugin marketplace add), or run scripts/configure-local-plugin.mjs from a complete Planban checkout and reinstall the plugin.");
+  const reason = codex.reason ? ` (${codex.reason})` : "";
+  throw new Error(`Planban runtime not found${reason}. Reinstall the Planban marketplace in your host (codex plugin marketplace add / claude plugin marketplace add), or run scripts/configure-local-plugin.mjs from a complete Planban checkout and reinstall the plugin.`);
 }
