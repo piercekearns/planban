@@ -442,9 +442,10 @@ export async function startServer(options: ServeOptions) {
   let onlineRefreshRunning = false;
   const onlineRevisions = new Map<string, number>();
   const onlineAbort = new AbortController();
-  // Online Boards are only polled while a browser is watching (it polls /api/live),
-  // so an idle background server costs the hosted service nothing.
-  let lastLiveRequestAt = 0;
+  // An Online Board is only polled while a browser is watching that board (it
+  // polls /api/live?repoId=...), so an idle server, or one showing only local
+  // boards, makes no hosted requests.
+  const lastLiveRequestAt = new Map<string, number>();
   const activityStore = new PlanbanActivityStore();
   let liveVersion = 0;
   let stateVersion = 0;
@@ -577,8 +578,8 @@ export async function startServer(options: ServeOptions) {
     });
   }
 
-  app.get("/api/live", (_req, res) => {
-    lastLiveRequestAt = Date.now();
+  app.get("/api/live", (req, res) => {
+    if (typeof req.query.repoId === "string" && req.query.repoId) lastLiveRequestAt.set(req.query.repoId, Date.now());
     res.set("Cache-Control", "no-store").json({
       liveVersion,
       stateVersion,
@@ -1729,15 +1730,18 @@ export async function startServer(options: ServeOptions) {
   // Online authority has no local file events. Refresh the same state signal
   // consumed by the Board's existing live polling, without overlapping polls.
   onlineRefresh = setInterval(() => {
-    if (onlineRefreshRunning || Date.now() - lastLiveRequestAt > 15_000) return;
+    if (onlineRefreshRunning) return;
+    const now = Date.now();
+    for (const [repoId, at] of lastLiveRequestAt) if (now - at > 15_000) lastLiveRequestAt.delete(repoId);
+    if (lastLiveRequestAt.size === 0) return;
     onlineRefreshRunning = true;
     void (async () => {
-      const boards = await listBoards();
-      await Promise.all([...new Set([cwd, ...boards.map((board) => board.cwd)])].map(async (boardCwd) => {
+      const boards = (await listBoards()).filter((board) => lastLiveRequestAt.has(board.repoId));
+      await Promise.all([...new Set(boards.map((board) => board.cwd))].map(async (boardCwd) => {
         if (!onlineRefresh) return;
         try {
           const manifest = await readManifest(boardCwd);
-          if (!manifest?.enabled || manifest.storage?.kind !== "online") return;
+          if (!manifest?.enabled || manifest.storage?.kind !== "online" || !lastLiveRequestAt.has(manifest.repoId)) return;
           const storage = manifest.storage;
           const key = `${storage.url}/${storage.boardId}`;
           const remote = await onlineRequest<{ revision: number }>(storage.url, boardPath(storage.boardId, `/changes?since=${onlineRevisions.get(key) ?? 0}&waitMs=0`), undefined, { signal: onlineAbort.signal });

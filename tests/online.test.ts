@@ -418,10 +418,15 @@ test("Board HTTP API reads and edits online state and signals changes from anoth
     assert.equal(state.roadmap.roadmapItems[0].id, "alpha");
     const response = await fetch(`${server.url}/api/boards/demo/cards/alpha`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: "UI edit", baseRevision: state.roadmap.revision }) });
     assert.equal(response.status, 200);
-    const live = await (await fetch(`${server.url}/api/live`)).json();
+    // Watching only another board must not reach the hosted service.
+    await fetch(`${server.url}/api/live?repoId=some-local-board`);
+    const before = fake.requests.filter((req) => req.path.endsWith("/changes")).length;
+    await new Promise((resolve) => setTimeout(resolve, 3300));
+    assert.equal(fake.requests.filter((req) => req.path.endsWith("/changes")).length, before);
+    const live = await (await fetch(`${server.url}/api/live?repoId=demo`)).json();
     await storage.updateCard({ cwd, cardId: "alpha", summary: "Other machine edit" });
     await new Promise((resolve) => setTimeout(resolve, 3300));
-    const changed = await (await fetch(`${server.url}/api/live`)).json();
+    const changed = await (await fetch(`${server.url}/api/live?repoId=demo`)).json();
     assert.ok(changed.stateVersion > live.stateVersion);
     assert.ok(fake.requests.some((req) => req.path.endsWith("/changes")));
     const stale = await fetch(`${server.url}/api/boards/demo/cards/alpha`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: "stale", baseRevision: 0 }) });

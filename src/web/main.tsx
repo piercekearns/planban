@@ -6153,7 +6153,8 @@ function App() {
     let pollTimer: number | null = null;
     const poll = async () => {
       try {
-        const snapshot = await api<LiveSnapshot>("/api/live", undefined, 3_000);
+        const watchedRepoId = selectedRepoIdRef.current;
+        const snapshot = await api<LiveSnapshot>(watchedRepoId ? `/api/live?repoId=${encodeURIComponent(watchedRepoId)}` : "/api/live", undefined, 3_000);
         if (stopped) return;
         setActivities(snapshot.activities);
         const previous = liveVersionRef.current;
