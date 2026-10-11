@@ -27,7 +27,8 @@ import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
 import { onlineLogin } from "./core/online/login";
-import { onlineStatus, saveCredentials } from "./core/online/credentials";
+import { onlineStatus } from "./core/online/credentials";
+import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
 import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
@@ -112,11 +113,24 @@ online.command("login <url>")
   .addOption(new Option("--access <scope>", "connection access").choices(["all", "board"]).default("all"))
   .option("--boards <id>", "board id for prototype board access")
   .option("--dev-user <id>", "development sign-in on a local Online Board backend")
+  .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
   .action(async (url, options) => print(await onlineLogin(url, options), {}));
-online.command("logout <url>").action(async (url) => {
-  await saveCredentials(url, null);
-  print("Signed out on this machine.", {});
-});
+online.command("logout <url>").description("sign out on this machine and revoke its connection")
+  .action(async (url) => print(await onlineLogout(url), {}));
+online.command("connections <url>").description("list this person's machines, agents and keys")
+  .action(async (url) => print(await listConnections(url), {}));
+online.command("revoke <url> <connectionId>").description("cut off a machine, agent or key at once")
+  .action(async (url, connectionId) => print(await revokeConnection(url, connectionId), {}));
+const keys = online.command("keys").description("personal access keys");
+keys.command("create <url>").requiredOption("--board <id>", "the one board the key reaches")
+  .addOption(new Option("--level <level>", "what the key may do").choices(["read", "plan", "complete"]).makeOptionMandatory())
+  .requiredOption("--name <name>", "a name to recognise the key by")
+  .option("--expires-days <days>", "days until the key stops working", (value) => Number(value))
+  .action(async (url, options) => {
+    const created = await createKey(url, { boardId: options.board, level: options.level, name: options.name, expiresInDays: options.expiresDays });
+    process.stderr.write("Copy this key now. Planban keeps only a fingerprint of it and cannot show it again.\n");
+    print(created, {});
+  });
 online.command("status").action(async () => print(await onlineStatus(), {}));
 online.command("take-online <url>").option("--cwd <path>", "project directory")
   .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));

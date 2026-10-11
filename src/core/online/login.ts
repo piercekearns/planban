@@ -16,6 +16,17 @@ export interface LoginOptions {
   openBrowser?: ((url: string) => Promise<void>) | undefined;
   /** Development sign-in, offered only by a local Online Board backend. */
   devUser?: string | undefined;
+  /** Sign in with a personal access key held in this environment variable. */
+  keyEnv?: string | undefined;
+}
+
+async function keyLogin(url: string, variable: string) {
+  const key = process.env[variable];
+  if (!key) throw new PlanbanValidationError(`Environment variable ${variable} is empty.`);
+  if (!/^pbk_[A-Za-z0-9_-]{20,}$/.test(key)) throw new PlanbanValidationError(`Environment variable ${variable} does not hold a Planban personal access key.`);
+  // Keys do not refresh; they last until revoked or until their expiry.
+  await saveCredentials(url, { clientId: "key", accessToken: key, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z" });
+  return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me") };
 }
 
 /**
@@ -87,6 +98,7 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
   const url = serviceUrl(urlInput);
   if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
   if (options.devUser) return devLogin(url, options);
+  if (options.keyEnv) return keyLogin(url, options.keyEnv);
   if (!!options.user !== !!options.passwordEnv) throw new PlanbanValidationError("Headless login requires both --user and --password-env.");
   const password = options.passwordEnv ? process.env[options.passwordEnv] : undefined;
   if (options.passwordEnv && !password) throw new PlanbanValidationError(`Password environment variable ${options.passwordEnv} is empty.`);

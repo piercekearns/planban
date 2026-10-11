@@ -89,6 +89,24 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
       .filter((item) => Number.isInteger(item.version)) : [];
     return json(await ctx.runQuery(internal.copies.check, { connectionId, fingerprints }));
   }
+  if (parts[0] === "connections" && parts.length === 1 && method === "GET") return json(await ctx.runQuery(internal.connections.list, { connectionId }));
+  if (parts[0] === "connections" && parts.length === 3 && parts[2] === "revoke" && method === "POST") {
+    return json(await ctx.runMutation(internal.connections.revoke, { connectionId, targetId: parts[1]! }));
+  }
+  if (parts[0] === "keys" && parts.length === 1 && method === "POST") {
+    const input = await body(request);
+    const level = input.level === "read" || input.level === "plan" || input.level === "complete" ? input.level : null;
+    if (!level) return json({ error: { code: "validation", message: "level must be read, plan or complete." } }, 400);
+    const days = input.expiresInDays === undefined ? undefined : Number(input.expiresInDays);
+    if (days !== undefined && !(Number.isInteger(days) && days > 0 && days <= 3650)) return json({ error: { code: "validation", message: "expiresInDays must be a whole number of days." } }, 400);
+    const token = randomSecret("pbk_");
+    const created = await ctx.runMutation(internal.connections.createKey, {
+      connectionId, tokenHash: await sha256Hex(token), name: String(input.name ?? ""), boardId: String(input.boardId ?? ""), level,
+      ...(days === undefined ? {} : { expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString() }),
+    });
+    // The key is shown once; only its hash is stored.
+    return json({ ...created, key: token }, 201);
+  }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {

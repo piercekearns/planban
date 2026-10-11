@@ -19,6 +19,7 @@ import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, restoreBac
 import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
+import { onlineLogout } from "../src/core/online/connections";
 import { startServer } from "../src/server/server";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
 
@@ -55,6 +56,7 @@ async function fakeService() {
   let failLiveToken = false;
   let failCopyCheck = false;
   let localTransfer: string | undefined;
+  const revokedTokens = new Set<string>();
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -114,6 +116,10 @@ async function fakeService() {
         return json(401, { error: "unauthorized" });
       }
       if (path === "/api/v1/me") return json(200, { userId: "dev-owner", scope: "all" });
+      if (path === "/api/v1/connections/self/revoke") {
+        revokedTokens.add(String(req.headers.authorization));
+        return json(200, { revoked: true });
+      }
       if (path === "/api/v1/copy-check") {
         if (failCopyCheck) return json(503, { error: { code: "unavailable", message: "Down for maintenance." } });
         if (!bundle || authority !== "online") return json(200, { matches: [] });
@@ -268,7 +274,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers,
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens,
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -834,4 +840,20 @@ test("every machine keeps a local backup of an Online Board it uses, and it rest
   assert.equal(state.manifest.storage?.kind, "local");
   assert.equal(state.roadmap.roadmapItems[0]!.summary, "Backed up");
   assert.equal((await storage.readDoc({ cwd: restoredCwd, cardId: "alpha", kind: "spec" })).markdown, "# Changed online");
+});
+
+test("signing out revokes this machine's connection on the service, then forgets it locally", async () => {
+  const result = await onlineLogout(fake.url);
+  assert.equal(result.revoked, true);
+  assert.ok(fake.revokedTokens.has("Bearer access-0"));
+  assert.equal((await readCredentials()).services[fake.url], undefined);
+});
+
+test("signing out while the service is unreachable still forgets the sign-in and says the connection remains", async () => {
+  const unreachable = "http://127.0.0.1:9";
+  await saveCredentials(unreachable, { clientId: "cli", accessToken: "access-x", refreshToken: "", expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  const result = await onlineLogout(unreachable);
+  assert.equal(result.revoked, false);
+  assert.match(result.note ?? "", /stays active until you revoke it/);
+  assert.equal((await readCredentials()).services[unreachable], undefined);
 });

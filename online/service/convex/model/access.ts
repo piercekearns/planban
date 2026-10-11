@@ -6,12 +6,20 @@ import { fail } from "./errors";
 
 export const BOARD_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/** A machine's sign-in lasts until it signs out or goes this long unused (owner decision 6). */
+export const IDLE_SIGN_OUT_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function connectionIsUsable(connection: Doc<"connections"> | null): connection is Doc<"connections"> {
+  if (!connection || connection.revokedAt) return false;
+  if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) return false;
+  if ((connection.kind === "machine" || connection.kind === "dev") && Date.now() - Date.parse(connection.lastUsedAt) > IDLE_SIGN_OUT_MS) return false;
+  return true;
+}
+
 export async function liveConnection(ctx: QueryCtx, connectionId: Id<"connections">): Promise<Doc<"connections">> {
   const connection = await ctx.db.get(connectionId);
-  if (!connection || connection.revokedAt || (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now())) {
-    fail("unauthorized", "This Planban connection was signed out or revoked. Sign in again.");
-  }
-  return connection;
+  if (!connectionIsUsable(connection)) fail("unauthorized", "This Planban connection was signed out, revoked or unused for 90 days. Sign in again.");
+  return connection!;
 }
 
 export function reaches(connection: Doc<"connections">, boardId: string) {
