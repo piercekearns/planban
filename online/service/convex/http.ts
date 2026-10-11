@@ -5,7 +5,7 @@ import { ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import { authenticate, devAuthEnabled, publicOrigin, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
-import { CLOCK_SKEW_SECONDS, clerkConfigured, verifyClerkAccessToken } from "./model/clerk";
+import { clerkConfigured, verifyClerkAccessToken } from "./model/clerk";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
@@ -320,21 +320,20 @@ const protectedMcpResource = protectedResourceFor("/mcp");
  * Planban sign-in for this machine (owner decision 6: it lasts until sign-out
  * or 90 days unused). Only fresh tokens for that client are accepted.
  */
-const MACHINE_EXCHANGE_SECONDS = 10 * 60;
 const machineSignIn = httpAction(async (ctx, request) => {
   try {
+    const input = await body(request);
     const match = /^Bearer\s+(\S+)$/i.exec(request.headers.get("Authorization") ?? "");
     const token = match ? await verifyClerkAccessToken(ctx, match[1]!, publicOrigin()) : null;
-    if (!token || token.clientId !== process.env.PLANBAN_CLI_CLIENT_ID || Date.now() / 1000 - token.issuedAt > MACHINE_EXCHANGE_SECONDS) {
-      return json({ error: { code: "unauthorized", message: "Sign in again: the sign-in was not for the Planban command line, or is too old." } }, 401);
+    if (!token || token.clientId !== process.env.PLANBAN_CLI_CLIENT_ID) {
+      return json({ error: { code: "unauthorized", message: "Sign in again: the sign-in was not for the Planban command line." } }, 401);
     }
-    const input = await body(request);
     const secret = randomSecret("pbm_");
+    // The age check happens inside the mutation, with the token's use, so no
+    // delay between here and there can outlast the record of that use.
     const { connectionId } = await ctx.runMutation(internal.connections.createMachine, {
       userId: token.sub, tokenHash: await sha256Hex(secret), name: typeof input.name === "string" ? input.name : "",
-      exchangeHash: await sha256Hex(token.signed),
-      // Past this, the age check above refuses the token anyway (issue times may be up to the clock skew ahead).
-      exchangeExpiresAt: new Date((token.issuedAt + MACHINE_EXCHANGE_SECONDS + CLOCK_SKEW_SECONDS) * 1000).toISOString(),
+      exchangeHash: await sha256Hex(token.signed), issuedAt: token.issuedAt,
     });
     return json({ token: secret, connectionId, userId: token.sub }, 201);
   } catch (error) {

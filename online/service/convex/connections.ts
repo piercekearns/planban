@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection } from "./model/access";
+import { CLOCK_SKEW_SECONDS } from "./model/clerk";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 
@@ -161,17 +162,25 @@ export const forOAuthClient = internalMutation({
   },
 });
 
+/** How long after it was issued a command-line sign-in token can be exchanged. */
+const MACHINE_EXCHANGE_SECONDS = 10 * 60;
+
 /**
  * A machine's own sign-in, from the command line's browser sign-in: the
  * person's full access. The sign-in token it was exchanged for is used up in
  * the same step, so it can never make a second one.
  */
 export const createMachine = internalMutation({
-  args: { userId: v.string(), tokenHash: v.string(), name: v.string(), exchangeHash: v.string(), exchangeExpiresAt: v.string() },
-  handler: async (ctx, { userId, tokenHash, name, exchangeHash, exchangeExpiresAt }) => {
+  args: { userId: v.string(), tokenHash: v.string(), name: v.string(), exchangeHash: v.string(), issuedAt: v.number() },
+  handler: async (ctx, { userId, tokenHash, name, exchangeHash, issuedAt }) => {
+    // Checked here, with the record of its use, so the record always outlives the token's usefulness.
+    const age = Date.now() / 1000 - issuedAt;
+    if (age > MACHINE_EXCHANGE_SECONDS || age < -CLOCK_SKEW_SECONDS) fail("unauthorized", "Sign in again: this sign-in is too old.");
     const used = await ctx.db.query("machineExchanges").withIndex("by_tokenHash", (q) => q.eq("tokenHash", exchangeHash)).first();
     if (used) fail("unauthorized", "Sign in again: this sign-in has already been used.");
-    await ctx.db.insert("machineExchanges", { tokenHash: exchangeHash, expiresAt: exchangeExpiresAt });
+    // Kept past the moment the age check above would refuse it anyway.
+    const expiresAt = new Date((issuedAt + MACHINE_EXCHANGE_SECONDS + CLOCK_SKEW_SECONDS) * 1000).toISOString();
+    await ctx.db.insert("machineExchanges", { tokenHash: exchangeHash, expiresAt });
     const now = new Date().toISOString();
     const label = name.trim().slice(0, 80) || "Planban command line";
     const id = await ctx.db.insert("connections", {

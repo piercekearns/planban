@@ -35,7 +35,10 @@ its access tokens are JWTs with `client_id`, `iat`, `jti` and no `sid` or
 `aud`, last 24 hours and cannot be revoked (so the service accepts the command
 line's token for one exchange only); and it sends codes to any loopback port,
 not just the registered ones, as RFC 8252 allows. The Clerk instance must serve
-Planban alone, since its tokens do not name an audience.
+Planban alone, since its tokens do not name an audience. Clerk gives every OAuth
+app refresh tokens; each new access token can be exchanged once, but only
+someone who completed the sign-in as that person ever holds a refresh token,
+and the command line does not ask for one.
 
 ## Checks
 
