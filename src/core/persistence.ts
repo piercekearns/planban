@@ -1,8 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { PlanbanConflictError } from "./boardOperations";
 
 const LOCK_DIR = ".planban-write.lock";
 const IDEMPOTENCY_FILE = ".idempotency.json";
@@ -102,6 +104,11 @@ const QUEUE_DIR = ".planban-write.queue";
 interface LockOwner {
   pid?: number;
   token?: string;
+  /** When the owner joined the queue or took the lock. */
+  at?: string;
+  createdAt?: string;
+  /** The owner's command line, to say which process holds a board. */
+  command?: string;
   /** Written by the queue's winner: removable at once if its process has gone. */
   queue?: boolean;
 }
@@ -161,9 +168,77 @@ async function liveEntries(queue: string): Promise<QueueEntry[]> {
 
 const ahead = (a: QueueEntry, b: QueueEntry) => a.number < b.number || (a.number === b.number && a.id < b.id);
 
+/** After this long waiting for a board, say which process holds it. */
+const LOCK_NOTICE_MS = 5_000;
+
+function lockWaitLimitMs() {
+  const configured = Number(process.env.PLANBAN_LOCK_WAIT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 60_000;
+}
+
+function ownCommand() {
+  return [basename(process.argv0), ...process.argv.slice(1)].join(" ").slice(0, 300);
+}
+
+/** The holder's command line: as it recorded it, or as the system reports it (older versions). */
+function commandOf(owner: LockOwner): string | null {
+  if (owner.command) return owner.command;
+  if (typeof owner.pid !== "number" || process.platform === "win32") return null;
+  try {
+    return execFileSync("ps", ["-o", "command=", "-p", String(owner.pid)], { encoding: "utf8", timeout: 1000 }).trim().slice(0, 300) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function describeLockHolder(planningRoot: string, owner: LockOwner | null): string {
+  if (!owner || typeof owner.pid !== "number") return `Another Planban process is writing the board at ${planningRoot}.`;
+  const command = commandOf(owner);
+  const since = owner.at ?? owner.createdAt;
+  const stop = process.platform === "win32" ? `taskkill /PID ${owner.pid} /F` : `kill ${owner.pid}   (or, if it does not exit, kill -9 ${owner.pid})`;
+  return [
+    `The board at ${planningRoot} is held by process ${owner.pid}${command ? ` (${command})` : ""}${since ? `, since ${since}` : ""}.`,
+    `If that process is stuck, stop it and Planban carries on by itself: ${stop}`,
+  ].join("\n");
+}
+
+/** A write that could not get the board in time. Nothing was changed. */
+export class PlanbanBoardBusyError extends PlanbanConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanbanBoardBusyError";
+  }
+}
+
+/**
+ * Watches one wait for a board. After a few seconds it says who holds the
+ * board and how to free it; past the limit (PLANBAN_LOCK_WAIT_MS, one
+ * minute by default) it gives up with that explanation instead of waiting
+ * silently, so a CLI command or an agent's MCP call reports a stuck process.
+ */
+class LockWait {
+  private readonly started = Date.now();
+  private noticed = false;
+
+  constructor(private readonly planningRoot: string) {}
+
+  async check(holder: () => Promise<LockOwner | null>) {
+    const waited = Date.now() - this.started;
+    if (waited < LOCK_NOTICE_MS) return;
+    const limit = lockWaitLimitMs();
+    if (!this.noticed && waited < limit) {
+      this.noticed = true;
+      process.stderr.write(`Waiting for another Planban process to finish writing.\n${describeLockHolder(this.planningRoot, await holder())}\n`);
+    }
+    if (waited >= limit) {
+      throw new PlanbanBoardBusyError(`Gave up after waiting ${Math.round(waited / 1000)} seconds; nothing was changed.\n${describeLockHolder(this.planningRoot, await holder())}`);
+    }
+  }
+}
+
 async function enterQueue(queue: string, id: string): Promise<string> {
   await mkdir(queue, { recursive: true });
-  const owner = JSON.stringify({ pid: process.pid, token: id }) + "\n";
+  const owner = JSON.stringify({ pid: process.pid, token: id, at: new Date().toISOString(), command: ownCommand() }) + "\n";
   const choosing = join(queue, `choosing-${id}.json`);
   let ticket: string | null = null;
   try {
@@ -173,10 +248,15 @@ async function enterQueue(queue: string, id: string): Promise<string> {
     ticket = join(queue, mine.name);
     await writeFile(ticket, owner, { flag: "wx" });
     await rm(choosing, { force: true });
+    const wait = new LockWait(dirname(queue));
     for (;;) {
       const entries = await liveEntries(queue);
-      const busy = entries.some((entry) => entry.id !== id && (entry.kind === "choosing" || ahead(entry, mine)));
-      if (!busy) return ticket;
+      const blockers = entries.filter((entry) => entry.id !== id && (entry.kind === "choosing" || ahead(entry, mine)));
+      if (blockers.length === 0) return ticket;
+      await wait.check(async () => {
+        const first = blockers.filter((entry) => entry.kind === "ticket").sort((a, b) => (ahead(a, b) ? -1 : 1))[0] ?? blockers[0]!;
+        return readJsonFile<LockOwner>(join(queue, first.name));
+      });
       await sleep(LOCK_RETRY_MS);
     }
   } catch (error) {
@@ -189,10 +269,11 @@ async function enterQueue(queue: string, id: string): Promise<string> {
 
 /** The original lock directory, for older Planban versions writing the same board. */
 async function takeLegacyLock(lockPath: string, token: string) {
+  const wait = new LockWait(dirname(lockPath));
   for (;;) {
     try {
       await mkdir(lockPath);
-      await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, token, queue: true, createdAt: new Date().toISOString() }) + "\n", "utf8");
+      await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, token, queue: true, createdAt: new Date().toISOString(), command: ownCommand() }) + "\n", "utf8");
       return;
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
@@ -209,6 +290,7 @@ async function takeLegacyLock(lockPath: string, token: string) {
           continue;
         }
       }
+      await wait.check(() => readJsonFile<LockOwner>(join(lockPath, "owner.json")));
       await sleep(LOCK_RETRY_MS);
     }
   }

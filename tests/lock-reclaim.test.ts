@@ -105,3 +105,50 @@ test("many processes taking turns on one board never overlap", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a write blocked by a stuck process says which process holds the board and how to free it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-lock-"));
+  const home = join(root, "home");
+  const project = join(root, "project");
+  const env = { ...process.env, PLANBAN_HOME: home, PLANBAN_LOCK_WAIT_MS: "1500" };
+  const cli = (args: string[]) => execFileAsync(process.execPath, ["--import", "tsx/esm", resolve("src/cli.ts"), ...args], { env });
+  try {
+    await cli(["init", "--cwd", project, "--repo-id", "stuck-board", "--no-agents", "-o", "json"]);
+    const planningRoot = join(home, "repos", "stuck-board");
+    // A process that takes the board and then hangs.
+    const script = join(root, "hang.mjs");
+    await writeFile(script, `
+      const { withBoardWriteLock } = await import(${JSON.stringify(resolve("src/core/persistence.ts"))});
+      await withBoardWriteLock(${JSON.stringify(planningRoot)}, async () => { console.log("holding"); await new Promise(() => { setInterval(() => {}, 1000); }); });
+    `);
+    const holder = spawn(process.execPath, ["--import", "tsx/esm", script, "hung-agent-marker"], { env });
+    await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+    try {
+      const failure = await cli(["create-card", "Blocked", "--cwd", project, "-o", "json"]).then(() => null, (error) => error);
+      assert.ok(failure, "the write should give up");
+      assert.match(failure.stderr, new RegExp(`held by process ${holder.pid}`));
+      assert.match(failure.stderr, /hung-agent-marker/);
+      assert.match(failure.stderr, new RegExp(`kill ${holder.pid}`));
+      assert.match(failure.stderr, /nothing was changed/);
+      // An agent going through the local MCP server gets the same explanation.
+      const mcp = spawn(process.execPath, ["plugins/planban/scripts/start-planban-mcp.mjs"], {
+        env: { ...env, PLANBAN_REPO_ROOT: resolve("."), PLANBAN_ACTIVITY_URL: "http://127.0.0.1:9" }, stdio: ["pipe", "pipe", "pipe"],
+      });
+      let output = "";
+      mcp.stdout.on("data", (chunk) => { output += chunk; });
+      const done = new Promise<void>((resolveDone) => mcp.once("exit", () => resolveDone()));
+      mcp.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "planban_create_card", arguments: { cwd: project, title: "From an agent" } } }) + "\n");
+      await done;
+      assert.match(output, new RegExp(`held by process ${holder.pid}`));
+      assert.match(output, new RegExp(`kill ${holder.pid}`));
+    } finally {
+      const exited = holder.exitCode !== null || holder.signalCode !== null ? Promise.resolve() : new Promise((resolveExit) => holder.once("exit", resolveExit));
+      holder.kill("SIGKILL");
+      await exited;
+    }
+    const created = JSON.parse((await cli(["create-card", "Unblocked", "--cwd", project, "-o", "json"])).stdout);
+    assert.ok(JSON.stringify(created).includes("Unblocked"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
