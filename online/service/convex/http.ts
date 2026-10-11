@@ -8,6 +8,7 @@ import { authenticate, devAuthEnabled, randomSecret, sha256Hex, type Authenticat
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
+import { blobStoreNamed } from "./model/blobs";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   conflict: 409,
@@ -176,6 +177,24 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
       connectionId, boardId, op: rest[1]!, input,
       ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
     }));
+  }
+  if (rest[0] === "attachments") {
+    if (rest.length === 1 && method === "GET") {
+      const cardId = url.searchParams.get("cardId");
+      return json(await ctx.runQuery(internal.attachments.list, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));
+    }
+    if ((rest[1] === "begin" || rest[1] === "finish") && rest.length === 2 && method === "POST") {
+      const input = await body(request);
+      const file = { cardId: String(input.cardId ?? ""), path: String(input.path ?? ""), sha256: String(input.sha256 ?? ""), size: Number(input.size), contentType: String(input.contentType ?? "application/octet-stream") };
+      if (rest[1] === "begin") return json(await ctx.runMutation(internal.attachments.begin, { connectionId, boardId, ...file }));
+      return json(await ctx.runMutation(internal.attachments.finish, { connectionId, boardId, uploadResult: String(input.uploadResult ?? ""), ...file }));
+    }
+    if (rest.length === 3 && rest[2] === "delete" && method === "POST") return json(await ctx.runMutation(internal.attachments.remove, { connectionId, boardId, attachmentId: rest[1]! }));
+    if (rest.length === 2 && method === "GET") {
+      const located = await ctx.runQuery(internal.attachments.locate, { connectionId, boardId, attachmentId: rest[1]! });
+      const response = await blobStoreNamed(located.store).download(ctx, located.storageKey, located.contentType);
+      return response ?? json({ error: { code: "not_found", message: "Attachment contents are missing." } }, 404);
+    }
   }
   if (rest[0] === "docs" && rest.length === 3 && method === "GET") {
     const kind = rest[2] === "plan" ? "plan" : rest[2] === "spec" ? "spec" : null;

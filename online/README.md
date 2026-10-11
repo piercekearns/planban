@@ -33,6 +33,7 @@ node --import tsx/esm online/scripts/generations-convex.ts               # Take 
 PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/transfers-convex.ts   # killed transfers resume
 PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/live-convex.ts   # live updates
 node --import tsx/esm online/scripts/access-convex.ts                    # connections, sign-out, personal access keys
+PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/attachments-convex.ts   # card attachments
 (cd online/service && node scripts/mcp-sdk-check.mjs)                  # remote MCP with the official MCP SDK client
 online/scripts/demo-convex.sh                                            # two machines, CLI and local MCP
 ```

@@ -75,9 +75,21 @@ export interface OnlineRequestOptions {
    * once with the same key and body, so the service applies it at most once.
    */
   idempotencyKey?: string;
+  /** Overall time limit for one attempt; 30 seconds unless set. */
+  timeoutMs?: number;
 }
 
 export async function onlineRequest<T>(urlInput: string, path: string, body?: unknown, options: OnlineRequestOptions = {}): Promise<T> {
+  return (await authorizedResponse(urlInput, path, body, options)).json() as Promise<T>;
+}
+
+/** A GET whose answer is a file. */
+export async function requestBytes(urlInput: string, path: string): Promise<Uint8Array> {
+  const response = await authorizedResponse(urlInput, path, undefined, { timeoutMs: 10 * 60_000 });
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function authorizedResponse(urlInput: string, path: string, body: unknown, options: OnlineRequestOptions): Promise<Response> {
   const url = serviceUrl(urlInput);
   let credentials = await requireCredentials(url);
   let refreshed = false;
@@ -93,7 +105,7 @@ export async function onlineRequest<T>(urlInput: string, path: string, body?: un
       ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
     },
     ...(payload === undefined ? {} : { body: payload }),
-    redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+    redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 30_000)]) : AbortSignal.timeout(options.timeoutMs ?? 30_000),
   });
   // Reads and keyed writes are safe to repeat after a network failure.
   const retryable = body === undefined || !!options.idempotencyKey;
@@ -126,7 +138,7 @@ export async function onlineRequest<T>(urlInput: string, path: string, body?: un
     if (response.status === 403) throw new OnlineAuthenticationError(`${message} Ask the board owner for access.`, 403);
     throw new Error(message);
   }
-  return response.json() as Promise<T>;
+  return response;
 }
 
 export function boardPath(boardId: string, suffix = "") {

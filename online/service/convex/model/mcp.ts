@@ -212,6 +212,13 @@ export const TOOLS: ToolDefinition[] = [
     }, ["boardId", "cardId", "kind", "markdown", "expectedMtimeMs"]),
     annotations: write,
   },
+  {
+    name: "planban_list_attachments",
+    title: "List Planban Attachments",
+    description: "List the files attached to a board's cards (path, size, type, hash). Contents are downloaded with the Planban CLI or REST API.",
+    inputSchema: object({ boardId, cardId: { type: "string", description: "Only this card's files." } }, ["boardId"]),
+    annotations: read,
+  },
   // ChatGPT's company-knowledge and deep-research surfaces look for these two read-only tools.
   {
     name: "search",
@@ -257,6 +264,10 @@ export class McpService {
 
   readDoc(boardId: string, cardId: string, kind: "spec" | "plan"): Promise<PlanbanDocPayload> {
     return this.call(() => this.ctx.runQuery(internal.boards.readDoc, { connectionId: this.connectionId, boardId, cardId, kind }));
+  }
+
+  attachments(boardId: string, cardId?: string) {
+    return this.call(() => this.ctx.runQuery(internal.attachments.list, { connectionId: this.connectionId, boardId, ...(cardId ? { cardId } : {}) }));
   }
 
   history(boardId: string): Promise<PlanbanHistoryPayload> {
@@ -317,6 +328,8 @@ async function callTool(service: McpService, origin: string, name: string, args:
     }
     case "planban_read_doc":
       return await service.readDoc(stringArg(args, "boardId"), stringArg(args, "cardId"), args.kind === "plan" ? "plan" : "spec");
+    case "planban_list_attachments":
+      return await service.attachments(stringArg(args, "boardId"), typeof args.cardId === "string" ? args.cardId : undefined);
     case "planban_history": {
       const history = await service.history(stringArg(args, "boardId"));
       const limit = typeof args.limit === "number" && args.limit > 0 ? Math.min(args.limit, 200) : 20;

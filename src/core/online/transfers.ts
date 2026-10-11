@@ -14,6 +14,7 @@ import { loadOnlineState, onlineState } from "./adapter";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readStaleMarker, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
+import { downloadAttachments, uploadLocalAttachments } from "./attachments";
 import { serviceUrl } from "./credentials";
 import { buildAgentContext } from "../protocol";
 import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
@@ -181,7 +182,7 @@ async function localChangesAfter(planningRoot: string, revision: number) {
  * and the board only becomes live online at commit. Running it again resumes,
  * including after the upload committed but before this project switched.
  */
-export async function takeOnline(urlInput: string, cwdInput: string) {
+export async function takeOnline(urlInput: string, cwdInput: string, options: { attachments?: boolean } = {}) {
   const url = serviceUrl(urlInput);
   await requireCredentials(url);
   const cwd = resolveProjectCwd(cwdInput);
@@ -238,7 +239,12 @@ export async function takeOnline(urlInput: string, cwdInput: string) {
       };
       await writeJournal(planningRoot, journal);
     }
-    return finishTakeOnline(cwd, manifest, planningRoot, journal);
+    const result = await finishTakeOnline(cwd, manifest, planningRoot, journal);
+    if (!options.attachments) return result;
+    // Card files go up once the board is online; re-running links files already stored.
+    const roadmap = JSON.parse(await readFile(result.localSnapshot, "utf8")) as { roadmapItems: Array<{ id: string }> };
+    const attachments = await uploadLocalAttachments(url, boardId, planningRoot, roadmap.roadmapItems.map((item) => item.id));
+    return { ...result, attachments };
   });
 }
 
@@ -401,6 +407,7 @@ export async function takeLocal(cwdInput: string) {
       // The folder is this transfer's own; a partial earlier attempt is replaced.
       await rm(root, { recursive: true, force: true });
       await stageBundle(root, bundle);
+      await downloadAttachments(storage.url, storage.boardId, root);
       await step({ ...journal, phase: "staged" });
     }
     crashPoint("take-local:after-stage");

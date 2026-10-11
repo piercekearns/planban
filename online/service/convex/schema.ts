@@ -180,4 +180,33 @@ export default defineSchema({
     name: v.string(),
     value: v.number(),
   }).index("by_name", ["name"]),
+
+  /**
+   * Files attached to cards (images, models, exports): one row per file path
+   * in a card's folder, pointing at a stored blob by content hash.
+   */
+  attachments: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    cardId: v.string(),
+    /** Path inside the card's folder, with forward slashes. */
+    path: v.string(),
+    sha256: v.string(),
+    size: v.number(),
+    contentType: v.string(),
+    uploadedBy: v.string(),
+    uploadedAt: v.string(),
+  }).index("by_board_card_path", ["boardId", "generation", "cardId", "path"])
+    .index("by_board_sha", ["boardId", "sha256"])
+    .index("by_board_generation", ["boardId", "generation"]),
+
+  /** Stored file contents, once per board per content hash, in whichever blob store holds them. */
+  blobs: defineTable({
+    boardId: v.string(),
+    sha256: v.string(),
+    size: v.number(),
+    store: v.union(v.literal("convex"), v.literal("r2")),
+    storageKey: v.string(),
+    createdAt: v.string(),
+  }).index("by_board_sha", ["boardId", "sha256"]),
 });

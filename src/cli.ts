@@ -1,6 +1,7 @@
 import { Command, Option } from "commander";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { ensureDemoBoard } from "./core/demo";
 import { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, restoreBoard } from "./core/registry";
 import {
@@ -19,6 +20,7 @@ import {
   updateCard,
   exportFlatVersion1,
   reconstructHierarchy,
+  readManifest,
 } from "./core/storage";
 import { PLANBAN_STATUSES, type PlanbanStatus } from "./core/types";
 import { queryWorkItems, workItemQueryFromSearchParams } from "./core/workItemQuery";
@@ -29,6 +31,7 @@ import { startServer } from "./server/server";
 import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
+import { downloadAttachment, listAttachments, removeAttachment, uploadAttachment } from "./core/online/attachments";
 import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
@@ -133,7 +136,36 @@ keys.command("create <url>").requiredOption("--board <id>", "the one board the k
   });
 online.command("status").action(async () => print(await onlineStatus(), {}));
 online.command("take-online <url>").option("--cwd <path>", "project directory")
-  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
+  .option("--attachments", "also upload the files in each card's folder (skips autosaves, logs, caches and files over 100 MB)")
+  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd), { attachments: !!options.attachments }), {}));
+const onlineBoardOf = async (cwd: string) => {
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled || manifest.storage?.kind !== "online") throw new Error("This project does not point to an Online Board.");
+  return manifest.storage;
+};
+online.command("files").description("list a board's card attachments").option("--cwd <path>", "project directory").option("--card <id>", "only this card")
+  .action(async (options) => {
+    const storage = await onlineBoardOf(cwdOption(options.cwd));
+    print({ attachments: await listAttachments(storage.url, storage.boardId, options.card) }, {});
+  });
+online.command("attach-file <file>").description("attach a file to a card").option("--cwd <path>", "project directory").requiredOption("--card <id>", "card id")
+  .option("--as <path>", "path inside the card's folder (defaults to the file's name)")
+  .action(async (file, options) => {
+    const storage = await onlineBoardOf(cwdOption(options.cwd));
+    const absolute = resolve(file);
+    print(await uploadAttachment(storage.url, storage.boardId, options.card, options.as ?? basename(absolute), await readFile(absolute)), {});
+  });
+online.command("get-file <attachmentId>").description("download an attachment").option("--cwd <path>", "project directory").requiredOption("--out <file>", "where to save it")
+  .action(async (attachmentId, options) => {
+    const storage = await onlineBoardOf(cwdOption(options.cwd));
+    await writeFile(resolve(options.out), await downloadAttachment(storage.url, storage.boardId, attachmentId));
+    print({ saved: resolve(options.out) }, {});
+  });
+online.command("remove-file <attachmentId>").description("remove an attachment").option("--cwd <path>", "project directory")
+  .action(async (attachmentId, options) => {
+    const storage = await onlineBoardOf(cwdOption(options.cwd));
+    print(await removeAttachment(storage.url, storage.boardId, attachmentId), {});
+  });
 online.command("export").option("--cwd <path>", "project directory").requiredOption("--out <file>", "bundle destination")
   .action(async (options) => {
     await exportOnline(cwdOption(options.cwd), options.out);

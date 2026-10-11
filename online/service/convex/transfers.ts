@@ -6,6 +6,7 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import { liveConnection } from "./model/access";
 import { fail } from "./model/errors";
 import { abortTransfer, beginTransfer, commitTransfer, putPart, requireOwnConnection } from "./model/transfer";
+import { releaseBlob } from "./attachments";
 
 const CLEANUP_BATCH = 25;
 
@@ -71,6 +72,15 @@ export const cleanupGeneration = internalMutation({
     for (const table of ["historyDocs", "historyPayloads", "history", "docs", "retiredIds", "boardFingerprints", "boardState"] as const) {
       removed += await deleteSome(ctx, table, boardId, generation);
       if (removed >= CLEANUP_BATCH) break;
+    }
+    if (removed < CLEANUP_BATCH) {
+      // Attachments of the old generation; their contents go when nothing else uses them.
+      const rows = await ctx.db.query("attachments").withIndex("by_board_generation", (q) => q.eq("boardId", boardId).eq("generation", generation)).take(CLEANUP_BATCH);
+      for (const row of rows) {
+        await ctx.db.delete(row._id);
+        await releaseBlob(ctx, boardId, row.sha256);
+      }
+      removed += rows.length;
     }
     if (removed > 0) {
       await ctx.scheduler.runAfter(0, internal.transfers.cleanupGeneration, { boardId, generation });

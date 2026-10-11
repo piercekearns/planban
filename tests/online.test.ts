@@ -29,6 +29,12 @@ let root: string;
 let cwd: string;
 let fake: Awaited<ReturnType<typeof fakeService>>;
 
+async function readBytes(req: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
 async function readBody(req: IncomingMessage) {
   let text = "";
   for await (const chunk of req) text += chunk;
@@ -59,16 +65,26 @@ async function fakeService() {
   const revokedTokens = new Set<string>();
   let failExportDocs = false;
   let boardUid: string | undefined;
+  const attachments = new Map<string, any>();
+  const blobs = new Map<string, Buffer>();
+  const uploads = new Map<string, Buffer>();
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
     try {
       const request = new URL(req.url!, url);
       const path = request.pathname;
-      const raw = await readBody(req);
-      const body = raw ? (req.headers["content-type"]?.includes("application/json") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : undefined;
+      const rawBytes = await readBytes(req);
+      const raw = rawBytes.toString("utf8");
+      const body = raw && path !== "/upload" ? (req.headers["content-type"]?.includes("application/json") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : undefined;
       requests.push({ method: req.method!, path, body });
       const json = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
+      // The upload URL is a signed blob-store address, not an authenticated API call.
+      if (path === "/upload" && req.method === "POST") {
+        const storageId = `blob-${uploads.size + 1}`;
+        uploads.set(storageId, Buffer.from(rawBytes));
+        return json(200, { storageId });
+      }
       if (path === "/.well-known/oauth-authorization-server") return json(200, {
         issuer: url, registration_endpoint: `${metadataOrigin ?? url}/oauth/register`, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
       });
@@ -220,6 +236,26 @@ async function fakeService() {
         return json(200, { finished: true });
       }
       if (suffix === "/history") return json(200, { currentVersion: Math.max(...bundle.history.map(({ entry }) => entry.version)), retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90 }, entries: bundle.history.map(({ entry }) => entry).filter((entry) => entry.version > Number(request.searchParams.get("after") ?? 0)).reverse() });
+      if (suffix === "/attachments" && req.method === "GET") return json(200, { attachments: [...attachments.values()] });
+      if (suffix === "/attachments/begin" || suffix === "/attachments/finish") {
+        if (suffix === "/attachments/begin" && !blobs.has(body.sha256)) return json(200, { done: false, upload: { url: `${url}/upload`, method: "POST", headers: { "Content-Type": body.contentType } } });
+        if (suffix === "/attachments/finish") {
+          const uploaded = uploads.get(body.uploadResult);
+          if (!uploaded || createHash("sha256").update(uploaded).digest("hex") !== body.sha256) return json(400, { error: { code: "validation", message: "Upload mismatch." } });
+          blobs.set(body.sha256, uploaded);
+        }
+        const id = `att-${body.cardId}-${body.path}`;
+        const record = { id, cardId: body.cardId, path: body.path, sha256: body.sha256, size: body.size, contentType: body.contentType, uploadedBy: "dev-owner", uploadedAt: new Date().toISOString() };
+        attachments.set(id, record);
+        return json(200, { done: true, attachment: record });
+      }
+      if (suffix.startsWith("/attachments/") && req.method === "GET") {
+        const record = attachments.get(decodeURIComponent(suffix.split("/")[2]!));
+        if (!record) return json(404, { error: { code: "not_found", message: "Attachment not found." } });
+        res.writeHead(200, { "Content-Type": record.contentType });
+        res.end(blobs.get(record.sha256));
+        return;
+      }
       if (suffix.startsWith("/docs/")) {
         const [, , cardId, kind] = suffix.split("/").map(decodeURIComponent);
         return json(200, docs.get(`${cardId}/${kind}`) ?? { cardId, kind, exists: false, path: null, markdown: "", mtimeMs: null });
@@ -281,7 +317,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -913,4 +949,22 @@ test("a copy of a board made before identities existed is still recognised by it
   const refusal = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
   assert.ok(refusal instanceof PlanbanStaleCopyError);
   assert.equal(refusal.stale.unsyncedChanges.length, 60);
+});
+
+test("take-online with attachments uploads card files once, and take-local brings them back", async () => {
+  const before = await storage.loadState(cwd);
+  const folder = join(before.planningRoot, "items", "alpha");
+  await mkdir(join(folder, "renders", "__pycache__"), { recursive: true });
+  await writeFile(join(folder, "renders", "front.png"), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
+  await writeFile(join(folder, "notes.txt"), "Fabric notes");
+  await writeFile(join(folder, "model.blend1"), "autosave");
+  await writeFile(join(folder, "renders", "__pycache__", "x.pyc"), "cache");
+  const result: any = await takeOnline(fake.url, cwd, { attachments: true });
+  assert.equal(result.attachments.files, 2);
+  assert.equal(result.attachments.uploaded, 2);
+  assert.deepEqual(result.attachments.skipped.map((entry: { path: string }) => entry.path).sort(), ["model.blend1", "renders/__pycache__"]);
+  assert.deepEqual([...fake.attachments.values()].map((entry) => entry.path).sort(), ["notes.txt", "renders/front.png"]);
+  const returned = await takeLocal(cwd);
+  assert.deepEqual([...await readFile(join(returned.planningRoot, "items", "alpha", "renders", "front.png"))], [137, 80, 78, 71, 1, 2, 3]);
+  assert.equal(await readFile(join(returned.planningRoot, "items", "alpha", "notes.txt"), "utf8"), "Fabric notes");
 });
