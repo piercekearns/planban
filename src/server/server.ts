@@ -59,6 +59,7 @@ import {
   reconstructHierarchy,
 } from "../core/storage";
 import { boardPath, onlineRequest } from "../core/online/client";
+import type { LiveWatch } from "../core/online/live";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
 import { PlanbanQueryValidationError, queryWorkItems, workItemQueryFromSearchParams } from "../core/workItemQuery";
 import {
@@ -440,6 +441,7 @@ export async function startServer(options: ServeOptions) {
   let activitySweep: NodeJS.Timeout | null = null;
   let onlineRefresh: NodeJS.Timeout | null = null;
   let onlineRefreshRunning = false;
+  let closeOnlineWatches = () => {};
   const onlineRevisions = new Map<string, number>();
   const onlineAbort = new AbortController();
   // An Online Board is only polled while a browser is watching that board (it
@@ -485,6 +487,7 @@ export async function startServer(options: ServeOptions) {
       clearInterval(onlineRefresh);
       onlineRefresh = null;
     }
+    closeOnlineWatches();
     if (activitySweep) {
       clearInterval(activitySweep);
       activitySweep = null;
@@ -1727,12 +1730,30 @@ export async function startServer(options: ServeOptions) {
     // Uninitialized projects can still be served so the UI can show onboarding.
   }
 
-  // Online authority has no local file events. Refresh the same state signal
-  // consumed by the Board's existing live polling, without overlapping polls.
+  // Online authority has no local file events. For each Online Board a browser
+  // is watching, subscribe to its revision (Convex pushes changes) and raise
+  // the same state signal the board page already polls. Services without live
+  // updates are checked every few seconds instead, without overlapping checks.
+  const onlineWatches = new Map<string, { repoId: string; watch: LiveWatch | null | "starting" }>();
+  const signalRevision = (key: string, repoId: string, revision: number) => {
+    if (onlineRevisions.get(key) !== revision && onlineRefresh) {
+      onlineRevisions.set(key, revision);
+      sendEvent("state", { repoId });
+    }
+  };
+  const dropWatch = (key: string) => {
+    const entry = onlineWatches.get(key);
+    onlineWatches.delete(key);
+    if (entry?.watch && entry.watch !== "starting") void entry.watch.close().catch(() => undefined);
+  };
+  closeOnlineWatches = () => {
+    for (const key of [...onlineWatches.keys()]) dropWatch(key);
+  };
   onlineRefresh = setInterval(() => {
     if (onlineRefreshRunning) return;
     const now = Date.now();
     for (const [repoId, at] of lastLiveRequestAt) if (now - at > 15_000) lastLiveRequestAt.delete(repoId);
+    for (const [key, entry] of onlineWatches) if (!lastLiveRequestAt.has(entry.repoId)) dropWatch(key);
     if (lastLiveRequestAt.size === 0) return;
     onlineRefreshRunning = true;
     void (async () => {
@@ -1743,13 +1764,30 @@ export async function startServer(options: ServeOptions) {
           const manifest = await readManifest(boardCwd);
           if (!manifest?.enabled || manifest.storage?.kind !== "online" || !lastLiveRequestAt.has(manifest.repoId)) return;
           const storage = manifest.storage;
+          const repoId = manifest.repoId;
           const key = `${storage.url}/${storage.boardId}`;
-          const remote = await onlineRequest<{ revision: number }>(storage.url, boardPath(storage.boardId, `/changes?since=${onlineRevisions.get(key) ?? 0}&waitMs=0`), undefined, { signal: onlineAbort.signal });
-          const revision = remote.revision;
-          if (onlineRevisions.get(key) !== revision && onlineRefresh) {
-            onlineRevisions.set(key, revision);
-            sendEvent("state", { repoId: manifest.repoId });
+          const existing = onlineWatches.get(key);
+          if (existing && existing.watch !== null) return;
+          if (!existing) {
+            onlineWatches.set(key, { repoId, watch: "starting" });
+            try {
+              const { watchRevision } = await import("../core/online/live");
+              const watch = await watchRevision(storage.url, storage.boardId,
+                (revision) => signalRevision(key, repoId, revision),
+                () => dropWatch(key));
+              if (onlineWatches.get(key)?.watch !== "starting" || !onlineRefresh) {
+                await watch?.close();
+                return;
+              }
+              onlineWatches.set(key, { repoId, watch });
+              if (watch) return;
+            } catch (error) {
+              onlineWatches.delete(key);
+              throw error;
+            }
           }
+          const remote = await onlineRequest<{ revision: number }>(storage.url, boardPath(storage.boardId, `/changes?since=${onlineRevisions.get(key) ?? 0}&waitMs=0`), undefined, { signal: onlineAbort.signal });
+          signalRevision(key, repoId, remote.revision);
         } catch {
           // Foreground reads surface connectivity/authentication errors. Never
           // replace remote authority with an editable offline copy.

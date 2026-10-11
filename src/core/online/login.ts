@@ -11,6 +11,24 @@ export interface LoginOptions {
   access?: "all" | "board" | undefined;
   boards?: string | undefined;
   openBrowser?: ((url: string) => Promise<void>) | undefined;
+  /** Development sign-in, offered only by a local Online Board backend. */
+  devUser?: string | undefined;
+}
+
+async function devLogin(url: string, options: LoginOptions) {
+  const response = await fetch(`${url}/dev/token`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+    body: JSON.stringify({
+      userId: options.devUser, clientName: "Planban CLI",
+      ...(options.access === "board" ? { boards: [options.boards] } : {}),
+    }),
+  });
+  if (response.status !== 201) throw new PlanbanValidationError("This Online Board service does not offer development sign-in.");
+  const { token } = await response.json() as { token: string };
+  // Development tokens do not expire or refresh; signing out revokes them.
+  await saveCredentials(url, { clientId: "dev", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", person: options.devUser });
+  return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me") };
 }
 
 async function openBrowser(url: string) {
@@ -38,6 +56,8 @@ function hiddenHandle(html: string) {
 
 export async function onlineLogin(urlInput: string, options: LoginOptions = {}) {
   const url = serviceUrl(urlInput);
+  if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
+  if (options.devUser) return devLogin(url, options);
   if (!!options.user !== !!options.passwordEnv) throw new PlanbanValidationError("Headless login requires both --user and --password-env.");
   const password = options.passwordEnv ? process.env[options.passwordEnv] : undefined;
   if (options.passwordEnv && !password) throw new PlanbanValidationError(`Password environment variable ${options.passwordEnv} is empty.`);

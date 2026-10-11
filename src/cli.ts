@@ -111,6 +111,7 @@ online.command("login <url>")
   .option("--password-env <name>", "environment variable holding the prototype password")
   .addOption(new Option("--access <scope>", "connection access").choices(["all", "board"]).default("all"))
   .option("--boards <id>", "board id for prototype board access")
+  .option("--dev-user <id>", "development sign-in on a local Online Board backend")
   .action(async (url, options) => print(await onlineLogin(url, options), {}));
 online.command("logout <url>").action(async (url) => {
   await saveCredentials(url, null);
