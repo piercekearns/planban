@@ -28,13 +28,24 @@ async function devLogin(userId: string, options: { boards?: string[]; level?: st
   return { token: (await response.json()).token };
 }
 
-async function api(session: Session | null, method: string, path: string, body?: unknown) {
+async function api(session: Session | null, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
   const response = await fetch(`${origin}${path}`, {
     method,
-    headers: { "Content-Type": "application/json", ...(session ? { Authorization: `Bearer ${session.token}` } : {}) },
+    headers: { "Content-Type": "application/json", ...(session ? { Authorization: `Bearer ${session.token}` } : {}), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   return { status: response.status, json: await response.json().catch(() => null) as any };
+}
+
+
+/** An edit that states the board revision it was based on, read just before. */
+async function op(session: Session, board: string, name: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  const input = { ...body };
+  if (!("baseRevision" in input)) {
+    const current = await api(session, "GET", `/api/v1/boards/${board}`);
+    input.baseRevision = current.json?.roadmap?.revision;
+  }
+  return api(session, "POST", `/api/v1/boards/${board}/ops/${name}`, input, headers);
 }
 
 const boardId = `smoke-${Date.now().toString(36)}`;
@@ -86,7 +97,7 @@ const listed = await api(owner, "GET", "/api/v1/boards");
 assert.ok(listed.json.boards.some((board: { boardId: string }) => board.boardId === boardId));
 ok("the board appears in the owner's board list");
 
-const created = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title: "Second card", baseRevision: 8, actor: "user" });
+const created = await op(owner, boardId, "createCard", { title: "Second card", baseRevision: 8, actor: "user" });
 assert.equal(created.status, 200, JSON.stringify(created.json));
 const secondId = created.json.result.createdCard.id;
 assert.equal(created.json.roadmap.revision, 9);
@@ -97,7 +108,7 @@ assert.deepEqual(unchanged.json, { unchanged: true, revision: 9, authority: "onl
 assert.equal((await api(owner, "GET", `/api/v1/boards/${boardId}/changes?since=0&waitMs=0`)).json.revision, 9);
 ok("a client holding the current revision gets a small 'unchanged' reply");
 
-const stale = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId: secondId, summary: "stale", baseRevision: 8 });
+const stale = await op(owner, boardId, "updateCard", { cardId: secondId, summary: "stale", baseRevision: 8 });
 assert.equal(stale.status, 409);
 assert.equal(stale.json.error.code, "conflict");
 assert.equal(stale.json.error.currentRevision, 9);
@@ -105,10 +116,10 @@ ok("a stale revision is refused with a conflict and the current revision");
 
 const spec = await api(owner, "GET", `/api/v1/boards/${boardId}/docs/${first.cardId}/spec`);
 assert.equal(spec.json.exists, true);
-const written = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId: first.cardId, kind: "spec", markdown: "# First card\n\nEdited online.\n", expectedMtimeMs: spec.json.mtimeMs });
+const written = await op(owner, boardId, "writeDoc", { cardId: first.cardId, kind: "spec", markdown: "# First card\n\nEdited online.\n", expectedMtimeMs: spec.json.mtimeMs });
 assert.equal(written.status, 200, JSON.stringify(written.json));
 assert.ok(written.json.result.doc.mtimeMs > spec.json.mtimeMs);
-const staleDoc = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId: first.cardId, kind: "spec", markdown: "lost", expectedMtimeMs: spec.json.mtimeMs });
+const staleDoc = await op(owner, boardId, "writeDoc", { cardId: first.cardId, kind: "spec", markdown: "lost", expectedMtimeMs: spec.json.mtimeMs });
 assert.equal(staleDoc.status, 409);
 ok("document writes check the document stamp");
 
@@ -119,7 +130,7 @@ const invited = await api(owner, "POST", `/api/v1/boards/${boardId}/members`, { 
 assert.equal(invited.status, 200, JSON.stringify(invited.json));
 const seen = await api(cofounder, "GET", `/api/v1/boards/${boardId}`);
 assert.equal(seen.status, 200);
-const edit = await api(cofounder, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId: secondId, nextAction: "Co-founder picks this up", baseRevision: seen.json.roadmap.revision });
+const edit = await op(cofounder, boardId, "updateCard", { cardId: secondId, nextAction: "Co-founder picks this up", baseRevision: seen.json.roadmap.revision });
 assert.equal(edit.status, 200, JSON.stringify(edit.json));
 ok("after the owner adds them, the co-founder can read and edit");
 
@@ -127,38 +138,62 @@ const agent = await devLogin("owner", { boards: [boardId], level: "plan", client
 const agentBoards = await api(agent, "GET", "/api/v1/boards");
 assert.deepEqual(agentBoards.json.boards.map((board: { boardId: string }) => board.boardId), [boardId]);
 assert.equal((await api(agent, "GET", `/api/v1/boards/${raceId}`)).status, 404);
-assert.equal((await api(agent, "POST", `/api/v1/boards/${boardId}/ops/moveCard`, { cardId: secondId, status: "complete" })).status, 403);
-const agentEdit = await api(agent, "POST", `/api/v1/boards/${boardId}/ops/moveCard`, { cardId: secondId, status: "in-progress" });
+assert.equal((await op(agent, boardId, "moveCard", { cardId: secondId, status: "complete" })).status, 403);
+const agentEdit = await op(agent, boardId, "moveCard", { cardId: secondId, status: "in-progress" });
 assert.equal(agentEdit.status, 200, JSON.stringify(agentEdit.json));
 ok("a per-board agent connection reaches only its board and can plan but not complete");
 
 const reader = await devLogin("owner", { boards: [boardId], level: "read", clientName: "Read-only agent" });
 assert.equal((await api(reader, "GET", `/api/v1/boards/${boardId}`)).status, 200);
-assert.equal((await api(reader, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId: secondId, summary: "nope" })).status, 403);
+assert.equal((await op(reader, boardId, "updateCard", { cardId: secondId, summary: "nope" })).status, 403);
 ok("a read-only connection can read but not edit");
 
-assert.equal((await api(cofounder, "POST", `/api/v1/boards/${boardId}/ops/moveCard`, { cardId: secondId, status: "complete" })).status, 403);
-assert.equal((await api(cofounder, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title: "Sneaky", status: "complete" })).status, 403);
+assert.equal((await op(cofounder, boardId, "moveCard", { cardId: secondId, status: "complete" })).status, 403);
+assert.equal((await op(cofounder, boardId, "createCard", { title: "Sneaky", status: "complete" })).status, 403);
 ok("an editor's own connection cannot complete cards");
-const parentAlias = await api(agent, "POST", `/api/v1/boards/${boardId}/ops/setCardParent`, { cardId: secondId, parentId: null, status: "complete" });
+const parentAlias = await op(agent, boardId, "setCardParent", { cardId: secondId, parentId: null, status: "complete" });
 assert.equal(parentAlias.status, 200, JSON.stringify(parentAlias.json));
 assert.notEqual(parentAlias.json.roadmap.roadmapItems.find((item: { id: string }) => item.id === secondId).status, "complete");
 ok("setCardParent ignores status, so it cannot be used to complete a card");
-const doneCard = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title: "Already done", status: "complete" });
+const doneCard = await op(owner, boardId, "createCard", { title: "Already done", status: "complete" });
 assert.equal(doneCard.status, 200, JSON.stringify(doneCard.json));
 const doneId = doneCard.json.result.createdCard.id;
-assert.equal((await api(agent, "POST", `/api/v1/boards/${boardId}/ops/createGroup`, { title: "Group from done", itemIds: [doneId], anchorId: doneId })).status, 403);
+assert.equal((await op(agent, boardId, "createGroup", { title: "Group from done", itemIds: [doneId], anchorId: doneId })).status, 403);
 ok("a Group that would inherit Complete status is owner-only too");
 await api(owner, "POST", `/api/v1/boards/${boardId}/members`, { userId: "owner" });
 const members = await api(owner, "GET", `/api/v1/boards/${boardId}/members`);
 assert.equal(members.json.members.find((member: { userId: string }) => member.userId === "owner").role, "owner");
 ok("inviting an existing owner never demotes them");
-assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/ops/moveCard`, { cardId: doneId, status: "archived" })).status, 200);
-assert.equal((await api(agent, "POST", `/api/v1/boards/${boardId}/ops/deleteArchivedCard`, { cardId: doneId })).status, 403);
-assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/ops/deleteArchivedCard`, { cardId: doneId })).status, 200);
-const recreated = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title: "Already done" });
+assert.equal((await op(owner, boardId, "moveCard", { cardId: doneId, status: "archived" })).status, 200);
+assert.equal((await op(agent, boardId, "deleteArchivedCard", { cardId: doneId })).status, 403);
+assert.equal((await op(owner, boardId, "deleteArchivedCard", { cardId: doneId })).status, 200);
+const recreated = await op(owner, boardId, "createCard", { title: "Already done" });
 assert.notEqual(recreated.json.result.createdCard.id, doneId);
 ok("only the owner deletes cards, and a deleted card's id is never reused");
+
+// Owner decision 10: every edit states its base version, and retries never duplicate.
+const unbased = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title: "No base" });
+assert.equal(unbased.status, 400);
+assert.match(unbased.json.error.message, /baseRevision/);
+assert.equal(typeof unbased.json.error.currentRevision, "number");
+const unbasedDoc = await op(owner, boardId, "writeDoc", { cardId: first.cardId, kind: "plan", markdown: "# Plan\n" });
+assert.equal(unbasedDoc.status, 400);
+assert.match(unbasedDoc.json.error.message, /expectedMtimeMs/);
+ok("an edit without the version it was based on is refused, with the current revision");
+const key = `smoke-retry-${Date.now()}`;
+const retryBase = (await api(owner, "GET", `/api/v1/boards/${boardId}`)).json.roadmap.revision;
+const firstTry = await op(owner, boardId, "createCard", { title: "Created once", baseRevision: retryBase }, { "Idempotency-Key": key });
+assert.equal(firstTry.status, 200, JSON.stringify(firstTry.json));
+const retry = await op(owner, boardId, "createCard", { title: "Created once", baseRevision: retryBase }, { "Idempotency-Key": key });
+assert.equal(retry.status, 200, JSON.stringify(retry.json));
+assert.equal(retry.json.result.createdCard.id, firstTry.json.result.createdCard.id);
+assert.equal(retry.json.roadmap.revision, firstTry.json.roadmap.revision);
+const afterRetry = (await api(owner, "GET", `/api/v1/boards/${boardId}`)).json.roadmap;
+assert.equal(afterRetry.roadmapItems.filter((item: { title: string }) => item.title === "Created once").length, 1);
+assert.equal(afterRetry.revision, firstTry.json.roadmap.revision);
+const misuse = await op(owner, boardId, "createCard", { title: "Different", baseRevision: afterRetry.revision }, { "Idempotency-Key": key });
+assert.equal(misuse.status, 400);
+ok("a retried edit with the same idempotency key returns the original result and applies once");
 
 const history = await api(owner, "GET", `/api/v1/boards/${boardId}/history`);
 assert.ok(history.json.entries.some((entry: { version: number }) => entry.version === 3), "imported history version kept");
@@ -168,7 +203,7 @@ ok("history keeps imported versions and attributes each change to a person and a
 // Many edits cross a snapshot boundary; export must rebuild every version exactly.
 let revision = (await api(owner, "GET", `/api/v1/boards/${boardId}`)).json.roadmap.revision;
 for (let index = 0; index < 30; index += 1) {
-  const response = await api(owner, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId: secondId, summary: `Edit ${index}`, baseRevision: revision });
+  const response = await op(owner, boardId, "updateCard", { cardId: secondId, summary: `Edit ${index}`, baseRevision: revision });
   assert.equal(response.status, 200, JSON.stringify(response.json));
   revision = response.json.roadmap.revision;
 }
@@ -185,7 +220,7 @@ for (let index = 0; index < 30; index += 1) {
 }
 assert.equal(exported.json.history.at(-1).roadmap.revision, exported.json.roadmap.revision);
 assert.deepEqual(exported.json.history.at(-1).roadmap, exported.json.roadmap);
-assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId: secondId, summary: "after take local" })).status, 409);
+assert.equal((await op(owner, boardId, "updateCard", { cardId: secondId, summary: "after take local" })).status, 409);
 ok("export rebuilds every history version from snapshots and changes; after Take Local the online copy is read-only");
 assert.ok(exported.json.historyDocs.some((doc: { markdown: string }) => doc.markdown.includes("Edited online")));
 ok("export includes document bodies as they were at each history version");
@@ -196,14 +231,14 @@ assert.equal(reonline.status, 201, JSON.stringify(reonline.json));
 assert.ok(reonline.json.roadmap.revision > lastRevision);
 const reHistory = await api(owner, "GET", `/api/v1/boards/${boardId}/history`);
 assert.ok(reHistory.json.entries.some((entry: { version: number }) => entry.version === 3));
-assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId: secondId, summary: "back online", baseRevision: reonline.json.roadmap.revision })).status, 200);
+assert.equal((await op(owner, boardId, "updateCard", { cardId: secondId, summary: "back online", baseRevision: reonline.json.roadmap.revision })).status, 200);
 assert.equal((await api(cofounder, "POST", "/api/v1/boards/import", exported.json)).status, 409);
 ok("the owner can take the same board online again; others cannot");
 assert.ok(exported.json.retiredIds.includes(doneId));
 const freshId = `${boardId}-copy`;
 const copy = await api(owner, "POST", "/api/v1/boards/import", { ...exported.json, retiredIds: [], roadmap: { ...exported.json.roadmap, project: { ...exported.json.roadmap.project, id: freshId } } });
 assert.equal(copy.status, 201, JSON.stringify(copy.json));
-const copyCard = await api(owner, "POST", `/api/v1/boards/${freshId}/ops/createCard`, { title: "Already done" });
+const copyCard = await op(owner, freshId, "createCard", { title: "Already done" });
 assert.notEqual(copyCard.json.result.createdCard.id, doneId);
 ok("deleted card ids stay retired through export and import, even rebuilt from history alone");
 

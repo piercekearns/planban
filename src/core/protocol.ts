@@ -17,6 +17,7 @@ This repo uses Planban.
 
 ${input.online ? `The planning authority is the Online Board at ${input.online.url}, board ${input.online.boardId}.
 Use Planban tools or the CLI for every read and edit. Local files are recovery evidence, not editable planning state.
+Every edit must state the board revision it was based on (\`baseRevision\`, from the latest read); document edits state the document version (\`expectedMtimeMs\`). A refused edit returns the current revision: reread, then retry.
 Sign in on this machine with \`planban online login ${input.online.url}\`.` : `Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
 
 - ${input.roadmapPath}`}

@@ -31,6 +31,8 @@ macbook() { PLANBAN_HOME="$MACBOOK_HOME" "${NODE[@]}" "$ROOT/bin/planban.mjs" "$
 mini()    { PLANBAN_HOME="$MINI_HOME"    "${NODE[@]}" "$ROOT/bin/planban.mjs" "$@"; }
 titles()  { "${NODE[@]}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const items=j.roadmapItems??j.roadmap?.roadmapItems??j.cards??j;for(const i of items)console.log("    - "+i.title+" ("+i.status+")")})'; }
 step()    { printf '\n== %s\n' "$1"; }
+# Online edits state the board revision they were based on.
+rev()     { PLANBAN_HOME="$1" "${NODE[@]}" "$ROOT/bin/planban.mjs" query-cards --cwd "$2" -o json | "${NODE[@]}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).revision))'; }
 
 step "MacBook: a normal local board with three cards"
 macbook init --cwd "$MACBOOK_REPO" --repo-id "$BOARD" --title "Online demo" --no-agents -o json >/dev/null
@@ -47,7 +49,7 @@ echo "    Board $BOARD is now online at $URL"
 step "Mac mini: sign in, attach the same board, add a card"
 mini online login "$URL" --dev-user owner >/dev/null
 mini online attach "$URL" "$BOARD" --cwd "$MINI_REPO" >/dev/null
-mini create-card "Added on the Mac mini" --summary "Created by the mini's CLI." --cwd "$MINI_REPO" -o json >/dev/null
+mini create-card "Added on the Mac mini" --summary "Created by the mini's CLI." --base-revision "$(rev "$MINI_HOME" "$MINI_REPO")" --cwd "$MINI_REPO" -o json >/dev/null
 mini list-cards --cwd "$MINI_REPO" -o json | titles
 
 step "MacBook sees the Mac mini's card without any sync"
@@ -69,7 +71,7 @@ echo "    ok - the MacBook sees the local agent's card"
 step "Mac mini: Take Local, then the online copy is read-only"
 mini online take-local --cwd "$MINI_REPO" >/dev/null
 mini list-cards --cwd "$MINI_REPO" -o json | titles
-if macbook create-card "After take local" --cwd "$MACBOOK_REPO" -o json >/dev/null 2>&1; then
+if macbook create-card "After take local" --base-revision "$(rev "$MACBOOK_HOME" "$MACBOOK_REPO")" --cwd "$MACBOOK_REPO" -o json >/dev/null 2>&1; then
   echo "    Unexpected: the online copy accepted an edit after Take Local."; exit 1
 fi
 echo "    ok - the MacBook's online view refuses edits after Take Local"

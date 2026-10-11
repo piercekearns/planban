@@ -10,8 +10,10 @@
 
 import type * as boards from "../boards.js";
 import type * as connections from "../connections.js";
+import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as live from "../live.js";
+import type * as maintenance from "../maintenance.js";
 import type * as members from "../members.js";
 import type * as model_access from "../model/access.js";
 import type * as model_auth from "../model/auth.js";
@@ -19,6 +21,9 @@ import type * as model_codec from "../model/codec.js";
 import type * as model_errors from "../model/errors.js";
 import type * as model_history from "../model/history.js";
 import type * as model_liveToken from "../model/liveToken.js";
+import type * as model_rows from "../model/rows.js";
+import type * as model_transfer from "../model/transfer.js";
+import type * as transfers from "../transfers.js";
 
 import type {
   ApiFromModules,
@@ -29,8 +34,10 @@ import type {
 declare const fullApi: ApiFromModules<{
   boards: typeof boards;
   connections: typeof connections;
+  crons: typeof crons;
   http: typeof http;
   live: typeof live;
+  maintenance: typeof maintenance;
   members: typeof members;
   "model/access": typeof model_access;
   "model/auth": typeof model_auth;
@@ -38,6 +45,9 @@ declare const fullApi: ApiFromModules<{
   "model/errors": typeof model_errors;
   "model/history": typeof model_history;
   "model/liveToken": typeof model_liveToken;
+  "model/rows": typeof model_rows;
+  "model/transfer": typeof model_transfer;
+  transfers: typeof transfers;
 }>;
 
 /**

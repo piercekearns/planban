@@ -80,6 +80,28 @@ export async function appendLineDurably(path: string, line: string) {
   }
 }
 
+/**
+ * A lock left by a process that was killed (a crash, a power cut, or the
+ * transfer crash tests) is released at once instead of after STALE_LOCK_MS.
+ * Planning roots are on this machine's disk, so the owner's pid is local.
+ */
+async function lockOwnerIsGone(lockPath: string, createdMs: number): Promise<boolean> {
+  let pid: unknown;
+  try {
+    pid = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")).pid;
+  } catch {
+    // The owner file is written just after the lock; give a live owner time to write it.
+    return Date.now() - createdMs > 10_000;
+  }
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
 export async function withBoardWriteLock<T>(planningRootInput: string, callback: () => Promise<T>): Promise<T> {
   const planningRoot = resolve(planningRootInput);
   const activeLocks = heldLocks.getStore();
@@ -101,7 +123,7 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
       const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
       if (code !== "EEXIST") throw error;
       const info = await stat(lockPath).catch(() => null);
-      if (info && Date.now() - info.mtimeMs > STALE_LOCK_MS) {
+      if (info && (Date.now() - info.mtimeMs > STALE_LOCK_MS || await lockOwnerIsGone(lockPath, info.mtimeMs))) {
         await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
         continue;
       }

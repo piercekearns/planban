@@ -7,7 +7,6 @@ import { v } from "convex/values";
 export const authorityState = v.union(
   v.literal("importing"),
   v.literal("online"),
-  v.literal("returning-local"),
   v.literal("returned-local"),
 );
 export const docKind = v.union(v.literal("spec"), v.literal("plan"));
@@ -21,6 +20,14 @@ export default defineSchema({
     ownerId: v.string(),
     authority: authorityState,
     revision: v.number(),
+    /**
+     * Which copy of the board's rows is live. Take Online uploads into the next
+     * generation, invisible until its commit flips this pointer, so a failed
+     * or abandoned upload never changes the live board.
+     */
+    generation: v.number(),
+    /** Highest generation ever allocated, so a cancelled upload's rows never collide with a new one. */
+    lastGeneration: v.number(),
     /** Latest history version number; versions keep their numbers across transfers. */
     historyVersion: v.number(),
     /** Local history retention settings carried through Take Online so Take Local restores them. */
@@ -32,11 +39,13 @@ export default defineSchema({
   /** The whole roadmap, deflate-compressed: the shared planning rules need all of it. */
   boardState: defineTable({
     boardId: v.string(),
+    generation: v.number(),
     roadmap: v.bytes(),
-  }).index("by_boardId", ["boardId"]),
+  }).index("by_board_generation", ["boardId", "generation"]),
 
   docs: defineTable({
     boardId: v.string(),
+    generation: v.number(),
     cardId: v.string(),
     kind: docKind,
     markdown: v.bytes(),
@@ -44,7 +53,7 @@ export default defineSchema({
     stamp: v.number(),
     updatedAt: v.string(),
     updatedBy: v.string(),
-  }).index("by_board_card_kind", ["boardId", "cardId", "kind"]),
+  }).index("by_board_card_kind", ["boardId", "generation", "cardId", "kind"]),
 
   /**
    * One row per history version. Every SNAPSHOT_EVERY versions (and the first
@@ -53,25 +62,28 @@ export default defineSchema({
    */
   history: defineTable({
     boardId: v.string(),
+    generation: v.number(),
     version: v.number(),
     entry: v.any(),
     snapshot: v.optional(v.bytes()),
     delta: v.optional(v.bytes()),
-  }).index("by_board_version", ["boardId", "version"]),
+  }).index("by_board_version", ["boardId", "generation", "version"]),
 
   historyDocs: defineTable({
     boardId: v.string(),
+    generation: v.number(),
     version: v.number(),
     cardId: v.string(),
     kind: docKind,
     markdown: v.bytes(),
-  }).index("by_board_version", ["boardId", "version"]),
+  }).index("by_board_version", ["boardId", "generation", "version"]),
 
   /** Ids of deleted cards, never reused, so history keeps one meaning per id. */
   retiredIds: defineTable({
     boardId: v.string(),
+    generation: v.number(),
     cardId: v.string(),
-  }).index("by_board_card", ["boardId", "cardId"]),
+  }).index("by_board_card", ["boardId", "generation", "cardId"]),
 
   members: defineTable({
     boardId: v.string(),
@@ -100,4 +112,39 @@ export default defineSchema({
     expiresAt: v.optional(v.string()),
     revokedAt: v.optional(v.string()),
   }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]),
+
+  /** Take Online uploads, sent in parts under one transfer id. */
+  transfers: defineTable({
+    transferId: v.string(),
+    userId: v.string(),
+    boardId: v.string(),
+    generation: v.number(),
+    state: v.union(v.literal("open"), v.literal("committed"), v.literal("aborted")),
+    /** Board revision before the upload, for boards taken online again. */
+    previousRevision: v.number(),
+    /** Highest history version uploaded so far. */
+    maxVersion: v.number(),
+    retention: v.optional(v.any()),
+    createdAt: v.string(),
+    updatedAt: v.string(),
+  }).index("by_transferId", ["transferId"]).index("by_board_state", ["boardId", "state"]).index("by_state_updated", ["state", "updatedAt"]),
+
+  transferParts: defineTable({
+    transferId: v.string(),
+    seq: v.number(),
+  }).index("by_transfer_seq", ["transferId", "seq"]),
+
+  /**
+   * Idempotency records: a retried edit with the same key returns the
+   * original result instead of applying twice. Kept for seven days.
+   */
+  operations: defineTable({
+    userId: v.string(),
+    key: v.string(),
+    requestHash: v.string(),
+    boardId: v.string(),
+    /** The operation's result and the history version it created. */
+    outcome: v.bytes(),
+    createdAt: v.string(),
+  }).index("by_user_key", ["userId", "key"]).index("by_createdAt", ["createdAt"]),
 });

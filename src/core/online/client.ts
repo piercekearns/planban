@@ -68,7 +68,16 @@ async function refresh(url: string, previous: OnlineCredentials) {
   });
 }
 
-export async function onlineRequest<T>(urlInput: string, path: string, body?: unknown, options: { signal?: AbortSignal } = {}): Promise<T> {
+export interface OnlineRequestOptions {
+  signal?: AbortSignal;
+  /**
+   * Sent as Idempotency-Key. A request that fails on the network is retried
+   * once with the same key and body, so the service applies it at most once.
+   */
+  idempotencyKey?: string;
+}
+
+export async function onlineRequest<T>(urlInput: string, path: string, body?: unknown, options: OnlineRequestOptions = {}): Promise<T> {
   const url = serviceUrl(urlInput);
   let credentials = await requireCredentials(url);
   let refreshed = false;
@@ -76,12 +85,27 @@ export async function onlineRequest<T>(urlInput: string, path: string, body?: un
     credentials = await refresh(url, credentials);
     refreshed = true;
   }
-  const request = () => fetch(`${url}${path}`, {
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  const send = () => fetch(`${url}${path}`, {
     method: body === undefined ? "GET" : "POST",
-    headers: { Authorization: `Bearer ${credentials.accessToken}`, "Content-Type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: {
+      Authorization: `Bearer ${credentials.accessToken}`, "Content-Type": "application/json",
+      ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
+    },
+    ...(payload === undefined ? {} : { body: payload }),
     redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
+  // Reads and keyed writes are safe to repeat after a network failure.
+  const retryable = body === undefined || !!options.idempotencyKey;
+  const request = async () => {
+    try {
+      return await send();
+    } catch (error) {
+      if (!retryable || options.signal?.aborted) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return send();
+    }
+  };
   let response = await request();
   if (response.status === 401 && !refreshed) {
     await response.body?.cancel();

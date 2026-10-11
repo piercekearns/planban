@@ -16,6 +16,7 @@ import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, servic
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
 import { attachOnline, buildLocalBundle, exportOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { onlineCacheRoot } from "../src/core/online/adapter";
 import { startServer } from "../src/server/server";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
 
@@ -46,6 +47,9 @@ async function fakeService() {
   let metadataOrigin: string | undefined;
   let beforeFence: (() => void) | undefined;
   const docs = new Map<string, PlanbanDocPayload>();
+  const transfers = new Map<string, { begin: any; parts: Map<number, any>; state: "open" | "committed" | "aborted" }>();
+  const replies = new Map<string, unknown>();
+  let dropNextReply = false;
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -106,27 +110,74 @@ async function fakeService() {
       }
       if (path === "/api/v1/me") return json(200, { userId: "dev-owner", scope: "all" });
       if (path.startsWith("/error/")) return json(Number(path.split("/")[2]), { error: { code: "fixture", message: "Fixture refusal", currentRevision: 19 } });
-      if (path === "/api/v1/boards/import") {
-        if (bundle && authority !== "returned-local") return json(409, { error: { code: "conflict", message: "Board exists" } });
-        assert.equal(body.roadmap.project.id, "demo");
-        bundle = structuredClone(body);
+      const importBundle = (input: BoardBundle) => {
+        assert.equal(input.roadmap.project.id, "demo");
+        bundle = structuredClone(input);
         authority = "online";
         bundle!.roadmap = domain.committedRoadmap(domain.normalizeRoadmap(bundle!.roadmap), new Date().toISOString());
         const version = Math.max(0, ...bundle!.history.map(({ entry }) => entry.version)) + 1;
         bundle!.history.push({ entry: { version, roadmapRevision: bundle!.roadmap.revision, createdAt: new Date().toISOString(), actor: "import", operation: "board.import", summary: "Imported board", affectedCards: [], affectedDocs: [] }, roadmap: structuredClone(bundle!.roadmap) });
         docs.clear();
         for (const doc of bundle!.docs) docs.set(`${doc.cardId}/${doc.kind}`, { ...doc, exists: true, path: `items/${doc.cardId}/${doc.kind}.md`, mtimeMs: 1 });
-        return json(201, { boardId: "demo", roadmap: bundle!.roadmap });
+        return { boardId: "demo", roadmap: bundle!.roadmap };
+      };
+      if (path === "/api/v1/boards/import") {
+        if (bundle && authority !== "returned-local") return json(409, { error: { code: "conflict", message: "Board exists" } });
+        return json(201, importBundle(body));
+      }
+      if (path === "/api/v1/transfers") {
+        const existing = transfers.get(body.transferId);
+        if (existing) return json(200, { state: existing.state, receivedParts: [...existing.parts.keys()] });
+        if (bundle && authority !== "returned-local") return json(409, { error: { code: "conflict", message: "Board exists" } });
+        transfers.set(body.transferId, { begin: body, parts: new Map(), state: "open" });
+        return json(200, { state: "open", receivedParts: [] });
+      }
+      if (path.startsWith("/api/v1/transfers/")) {
+        const [, , , , transferId, step] = path.split("/");
+        const transfer = transfers.get(decodeURIComponent(transferId!));
+        if (!transfer) return json(404, { error: { code: "not_found", message: "Upload not found." } });
+        if (step === "parts") {
+          if (transfer.state === "open") transfer.parts.set(body.seq, body);
+          return json(200, { duplicate: false });
+        }
+        if (step === "abort") {
+          if (transfer.state === "committed") return json(409, { error: { code: "conflict", message: "This upload already finished." } });
+          transfer.state = "aborted";
+          return json(200, { state: "aborted" });
+        }
+        if (step === "commit") {
+          if (transfer.state === "committed") return json(200, { boardId: "demo", roadmap: bundle!.roadmap });
+          if (transfer.parts.size !== body.partCount) return json(400, { error: { code: "validation", message: "The upload is incomplete." } });
+          const parts = [...transfer.parts.entries()].sort(([a], [b]) => a - b).map(([, part]) => part);
+          const result = importBundle({
+            format: "planban-board-bundle", version: 1, roadmap: transfer.begin.roadmap, retiredIds: transfer.begin.retiredIds,
+            ...(transfer.begin.retention ? { retention: transfer.begin.retention } : {}),
+            docs: parts.flatMap((part) => part.docs ?? []), history: parts.flatMap((part) => part.history ?? []), historyDocs: parts.flatMap((part) => part.historyDocs ?? []),
+          } as BoardBundle);
+          transfer.state = "committed";
+          return json(200, result);
+        }
       }
       if (!bundle || !path.startsWith("/api/v1/boards/demo")) return json(404, { error: { code: "not_found", message: "Board not found" } });
       const roadmap = () => domain.normalizeRoadmap(bundle!.roadmap);
       const suffix = path.slice("/api/v1/boards/demo".length);
       if (!suffix) return json(200, { roadmap: roadmap(), authority });
       if (suffix === "/changes") return json(200, { revision: roadmap().revision });
-      if (suffix === "/export") {
+      if (suffix === "/export/meta") {
         if (failExport) return json(500, { error: { message: "Export interrupted" } });
-        bundle.docs = [...docs.values()].map(({ cardId, kind, markdown }) => ({ cardId, kind, markdown }));
-        return json(200, bundle);
+        return json(200, { format: "planban-board-bundle", version: 1, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], historyVersions: bundle.history.map(({ entry }) => entry.version), ...(bundle.retention ? { retention: bundle.retention } : {}) });
+      }
+      if (suffix === "/export/docs") {
+        const all = [...docs.values()].map(({ cardId, kind, markdown }) => ({ cardId, kind, markdown }));
+        const offset = Number(request.searchParams.get("offset") ?? 0);
+        return json(200, offset === 0 ? { docs: all, nextOffset: null } : { docs: [], nextOffset: null });
+      }
+      if (suffix === "/export/history") {
+        const after = Number(request.searchParams.get("after") ?? 0);
+        const limit = Number(request.searchParams.get("limit") ?? 8);
+        const page = bundle.history.filter(({ entry }) => entry.version > after).sort((a, b) => a.entry.version - b.entry.version).slice(0, limit);
+        const versions = new Set(page.map(({ entry }) => entry.version));
+        return json(200, { history: page, historyDocs: (bundle.historyDocs ?? []).filter((doc) => versions.has(doc.version)) });
       }
       if (suffix === "/authority") {
         beforeFence?.();
@@ -142,8 +193,14 @@ async function fakeService() {
       if (suffix.startsWith("/ops/")) {
         assert.equal("cwd" in body, false);
         if (authority !== "online") return json(409, { error: { code: "conflict", message: "Board has returned to local authority" } });
-        domain.assertBaseRevision(roadmap(), body.baseRevision);
         const op = suffix.split("/").at(-1)!;
+        const key = req.headers["idempotency-key"] as string | undefined;
+        if (key && replies.has(key)) return json(200, replies.get(key));
+        // Like the hosted service: every edit states its base version.
+        if (op === "writeDoc" ? body.expectedMtimeMs === undefined : typeof body.baseRevision !== "number") {
+          return json(400, { error: { code: "validation", message: "Online Board edits must state the version they were based on (baseRevision).", currentRevision: roadmap().revision } });
+        }
+        if (body.baseRevision !== undefined) domain.assertBaseRevision(roadmap(), body.baseRevision);
         const context = { now: new Date().toISOString() };
         let result: Record<string, unknown> = {};
         let change: domain.PlannedChange;
@@ -167,6 +224,13 @@ async function fakeService() {
         bundle.roadmap = domain.committedRoadmap(change.roadmap, context.now);
         const version = Math.max(...bundle.history.map(({ entry }) => entry.version)) + 1;
         bundle.history.push({ entry: { ...change.history, affectedDocs: change.history.affectedDocs ?? [], version, roadmapRevision: bundle.roadmap.revision, createdAt: context.now }, roadmap: structuredClone(bundle.roadmap) });
+        if (key) replies.set(key, { roadmap: bundle.roadmap, result });
+        if (dropNextReply) {
+          // Simulates a response lost on the network after the edit committed.
+          dropNextReply = false;
+          req.socket.destroy();
+          return;
+        }
         return json(200, { roadmap: bundle.roadmap, result });
       }
       json(404, { error: { code: "not_found", message: "Unknown endpoint" } });
@@ -183,7 +247,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, transfers,
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -288,18 +352,19 @@ test("dispatch preserves state and result shapes for all card operations", async
   assert.equal(moved.roadmap.roadmapItems[0]?.status, "up-next");
   const updated = await storage.updateCard({ cwd, cardId: "alpha", summary: "Shared summary", metadata: { source: "test" }, baseRevision: moved.roadmap.revision });
   assert.equal(updated.roadmap.roadmapItems[0]?.summary, "Shared summary");
-  const created = await storage.createCard({ cwd, title: "Beta", status: "pending" });
+  const rev = async () => (await storage.loadState(cwd)).roadmap.revision;
+  const created = await storage.createCard({ cwd, title: "Beta", status: "pending", baseRevision: await rev() });
   assert.equal(created.createdCard.id, "beta");
-  const group = await storage.createGroup({ cwd, title: "Group", summary: "Shared objective" });
+  const group = await storage.createGroup({ cwd, title: "Group", summary: "Shared objective", baseRevision: await rev() });
   assert.equal(group.createdGroup.isGroup, true);
-  const children = await storage.createCards({ cwd, titles: ["Child one", "Child two"], parentId: group.createdGroup.id });
+  const children = await storage.createCards({ cwd, titles: ["Child one", "Child two"], parentId: group.createdGroup.id, baseRevision: await rev() });
   assert.equal(children.createdCards.length, 2);
-  const parented = await storage.setCardParent({ cwd, cardId: "beta", parentId: group.createdGroup.id });
+  const parented = await storage.setCardParent({ cwd, cardId: "beta", parentId: group.createdGroup.id, baseRevision: await rev() });
   assert.equal(parented.roadmap.roadmapItems.find((item) => item.id === "beta")?.parentId, group.createdGroup.id);
-  await storage.setCardParent({ cwd, cardId: "beta", parentId: null });
-  await storage.reorderCards({ cwd, items: (await storage.loadState(cwd)).roadmap.roadmapItems.map(({ id, status }) => ({ id, status })).reverse() });
-  await storage.setCardStatus(cwd, "beta", "archived");
-  const deleted = await storage.deleteArchivedCard({ cwd, cardId: "beta" });
+  await storage.setCardParent({ cwd, cardId: "beta", parentId: null, baseRevision: await rev() });
+  await storage.reorderCards({ cwd, items: (await storage.loadState(cwd)).roadmap.roadmapItems.map(({ id, status }) => ({ id, status })).reverse(), baseRevision: await rev() });
+  await storage.setCardStatus(cwd, "beta", "archived", await rev());
+  const deleted = await storage.deleteArchivedCard({ cwd, cardId: "beta", baseRevision: await rev() });
   assert.equal(deleted.roadmap.roadmapItems.some((item) => item.id === "beta"), false);
   assert.ok((await storage.historyPayload(cwd)).entries.length > 2);
 });
@@ -326,8 +391,18 @@ test("take-online sends every retained roadmap and current and historical docume
   const before = await storage.loadState(cwd);
   const expected = await buildLocalBundle(cwd);
   const result = await takeOnline(fake.url, cwd);
-  const imported = fake.requests.find((req) => req.path === "/api/v1/boards/import")!.body;
-  assert.deepEqual(imported, expected);
+  // Reassemble what was uploaded in parts.
+  const begin = fake.requests.find((req) => req.path === "/api/v1/transfers")!.body;
+  const parts = fake.requests.filter((req) => req.path.endsWith("/parts")).map((req) => req.body).sort((a, b) => a.seq - b.seq);
+  const imported = {
+    format: expected.format, version: expected.version, roadmap: begin.roadmap,
+    docs: parts.flatMap((part) => part.docs ?? []), history: parts.flatMap((part) => part.history ?? []),
+    historyDocs: parts.flatMap((part) => part.historyDocs ?? []), retention: begin.retention,
+  };
+  const byVersion = <T extends { version: number; cardId: string; kind: string }>(docs: T[]) => [...docs].sort((a, b) => a.version - b.version || a.cardId.localeCompare(b.cardId) || a.kind.localeCompare(b.kind));
+  assert.deepEqual({ ...imported, historyDocs: byVersion(imported.historyDocs) }, {
+    ...expected, history: [...expected.history].sort((a, b) => a.entry.version - b.entry.version), historyDocs: byVersion(expected.historyDocs ?? []),
+  });
   assert.equal(imported.roadmap.project.id, "demo");
   assert.equal(expected.docs.length, 2);
   assert.ok(expected.historyDocs!.some((doc) => doc.markdown === "# Original spec"));
@@ -345,8 +420,8 @@ test("take-local fences before export, preserves history docs and can re-take on
   fake.beforeFence(() => { fake.bundle.roadmap.roadmapItems[0]!.summary = "Last remote edit"; });
   const start = fake.requests.length;
   const returned = await takeLocal(cwd);
-  const calls = fake.requests.slice(start).filter((req) => req.path.endsWith("/authority") || req.path.endsWith("/export"));
-  assert.deepEqual(calls.map((req) => req.path.split("/").at(-1)), ["authority", "export"]);
+  const calls = fake.requests.slice(start).filter((req) => req.path.endsWith("/authority") || req.path.includes("/export/"));
+  assert.deepEqual(calls.slice(0, 2).map((req) => req.path.split("/").at(-1)), ["authority", "meta"]);
   assert.equal(fake.authority, "returned-local");
   const local = await storage.loadState(cwd);
   assert.equal(local.manifest.storage?.kind, "local");
@@ -379,7 +454,7 @@ test("attach and registry discovery use remote authority and export writes a bun
   await attachOnline(fake.url, "demo", second);
   assert.equal((await registerBoardFromCwd(second))?.repoId, "demo");
   assert.equal((await listBoards()).find((board) => board.repoId === "demo")?.cwd, second);
-  await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Second machine" });
+  await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Second machine", baseRevision: (await storage.loadState(second)).roadmap.revision });
   assert.equal((await storage.loadState(cwd)).roadmap.roadmapItems[0]!.summary, "Second machine");
   const out = join(root, "bundle.json");
   await execFileAsync(process.execPath, ["--import", "tsx/esm", "src/cli.ts", "online", "export", "--cwd", second, "--out", out], { env: process.env });
@@ -424,7 +499,7 @@ test("Board HTTP API reads and edits online state and signals changes from anoth
     await new Promise((resolve) => setTimeout(resolve, 3300));
     assert.equal(fake.requests.filter((req) => req.path.endsWith("/changes")).length, before);
     const live = await (await fetch(`${server.url}/api/live?repoId=demo`)).json();
-    await storage.updateCard({ cwd, cardId: "alpha", summary: "Other machine edit" });
+    await storage.updateCard({ cwd, cardId: "alpha", summary: "Other machine edit", baseRevision: (await storage.loadState(cwd)).roadmap.revision });
     await new Promise((resolve) => setTimeout(resolve, 3300));
     const changed = await (await fetch(`${server.url}/api/live?repoId=demo`)).json();
     assert.ok(changed.stateVersion > live.stateVersion);
@@ -450,7 +525,7 @@ test("local stdio MCP dispatches online reads and mutations", async () => {
     const timer = setTimeout(() => { child.kill(); reject(new Error("MCP timeout")); }, 10_000);
     child.once("exit", (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(stderr)); });
   });
-  child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "planban_update_card", arguments: { cwd, cardId: "alpha", summary: "MCP edit" } } }) + "\n");
+  child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "planban_update_card", arguments: { cwd, cardId: "alpha", summary: "MCP edit", baseRevision: (await storage.loadState(cwd)).roadmap.revision } } }) + "\n");
   await exit;
   const result = JSON.parse(output.trim()).result;
   assert.notEqual(result.isError, true, JSON.stringify(result));
@@ -492,4 +567,85 @@ test("export documents cannot replace the local roadmap, history index or lock",
     await assert.rejects(takeLocal(cwd), (error: any) => error instanceof storage.PlanbanValidationError && /conflicting document path/.test(error.message));
     assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
   }
+});
+
+async function killedAt(point: string, args: string[]) {
+  const failure = await execFileAsync(process.execPath, ["--import", "tsx/esm", "src/cli.ts", ...args], {
+    env: { ...process.env, PLANBAN_TEST_CRASH_AT: point },
+  }).then(() => null, (error) => error);
+  assert.equal(failure?.signal, "SIGKILL", `expected the process to be killed at ${point}`);
+}
+
+test("take-online killed mid-upload leaves the board local, and running it again finishes once", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+  assert.equal(await storage.pathExists(before.roadmapPath), true);
+  assert.equal([...fake.transfers.values()].some((transfer) => transfer.state === "committed"), false);
+  const result = await takeOnline(fake.url, cwd);
+  assert.equal(result.boardId, "demo");
+  assert.equal([...fake.transfers.values()].filter((transfer) => transfer.state === "committed").length, 1);
+  assert.equal(fake.transfers.size, 1, "the resumed upload reuses the same transfer");
+  assert.equal((await storage.loadState(cwd)).manifest.storage?.kind, "online");
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+});
+
+test("take-online killed after the upload committed finishes on retry and reports later local edits", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-commit", ["online", "take-online", fake.url, "--cwd", cwd]);
+  assert.equal(fake.authority, "online");
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+  // An edit made on this machine after the upload, before the retry.
+  await storage.createCard({ cwd, title: "Made after the upload" });
+  const result = await takeOnline(fake.url, cwd);
+  assert.equal([...fake.transfers.values()].filter((transfer) => transfer.state === "committed").length, 1);
+  assert.deepEqual(result.unsyncedLocalChanges?.map((change) => change.summary), ["Created Made after the upload"]);
+  assert.equal(fake.bundle.roadmap.roadmapItems.some((item) => item.title === "Made after the upload"), false);
+  // The local edit is kept as recovery evidence.
+  assert.ok(JSON.parse(await readFile(result.localSnapshot, "utf8")).roadmapItems.some((item: { title: string }) => item.title === "Made after the upload"));
+  assert.equal((await storage.loadState(cwd)).manifest.storage?.kind, "online");
+  assert.equal(await storage.pathExists(before.roadmapPath), false);
+});
+
+test("take-local killed mid-download keeps the online board intact, and running it again finishes", async () => {
+  await takeOnline(fake.url, cwd);
+  const online = await storage.loadState(cwd);
+  await killedAt("take-local:mid-download", ["online", "take-local", "--cwd", cwd]);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  assert.equal(fake.authority, "returned-local");
+  await assert.rejects(storage.updateCard({ cwd, cardId: "alpha", summary: "late", baseRevision: (await storage.loadState(cwd)).roadmap.revision }), storage.PlanbanConflictError);
+  const returned = await takeLocal(cwd);
+  const local = await storage.loadState(cwd);
+  assert.equal(local.manifest.storage?.kind, "local");
+  assert.equal(local.planningRoot, returned.planningRoot);
+  assert.deepEqual(local.roadmap.roadmapItems.map((item) => item.id), online.roadmap.roadmapItems.map((item) => item.id));
+  assert.equal((await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, "# Original spec");
+  assert.equal(await storage.pathExists(join(onlineCacheRoot({ kind: "online", url: fake.url, boardId: "demo" }), "online-transfer.json")), false);
+});
+
+test("take-local killed after writing the local copy resumes into the same folder", async () => {
+  await takeOnline(fake.url, cwd);
+  await killedAt("take-local:after-stage", ["online", "take-local", "--cwd", cwd]);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  const journal = JSON.parse(await readFile(join(onlineCacheRoot({ kind: "online", url: fake.url, boardId: "demo" }), "online-transfer.json"), "utf8"));
+  const returned = await takeLocal(cwd);
+  assert.equal(returned.planningRoot, journal.root);
+  assert.equal((await storage.loadState(cwd)).manifest.storage?.kind, "local");
+});
+
+test("an edit whose response is lost is retried with its idempotency key and applied once", async () => {
+  await takeOnline(fake.url, cwd);
+  const state = await storage.loadState(cwd);
+  const versions = fake.bundle.history.length;
+  fake.dropNextReply();
+  const updated = await storage.updateCard({ cwd, cardId: "alpha", summary: "Exactly once", baseRevision: state.roadmap.revision });
+  assert.equal(updated.roadmap.roadmapItems[0]!.summary, "Exactly once");
+  assert.equal(fake.bundle.history.length, versions + 1);
+  const keys = fake.requests.filter((req) => req.path.endsWith("/ops/updateCard"));
+  assert.equal(keys.length, 2, "the edit was sent twice");
+});
+
+test("online edits must state the version they were based on", async () => {
+  await takeOnline(fake.url, cwd);
+  await assert.rejects(storage.updateCard({ cwd, cardId: "alpha", summary: "No base" }), (error: any) => error instanceof storage.PlanbanValidationError && /baseRevision/.test(error.message));
 });

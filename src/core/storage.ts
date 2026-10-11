@@ -365,8 +365,8 @@ export async function setCardParent(input: {
   return moveCard(input);
 }
 
-export async function setCardStatus(cwd: string, cardId: string, status: PlanbanStatus) {
-  return moveCard({ cwd, cardId, status });
+export async function setCardStatus(cwd: string, cardId: string, status: PlanbanStatus, baseRevision?: number) {
+  return moveCard({ cwd, cardId, status, baseRevision });
 }
 
 export async function deleteArchivedCard(input: {

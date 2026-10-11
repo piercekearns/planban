@@ -59,10 +59,32 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     await ctx.runQuery(internal.boards.me, { connectionId });
     return json({ ...(await signLiveToken(connectionId)), convexUrl: process.env.CONVEX_CLOUD_URL });
   }
+  if (parts[0] === "transfers" && method === "POST") {
+    // Take Online in parts: begin (with the roadmap), parts, commit; or abort.
+    const input = await body(request);
+    if (parts.length === 1) {
+      return json(await ctx.runMutation(internal.transfers.begin, {
+        connectionId, transferId: String(input.transferId ?? ""), roadmap: input.roadmap,
+        ...(input.retention === undefined ? {} : { retention: input.retention }),
+        ...(Array.isArray(input.retiredIds) ? { retiredIds: input.retiredIds.map(String) } : {}),
+      }));
+    }
+    const transferId = parts[1]!;
+    if (parts[2] === "parts" && parts.length === 3) {
+      return json(await ctx.runMutation(internal.transfers.part, {
+        connectionId, transferId, seq: Number(input.seq),
+        ...(input.docs === undefined ? {} : { docs: input.docs }),
+        ...(input.history === undefined ? {} : { history: input.history }),
+        ...(input.historyDocs === undefined ? {} : { historyDocs: input.historyDocs }),
+      }));
+    }
+    if (parts[2] === "commit" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.commit, { connectionId, transferId, partCount: Number(input.partCount) }));
+    if (parts[2] === "abort" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.abort, { connectionId, transferId }));
+  }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {
-    return json(await ctx.runMutation(internal.boards.importBoard, { connectionId, bundle: await body(request) }), 201);
+    return json(await ctx.runMutation(internal.transfers.importBundle, { connectionId, transferId: crypto.randomUUID(), bundle: await body(request) }), 201);
   }
 
   const boardId = parts[1]!;
@@ -71,7 +93,14 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     const since = url.searchParams.get("since");
     return json(await ctx.runQuery(internal.boards.getBoard, { connectionId, boardId, ...(since === null ? {} : { since: Number(since) }) }));
   }
-  if (rest[0] === "export" && method === "GET") return json(await ctx.runQuery(internal.boards.exportBoard, { connectionId, boardId }));
+  if (rest[0] === "export" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.boards.exportBoard, { connectionId, boardId }));
+  if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId }));
+  if (rest[0] === "export" && rest[1] === "docs" && method === "GET") {
+    return json(await ctx.runQuery(internal.boards.exportDocs, { connectionId, boardId, offset: Number(url.searchParams.get("offset") ?? 0), limit: Number(url.searchParams.get("limit") ?? 100) }));
+  }
+  if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
+    return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8) }));
+  }
   if (rest[0] === "history" && method === "GET") return json(await ctx.runQuery(internal.boards.history, { connectionId, boardId }));
   if (rest[0] === "changes" && method === "GET") {
     // Live updates use Convex subscriptions; this one-shot check remains for
@@ -93,7 +122,19 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     return json(await ctx.runMutation(internal.boards.setAuthority, { connectionId, boardId, state: input.state }));
   }
   if (rest[0] === "ops" && rest.length === 2 && method === "POST") {
-    return json(await ctx.runMutation(internal.boards.run, { connectionId, boardId, op: rest[1]!, input: await body(request) }));
+    // A retried edit carries the same Idempotency-Key and byte-identical body.
+    const raw = await request.text();
+    let input: unknown = {};
+    try {
+      input = JSON.parse(raw || "{}");
+    } catch {
+      return json({ error: { code: "validation", message: "The request body must be JSON." } }, 400);
+    }
+    const idempotencyKey = request.headers.get("Idempotency-Key");
+    return json(await ctx.runMutation(internal.boards.run, {
+      connectionId, boardId, op: rest[1]!, input,
+      ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
+    }));
   }
   if (rest[0] === "docs" && rest.length === 3 && method === "GET") {
     const kind = rest[2] === "plan" ? "plan" : rest[2] === "spec" ? "spec" : null;

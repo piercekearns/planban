@@ -47,10 +47,17 @@ function apply(previous: PlanbanRoadmap, delta: Delta): PlanbanRoadmap {
   } as PlanbanRoadmap;
 }
 
-export async function roadmapAtVersion(ctx: QueryCtx, boardId: string, version: number): Promise<PlanbanRoadmap | null> {
+/** A board's rows in one generation. */
+export interface BoardRows {
+  boardId: string;
+  generation: number;
+}
+
+export async function roadmapAtVersion(ctx: QueryCtx, at: BoardRows, version: number): Promise<PlanbanRoadmap | null> {
+  const { boardId, generation } = at;
   const rows: Doc<"history">[] = [];
   for await (const row of ctx.db.query("history")
-    .withIndex("by_board_version", (q) => q.eq("boardId", boardId).lte("version", version))
+    .withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).lte("version", version))
     .order("desc")) {
     rows.push(row);
     if (row.snapshot) break;
@@ -63,8 +70,29 @@ export async function roadmapAtVersion(ctx: QueryCtx, boardId: string, version: 
   return roadmap;
 }
 
+/** History versions after `after`, oldest first, each with its full roadmap. */
+export async function historyPage(ctx: QueryCtx, at: BoardRows, after: number, limit: number) {
+  const rows = await ctx.db.query("history")
+    .withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).gt("version", after))
+    .take(limit);
+  const page: Array<{ entry: PlanbanHistoryEntry; roadmap: PlanbanRoadmap }> = [];
+  let previous: PlanbanRoadmap | null = null;
+  for (const row of rows) {
+    const roadmap: PlanbanRoadmap | null = row.snapshot
+      ? unpackJson<PlanbanRoadmap>(row.snapshot)
+      : previous
+        ? apply(previous, unpackJson<Delta>(row.delta!))
+        : await roadmapAtVersion(ctx, at, row.version);
+    page.push({ entry: row.entry as PlanbanHistoryEntry, roadmap: roadmap! });
+    previous = roadmap;
+  }
+  return page;
+}
+
 export async function recordHistory(ctx: MutationCtx, input: {
   board: Doc<"boards">;
+  /** Defaults to the board's live generation. */
+  generation?: number;
   previous: PlanbanRoadmap | null;
   committed: PlanbanRoadmap;
   history: PlannedHistory;
@@ -73,6 +101,7 @@ export async function recordHistory(ctx: MutationCtx, input: {
   now: string;
 }): Promise<number> {
   const { board, previous, committed, history, docs, attribution, now } = input;
+  const at = { boardId: board.boardId, generation: input.generation ?? board.generation };
   const version = board.historyVersion + 1;
   const entry: PlanbanHistoryEntry & { attribution: Omit<Attribution, "connectionId"> } = {
     version,
@@ -87,40 +116,41 @@ export async function recordHistory(ctx: MutationCtx, input: {
   };
   const snapshot = !previous || version % SNAPSHOT_EVERY === 0;
   await ctx.db.insert("history", {
-    boardId: board.boardId,
+    ...at,
     version,
     entry,
     ...(snapshot ? { snapshot: packJson(committed) } : { delta: packJson(diff(previous!, committed)) }),
   });
   for (const doc of docs) {
-    await ctx.db.insert("historyDocs", { boardId: board.boardId, version, cardId: doc.cardId, kind: doc.kind, markdown: packText(doc.markdown) });
+    await ctx.db.insert("historyDocs", { ...at, version, cardId: doc.cardId, kind: doc.kind, markdown: packText(doc.markdown) });
   }
   await ctx.db.patch(board._id, { historyVersion: version });
-  await prune(ctx, board.boardId, version - MAX_HISTORY_VERSIONS);
+  await prune(ctx, at, version - MAX_HISTORY_VERSIONS);
   return version;
 }
 
-/** Stores an imported history version as written by the local board. */
-export async function importHistoryVersion(ctx: MutationCtx, boardId: string, entry: PlanbanHistoryEntry, roadmap: PlanbanRoadmap) {
-  await ctx.db.insert("history", { boardId, version: entry.version, entry, snapshot: packJson(roadmap) });
+/** Stores an uploaded history version as written by the local board. */
+export async function importHistoryVersion(ctx: MutationCtx, at: BoardRows, entry: PlanbanHistoryEntry, roadmap: PlanbanRoadmap) {
+  await ctx.db.insert("history", { ...at, version: entry.version, entry, snapshot: packJson(roadmap) });
 }
 
 /** Drops versions at or below the cutoff, keeping a snapshot at the start of what remains. */
-async function prune(ctx: MutationCtx, boardId: string, cutoff: number) {
+async function prune(ctx: MutationCtx, at: BoardRows, cutoff: number) {
   if (cutoff <= 0) return;
+  const { boardId, generation } = at;
   const first = await ctx.db.query("history")
-    .withIndex("by_board_version", (q) => q.eq("boardId", boardId).gt("version", cutoff))
+    .withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).gt("version", cutoff))
     .first();
   if (first && !first.snapshot) {
-    const roadmap = await roadmapAtVersion(ctx, boardId, first.version);
+    const roadmap = await roadmapAtVersion(ctx, at, first.version);
     await ctx.db.patch(first._id, { snapshot: packJson(roadmap), delta: undefined });
   }
   const old = await ctx.db.query("history")
-    .withIndex("by_board_version", (q) => q.eq("boardId", boardId).lte("version", cutoff))
+    .withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).lte("version", cutoff))
     .take(PRUNE_BATCH);
   for (const row of old) {
     await ctx.db.delete(row._id);
-    for (const doc of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("version", row.version)).collect()) {
+    for (const doc of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("version", row.version)).collect()) {
       await ctx.db.delete(doc._id);
     }
   }

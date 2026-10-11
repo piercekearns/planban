@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { agentContextPath, defaultPlanbanRoot, manifestPath } from "../paths";
 import { normalizeRoadmap, PlanbanValidationError } from "../boardOperations";
@@ -26,10 +26,12 @@ export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManif
   return onlineState(cwd, manifest, roadmap);
 }
 
-export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectManifest, op: string, input: { cwd: string }) {
+export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectManifest, op: string, input: { cwd: string; idempotencyKey?: string | undefined }) {
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
-  const { cwd: _cwd, ...body } = input;
-  const response = await onlineRequest<{ roadmap: PlanbanRoadmap; result: T }>(manifest.storage.url, boardPath(manifest.storage.boardId, `/ops/${op}`), body);
+  const { cwd: _cwd, idempotencyKey, ...body } = input;
+  // One key per logical edit: a retry after a lost response cannot apply it twice.
+  const response = await onlineRequest<{ roadmap: PlanbanRoadmap; result: T }>(manifest.storage.url, boardPath(manifest.storage.boardId, `/ops/${op}`), body,
+    { idempotencyKey: idempotencyKey ?? randomUUID() });
   return { state: onlineState(cwd, manifest, response.roadmap), result: response.result };
 }
 
