@@ -13,6 +13,7 @@ import { defaultPlanbanRoot, PlanbanPathError } from "../core/paths";
 import { ensureDemoBoard } from "../core/demo";
 import {
   idempotencyFingerprint,
+  LOCK_DIR,
   PlanbanIdempotencyConflictError,
   runIdempotentBoardMutation,
 } from "../core/persistence";
@@ -96,6 +97,9 @@ export function isIgnoredPlanbanWatchPath(path: string): boolean {
   const relativePath = relative(root, resolve(path));
   if (!relativePath || relativePath.startsWith(`..${sep}`) || relativePath === "..") return false;
   const segments = relativePath.split(sep);
+  // Reads take the board write lock too, so its folder comes and goes on every
+  // board read; watching it would make each read tell the page to reload.
+  if (segments.includes(LOCK_DIR)) return true;
   return segments[0] === "repos" && segments[2] === "history";
 }
 
