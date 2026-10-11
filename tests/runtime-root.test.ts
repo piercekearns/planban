@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { resolvePlanbanRuntime } from "../plugins/planban/scripts/runtime-root.mjs";
+import { codexMarketplaceConfig, resolvePlanbanRuntime } from "../plugins/planban/scripts/runtime-root.mjs";
 
 async function runtime(root: string) {
   for (const file of ["bin/planban.mjs", "src/cli.ts", "src/core/storage.ts"]) {
@@ -50,6 +50,72 @@ test("marketplace recovery requires an installed cache and a complete runtime", 
     assert.equal(resolvePlanbanRuntime(cache, env), marketplace);
     assert.throws(() => resolvePlanbanRuntime(join(root, "unrelated/plugin"), env), /runtime not found/u);
     assert.throws(() => resolvePlanbanRuntime(cache, { ...env, PLANBAN_REPO_ROOT: join(root, "missing") }), /PLANBAN_REPO_ROOT/u);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Codex local-folder marketplaces resolve through config.toml after the Git marketplace clone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-runtime-"));
+  try {
+    const home = join(root, "custom codex home");
+    const cache = join(home, "plugins/cache/planban/planban/1.1.6");
+    await mkdir(cache, { recursive: true });
+    const env = { CODEX_HOME: home };
+    const folder = await runtime(join(root, "release folder"));
+    const config = (sourceType: string, source: string) => writeFile(
+      join(home, "config.toml"),
+      `model = "x"\n\n[marketplaces.planban]\nsource_type = "${sourceType}"\nsource = ${source}\n\n[marketplaces.paper]\nsource_type = "local"\nsource = "${join(root, "elsewhere")}"\n`,
+    );
+
+    // Missing config, then a config that does not name a complete runtime, keep the existing error.
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+    await writeFile(join(home, "config.toml"), "[marketplaces.planban\nsource_type = \"local\"\n");
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+    await config("local", JSON.stringify(join(root, "missing")));
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+    await config("git", JSON.stringify(folder));
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+
+    await config("local", JSON.stringify(folder));
+    assert.equal(resolvePlanbanRuntime(cache, env), folder);
+    await config("local", `'${folder}'  # literal string`);
+    assert.equal(resolvePlanbanRuntime(cache, env), folder);
+    await config("local", JSON.stringify("../release folder"));
+    assert.equal(resolvePlanbanRuntime(cache, env), folder);
+
+    // CODEX_HOME is respected: the same layout under another home is not consulted.
+    assert.throws(() => resolvePlanbanRuntime(cache, { CODEX_HOME: join(root, "other") }), /runtime not found/u);
+
+    // A Git marketplace clone still takes precedence.
+    const clone = await runtime(join(home, ".tmp/marketplaces/planban"));
+    assert.equal(resolvePlanbanRuntime(cache, env), clone);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Codex marketplace config extraction reads only the named table's string keys", () => {
+  const text = [
+    "[marketplaces.paper]",
+    'source = "/paper"',
+    "[ marketplaces . \"planban\" ]  # comment",
+    'source_type = "local"\r',
+    'source = "C:\\\\Planban \\"1.1.6\\""',
+    "last_updated = 2026-10-11",
+    "[[profiles]]",
+    'source = "/not-this"',
+  ].join("\n");
+  assert.deepEqual(codexMarketplaceConfig(text, "planban"), { source_type: "local", source: 'C:\\Planban "1.1.6"' });
+  assert.equal(codexMarketplaceConfig(text, "missing"), null);
+  assert.equal(codexMarketplaceConfig("", "planban"), null);
+});
+
+test("Codex local marketplace sources expand a leading ~", async () => {
+  const root = await mkdtemp(join(homedir(), ".planban-runtime-test-"));
+  try {
+    const home = join(root, "codex");
+    const cache = join(home, "plugins/cache/planban/planban/1.1.6");
+    await mkdir(cache, { recursive: true });
+    const folder = await runtime(join(root, "release"));
+    await writeFile(join(home, "config.toml"), `[marketplaces.planban]\nsource_type = "local"\nsource = "~/${folder.slice(homedir().length + 1)}"\n`);
+    assert.equal(resolvePlanbanRuntime(cache, { CODEX_HOME: home }), folder);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -29,11 +29,55 @@ function installedCacheParts(hostHome, pluginRoot) {
   return { marketplace: parts[0], plugin: parts[1], version: parts[2] };
 }
 
+// Read one string value from a TOML line: a basic "..." string (with escapes) or a literal '...' string,
+// optionally followed by a comment. Anything else (arrays, inline tables, multi-line strings) is ignored.
+function tomlString(raw) {
+  const basic = raw.match(/^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/u);
+  if (basic) {
+    try { return JSON.parse(`"${basic[1]}"`); } catch { return null; }
+  }
+  return raw.match(/^'([^']*)'\s*(?:#.*)?$/u)?.[1] ?? null;
+}
+
+// Extract the string keys of one [marketplaces.<name>] table from Codex's config.toml without a TOML dependency.
+export function codexMarketplaceConfig(configText, name) {
+  const header = /^\s*\[\s*marketplaces\s*\.\s*(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*(?:#.*)?$/u;
+  const values = {};
+  let inTable = false;
+  let found = false;
+  for (const line of configText.split(/\r?\n/u)) {
+    if (/^\s*\[/u.test(line)) {
+      const match = line.match(header);
+      inTable = Boolean(match) && (match[1] ?? match[2] ?? match[3]) === name;
+      found ||= inTable;
+      continue;
+    }
+    if (!inTable) continue;
+    const entry = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.*?)\s*$/u);
+    if (!entry) continue;
+    const value = tomlString(entry[2]);
+    if (value !== null) values[entry[1]] = value;
+  }
+  return found ? values : null;
+}
+
+function expandHome(value) {
+  return typeof value === "string" && (value === "~" || value.startsWith("~/")) ? join(homedir(), value.slice(1)) : value;
+}
+
+// Codex clones Git marketplaces to .tmp/marketplaces/planban; a local marketplace stays in the folder
+// recorded as `source` in config.toml's [marketplaces.planban] table.
 function codexMarketplaceRuntime(env, pluginRoot) {
   const codexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homedir(), ".codex");
   if (!installedCacheParts(codexHome, pluginRoot)) return null;
   const marketplaceRoot = join(codexHome, ".tmp/marketplaces/planban");
-  return runtimeAt(marketplaceRoot) ? marketplaceRoot : null;
+  if (runtimeAt(marketplaceRoot)) return marketplaceRoot;
+  let configText;
+  try { configText = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { return null; }
+  const configured = codexMarketplaceConfig(configText, "planban");
+  if (configured?.source_type !== "local") return null;
+  const localRoot = configuredPath(expandHome(configured.source), codexHome);
+  return localRoot && runtimeAt(localRoot) ? localRoot : null;
 }
 
 // Claude Code records each marketplace's checkout (or, for directory sources, the source directory itself)
