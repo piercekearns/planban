@@ -107,6 +107,7 @@ export interface PlanbanHistoryIndex {
     boardVersions: number;
     cardVersions: number;
     documentVersions: number;
+    hourlyDays: number;
     maxAgeDays: number;
   };
   entries: PlanbanHistoryEntry[];

@@ -255,6 +255,9 @@ Follow this protocol exactly:
   completion after testing/review, or clearly waives user-side verification.
 - Agent-side tests are evidence for readiness to review. They are not permission to
   self-complete the card.
+- A landing is a card event: whoever merges a PR, pushes to a release branch or
+  retires a branch updates every In Progress Item that names it, before reporting the
+  landing.
 
 ## Updating Roadmap State
 

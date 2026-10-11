@@ -83,12 +83,21 @@ Answer these questions in order when relevant:
 
 - For active work, identify the immediate action, relevant actor when needed, gate, and stopping condition.
 - For owner-gated work, identify what the owner is reviewing and what happens after acceptance or rejection.
+- When the next step is the owner's, start the Next action with `Owner:`, and use that prefix only then. The board shows these Items as needing the owner.
 - A trigger-gated Item may truthfully say `Do not start work until X; then activate one bounded Item or slice`. Do not invent immediate work. If the Item has no continuing coordination role while it waits, consider Pending instead of In Progress.
 - Keep one executable path. Split unrelated outcomes into separate Items or deeper reference.
 - For completed work, do not manufacture an active action. State a scoped reopening or monitoring condition only when it is genuinely useful.
 - Prefer `No active action in this Item` for completed work. Add monitoring, reopening, or external-ownership language only when it helps the next decision; otherwise the field may be empty if the product permits it.
 - When related work belongs to another Item, name its stable Item identifier where available and state that this Item grants no authority to act on it.
 - Distinguish routine observation from unfinished implementation.
+
+### Volatile facts in Summary and Next action
+
+- Do not put volatile facts in the Summary or Next action: preview or environment URLs, branch, thread, or session names, SHAs, and merge or deploy state such as `not merged` or `PR 275 open`. The exception is an Item that owns that environment. These facts change on another thread's schedule and go wrong silently.
+- PR numbers may appear as references, such as `see PR #275`. Statements about their state may not.
+- When the work depends on a landing owned elsewhere, name the coordinating Item (`planban:<board>/<item>`) and state the condition, not the current state.
+- Write the card after the event when possible. Otherwise, phrase it conditionally.
+- Keep exact IDs, SHAs, releases, and test counts out of the opening of either field unless they explain current state, rollback, or a decision.
 
 ### Spec
 
@@ -131,13 +140,17 @@ Then provide the agent runbook:
 
 Do not repeat the Spec's purpose, target outcome, product decisions, or acceptance criteria unless the Plan must operate safely without a Spec.
 
+### Tags and metadata
+
+- Use metadata for small, stable identifiers. Put evidence, ledgers, and environment state in the Plan or an evidence document.
+
 ## Recommended rules
 
 - Put the most decision-relevant sentence first.
 - Prefer one primary idea per sentence when it improves comprehension.
 - Prefer active voice when the actor or authority matters.
 - Use bullets for parallel facts, criteria, and steps; use prose for reasoning and trade-offs.
-- Keep exact IDs, SHAs, releases, and test counts out of the opening unless they explain current state, rollback, or a decision.
+- Keep exact IDs, SHAs, releases, and test counts out of the opening unless they explain current state, rollback, or a decision. For the Summary and Next action, this rule is Required.
 - Summarize extensive evidence and retain the exact record in existing history, Spec or Plan reference sections, or linked authoritative sources. A future evidence ledger is optional.
 - Treat deployment identities, test results, and environment checks as dated evidence. Require fresh verification before later operational action when current external state matters.
 - Let short, simple Items use proportionally short Specs and Plans.

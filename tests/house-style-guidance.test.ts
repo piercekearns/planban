@@ -22,6 +22,32 @@ test("the bundled Planban house style is the single runtime authoring reference"
   assert.match(createSkill, /read\s+`\.\.\/planban\/references\/planban-house-style\.md` completely/u);
 });
 
+test("the house style keeps volatile facts out of Summary and Next action", () => {
+  const houseStyle = source("plugins/planban/skills/planban/references/planban-house-style.md");
+  const required = houseStyle.slice(houseStyle.indexOf("## Required rules"), houseStyle.indexOf("## Recommended rules"));
+
+  assert.match(required, /### Volatile facts in Summary and Next action/u);
+  assert.match(required, /Do not put volatile facts in the Summary or Next action/u);
+  assert.match(required, /PR numbers may appear as references/u);
+  assert.match(required, /name the coordinating Item \(`planban:<board>\/<item>`\)/u);
+  assert.match(required, /Keep exact IDs, SHAs, releases, and test counts out of the opening of either field/u);
+  assert.match(required, /start the Next action with `Owner:`, and use that prefix only then\./u);
+  assert.match(required, /### Tags and metadata\r?\n\r?\n- Use metadata for small, stable identifiers\./u);
+});
+
+test("the status protocol makes a landing a card event", () => {
+  const landing = /landing is a card event: whoever merges a PR, pushes to a release branch or\s+retires a branch updates every In Progress Item that names it, before reporting the\s+landing/iu;
+  const context = buildAgentContext({
+    planningRoot: "/tmp/planban/repos/example",
+    roadmapPath: "/tmp/planban/repos/example/roadmap.json",
+    manifestPath: "/tmp/example/.planban/project.json",
+    repoId: "example",
+  });
+
+  assert.match(context, landing);
+  assert.match(source("plugins/planban/skills/planban/references/planban-protocol.md"), landing);
+});
+
 test("generated agent context invokes the installed policy without copying it", () => {
   const context = buildAgentContext({
     planningRoot: "/tmp/planban/repos/example",
