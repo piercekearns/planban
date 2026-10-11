@@ -32,7 +32,7 @@ import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
 import { downloadAttachment, listAttachments, removeAttachment, uploadAttachment } from "./core/online/attachments";
-import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
+import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, stopTakeOnline, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -140,6 +140,8 @@ online.command("status").action(async () => print(await onlineStatus(), {}));
 online.command("take-online <url>").option("--cwd <path>", "project directory")
   .option("--attachments", "also upload the files in each card's folder (skips autosaves, logs, caches and files over 100 MB)")
   .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd), { attachments: !!options.attachments }), {}));
+online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")
+  .action(async (options) => print(await stopTakeOnline(cwdOption(options.cwd)), {}));
 const onlineBoardOf = async (cwd: string) => {
   const manifest = await readManifest(cwd);
   if (!manifest?.enabled || manifest.storage?.kind !== "online") throw new Error("This project does not point to an Online Board.");
@@ -177,7 +179,8 @@ online.command("export").option("--cwd <path>", "project directory").requiredOpt
     print({ exported: resolve(options.out) }, {});
   });
 online.command("take-local").option("--cwd <path>", "project directory")
-  .action(async (options) => print(await takeLocal(cwdOption(options.cwd)), {}));
+  .option("--remove-others", "on a shared board: confirm that everyone else and their agents lose access")
+  .action(async (options) => print(await takeLocal(cwdOption(options.cwd), { removeOthers: !!options.removeOthers }), {}));
 online.command("attach <url> <boardId>").requiredOption("--cwd <path>", "project directory")
   .option("--replace-stale-copy", "set aside this project's out-of-date local copy of the board")
   .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd), { replaceStaleCopy: !!options.replaceStaleCopy }), {}));

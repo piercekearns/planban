@@ -15,7 +15,7 @@ import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/re
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
-import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, PlanbanConfirmationNeeded, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
@@ -68,6 +68,8 @@ async function fakeService() {
   let boardUid: string | undefined;
   const attachments = new Map<string, any>();
   const blobs = new Map<string, Buffer>();
+  const members = [{ userId: "dev-owner", role: "owner" }];
+  let failParts = false;
   const uploads = new Map<string, Buffer>();
   const sessions = new Map<string, any>();
   const requests: { method: string; path: string; body: any }[] = [];
@@ -175,6 +177,7 @@ async function fakeService() {
         const transfer = transfers.get(decodeURIComponent(transferId!));
         if (!transfer) return json(404, { error: { code: "not_found", message: "Upload not found." } });
         if (step === "parts") {
+          if (failParts) return json(503, { error: { code: "unavailable", message: "The service is busy." } });
           if (transfer.state === "open") transfer.parts.set(body.seq, body);
           return json(200, { duplicate: false });
         }
@@ -218,6 +221,7 @@ async function fakeService() {
         const versions = new Set(page.map(({ entry }) => entry.version));
         return json(200, { history: page, historyDocs: (bundle.historyDocs ?? []).filter((doc) => versions.has(doc.version)) });
       }
+      if (suffix === "/members" && req.method === "GET") return json(200, { members });
       if (suffix === "/take-local/fence") {
         if (localTransfer === body.transferId) return json(200, { generation: 1 });
         if (authority !== "online") return json(409, { error: { code: "conflict", message: "Already being taken local." } });
@@ -225,6 +229,7 @@ async function fakeService() {
         authority = "returned-local";
         localTransfer = body.transferId;
         bundle.roadmap = domain.committedRoadmap(roadmap(), new Date().toISOString());
+        members.splice(1);
         return json(200, { generation: 1 });
       }
       if (suffix === "/take-local/finish") {
@@ -324,7 +329,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -752,7 +757,7 @@ test("a local copy of a board taken online elsewhere refuses writes and says how
   await takeOnline(fake.url, cwd);
   resetCopyChecks();
   await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "Too late", baseRevision: await revisionOf(second) }),
-    (error: any) => error instanceof PlanbanStaleCopyError && /taken online/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy/.test(error.message));
+    (error: any) => error instanceof PlanbanStaleCopyError && /Not saved.*now lives online/.test(error.message) && /do not choose for the owner/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy/.test(error.message));
   assert.equal((await storage.loadState(second)).roadmap.roadmapItems[0]!.summary, "Before it went online", "reads still work");
   assert.ok(await storage.pathExists(join(copyRoot, STALE_MARKER)));
   // The refusal survives the service being unreachable.
@@ -951,6 +956,46 @@ test("take-online with attachments uploads card files once, and take-local bring
   const returned = await takeLocal(cwd);
   assert.deepEqual([...await readFile(join(returned.planningRoot, "items", "alpha", "renders", "front.png"))], [137, 80, 78, 71, 1, 2, 3]);
   assert.equal(await readFile(join(returned.planningRoot, "items", "alpha", "notes.txt"), "utf8"), "Fabric notes");
+});
+
+test("a take-online that fails removes the partly copied online board and leaves this machine's board unchanged", async () => {
+  const before = await storage.loadState(cwd);
+  fake.failParts(true);
+  await assert.rejects(takeOnline(fake.url, cwd), /still on this machine, unchanged, and the partly copied online version was removed/);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"]);
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+  assert.equal((await storage.loadState(cwd)).roadmap.revision, before.roadmap.revision);
+  fake.failParts(false);
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("stop-take-online cancels an interrupted move; one that already reached the service is finished instead", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const stopped = await stopTakeOnline(cwd);
+  assert.equal(stopped.stopped, true);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"]);
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  assert.equal((await stopTakeOnline(cwd)).stopped, false);
+  await killedAt("take-online:after-commit", ["online", "take-online", fake.url, "--cwd", cwd]);
+  await assert.rejects(stopTakeOnline(cwd), /already reached the online service/);
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("taking a shared board local says who loses access, and only goes ahead when confirmed", async () => {
+  await takeOnline(fake.url, cwd);
+  fake.members.push({ userId: "maya", role: "editor" });
+  const refusal: any = await takeLocal(cwd).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanConfirmationNeeded, String(refusal));
+  assert.match(refusal.message, /removes access for 1 other person\(s\), and their agents: maya \(editor\).*kept, read-only/s);
+  assert.equal(fake.requests.some((req) => req.path.endsWith("/take-local/fence")), false, "nothing is frozen before confirming");
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  await takeLocal(cwd, { removeOthers: true });
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "local");
+  assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
 });
 
 test("take-local never writes an attachment outside the board's folder, whatever the card id", async () => {

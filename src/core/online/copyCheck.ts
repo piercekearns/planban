@@ -39,16 +39,19 @@ export interface StaleCopy {
 
 export class PlanbanStaleCopyError extends PlanbanConflictError {
   constructor(readonly stale: StaleCopy, cwd: string, repoId: string) {
+    // Wording approved with the board page mockups (owner decision 15).
     const lines = [
-      `This board was taken online as "${stale.title}" (${stale.boardId} at ${stale.url}) on ${stale.onlineSince.slice(0, 10)}. This machine's local copy is out of date, so Planban will not change it.`,
+      `Not saved. "${stale.title}" now lives online (${stale.boardId} at ${stale.url}); it was taken online on ${stale.onlineSince.slice(0, 10)}.`,
+      "The copy on this machine is older and read-only. Nothing has been lost, and nothing was changed.",
       "Choose one:",
-      `  1. Use the online board in this project: planban online attach ${stale.url} ${stale.boardId} --cwd ${cwd} --replace-stale-copy`,
-      `  2. Keep this copy as a separate local board: planban online keep-local-copy --cwd ${cwd} --new-id ${repoId}-local`,
+      `  1. Use the online board (recommended): planban online attach ${stale.url} ${stale.boardId} --cwd ${cwd} --replace-stale-copy`,
+      `  2. Keep this copy as a separate board: planban online keep-local-copy --cwd ${cwd} --new-id ${repoId}-local`,
     ];
     if (stale.unsyncedChanges.length) {
       lines.push(`${stale.unsyncedChanges.length} change(s) on this machine never reached the online board. Both choices keep them:`);
       for (const change of stale.unsyncedChanges.slice(0, 10)) lines.push(`  - v${change.version} ${change.createdAt.slice(0, 16)}: ${change.summary}`);
     }
+    lines.push("Agents: do not retry this change, and do not choose for the owner. Ask the owner whether to use the online board or keep this copy as a separate board.");
     super(lines.join("\n"));
     this.name = "PlanbanStaleCopyError";
   }

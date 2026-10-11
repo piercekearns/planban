@@ -344,7 +344,7 @@ export const fence = internalMutation({
       }
       if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
       await ctx.db.patch(board._id, { localTransfer: { ...board.localTransfer, at: new Date().toISOString() } });
-      return { generation: board.localTransfer.generation, revision: board.revision };
+      return { generation: board.localTransfer.generation, revision: board.revision, removedPeople: [] as string[] };
     }
     if (!/^[A-Za-z0-9-]{8,80}$/.test(transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
     if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
@@ -364,7 +364,15 @@ export const fence = internalMutation({
       history: { actor: "user", operation: "board.take-local", summary: "Took the board back to Local Mode", affectedCards: [] },
       docs: [], attribution: attributionFor(access.connection, "user"), now,
     });
-    return { generation: board.generation, revision: committed.revision };
+    // Owner decision 15: everyone else, and their agents, lose access now.
+    // The online copy stays, read-only, for the person taking it local.
+    const removedPeople: string[] = [];
+    for (const member of await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect()) {
+      if (member.userId === access.connection.userId) continue;
+      removedPeople.push(member.userId);
+      await ctx.db.delete(member._id);
+    }
+    return { generation: board.generation, revision: committed.revision, removedPeople };
   },
 });
 
