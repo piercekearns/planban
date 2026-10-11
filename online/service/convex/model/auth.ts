@@ -46,7 +46,7 @@ export function publicOrigin() {
 
 export const clerkVerifier: AuthVerifier = {
   async authenticate(ctx, bearer) {
-    const token = await verifyClerkAccessToken(bearer, publicOrigin());
+    const token = await verifyClerkAccessToken(ctx, bearer, publicOrigin());
     // The command line's own client signs in only through the machine exchange.
     if (!token || token.clientId === process.env.PLANBAN_CLI_CLIENT_ID) return null;
     return ctx.runMutation(internal.connections.forOAuthClient, { userId: token.sub, clientId: token.clientId, clientName: clientNameOf(token.clientId) });

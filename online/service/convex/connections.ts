@@ -161,10 +161,17 @@ export const forOAuthClient = internalMutation({
   },
 });
 
-/** A machine's own sign-in, from the command line's browser sign-in: the person's full access. */
+/**
+ * A machine's own sign-in, from the command line's browser sign-in: the
+ * person's full access. The sign-in token it was exchanged for is used up in
+ * the same step, so it can never make a second one.
+ */
 export const createMachine = internalMutation({
-  args: { userId: v.string(), tokenHash: v.string(), name: v.string() },
-  handler: async (ctx, { userId, tokenHash, name }) => {
+  args: { userId: v.string(), tokenHash: v.string(), name: v.string(), exchangeHash: v.string(), exchangeExpiresAt: v.string() },
+  handler: async (ctx, { userId, tokenHash, name, exchangeHash, exchangeExpiresAt }) => {
+    const used = await ctx.db.query("machineExchanges").withIndex("by_tokenHash", (q) => q.eq("tokenHash", exchangeHash)).first();
+    if (used) fail("unauthorized", "Sign in again: this sign-in has already been used.");
+    await ctx.db.insert("machineExchanges", { tokenHash: exchangeHash, expiresAt: exchangeExpiresAt });
     const now = new Date().toISOString();
     const label = name.trim().slice(0, 80) || "Planban command line";
     const id = await ctx.db.insert("connections", {

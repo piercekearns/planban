@@ -1,5 +1,6 @@
-// Housekeeping: idempotency records expire after seven days, and uploads
-// abandoned for a day are cancelled so their board id is released.
+// Housekeeping: idempotency records expire after seven days, uploads
+// abandoned for a day are cancelled so their board id is released, and used
+// command-line sign-in tokens are forgotten once too old to exchange anyway.
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import { abortTransfer } from "./model/transfer";
@@ -25,5 +26,15 @@ export const cancelAbandonedTransfers = internalMutation({
     const abandoned = await ctx.db.query("transfers").withIndex("by_state_updated", (q) => q.eq("state", "open").lt("updatedAt", cutoff)).take(BATCH);
     for (const transfer of abandoned) await abortTransfer(ctx, transfer);
     if (abandoned.length === BATCH) await ctx.scheduler.runAfter(0, internal.maintenance.cancelAbandonedTransfers, {});
+  },
+});
+
+export const expireMachineExchanges = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = new Date().toISOString();
+    const old = await ctx.db.query("machineExchanges").withIndex("by_expiresAt", (q) => q.lt("expiresAt", now)).take(BATCH);
+    for (const row of old) await ctx.db.delete(row._id);
+    if (old.length === BATCH) await ctx.scheduler.runAfter(0, internal.maintenance.expireMachineExchanges, {});
   },
 });

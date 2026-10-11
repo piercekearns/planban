@@ -9,7 +9,10 @@
 //
 //   PLANBAN_ONLINE_URL=http://127.0.0.1:3411 node --import tsx/esm online/scripts/clerk-tokens-convex.ts
 import assert from "node:assert/strict";
-import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, createSign, generateKeyPairSync, randomUUID } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import { createEmptyRoadmap } from "../../src/core/boardOperations";
 
@@ -18,10 +21,17 @@ const issuer = "http://127.0.0.1:3499";
 let step = 0;
 const ok = (label: string) => console.log(`  ok ${++step} - ${label}`);
 
-const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-const kid = randomUUID();
+// The stand-in's key is kept between runs: the service refetches a key set at
+// most every 30 seconds, so a new key each run would be refused for a while.
+const keyFile = join(tmpdir(), "planban-clerk-stand-in-key.pem");
+if (!existsSync(keyFile)) writeFileSync(keyFile, generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+const privateKey = createPrivateKey(readFileSync(keyFile));
+const publicKey = createPublicKey(privateKey);
+const kid = createHash("sha256").update(publicKey.export({ format: "der", type: "spki" })).digest("hex").slice(0, 16);
 const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "RS256" }] };
+let keyFetches = 0;
 const server = createServer((req, res) => {
+  if (req.url === "/.well-known/jwks.json") keyFetches += 1;
   res.writeHead(req.url === "/.well-known/jwks.json" ? 200 : 404, { "Content-Type": "application/json" });
   res.end(JSON.stringify(req.url === "/.well-known/jwks.json" ? jwks : {}));
 });
@@ -30,7 +40,7 @@ await new Promise<void>((resolve) => server.listen(3499, "127.0.0.1", resolve));
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 function token(claims: Record<string, unknown>, options: { key?: typeof privateKey; kid?: string } = {}) {
   const head = encode({ alg: "RS256", typ: "JWT", kid: options.kid ?? kid });
-  const body = encode({ iss: issuer, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, ...claims });
+  const body = encode({ iss: issuer, jti: randomUUID(), iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, ...claims });
   const signature = createSign("RSA-SHA256").update(`${head}.${body}`).sign(options.key ?? privateKey).toString("base64url");
   return `${head}.${body}.${signature}`;
 }
@@ -73,13 +83,24 @@ try {
     [token({ sub: person, client_id: "x", aud: "https://elsewhere.example" }), "a token for another audience"],
     [token({ sub: person, client_id: "test-cli" }), "the command line's own client, outside the sign-in exchange"],
     [`${token({ sub: person, client_id: "x" }).slice(0, -4)}AAAA`, "a tampered signature"],
+    [token({ sub: person, sid: "sess_1", client_id: "x" }), "a session token that also names a client"],
+    [token({ sub: person, client_id: "x", iat: undefined }), "a token without an issue time"],
+    [token({ sub: person, client_id: "x", iat: Math.floor(Date.now() / 1000) + 3600 }), "a token issued in the future"],
+    [token({ sub: person, client_id: "x", nbf: String(Math.floor(Date.now() / 1000) + 3600) }), "a token with a malformed start time"],
+    [`${encode(null)}.${token({ sub: person, client_id: "x" }).split(".")[1]}.AAAA`, "a token whose header is not an object"],
+    [`${token({ sub: person, client_id: "x" }).split(".").slice(0, 2).join(".")}.!!!`, "a token whose signature is not base64"],
   ];
   for (const [bad, what] of refused) assert.equal((await api(bad, "GET", "/api/v1/me")).status, 401, what);
-  ok("session tokens, other issuers, expired, foreign-key, unknown-key, wrong-audience, tampered and command-line tokens are refused");
+  ok("session tokens, other issuers, expired, foreign-key, unknown-key, wrong-audience, tampered, badly timed, malformed and command-line tokens are refused");
+  const fetchesBefore = keyFetches;
+  for (let i = 0; i < 5; i += 1) assert.equal((await api(token({ sub: person, client_id: "x" }, { kid: randomUUID() }), "GET", "/api/v1/me")).status, 401);
+  assert.ok(keyFetches - fetchesBefore <= 1, `made-up key ids fetched the key set ${keyFetches - fetchesBefore} times`);
+  ok("made-up key ids cannot make the service keep refetching the sign-in server's keys");
   assert.equal((await api(token({ sub: person, client_id: "y", aud: origin }), "GET", "/api/v1/me")).status, 200);
   ok("a token naming this service as its audience is accepted");
 
-  const machine = await api(token({ sub: person, client_id: "test-cli" }), "POST", "/api/v1/auth/machine", { name: "Test Mac" });
+  const cliToken = token({ sub: person, client_id: "test-cli" });
+  const machine = await api(cliToken, "POST", "/api/v1/auth/machine", { name: "Test Mac" });
   assert.equal(machine.status, 201, JSON.stringify(machine.json));
   assert.match(machine.json.token, /^pbm_/);
   const machineMe = (await api(machine.json.token, "GET", "/api/v1/me")).json;
@@ -89,6 +110,13 @@ try {
   assert.equal((await api(token({ sub: person, client_id: "test-cli", iat: Math.floor(Date.now() / 1000) - 3600 }), "POST", "/api/v1/auth/machine", {})).status, 401, "an old sign-in");
   assert.equal((await api(token({ sub: person, client_id: "https://claude.ai/oauth/mcp-client-metadata" }), "POST", "/api/v1/auth/machine", {})).status, 401, "another app's token");
   ok("the command line's fresh sign-in becomes this machine's own sign-in; old or other apps' tokens do not");
+  assert.equal((await api(cliToken, "POST", "/api/v1/auth/machine", {})).status, 401, "the same sign-in a second time");
+  const spareToken = token({ sub: person, client_id: "test-cli" });
+  const spare = await api(spareToken, "POST", "/api/v1/auth/machine", { name: "Spare" });
+  assert.equal(spare.status, 201);
+  assert.equal((await api(spare.json.token, "POST", `/api/v1/connections/${spare.json.connectionId}/revoke`, {})).status, 200);
+  assert.equal((await api(spareToken, "POST", "/api/v1/auth/machine", {})).status, 401, "the same sign-in after signing out");
+  ok("a command-line sign-in token works once, even after the machine signs out");
 
   const claudeId = me.json.connectionId as string;
   assert.equal((await api(machine.json.token, "POST", `/api/v1/connections/${claudeId}/access`, { level: "read" })).status, 200);

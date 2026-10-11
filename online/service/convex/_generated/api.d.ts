@@ -30,6 +30,7 @@ import type * as model_mcp from "../model/mcp.js";
 import type * as model_rows from "../model/rows.js";
 import type * as model_sha256 from "../model/sha256.js";
 import type * as model_transfer from "../model/transfer.js";
+import type * as signingKeys from "../signingKeys.js";
 import type * as transfers from "../transfers.js";
 
 import type {
@@ -61,6 +62,7 @@ declare const fullApi: ApiFromModules<{
   "model/rows": typeof model_rows;
   "model/sha256": typeof model_sha256;
   "model/transfer": typeof model_transfer;
+  signingKeys: typeof signingKeys;
   transfers: typeof transfers;
 }>;
 

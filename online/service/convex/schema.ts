@@ -143,6 +143,25 @@ export default defineSchema({
     oauthClientId: v.optional(v.string()),
   }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"]),
 
+  /** Clerk's signing key set (JSON), and when it was last fetched and last attempted. */
+  signingKeys: defineTable({
+    name: v.string(),
+    keys: v.string(),
+    fetchedAt: v.number(),
+    attemptedAt: v.number(),
+  }).index("by_name", ["name"]),
+
+  /**
+   * Sign-in tokens the command line has already exchanged for a machine
+   * sign-in. Each one works once, so a copied token cannot make another
+   * sign-in, even after this one is signed out. Kept until it would be too
+   * old to exchange anyway.
+   */
+  machineExchanges: defineTable({
+    tokenHash: v.string(),
+    expiresAt: v.string(),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_expiresAt", ["expiresAt"]),
+
   /** Take Online uploads, sent in parts under one transfer id. */
   transfers: defineTable({
     transferId: v.string(),

@@ -5,18 +5,24 @@
 //
 // Configuration (deployment environment): CLERK_ISSUER, CLERK_JWKS_URL and
 // PLANBAN_CLI_CLIENT_ID (the public OAuth client the command line uses).
+import { internal } from "../_generated/api";
+import type { ActionCtx } from "../_generated/server";
 
 export interface ClerkAccessToken {
   /** The Clerk user id. */
   sub: string;
   /** The OAuth client the token was issued to: a client id, or for a client ID metadata document its URL. */
   clientId: string;
+  /** When it was issued (seconds); never later than now plus the allowed clock skew. */
   issuedAt: number;
 }
 
-const CLOCK_SKEW_SECONDS = 60;
+export const CLOCK_SKEW_SECONDS = 60;
 const KEYS_TTL_MS = 10 * 60 * 1000;
-let keys: { fetchedAt: number; byKid: Map<string, JsonWebKey> } | null = null;
+/** The key set is refetched at most this often across the service, so made-up key ids cannot flood Clerk. */
+const KEYS_REFRESH_COOLDOWN_MS = 30 * 1000;
+const KEYS_FETCH_TIMEOUT_MS = 5000;
+type KeyWithId = JsonWebKey & { kid?: string };
 
 export function clerkConfigured() {
   return !!process.env.CLERK_ISSUER && !!process.env.CLERK_JWKS_URL;
@@ -28,62 +34,81 @@ function base64UrlDecode(part: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-function decodeJson(part: string): Record<string, unknown> {
-  return JSON.parse(new TextDecoder().decode(base64UrlDecode(part)));
+function decodeJson(part: string): Record<string, unknown> | null {
+  const value: unknown = JSON.parse(new TextDecoder().decode(base64UrlDecode(part)));
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-async function signingKey(kid: string): Promise<JsonWebKey | null> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const stale = !keys || Date.now() - keys.fetchedAt > KEYS_TTL_MS;
-    // An unknown key id may mean Clerk rotated its keys: fetch once more.
-    if (stale || attempt === 1) {
-      const response = await fetch(process.env.CLERK_JWKS_URL!, { redirect: "error" });
-      if (!response.ok) throw new Error("Clerk's signing keys could not be loaded.");
-      const set = await response.json() as { keys?: Array<JsonWebKey & { kid?: string }> };
-      keys = { fetchedAt: Date.now(), byKid: new Map((set.keys ?? []).filter((key) => key.kid).map((key) => [key.kid!, key])) };
-    }
-    const key = keys!.byKid.get(kid);
-    if (key) return key;
-  }
-  return null;
+/** Loads Clerk's key set. A failure here is the service's, not the token's, so it throws. */
+async function fetchKeys(ctx: ActionCtx): Promise<KeyWithId[]> {
+  const response = await fetch(process.env.CLERK_JWKS_URL!, { redirect: "error", signal: AbortSignal.timeout(KEYS_FETCH_TIMEOUT_MS) });
+  if (!response.ok) throw new Error("Clerk's signing keys could not be loaded.");
+  const set = await response.json() as { keys?: KeyWithId[] };
+  const keys = (set.keys ?? []).filter((key) => typeof key.kid === "string");
+  await ctx.runMutation(internal.signingKeys.store, { keys: JSON.stringify(keys) });
+  return keys;
 }
+
+async function signingKey(ctx: ActionCtx, kid: string): Promise<JsonWebKey | null> {
+  const cached = await ctx.runQuery(internal.signingKeys.cached, {});
+  const keys: KeyWithId[] = cached ? JSON.parse(cached.keys) : [];
+  const known = keys.find((key) => key.kid === kid);
+  if (known && Date.now() - cached!.fetchedAt < KEYS_TTL_MS) return known;
+  // Stale keys, or an unknown key id (Clerk may have rotated its keys): refetch,
+  // unless another request did so within the cooldown. Until then a known key
+  // is still used; a key set never loaded at all is fetched regardless.
+  if (cached && cached.fetchedAt > 0 && !await ctx.runMutation(internal.signingKeys.claimRefresh, { cooldownMs: KEYS_REFRESH_COOLDOWN_MS })) return known ?? null;
+  return (await fetchKeys(ctx)).find((key) => key.kid === kid) ?? null;
+}
+
+const isTime = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 /**
  * Checks a Clerk OAuth access token: RS256 signature by a current Clerk key,
- * Clerk's issuer, a current time window, and a client id (so a person's own
- * browser session token, which has none, is never accepted here). If the
- * token names audiences, this service's public address must be one of them.
+ * Clerk's issuer, a current time window with well-formed times, and a client
+ * id. A person's own browser session token (it carries a session id) is never
+ * accepted here, whatever else it contains. If the token names audiences,
+ * this service's public address must be one of them. Malformed tokens are
+ * refused (null); only failing to load Clerk's keys throws.
  */
-export async function verifyClerkAccessToken(token: string, audience: string): Promise<ClerkAccessToken | null> {
+export async function verifyClerkAccessToken(ctx: ActionCtx, token: string, audience: string): Promise<ClerkAccessToken | null> {
   if (!clerkConfigured()) return null;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
-  let header: Record<string, unknown>;
-  let claims: Record<string, unknown>;
+  let header: Record<string, unknown> | null;
+  let claims: Record<string, unknown> | null;
+  let signature: Uint8Array<ArrayBuffer>;
   try {
     header = decodeJson(parts[0]!);
     claims = decodeJson(parts[1]!);
+    signature = base64UrlDecode(parts[2]!);
   } catch {
     return null;
   }
+  if (!header || !claims) return null;
   if (header.alg !== "RS256" || typeof header.kid !== "string") return null;
-  const jwk = await signingKey(header.kid);
+  const jwk = await signingKey(ctx, header.kid);
   if (!jwk) return null;
-  const key = await crypto.subtle.importKey("jwk", { ...jwk, alg: "RS256", ext: true }, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
-  const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, base64UrlDecode(parts[2]!), new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
-  if (!valid) return null;
+  try {
+    const key = await crypto.subtle.importKey("jwk", { ...jwk, alg: "RS256", ext: true }, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    if (!await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, new TextEncoder().encode(`${parts[0]}.${parts[1]}`))) return null;
+  } catch {
+    return null;
+  }
   const now = Math.floor(Date.now() / 1000);
   if (claims.iss !== process.env.CLERK_ISSUER) return null;
-  if (typeof claims.exp !== "number" || claims.exp < now - CLOCK_SKEW_SECONDS) return null;
-  if (typeof claims.nbf === "number" && claims.nbf > now + CLOCK_SKEW_SECONDS) return null;
+  if (!isTime(claims.exp) || claims.exp < now - CLOCK_SKEW_SECONDS) return null;
+  if (claims.nbf !== undefined && (!isTime(claims.nbf) || claims.nbf > now + CLOCK_SKEW_SECONDS)) return null;
+  if (!isTime(claims.iat) || claims.iat > now + CLOCK_SKEW_SECONDS) return null;
   if (typeof claims.sub !== "string" || !claims.sub) return null;
-  const clientId = typeof claims.client_id === "string" ? claims.client_id : typeof claims.azp === "string" && !claims.sid ? claims.azp : null;
+  if (claims.sid !== undefined) return null;
+  const clientId = typeof claims.client_id === "string" ? claims.client_id : typeof claims.azp === "string" ? claims.azp : null;
   if (!clientId) return null;
   if (claims.aud !== undefined) {
     const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!audiences.includes(audience) && !audiences.includes(`${audience}/mcp`)) return null;
   }
-  return { sub: claims.sub, clientId, issuedAt: typeof claims.iat === "number" ? claims.iat : now };
+  return { sub: claims.sub, clientId, issuedAt: claims.iat };
 }
 
 /** A readable name for an OAuth client: the host of a metadata document URL, or the client id. */
