@@ -244,5 +244,5 @@ export default defineSchema({
     index: v.number(),
     storageId: v.id("_storage"),
     size: v.number(),
-  }).index("by_upload_index", ["uploadId", "index"]),
+  }).index("by_upload_index", ["uploadId", "index"]).index("by_storageId", ["storageId"]),
 });

@@ -18,6 +18,9 @@ import { asServiceError, fail } from "./errors";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
 
+/** Delay before an old generation's clean-up (and file carry-over) starts after a commit. */
+const CLEANUP_DELAY_MS = 5_000;
+
 /** An open upload untouched for this long may be replaced by a new one. */
 export const STALE_TRANSFER_MS = 10 * 60 * 1000;
 
@@ -248,7 +251,9 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
     if (await ctx.db.query("attachments").withIndex("by_board_generation", (q) => q.eq("boardId", board!.boardId).eq("generation", previousGeneration)).first()) {
       await ctx.db.patch(board!._id, { carryFrom: previousGeneration });
     }
-    await ctx.scheduler.runAfter(0, internal.transfers.cleanupGeneration, { boardId: board!.boardId, generation: previousGeneration });
+    // Clean-up is not urgent; starting it a few seconds later also lets a
+    // re-run of take-online --attachments re-link files before they move.
+    await ctx.scheduler.runAfter(CLEANUP_DELAY_MS, internal.transfers.cleanupGeneration, { boardId: board!.boardId, generation: previousGeneration });
   }
   return { boardId: board!.boardId, roadmap: committed };
 }

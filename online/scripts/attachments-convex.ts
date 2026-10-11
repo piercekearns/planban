@@ -147,4 +147,18 @@ assert.ok(back, "Take Local finished");
 const { readdir } = await import("node:fs/promises");
 assert.equal((await readdir(join(back!.planningRoot, "items", "album", "photos"))).length, 250);
 ok("taking a board with 250 files local straight after it went online again keeps every file");
+// A file replaced and then removed while files are still being carried over stays removed.
+await takeOnline(origin, many);
+const replaced = await uploadAttachment(origin, manyId, "album", "photos/7.txt", Buffer.from("replacement"));
+await removeAttachment(origin, manyId, replaced.attachment.id);
+for (let attempt = 0; attempt < 40; attempt += 1) {
+  const listed = await listAttachments(origin, manyId, "album");
+  if (listed.length === 249) break;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+await new Promise((resolve) => setTimeout(resolve, 1500));
+const remaining = await listAttachments(origin, manyId, "album");
+assert.equal(remaining.length, 249);
+assert.ok(!remaining.some((file) => file.path === "photos/7.txt"), "the removed file came back");
+ok("a file replaced and removed while files are being carried over does not come back");
 console.log(`All ${step} checks passed.`);

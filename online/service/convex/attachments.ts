@@ -61,6 +61,19 @@ function describe(row: Doc<"attachments">) {
   return { id: _id, cardId, path, sha256, size, contentType, uploadedBy, uploadedAt };
 }
 
+/**
+ * While files are being carried over from an earlier generation, a file at
+ * the same card and path there is superseded by any change made now, so it
+ * is dropped at once rather than resurfacing later.
+ */
+async function dropCarried(ctx: MutationCtx, board: Doc<"boards">, cardId: string, key: string) {
+  if (board.carryFrom === undefined) return;
+  const carried = await ctx.db.query("attachments").withIndex("by_board_card_pathKey", (q) => q.eq("boardId", board.boardId).eq("generation", board.carryFrom!).eq("cardId", cardId).eq("pathKey", key)).unique();
+  if (!carried) return;
+  await ctx.db.delete(carried._id);
+  await releaseBlob(ctx, board.boardId, carried.sha256);
+}
+
 /** Points a path at stored contents, replacing the file already at that path (in any letter case). */
 async function link(ctx: MutationCtx, board: Doc<"boards">, userId: string, input: { cardId: string; path: string; sha256: string; size: number; contentType: string }) {
   const at = live(board);
@@ -76,6 +89,7 @@ async function link(ctx: MutationCtx, board: Doc<"boards">, userId: string, inpu
     id = await ctx.db.insert("attachments", { ...at, cardId: input.cardId, ...fields });
   }
   if (previousSha && previousSha !== input.sha256) await releaseBlob(ctx, at.boardId, previousSha);
+  await dropCarried(ctx, board, input.cardId, key);
   return describe((await ctx.db.get(id))!);
 }
 
@@ -152,7 +166,10 @@ export const partAllowed = internalQuery({
 export const recordPart = internalMutation({
   args: { connectionId: v.id("connections"), boardId: v.string(), uploadId: v.string(), index: v.number(), storageId: v.id("_storage"), size: v.number() },
   handler: async (ctx, { connectionId, boardId, uploadId, index, storageId, size }) => {
-    const upload = await ownUpload(ctx, connectionId, boardId, uploadId).catch((error) => error as Error);
+    // Access may have changed while the part was arriving: check it all again.
+    const upload = await ownUpload(ctx, connectionId, boardId, uploadId)
+      .then(async (found) => (await writableCard(ctx, connectionId, boardId, found.cardId), found))
+      .catch((error) => error as Error);
     if (upload instanceof Error || upload.state !== "open") {
       await ctx.storage.delete(storageId);
       return { stored: false };
@@ -226,6 +243,8 @@ export const remove = internalMutation({
     if (!visible) fail("not_found", "Attachment not found.");
     await ctx.db.delete(row!._id);
     await releaseBlob(ctx, boardId, row!.sha256);
+    // Removing a file removes it in every generation, so an older copy never reappears.
+    await dropCarried(ctx, access.board, row!.cardId, row!.pathKey);
     return { removed: true };
   },
 });
@@ -284,5 +303,21 @@ export const sweepUploads = internalMutation({
         await ctx.db.delete(upload._id);
       }
     }
+    // Bytes stored by the upload endpoint whose part was never recorded (the
+    // request died in between) belong to nothing; the scan walks all stored
+    // files a page at a time, remembering where it got to.
+    const counter = await ctx.db.query("counters").withIndex("by_name", (q) => q.eq("name", "storage-sweep")).unique();
+    const after = counter?.value ?? 0;
+    const files = await ctx.db.system.query("_storage").withIndex("by_creation_time", (q) => q.gt("_creationTime", after)).take(BATCH);
+    let reached = after;
+    for (const file of files) {
+      if (file._creationTime > Date.parse(cutoff)) break;
+      reached = file._creationTime;
+      if (await ctx.db.query("uploadParts").withIndex("by_storageId", (q) => q.eq("storageId", file._id)).first()) continue;
+      await ctx.storage.delete(file._id);
+    }
+    const next = files.length < BATCH ? 0 : reached;
+    if (counter) await ctx.db.patch(counter._id, { value: next });
+    else await ctx.db.insert("counters", { name: "storage-sweep", value: next });
   },
 });
