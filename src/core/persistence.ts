@@ -6,7 +6,7 @@ import { mkdir, open, readdir, readFile, rename, rm, stat, utimes, writeFile } f
 import { basename, dirname, join, resolve } from "node:path";
 import { PlanbanConflictError } from "./boardOperations";
 
-const LOCK_DIR = ".planban-write.lock";
+export const LOCK_DIR = ".planban-write.lock";
 const IDEMPOTENCY_FILE = ".idempotency.json";
 const LOCK_RETRY_MS = 25;
 const STALE_LOCK_MS = 2 * 60 * 1000;
@@ -99,7 +99,7 @@ export async function appendLineDurably(path: string, line: string) {
  * excluded. Only the queue's winner touches that directory, so processes of
  * this version never race each other for it.
  */
-const QUEUE_DIR = ".planban-write.queue";
+export const QUEUE_DIR = ".planban-write.queue";
 
 interface LockOwner {
   pid?: number;

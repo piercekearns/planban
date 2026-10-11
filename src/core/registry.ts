@@ -147,10 +147,17 @@ export async function registerBoardFromState(
   });
 }
 
+// Board reads touch the registry, and the board server watches the registry to
+// tell the UI to reload. Rewriting it on every read made each reload trigger
+// another, so "last opened" is only refreshed once it is this old.
+export const TOUCH_INTERVAL_MS = 60_000;
+
 export async function touchBoard(repoId: string): Promise<void> {
   return withRegistryWriteLock(async () => {
   const registry = await readRegistryFile();
   const timestamp = nowIso();
+  const current = registry.boards.find((board) => board.repoId === repoId);
+  if (!current || Date.parse(timestamp) - Date.parse(current.lastOpenedAt) < TOUCH_INTERVAL_MS) return;
   await writeRegistryFile({
     version: 1,
     boards: registry.boards.map((board) =>

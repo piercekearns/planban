@@ -12,7 +12,7 @@ import { roadmapV1Schema } from "../src/core/schema";
 import type { PlanbanHistoryEntry, PlanbanHistoryIndex } from "../src/core/types";
 import { queryWorkItems } from "../src/core/workItemQuery";
 import { groupRollup } from "../src/web/mainBoardProjection";
-import { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, restoreBoard } from "../src/core/registry";
+import { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, restoreBoard, TOUCH_INTERVAL_MS, touchBoard } from "../src/core/registry";
 import {
   createCard,
   createCards,
@@ -435,6 +435,32 @@ test("initializes repo protocol files and device-local state", async () => {
   assert.equal(JSON.parse(await readFile(join(cwd, ".planban", "project.json"), "utf8")).repoId, repoId);
   assert.equal(JSON.parse(await readFile(join(planningRoot, "roadmap.json"), "utf8")).project.title, "Storage Test");
   assert.equal(JSON.parse(await readFile(registryPath(), "utf8")).boards[0].repoId, repoId);
+});
+
+test("touching a recently opened board does not rewrite the registry", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  const before = await readFile(registryPath(), "utf8");
+  const beforeMtime = (await stat(registryPath())).mtimeMs;
+
+  await touchBoard(repoId);
+  await touchBoard("missing-board");
+
+  assert.equal(await readFile(registryPath(), "utf8"), before);
+  assert.equal((await stat(registryPath())).mtimeMs, beforeMtime);
+});
+
+test("touching a board refreshes last opened once the interval has passed", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  const registry = JSON.parse(await readFile(registryPath(), "utf8"));
+  const stale = new Date(Date.now() - TOUCH_INTERVAL_MS - 1_000).toISOString();
+  registry.boards[0].lastOpenedAt = stale;
+  await writeFile(registryPath(), JSON.stringify(registry, null, 2) + "\n");
+
+  await touchBoard(repoId);
+
+  const touched = JSON.parse(await readFile(registryPath(), "utf8")).boards[0].lastOpenedAt;
+  assert.ok(Date.parse(touched) > Date.parse(stale));
+  assert.ok(Date.now() - Date.parse(touched) < TOUCH_INTERVAL_MS);
 });
 
 test("loads version-1 boards as flat roots without rewriting the roadmap", async () => {
