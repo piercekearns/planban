@@ -49,7 +49,10 @@ const DOCS_PAGE = 100;
  * this process at that exact point, the way a power cut would.
  */
 function crashPoint(name: string) {
-  if (process.env.PLANBAN_TEST_CRASH_AT === name) process.kill(process.pid, "SIGKILL");
+  if (process.env.PLANBAN_TEST_CRASH_AT !== name) return;
+  // Windows has no kill signals: exit at once with the code a killed process would have.
+  if (process.platform === "win32") process.exit(137);
+  process.kill(process.pid, "SIGKILL");
 }
 
 const journalSchema = z.object({

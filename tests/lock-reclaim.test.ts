@@ -5,9 +5,21 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
 
 const execFileAsync = promisify(execFile);
+
+/** Waits for a helper process to say it holds the board; fails instead of hanging if it never does. */
+function started(child: import("node:child_process").ChildProcess) {
+  return new Promise<void>((resolveStarted, rejectStarted) => {
+    let errors = "";
+    child.stderr?.on("data", (chunk) => { errors += chunk; });
+    const timer = setTimeout(() => rejectStarted(new Error(`helper did not start: ${errors}`)), 20_000);
+    child.stdout?.once("data", () => { clearTimeout(timer); resolveStarted(); });
+    child.once("exit", (code) => { clearTimeout(timer); rejectStarted(new Error(`helper exited (${code}): ${errors}`)); });
+  });
+}
 
 test("processes that find a killed process's lock at the same time never hold it together", async () => {
   const root = await mkdtemp(join(tmpdir(), "planban-lock-"));
@@ -26,7 +38,7 @@ test("processes that find a killed process's lock at the same time never hold it
     const script = join(root, "hold.mjs");
     await writeFile(script, `
       import { appendFile } from "node:fs/promises";
-      const { withBoardWriteLock } = await import(${JSON.stringify(resolve("src/core/persistence.ts"))});
+      const { withBoardWriteLock } = await import(${JSON.stringify(pathToFileURL(resolve("src/core/persistence.ts")).href)});
       await withBoardWriteLock(${JSON.stringify(planningRoot)}, async () => {
         await appendFile(${JSON.stringify(log)}, "enter\\n");
         await new Promise((r) => setTimeout(r, 150));
@@ -89,7 +101,7 @@ test("many processes taking turns on one board never overlap", async () => {
     const script = join(root, "turns.mjs");
     await writeFile(script, `
       import { appendFile } from "node:fs/promises";
-      const { withBoardWriteLock } = await import(${JSON.stringify(resolve("src/core/persistence.ts"))});
+      const { withBoardWriteLock } = await import(${JSON.stringify(pathToFileURL(resolve("src/core/persistence.ts")).href)});
       for (let turn = 0; turn < 3; turn += 1) {
         await withBoardWriteLock(${JSON.stringify(planningRoot)}, async () => {
           await appendFile(${JSON.stringify(log)}, "enter\\n");
@@ -119,18 +131,18 @@ test("a write blocked by a stuck process says which process holds the board and 
     // A process that takes the board and then hangs.
     const script = join(root, "hang.mjs");
     await writeFile(script, `
-      const { withBoardWriteLock } = await import(${JSON.stringify(resolve("src/core/persistence.ts"))});
+      const { withBoardWriteLock } = await import(${JSON.stringify(pathToFileURL(resolve("src/core/persistence.ts")).href)});
       await withBoardWriteLock(${JSON.stringify(planningRoot)}, async () => { console.log("holding"); await new Promise(() => { setInterval(() => {}, 1000); }); });
     `);
     const holder = spawn(process.execPath, ["--import", "tsx/esm", script, "hung-agent-marker"], { env });
-    await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+    await started(holder);
     try {
       const started = Date.now();
       const failure = await cli(["create-card", "Blocked", "--cwd", project, "-o", "json"]).then(() => null, (error) => error);
       assert.ok(failure, "the write should give up");
       assert.match(failure.stderr, new RegExp(`held by process ${holder.pid}`));
       assert.match(failure.stderr, /hung-agent-marker/);
-      assert.match(failure.stderr, new RegExp(`kill ${holder.pid}`));
+      assert.match(failure.stderr, new RegExp(process.platform === "win32" ? `taskkill /PID ${holder.pid}` : `kill ${holder.pid}`));
       assert.match(failure.stderr, /nothing was changed/);
       assert.ok(Date.now() - started < 4000, "a short limit is honoured without waiting for the notice");
       // An agent going through the local MCP server gets the same explanation.
@@ -143,7 +155,7 @@ test("a write blocked by a stuck process says which process holds the board and 
       mcp.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "planban_create_card", arguments: { cwd: project, title: "From an agent" } } }) + "\n");
       await done;
       assert.match(output, new RegExp(`held by process ${holder.pid}`));
-      assert.match(output, new RegExp(`kill ${holder.pid}`));
+      assert.match(output, new RegExp(process.platform === "win32" ? `taskkill /PID ${holder.pid}` : `kill ${holder.pid}`));
     } finally {
       const exited = holder.exitCode !== null || holder.signalCode !== null ? Promise.resolve() : new Promise((resolveExit) => holder.once("exit", resolveExit));
       holder.kill("SIGKILL");
@@ -164,10 +176,10 @@ async function hang(root: string, lockedFolder: string, env: NodeJS.ProcessEnv, 
        mkdirSync(${JSON.stringify(join(lockedFolder, ".planban-write.lock"))}, { recursive: true });
        writeFileSync(${JSON.stringify(join(lockedFolder, ".planban-write.lock", "owner.json"))}, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
        console.log("holding"); setInterval(() => {}, 1000);`
-    : `const { withBoardWriteLock } = await import(${JSON.stringify(resolve("src/core/persistence.ts"))});
+    : `const { withBoardWriteLock } = await import(${JSON.stringify(pathToFileURL(resolve("src/core/persistence.ts")).href)});
        await withBoardWriteLock(${JSON.stringify(lockedFolder)}, async () => { console.log("holding"); await new Promise(() => { setInterval(() => {}, 1000); }); });`);
   const holder = spawn(process.execPath, ["--import", "tsx/esm", script, "older-or-hung-marker"], { env });
-  await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+  await started(holder);
   return {
     holder,
     async stop() {

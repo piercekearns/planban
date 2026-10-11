@@ -366,7 +366,8 @@ test("headless CLI login discovers OAuth endpoints, preserves cookies and sends 
   assert.equal(consent.body.boardId, "demo");
   const file = await readCredentials();
   assert.match(file.services[fake.url]!.refreshToken, /^refresh-/);
-  assert.equal((await stat(join(credentialsRoot(), "credentials.json"))).mode & 0o777, 0o600);
+  // Windows has no owner-only file modes.
+  if (process.platform !== "win32") assert.equal((await stat(join(credentialsRoot(), "credentials.json"))).mode & 0o777, 0o600);
   const status = await onlineStatus();
   assert.equal(status[0]?.person, "owner");
   assert.equal(JSON.stringify(status).includes("Token"), false);
@@ -649,7 +650,9 @@ async function killedAt(point: string, args: string[]) {
   const failure = await execFileAsync(process.execPath, ["--import", "tsx/esm", "src/cli.ts", ...args], {
     env: { ...process.env, PLANBAN_TEST_CRASH_AT: point },
   }).then(() => null, (error) => error);
-  assert.equal(failure?.signal, "SIGKILL", `expected the process to be killed at ${point}`);
+  // Windows has no kill signals; the crash hook exits with code 137 there instead.
+  const killed = failure?.signal === "SIGKILL" || (process.platform === "win32" && failure?.code === 137);
+  assert.ok(killed, `expected the process to be killed at ${point}: ${failure?.stderr ?? "it finished"}`);
 }
 
 test("take-online killed mid-upload leaves the board local, and running it again finishes once", async () => {
