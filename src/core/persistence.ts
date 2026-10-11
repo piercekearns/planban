@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
-const LOCK_DIR = ".planban-write.lock";
+export const LOCK_DIR = ".planban-write.lock";
 const IDEMPOTENCY_FILE = ".idempotency.json";
 const LOCK_RETRY_MS = 25;
 const STALE_LOCK_MS = 2 * 60 * 1000;

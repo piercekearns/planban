@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { Agent as HttpAgent, createServer as createHttpServer, get as httpGet, type IncomingMessage } from "node:http";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import chokidar from "chokidar";
 import { createCard, createGroup as createGroupCore, initializeProject, loadState, readDoc, saveRoadmap, setCardStatus, writeDoc } from "../src/core/storage";
 import { PLANBAN_VERSION } from "../src/core/version";
 import { isIgnoredPlanbanWatchPath, planbanWatcherOptions, planbanWatchPaths, startServer } from "../src/server/server";
@@ -301,6 +302,9 @@ test("bounds filesystem watching when history is large and file descriptors are 
     assert.deepEqual(watchedPaths, planbanWatchPaths());
     assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, "history", "v0500", "roadmap.json")), true);
     assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, "roadmap.json")), false);
+    assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, ".planban-write.lock")), true);
+    assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, ".planban-write.lock", "owner.json")), true);
+    assert.equal(isIgnoredPlanbanWatchPath(join(planbanHome, ".planban-write.lock")), true);
     assert.equal((await fetch(`${server.url}/api/status`)).status, 200);
   } finally {
     await server.close();
@@ -494,6 +498,65 @@ test("lists registered boards and serves board-specific state APIs", async () =>
     await server.close();
   }
 });
+
+for (const polling of [false, true]) {
+  test(`reading a board does not move the live state version, but edits do (${polling ? "polling" : "default"} watcher)`, async () => {
+    const previousPolling = process.env.CHOKIDAR_USEPOLLING;
+    if (polling) process.env.CHOKIDAR_USEPOLLING = "1";
+    await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+    await createCard({ cwd, title: "Alpha", status: "pending" });
+    let watcherReady: Promise<unknown> = Promise.resolve();
+    const server = await startServer({
+      cwd,
+      port: await freePort(),
+      useVite: false,
+      watcherFactory(paths, options) {
+        const watcher = chokidar.watch(paths, options);
+        watcherReady = once(watcher, "ready");
+        return watcher;
+      },
+    });
+    const liveState = async () => (await jsonFetch<{ stateVersion: number }>(`${server.url}/api/live`)).stateVersion;
+    // Longer than the polling interval, so a missed event would have been seen.
+    const observe = () => new Promise((resolveWait) => setTimeout(resolveWait, 2_500));
+    const waitForChange = async (from: number) => {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const current = await liveState();
+        if (current !== from) return current;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      assert.fail(`live state version stayed at ${from}`);
+    };
+
+    try {
+      await watcherReady;
+      const baseline = await liveState();
+      for (let read = 0; read < 3; read += 1) {
+        await jsonFetch(`${server.url}/api/boards/${repoId}/state`);
+        await jsonFetch(`${server.url}/api/boards/${repoId}/cards/alpha`);
+      }
+      await observe();
+      assert.equal(await liveState(), baseline);
+
+      await setCardStatus(cwd, "alpha", "in-progress");
+      const afterRoadmapEdit = await waitForChange(baseline);
+      assert.equal((await readDoc({ cwd, cardId: "alpha", kind: "plan" })).exists, false);
+      const doc = await writeDoc({ cwd, cardId: "alpha", kind: "plan", markdown: "# Alpha plan\n" });
+      const afterDocCreate = await waitForChange(afterRoadmapEdit);
+      // An edit to the card doc alone, with no roadmap write, must still reach the page.
+      await observe();
+      const beforeDocEdit = await liveState();
+      assert.ok(doc.path && afterDocCreate);
+      await writeFile(resolve(planningRoot, doc.path), "# Alpha plan, edited\n", "utf8");
+      await waitForChange(beforeDocEdit);
+    } finally {
+      await server.close();
+      if (previousPolling === undefined) delete process.env.CHOKIDAR_USEPOLLING;
+      else process.env.CHOKIDAR_USEPOLLING = previousPolling;
+    }
+  });
+}
 
 test("duplicates, archives, restores, and deletes whole boards through the board API", async () => {
   await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
