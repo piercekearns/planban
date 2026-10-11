@@ -2368,6 +2368,14 @@ h1 {
   color: var(--text-muted);
 }
 
+.staleness-note {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
 .card-copy {
   margin: 9px 0 0;
   color: var(--text-muted);

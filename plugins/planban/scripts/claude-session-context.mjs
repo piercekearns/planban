@@ -2,8 +2,14 @@
 // Claude Code SessionStart hook: when the project uses Planban, add one short orientation line to the session context.
 // Output goes to stdout, which Claude Code adds as context. Never fail the session: exit 0 on any error.
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolvePlanbanProjectDir } from "./project-dir.mjs";
+import { loadRuntimeTypescript } from "./runtime-dependencies.mjs";
+import { resolvePlanbanRuntime } from "./runtime-root.mjs";
+
+const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const STALENESS_BUDGET_MS = 3_000;
 
 function readStdinJson() {
   try {
@@ -38,13 +44,39 @@ export function planbanSessionContext({ projectDir: requestedDir, port = 4317 })
   ].join("\n");
 }
 
+// One line naming stale active cards, from the same core function as the MCP tools and the board chip.
+// Best effort: returns null when the runtime, board or git is unavailable, or when it runs out of time.
+export async function planbanStalenessLine({ projectDir: requestedDir }) {
+  const line = (async () => {
+    const projectDir = resolvePlanbanProjectDir(requestedDir).projectDir;
+    if (!existsSync(join(projectDir, ".planban/project.json"))) return null;
+    const runtimeRoot = resolvePlanbanRuntime(PLUGIN_ROOT);
+    if (!existsSync(join(runtimeRoot, "node_modules/tsx"))) return null;
+    await loadRuntimeTypescript(runtimeRoot);
+    const { projectStaleness } = await import(pathToFileURL(join(runtimeRoot, "src/core/stalenessSources.ts")).href);
+    const { stalenessAttention, stalenessLine } = await import(pathToFileURL(join(runtimeRoot, "src/core/staleness.ts")).href);
+    const board = await projectStaleness(projectDir);
+    return board ? stalenessLine(stalenessAttention(board.staleness, board.items)) : null;
+  })().catch(() => null);
+  let timer;
+  const timeout = new Promise((resolveTimeout) => { timer = setTimeout(() => resolveTimeout(null), STALENESS_BUDGET_MS); });
+  try {
+    return await Promise.race([line, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const isMain = process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname;
 if (isMain) {
   try {
     const input = readStdinJson();
     const projectDir = process.env.CLAUDE_PROJECT_DIR || (typeof input.cwd === "string" && input.cwd) || process.cwd();
     const context = planbanSessionContext({ projectDir: resolve(projectDir) });
-    if (context) process.stdout.write(`${context}\n`);
+    if (context) {
+      const stale = await planbanStalenessLine({ projectDir: resolve(projectDir) });
+      process.stdout.write(`${stale ? `${context}\n${stale}` : context}\n`);
+    }
   } catch {
     // Orientation is optional; never block the session.
   }
