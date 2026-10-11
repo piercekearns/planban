@@ -30,6 +30,13 @@ then opens the browser to sign in with Clerk and keeps only this machine's own
 Planban sign-in. AI apps (ChatGPT, Claude) sign in through Clerk with client ID
 metadata documents; the service publishes `/.well-known/oauth-protected-resource/mcp`.
 
+Clerk behaviour seen on the development instance, which the code relies on:
+its access tokens are JWTs with `client_id`, `iat`, `jti` and no `sid` or
+`aud`, last 24 hours and cannot be revoked (so the service accepts the command
+line's token for one exchange only); and it sends codes to any loopback port,
+not just the registered ones, as RFC 8252 allows. The Clerk instance must serve
+Planban alone, since its tokens do not name an audience.
+
 ## Checks
 
 From the repository root, with the backend running:

@@ -3,6 +3,12 @@
 // access tokens from it. These are JWTs signed with the instance's keys,
 // which this module checks against Clerk's published key set.
 //
+// Clerk's OAuth access tokens carry no audience, even when the app names
+// Planban as the resource (seen on a real development-instance token). That is
+// safe only because the Clerk instance serves Planban alone, so everything it
+// issues is meant for Planban; keep it that way, or turn on Clerk's audience
+// claim. A token that does name audiences must name this service.
+//
 // Configuration (deployment environment): CLERK_ISSUER, CLERK_JWKS_URL and
 // PLANBAN_CLI_CLIENT_ID (the public OAuth client the command line uses).
 import { internal } from "../_generated/api";

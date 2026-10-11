@@ -82,7 +82,7 @@ async function fakeService() {
       requests.push({ method: req.method!, path, body });
       const json = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
       // The fake also plays Clerk, the sign-in server.
-      if (path === "/.well-known/planban.json") return json(200, { signIn: { issuer: url, cliClientId: "cli", redirectPorts: [53682, 53683, 53684, 53685, 53686], scope: "openid email profile offline_access" } });
+      if (path === "/.well-known/planban.json") return json(200, { signIn: { issuer: url, cliClientId: "cli", redirectPorts: [53682, 53683, 53684, 53685, 53686], scope: "openid email profile" } });
       if (path === "/.well-known/oauth-authorization-server") return json(200, {
         issuer: url, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
         revocation_endpoint: `${metadataOrigin ?? url}/oauth/revoke`, code_challenge_methods_supported: ["S256"],
@@ -92,7 +92,7 @@ async function fakeService() {
         auth = request;
         assert.equal(auth.searchParams.get("client_id"), "cli");
         assert.equal(auth.searchParams.get("resource"), url);
-        assert.equal(auth.searchParams.get("scope"), "openid email profile offline_access");
+        assert.equal(auth.searchParams.get("scope"), "openid email profile");
         assert.equal(auth.searchParams.get("code_challenge_method"), "S256");
         assert.match(auth.searchParams.get("redirect_uri")!, /^http:\/\/127\.0\.0\.1:5368[2-6]\/callback$/);
         const callback = new URL(auth.searchParams.get("redirect_uri")!);
@@ -371,7 +371,7 @@ test("browser sign-in uses the service's sign-in server with PKCE, then keeps on
   const credentials = (await readCredentials()).services[fake.url]!;
   assert.equal(credentials.accessToken, "pbm_machine-token");
   assert.equal(credentials.refreshToken, "");
-  assert.deepEqual([...fake.revoked].sort(), ["clerk-access", "clerk-refresh"], "the sign-in server's tokens are revoked");
+  assert.deepEqual(fake.revoked, ["clerk-refresh"], "the sign-in server's refresh token is revoked");
   // Windows has no owner-only file modes.
   if (process.platform !== "win32") assert.equal((await stat(join(credentialsRoot(), "credentials.json"))).mode & 0o777, 0o600);
   assert.equal(JSON.stringify(await onlineStatus()).includes("machine-token"), false);

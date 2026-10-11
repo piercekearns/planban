@@ -202,11 +202,11 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
     });
     const signedIn = await machine.json().catch(() => ({})) as { token?: string; userId?: string; error?: { message?: string } };
     if (!machine.ok || !signedIn.token) throw new Error(signedIn.error?.message ?? "This Online Board service did not accept the sign-in.");
-    // Nothing keeps the sign-in server's tokens; revoke them (best effort).
-    if (server.revoke) {
-      for (const token of [tokens.refresh_token, tokens.access_token]) {
-        if (token) await fetch(server.revoke, { method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000), body: new URLSearchParams({ token, client_id: server.clientId }) }).catch(() => undefined);
-      }
+    // Nothing keeps the sign-in server's tokens. A refresh token, if one was
+    // issued, is revoked (best effort). Clerk's access tokens cannot be
+    // revoked; the service accepts this one for one exchange only.
+    if (server.revoke && tokens.refresh_token) {
+      await fetch(server.revoke, { method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000), body: new URLSearchParams({ token: tokens.refresh_token, client_id: server.clientId }) }).catch(() => undefined);
     }
     await saveCredentials(url, { clientId: "machine", accessToken: signedIn.token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(signedIn.userId ? { person: signedIn.userId } : {}) });
     return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };

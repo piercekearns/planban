@@ -352,7 +352,8 @@ const serviceDiscovery = httpAction(async () => json({
       cliClientId: process.env.PLANBAN_CLI_CLIENT_ID,
       // The command-line client's registered loopback addresses.
       redirectPorts: [53682, 53683, 53684, 53685, 53686],
-      scope: "openid email profile offline_access",
+      // No offline_access: the command line keeps none of Clerk's tokens.
+      scope: "openid email profile",
     },
   } : {}),
   devSignIn: devAuthEnabled(),
