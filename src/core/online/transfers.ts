@@ -317,7 +317,7 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     const configured = doc.kind === "spec" ? item.specDoc : item.planDoc;
     if (!configured) throw new PlanbanValidationError(`Export document has no roadmap reference: ${key}`);
     const destination = resolveInsideRoot(root, configured);
-    const protectedPaths = [join(root, "roadmap.json"), join(root, "history"), join(root, ".planban-write.lock")];
+    const protectedPaths = [join(root, "roadmap.json"), join(root, "history"), join(root, ".planban-write.lock"), join(root, ".planban-write.queue")];
     if (protectedPaths.some((path) => destination === path || destination.startsWith(path + sep)) || paths.has(destination)) {
       throw new PlanbanValidationError(`Export contains a conflicting document path: ${configured}`);
     }

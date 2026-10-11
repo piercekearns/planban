@@ -55,6 +55,7 @@ assert.equal(created.isError, false, JSON.stringify(created));
 const cardId = structured(created).createdCard.id;
 const retried = await ownerClient.callTool({ name: "planban_create_card", arguments: { boardId, title: "Over MCP", specMarkdown: "# Over MCP\n", baseRevision: board.revision, idempotencyKey: `create-${boardId}` } });
 assert.equal(structured(retried).createdCard.id, cardId);
+assert.equal(structured(retried).replayed, true, "a retried edit says it was already applied");
 board = structured(await ownerClient.callTool({ name: "planban_get_board", arguments: { boardId } }));
 assert.equal(board.cards.filter((card) => card.title === "Over MCP").length, 1);
 ok("creating a card over MCP and retrying with the same idempotency key creates it once");

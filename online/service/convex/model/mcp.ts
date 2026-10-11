@@ -268,7 +268,7 @@ export class McpService {
     return this.call(() => this.ctx.runMutation(internal.boards.run, {
       connectionId: this.connectionId, boardId, op, input, completionConfirmed,
       ...(idempotencyKey ? { idempotencyKey, requestHash } : {}),
-    })) as Promise<{ roadmap: PlanbanRoadmap; result: unknown }>;
+    })) as Promise<{ roadmap: PlanbanRoadmap; result: unknown; replayed?: boolean; originalRevision?: number }>;
   }
 }
 
@@ -340,7 +340,11 @@ async function callTool(service: McpService, origin: string, name: string, args:
       // board judges the effect, including status inherited by a new Group.
       const key = typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined;
       const outcome = await service.run(stringArg(args, "boardId"), op, operationInput(args), args.completionConfirmed === true, key);
-      return { revision: outcome.roadmap.revision, ...(outcome.result as Record<string, unknown>) };
+      // A retried edit says so, and which revision it originally produced.
+      return {
+        revision: outcome.roadmap.revision, ...(outcome.result as Record<string, unknown>),
+        ...(outcome.replayed ? { replayed: true, ...(outcome.originalRevision === undefined ? {} : { originalRevision: outcome.originalRevision }) } : {}),
+      };
     }
     case "search": {
       const query = stringArg(args, "query");

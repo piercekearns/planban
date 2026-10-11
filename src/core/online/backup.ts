@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { PlanbanDocPayload, PlanbanHistoryPayload, PlanbanRoadmap } from "../types";
+import { PlanbanConflictError } from "../boardOperations";
 import { defaultPlanbanRoot } from "../paths";
 import { atomicWriteFile, withBoardWriteLock } from "../persistence";
 import { boardPath, onlineRequest } from "./client";
@@ -64,7 +65,19 @@ export async function refreshBackup(url: string, boardId: string, options: { for
   const root = backupRoot(url, boardId);
   if (!options.force && Date.now() - (lastAttempt.get(root) ?? 0) < REFRESH_INTERVAL_MS) return null;
   lastAttempt.set(root, Date.now());
-  try {
+  // A board that changes while a full download is under way is downloaded again.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await refreshOnce(url, boardId, root, options);
+    } catch (error) {
+      if (!(error instanceof PlanbanConflictError)) return null;
+    }
+  }
+  return null;
+}
+
+async function refreshOnce(url: string, boardId: string, root: string, options: { force?: boolean }): Promise<BackupMeta | null> {
+  {
     return await withBoardWriteLock(root, async () => {
       await recoverLatest(root);
       const previous = await readMeta(root);
@@ -98,7 +111,7 @@ export async function refreshBackup(url: string, boardId: string, options: { for
         if (!complete) {
           for (let offset: number | null = 0; offset !== null;) {
             const page: { docs: Array<{ cardId: string; kind: "spec" | "plan"; markdown: string }>; nextOffset: number | null } =
-              await onlineRequest(url, boardPath(boardId, `/export/docs?offset=${offset}&limit=${DOCS_PAGE}`));
+              await onlineRequest(url, boardPath(boardId, `/export/docs?offset=${offset}&limit=${DOCS_PAGE}&revision=${roadmap.revision}`));
             for (const doc of page.docs) if (live.has(doc.cardId)) await atomicWriteFile(docFile(staging, doc.cardId, doc.kind), doc.markdown);
             offset = page.nextOffset;
           }
@@ -134,8 +147,6 @@ export async function refreshBackup(url: string, boardId: string, options: { for
         await rm(staging, { recursive: true, force: true }).catch(() => undefined);
       }
     });
-  } catch {
-    return null;
   }
 }
 

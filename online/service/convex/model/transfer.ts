@@ -49,7 +49,15 @@ function rowsOf(transfer: Doc<"transfers">): BoardRows {
   return { boardId: transfer.boardId, generation: transfer.generation };
 }
 
+/** Uploads are driven only by the person's own sign-in, never by an agent connection or a key. */
+export function requireOwnConnection(connection: Doc<"connections">) {
+  if (connection.boards !== "all" || !connection.canAdminister) {
+    fail("forbidden", "Taking a board online needs the owner's own connection, not a per-board grant.");
+  }
+}
+
 async function ownedOpenTransfer(ctx: MutationCtx, connection: Doc<"connections">, transferId: string) {
+  requireOwnConnection(connection);
   const transfer = await transferRow(ctx, transferId);
   if (!transfer || transfer.userId !== connection.userId) fail("not_found", "Upload not found.");
   if (transfer!.state === "aborted") fail("conflict", "This upload was cancelled. Start Take Online again.");
@@ -76,9 +84,7 @@ export async function abortTransfer(ctx: MutationCtx, transfer: Doc<"transfers">
 }
 
 export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connections">, input: BeginInput) {
-  if (connection.boards !== "all" || !connection.canAdminister) {
-    fail("forbidden", "Taking a board online needs the owner's own connection, not a per-board grant.");
-  }
+  requireOwnConnection(connection);
   if (!/^[A-Za-z0-9-]{8,80}$/.test(input.transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
   const existing = await transferRow(ctx, input.transferId);
   if (existing) {
@@ -196,6 +202,10 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   if (!board) fail("not_found", `Online Board not found: ${transfer.boardId}`);
   if (transfer.state === "committed") {
     return { boardId: board!.boardId, roadmap: await currentRoadmap(ctx, { boardId: board!.boardId, generation: board!.generation }) };
+  }
+  // A Take Local that renewed its freeze still owns the board.
+  if (board!.localTransfer && Date.now() - Date.parse(board!.localTransfer.at) < 24 * 60 * 60 * 1000) {
+    fail("conflict", "This board is still being taken local on a machine. Finish that Take Local first.");
   }
   const parts = await ctx.db.query("transferParts").withIndex("by_transfer_seq", (q) => q.eq("transferId", input.transferId)).collect();
   if (parts.length !== input.partCount) fail("validation", `The upload is incomplete: ${parts.length} of ${input.partCount} parts arrived. Run Take Online again to resume.`);

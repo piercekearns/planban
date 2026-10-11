@@ -110,4 +110,20 @@ assert.equal(later.json.replayed, true);
 assert.equal(later.json.originalRevision, edit.json.roadmap.revision);
 assert.deepEqual(later.json.result, edit.json.result);
 ok("a replay returns the original result, and says which revision it produced when that roadmap is gone");
+// 5. Upload steps need the owner's own sign-in; a key, even of the same person, cannot touch them.
+const guarded = `guarded-${stamp}`;
+const guardedTransfer = `guarded-${stamp}`;
+assert.equal((await api(owner, "POST", "/api/v1/transfers", { transferId: guardedTransfer, roadmap: createEmptyRoadmap({ repoId: guarded, title: guarded, now }) })).status, 200);
+const readKey = (await api(owner, "POST", "/api/v1/keys", { boardId: bound, level: "read", name: "Reader" })).json.key as string;
+assert.equal((await api(readKey, "POST", `/api/v1/transfers/${guardedTransfer}/parts`, { seq: 0, history: [] })).status, 403);
+assert.equal((await api(readKey, "POST", `/api/v1/transfers/${guardedTransfer}/commit`, { partCount: 0 })).status, 403);
+assert.equal((await api(readKey, "POST", `/api/v1/transfers/${guardedTransfer}/abort`, {})).status, 403);
+assert.equal((await api(owner, "POST", `/api/v1/transfers/${guardedTransfer}/commit`, { partCount: 0 })).status, 200);
+ok("a personal access key cannot add to, finish or cancel its owner's uploads");
+
+// 6. Document export pages are tied to one revision.
+const pinned = await api(owner, "GET", `/api/v1/boards/${large}`);
+assert.equal((await api(owner, "GET", `/api/v1/boards/${large}/export/docs?offset=0&limit=5&revision=${pinned.json.roadmap.revision}`)).status, 200);
+assert.equal((await api(owner, "GET", `/api/v1/boards/${large}/export/docs?offset=0&limit=5&revision=${pinned.json.roadmap.revision - 1}`)).status, 409);
+ok("document export pages refuse a revision other than the board's current one");
 console.log(`All ${step} checks passed.`);

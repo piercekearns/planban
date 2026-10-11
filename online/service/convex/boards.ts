@@ -258,10 +258,12 @@ const PAGE_BYTES = 6 * 1024 * 1024;
 
 /** Paged export: current documents, a page of cards at a time. */
 export const exportDocs = internalQuery({
-  args: { connectionId: v.id("connections"), boardId: v.string(), offset: v.number(), limit: v.number(), transferId: v.optional(v.string()) },
-  handler: async (ctx, { connectionId, boardId, offset, limit, transferId }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), offset: v.number(), limit: v.number(), transferId: v.optional(v.string()), revision: v.optional(v.number()) },
+  handler: async (ctx, { connectionId, boardId, offset, limit, transferId, revision }) => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     requireLocalTransfer(board, transferId);
+    // Pages are positions in the roadmap, so all pages must come from one revision.
+    if (revision !== undefined && revision !== board.revision) fail("conflict", "The board changed while it was being read. Start again.", { currentRevision: board.revision });
     const at = live(board);
     const roadmap = await currentRoadmap(ctx, at);
     const docs: BoardBundle["docs"] = [];
@@ -332,7 +334,18 @@ export const fence = internalMutation({
     const access = await readableBoard(ctx, connectionId, boardId);
     if (!access.canAdminister) fail("forbidden", "Moving a board between Online and Local Mode is kept for the board owner's own connection.");
     const board = access.board;
-    if (board.localTransfer?.transferId === transferId) return { generation: board.localTransfer.generation, revision: board.revision };
+    if (board.localTransfer?.transferId === transferId) {
+      // Resuming. If the freeze lapsed and someone has started taking the
+      // board online again since, this Take Local has been superseded;
+      // otherwise the freeze is renewed.
+      const successor = await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", boardId).eq("state", "open")).first();
+      if (successor || board.localTransfer.generation !== board.generation) {
+        fail("conflict", "This board is being taken online again elsewhere, so this Take Local was superseded. Run Take Local again later.");
+      }
+      if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
+      await ctx.db.patch(board._id, { localTransfer: { ...board.localTransfer, at: new Date().toISOString() } });
+      return { generation: board.localTransfer.generation, revision: board.revision };
+    }
     if (!/^[A-Za-z0-9-]{8,80}$/.test(transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
     if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
     if (board.authority !== "online") fail("conflict", "This board is already being taken local, or is local already.");

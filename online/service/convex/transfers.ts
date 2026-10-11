@@ -5,7 +5,7 @@ import { internal } from "./_generated/api";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { liveConnection } from "./model/access";
 import { fail } from "./model/errors";
-import { abortTransfer, beginTransfer, commitTransfer, putPart } from "./model/transfer";
+import { abortTransfer, beginTransfer, commitTransfer, putPart, requireOwnConnection } from "./model/transfer";
 
 const CLEANUP_BATCH = 25;
 
@@ -34,6 +34,7 @@ export const abort = internalMutation({
   args: { connectionId: v.id("connections"), transferId: v.string() },
   handler: async (ctx, { connectionId, transferId }) => {
     const connection = await liveConnection(ctx, connectionId);
+    requireOwnConnection(connection);
     const transfer = await ctx.db.query("transfers").withIndex("by_transferId", (q) => q.eq("transferId", transferId)).unique();
     if (!transfer || transfer.userId !== connection.userId) fail("not_found", "Upload not found.");
     if (transfer!.state === "committed") fail("conflict", "This upload already finished; the board is online.");

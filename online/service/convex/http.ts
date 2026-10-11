@@ -126,7 +126,11 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
   const bound = transfer === null ? {} : { transferId: transfer };
   if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId, ...bound }));
   if (rest[0] === "export" && rest[1] === "docs" && method === "GET") {
-    return json(await ctx.runQuery(internal.boards.exportDocs, { connectionId, boardId, offset: Number(url.searchParams.get("offset") ?? 0), limit: Number(url.searchParams.get("limit") ?? 100), ...bound }));
+    const atRevision = url.searchParams.get("revision");
+    return json(await ctx.runQuery(internal.boards.exportDocs, {
+      connectionId, boardId, offset: Number(url.searchParams.get("offset") ?? 0), limit: Number(url.searchParams.get("limit") ?? 100), ...bound,
+      ...(atRevision === null ? {} : { revision: Number(atRevision) }),
+    }));
   }
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
     return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound }));

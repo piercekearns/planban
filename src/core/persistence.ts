@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 const LOCK_DIR = ".planban-write.lock";
@@ -80,14 +80,35 @@ export async function appendLineDurably(path: string, line: string) {
   }
 }
 
+/*
+ * Board write lock.
+ *
+ * Processes of this version take turns through a queue of uniquely named
+ * ticket files (Lamport's bakery algorithm on the file system): a waiter
+ * announces that it is choosing, takes the next number, and enters when no
+ * live process is still choosing and no live ticket is ahead of it. Every
+ * file has its own unique name and is only ever removed by its owner or once
+ * its owner's process has gone, so recovering from a killed process can
+ * never remove someone else's newer file. A live process is never pushed out,
+ * however long it holds the lock.
+ *
+ * The queue's winner also takes the original single lock directory, with the
+ * original rules, so older Planban versions writing the same board are still
+ * excluded. Only the queue's winner touches that directory, so processes of
+ * this version never race each other for it.
+ */
+const QUEUE_DIR = ".planban-write.queue";
+
 interface LockOwner {
   pid?: number;
   token?: string;
+  /** Written by the queue's winner: removable at once if its process has gone. */
+  queue?: boolean;
 }
 
-async function readLockOwner(lockPath: string): Promise<LockOwner | null> {
+async function readJsonFile<T>(path: string): Promise<T | null> {
   try {
-    return JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")) as LockOwner;
+    return JSON.parse(await readFile(path, "utf8")) as T;
   } catch {
     return null;
   }
@@ -104,51 +125,92 @@ function processIsAlive(pid: unknown): boolean | null {
   }
 }
 
-/**
- * A lock is stale when the process that holds it has gone (a crash, a power
- * cut, or the transfer crash tests), so a killed transfer does not block the
- * next attempt. A lock whose holder is still alive is never taken away, however
- * old. Only a lock with no identifiable owner falls back to its age.
- * Planning roots are on this machine's disk, so the owner's pid is local.
- */
-function lockIsStale(owner: LockOwner | null, createdMs: number): boolean {
-  // The owner file is written just after the lock; give a live owner time to write it.
-  if (!owner) return Date.now() - createdMs > 10_000;
-  const alive = processIsAlive(owner.pid);
-  if (alive === null) return Date.now() - createdMs > STALE_LOCK_MS;
-  return !alive;
+interface QueueEntry {
+  name: string;
+  kind: "choosing" | "ticket";
+  number: number;
+  id: string;
 }
 
-/**
- * Removes a stale lock, but only the exact lock that was judged stale.
- * Reclaimers take turns through a second lock, which has an owner too, and
- * re-read the board lock's owner under it, so two waiters can never both
- * remove locks and enter together.
- */
-async function reclaimStaleLock(lockPath: string, observed: LockOwner | null): Promise<boolean> {
-  const reclaimPath = `${lockPath}.reclaim`;
-  const token = randomUUID();
-  try {
-    await mkdir(reclaimPath);
-    await writeFile(join(reclaimPath, "owner.json"), JSON.stringify({ pid: process.pid, token }) + "\n", "utf8");
-  } catch {
-    const info = await stat(reclaimPath).catch(() => null);
-    // A reclaimer takes milliseconds; one whose process died is cleared.
-    if (info && lockIsStale(await readLockOwner(reclaimPath), info.mtimeMs)) {
-      await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+function parseEntry(name: string): QueueEntry | null {
+  const choosing = /^choosing-([a-f0-9-]{36})\.json$/.exec(name);
+  if (choosing) return { name, kind: "choosing", number: 0, id: choosing[1]! };
+  const ticket = /^ticket-(\d{12})-([a-f0-9-]{36})\.json$/.exec(name);
+  if (ticket) return { name, kind: "ticket", number: Number(ticket[1]), id: ticket[2]! };
+  return null;
+}
+
+/** Live entries of the queue; entries of processes that have gone are removed (their names are unique). */
+async function liveEntries(queue: string): Promise<QueueEntry[]> {
+  const live: QueueEntry[] = [];
+  for (const name of await readdir(queue).catch(() => [] as string[])) {
+    const entry = parseEntry(name);
+    if (!entry) continue;
+    const owner = await readJsonFile<LockOwner>(join(queue, name));
+    // An unreadable entry is still being written, unless it has stayed
+    // unreadable for ten seconds (its writer died mid-write).
+    const abandoned = !owner && Date.now() - ((await stat(join(queue, name)).catch(() => null))?.mtimeMs ?? Date.now()) > 10_000;
+    if (abandoned || (owner && processIsAlive(owner.pid) === false)) {
+      await rm(join(queue, name), { force: true });
+      continue;
     }
-    return false;
+    live.push(entry);
   }
+  return live;
+}
+
+const ahead = (a: QueueEntry, b: QueueEntry) => a.number < b.number || (a.number === b.number && a.id < b.id);
+
+async function enterQueue(queue: string, id: string): Promise<string> {
+  await mkdir(queue, { recursive: true });
+  const owner = JSON.stringify({ pid: process.pid, token: id }) + "\n";
+  const choosing = join(queue, `choosing-${id}.json`);
+  let ticket: string | null = null;
   try {
-    const info = await stat(lockPath).catch(() => null);
-    if (!info) return true;
-    const owner = await readLockOwner(lockPath);
-    if (owner?.token === observed?.token && owner?.pid === observed?.pid && lockIsStale(owner, info.mtimeMs)) {
-      await rm(lockPath, { recursive: true, force: true });
+    await writeFile(choosing, owner, { flag: "wx" });
+    const highest = Math.max(0, ...(await liveEntries(queue)).filter((entry) => entry.kind === "ticket").map((entry) => entry.number));
+    const mine: QueueEntry = { name: `ticket-${String(highest + 1).padStart(12, "0")}-${id}.json`, kind: "ticket", number: highest + 1, id };
+    ticket = join(queue, mine.name);
+    await writeFile(ticket, owner, { flag: "wx" });
+    await rm(choosing, { force: true });
+    for (;;) {
+      const entries = await liveEntries(queue);
+      const busy = entries.some((entry) => entry.id !== id && (entry.kind === "choosing" || ahead(entry, mine)));
+      if (!busy) return ticket;
+      await sleep(LOCK_RETRY_MS);
     }
-    return true;
-  } finally {
-    if ((await readLockOwner(reclaimPath))?.token === token) await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+  } catch (error) {
+    // A failure part-way must not leave this live process's entries blocking others.
+    await rm(choosing, { force: true }).catch(() => undefined);
+    if (ticket) await rm(ticket, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** The original lock directory, for older Planban versions writing the same board. */
+async function takeLegacyLock(lockPath: string, token: string) {
+  for (;;) {
+    try {
+      await mkdir(lockPath);
+      await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, token, queue: true, createdAt: new Date().toISOString() }) + "\n", "utf8");
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (code !== "EEXIST") throw error;
+      const info = await stat(lockPath).catch(() => null);
+      if (info) {
+        const owner = await readJsonFile<LockOwner>(join(lockPath, "owner.json"));
+        // Left by a queue winner whose process has gone: no other process of
+        // this version can be using it, so it is removed at once.
+        const deadWinner = owner?.queue === true && processIsAlive(owner.pid) === false;
+        // Anything else follows the original rule: stale after two minutes unchanged.
+        if (deadWinner || Date.now() - info.mtimeMs > STALE_LOCK_MS) {
+          await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+          continue;
+        }
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
   }
 }
 
@@ -160,35 +222,18 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
   await mkdir(planningRoot, { recursive: true });
   const lockPath = join(planningRoot, LOCK_DIR);
   const token = randomUUID();
-  let acquired = false;
-
-  while (!acquired) {
-    try {
-      await mkdir(lockPath);
-      await writeFile(join(lockPath, "owner.json"), JSON.stringify({
-        pid: process.pid,
-        token,
-        createdAt: new Date().toISOString(),
-      }) + "\n", "utf8");
-      acquired = true;
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-      if (code !== "EEXIST") throw error;
-      const info = await stat(lockPath).catch(() => null);
-      if (info) {
-        const owner = await readLockOwner(lockPath);
-        if (lockIsStale(owner, info.mtimeMs)) {
-          if (!(await reclaimStaleLock(lockPath, owner))) await sleep(LOCK_RETRY_MS);
-          continue;
-        }
-      }
-      await sleep(LOCK_RETRY_MS);
-    }
+  const ticket = await enterQueue(join(planningRoot, QUEUE_DIR), token);
+  try {
+    await takeLegacyLock(lockPath, token);
+  } catch (error) {
+    await rm(ticket, { force: true });
+    throw error;
   }
 
   const nextLocks = new Set(activeLocks ?? []);
   nextLocks.add(planningRoot);
-  // A long hold (a large Take Online) keeps its lock's time current.
+  // A long hold (a large Take Online) keeps the original lock's time current,
+  // so older versions never treat it as stale.
   const heartbeat = setInterval(() => {
     const now = new Date();
     void utimes(lockPath, now, now).catch(() => undefined);
@@ -198,8 +243,8 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
     return await heldLocks.run(nextLocks, callback);
   } finally {
     clearInterval(heartbeat);
-    // Only ever remove this process's own lock.
-    if ((await readLockOwner(lockPath))?.token === token) await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+    if ((await readJsonFile<LockOwner>(join(lockPath, "owner.json")))?.token === token) await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+    await rm(ticket, { force: true });
   }
 }
 
