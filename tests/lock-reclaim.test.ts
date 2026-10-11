@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { createServer } from "node:net";
 
 const execFileAsync = promisify(execFile);
 
@@ -217,6 +218,45 @@ test("when an older Planban version holds the board, that is the process named",
       await held.stop();
     }
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a card edit from the board page gives up with the same explanation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-lock-"));
+  const home = join(root, "home");
+  const project = join(root, "project");
+  const env = { ...process.env, PLANBAN_HOME: home, PLANBAN_LOCK_WAIT_MS: "1500" };
+  const saved = { home: process.env.PLANBAN_HOME, wait: process.env.PLANBAN_LOCK_WAIT_MS };
+  process.env.PLANBAN_HOME = home;
+  process.env.PLANBAN_LOCK_WAIT_MS = "1500";
+  try {
+    const storage = await import("../src/core/storage");
+    await storage.initializeProject({ cwd: project, repoId: "page-board", title: "Page board", updateAgents: false });
+    const created = await storage.createCard({ cwd: project, title: "Alpha" });
+    const held = await hang(root, join(home, "repos", "page-board"), env);
+    const { startServer } = await import("../src/server/server");
+    const probe = createServer();
+    await new Promise<void>((resolveListen) => probe.listen(0, "127.0.0.1", resolveListen));
+    const port = (probe.address() as { port: number }).port;
+    await new Promise<void>((resolveClose) => probe.close(() => resolveClose()));
+    const server = await startServer({ cwd: project, port, useVite: false });
+    try {
+      const started = Date.now();
+      const response = await fetch(`${server.url}/api/boards/page-board/cards/${created.createdCard.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ summary: "From the page", baseRevision: created.roadmap.revision }),
+      });
+      assert.equal(response.status, 409);
+      assert.match((await response.json()).error, new RegExp(`held by process ${held.holder.pid}`));
+      assert.ok(Date.now() - started < 4000);
+    } finally {
+      await server.close();
+      await held.stop();
+    }
+  } finally {
+    if (saved.home === undefined) delete process.env.PLANBAN_HOME; else process.env.PLANBAN_HOME = saved.home;
+    if (saved.wait === undefined) delete process.env.PLANBAN_LOCK_WAIT_MS; else process.env.PLANBAN_LOCK_WAIT_MS = saved.wait;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -305,7 +305,7 @@ export async function saveRoadmap(
     revision: updated.revision,
   }).catch(() => undefined);
   return updated;
-  }, { giveUp: true });
+  });
 }
 
 export async function appendEvent(planningRoot: string, event: Record<string, unknown>) {

@@ -504,18 +504,22 @@ export async function keepLocalCopy(cwdInput: string, newId: string, title?: str
   if (!manifest?.enabled || manifest.storage?.kind === "online") throw new PlanbanValidationError("This project does not hold a local board.");
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(newId) || newId === manifest.repoId) throw new PlanbanValidationError("Choose a new board id: lowercase letters, digits and dashes.");
   const planningRoot = resolvePlanningRoot(manifest);
-  const marker = await readStaleMarker(planningRoot);
-  if (!marker) throw new PlanbanValidationError("This board is not marked as a stale copy of an Online Board.");
-  await markIndependent(planningRoot, marker);
-  // A separate board is a different board: it gets its own identity.
-  await writeBoardIdentity(planningRoot);
-  const localManifest: PlanbanProjectManifest = { ...manifest, repoId: newId, storage: { kind: "local", root: planningRoot } };
-  await writeJson(manifestPath(cwd), localManifest);
-  const state = await loadState(cwd);
-  const roadmap = { ...state.roadmap, project: { ...state.roadmap.project, id: newId, title: title ?? `${state.roadmap.project.title} (local copy)` } };
-  const saved = await saveRoadmap(state, roadmap, { actor: "user", operation: "board.keep-local-copy", summary: `Kept as a separate local board after ${marker.boardId} went online`, affectedCards: [] });
-  await publishManifest(cwd, localManifest, { ...state, roadmap: saved });
-  return { repoId: newId, planningRoot, unsyncedChanges: marker.unsyncedChanges };
+  // The whole conversion holds the board, taken before its first write, so
+  // no other writer can come between its steps.
+  return withBoardWriteLock(planningRoot, async () => {
+    const marker = await readStaleMarker(planningRoot);
+    if (!marker) throw new PlanbanValidationError("This board is not marked as a stale copy of an Online Board.");
+    await markIndependent(planningRoot, marker);
+    // A separate board is a different board: it gets its own identity.
+    await writeBoardIdentity(planningRoot);
+    const localManifest: PlanbanProjectManifest = { ...manifest, repoId: newId, storage: { kind: "local", root: planningRoot } };
+    await writeJson(manifestPath(cwd), localManifest);
+    const state = await loadState(cwd);
+    const roadmap = { ...state.roadmap, project: { ...state.roadmap.project, id: newId, title: title ?? `${state.roadmap.project.title} (local copy)` } };
+    const saved = await saveRoadmap(state, roadmap, { actor: "user", operation: "board.keep-local-copy", summary: `Kept as a separate local board after ${marker.boardId} went online`, affectedCards: [] });
+    await publishManifest(cwd, localManifest, { ...state, roadmap: saved });
+    return { repoId: newId, planningRoot, unsyncedChanges: marker.unsyncedChanges };
+  });
 }
 
 /** Turns a backup folder (its latest copy, or one day's) into a new local board. */

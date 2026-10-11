@@ -191,14 +191,15 @@ function commandOf(owner: LockOwner): string | null {
   }
 }
 
-export function describeLockHolder(planningRoot: string, owner: LockOwner | null): string {
-  if (!owner || typeof owner.pid !== "number") return `Another Planban process is writing the board at ${planningRoot}.`;
+export function describeLockHolder(planningRoot: string, owner: LockOwner | null, gaveUp = false): string {
+  const next = gaveUp ? "then run this command again" : "and Planban carries on by itself";
+  if (!owner || typeof owner.pid !== "number") return `Another Planban process is writing the board at ${planningRoot}.${gaveUp ? " Try again once it has finished." : ""}`;
   const command = commandOf(owner);
   const since = owner.at ?? owner.createdAt;
   const stop = process.platform === "win32" ? `taskkill /PID ${owner.pid} /F` : `kill ${owner.pid}   (or, if it does not exit, kill -9 ${owner.pid})`;
   return [
     `The board at ${planningRoot} is held by process ${owner.pid}${command ? ` (${command})` : ""}${since ? `, since ${since}` : ""}.`,
-    `If that process is stuck, stop it and Planban carries on by itself: ${stop}`,
+    `If that process is stuck, stop it (${stop}), ${next}.`,
   ].join("\n");
 }
 
@@ -232,7 +233,7 @@ class LockWait {
     const waited = Date.now() - this.started;
     const limit = lockWaitLimitMs();
     if (this.giveUp && waited >= limit) {
-      throw new PlanbanBoardBusyError(`Gave up after waiting ${Math.round(waited / 1000)} seconds; nothing was changed.\n${describeLockHolder(this.planningRoot, await holder())}`);
+      throw new PlanbanBoardBusyError(`Gave up after waiting ${Math.round(waited / 1000)} seconds; nothing was changed.\n${describeLockHolder(this.planningRoot, await holder(), true)}`);
     }
     if (!this.noticed && waited >= LOCK_NOTICE_MS) {
       this.noticed = true;
@@ -454,5 +455,5 @@ export async function runIdempotentBoardMutation<T>(input: {
       });
       throw error;
     }
-  });
+  }, { giveUp: true });
 }
