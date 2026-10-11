@@ -1,16 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { hostname } from "node:os";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultPlanbanRoot } from "../paths";
 import { spawn } from "node:child_process";
 import { serviceUrl, saveCredentials } from "./credentials";
-import { authorizationMetadata, onlineRequest, tokenRequest } from "./client";
+import { onlineRequest } from "./client";
 import { PlanbanValidationError } from "../boardOperations";
 
 export interface LoginOptions {
-  user?: string | undefined;
-  passwordEnv?: string | undefined;
+  /** Development sign-in only: a connection limited to one board. */
   access?: "all" | "board" | undefined;
   boards?: string | undefined;
   openBrowser?: ((url: string) => Promise<void>) | undefined;
@@ -81,112 +81,141 @@ async function openBrowser(url: string) {
   });
 }
 
-function hiddenHandle(html: string) {
-  for (const tag of html.match(/<input\b[^>]*>/gi) ?? []) {
-    const attrs = Object.fromEntries([...tag.matchAll(/([\w-]+)\s*=\s*["']([^"']*)["']/g)].map((match) => [match[1]!, match[2]!]));
-    if (attrs.name === "handle" && attrs.value) {
-      return attrs.value.replace(/&(?:quot|apos|amp|lt|gt|#\d+|#x[\da-f]+);/gi, (entity) => {
-        const named: Record<string, string> = { "&quot;": '"', "&apos;": "'", "&amp;": "&", "&lt;": "<", "&gt;": ">" };
-        return named[entity] ?? String.fromCodePoint(entity.startsWith("&#x") ? parseInt(entity.slice(3), 16) : parseInt(entity.slice(2), 10));
-      });
-    }
-  }
-  throw new Error("Online Board sign-in page is missing its consent handle.");
+interface SignInConfig {
+  issuer: string;
+  cliClientId: string;
+  redirectPorts: number[];
+  scope: string;
 }
 
-export async function onlineLogin(urlInput: string, options: LoginOptions = {}) {
-  const url = serviceUrl(urlInput);
-  if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
-  if (options.devUser) return devLogin(url, options);
-  if (options.keyEnv) return keyLogin(url, options.keyEnv);
-  if (!!options.user !== !!options.passwordEnv) throw new PlanbanValidationError("Headless login requires both --user and --password-env.");
-  const password = options.passwordEnv ? process.env[options.passwordEnv] : undefined;
-  if (options.passwordEnv && !password) throw new PlanbanValidationError(`Password environment variable ${options.passwordEnv} is empty.`);
-  if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
-  if (options.access === "board" && options.boards?.includes(",")) throw new PlanbanValidationError("The prototype supports one board per connection. Sign in separately for broader access.");
-  const verifier = randomBytes(32).toString("base64url");
-  const state = randomBytes(32).toString("base64url");
+function httpsOrLoopback(value: string, what: string) {
+  const parsed = new URL(value);
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) throw new Error(`${what} must use HTTPS.`);
+  return parsed;
+}
+
+/** Where to sign in: the service names its sign-in server, whose metadata gives the endpoints. */
+async function signInEndpoints(url: string) {
+  const discovery = await fetch(`${url}/.well-known/planban.json`, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  if (!discovery.ok) throw new Error("This Online Board service did not say how to sign in.");
+  const config = (await discovery.json() as { signIn?: SignInConfig }).signIn;
+  if (!config?.issuer || !config.cliClientId || !config.redirectPorts?.length) {
+    throw new PlanbanValidationError("This Online Board service has no browser sign-in yet. On a local development backend use --dev-user.");
+  }
+  const issuer = httpsOrLoopback(config.issuer, "The sign-in server").origin;
+  const response = await fetch(`${issuer}/.well-known/oauth-authorization-server`, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error("The sign-in server's details could not be loaded.");
+  const metadata = await response.json() as Record<string, unknown>;
+  if (String(metadata.issuer ?? "").replace(/\/+$/, "") !== issuer) throw new Error("The sign-in server's details name a different server.");
+  const endpoint = (name: string, required = true) => {
+    const value = metadata[name];
+    if (typeof value !== "string" || new URL(value).origin !== issuer) {
+      if (!required) return null;
+      throw new Error(`The sign-in server's ${name} must belong to it.`);
+    }
+    return value;
+  };
+  if (!(metadata.code_challenge_methods_supported as string[] | undefined)?.includes("S256")) throw new Error("The sign-in server does not support PKCE.");
+  return {
+    issuer, clientId: config.cliClientId, ports: config.redirectPorts, scope: config.scope,
+    authorize: endpoint("authorization_endpoint")!, token: endpoint("token_endpoint")!, revoke: endpoint("revocation_endpoint", false),
+  };
+}
+
+/** Listens for the sign-in callback on the first free registered loopback port. */
+async function callbackListener(ports: number[], state: string, issuer: string) {
   let resolveCode!: (code: string) => void;
   let rejectCode!: (error: Error) => void;
-  const codePromise = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
+  const code = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
   // Attach a handler immediately so an early timeout is never unhandled.
-  void codePromise.catch(() => undefined);
+  void code.catch(() => undefined);
   const listener = createServer((req, res) => {
     const callback = new URL(req.url ?? "/", "http://127.0.0.1");
     if (callback.pathname !== "/callback" || callback.searchParams.get("state") !== state
-      || (callback.searchParams.has("iss") && callback.searchParams.get("iss") !== url)) {
+      || (callback.searchParams.has("iss") && callback.searchParams.get("iss")?.replace(/\/+$/, "") !== issuer)) {
       res.writeHead(400).end("Invalid sign-in callback.");
       return;
     }
-    const code = callback.searchParams.get("code");
-    if (!code) {
+    const received = callback.searchParams.get("code");
+    if (!received) {
       res.writeHead(400).end("Sign-in was not completed.");
-      rejectCode(new Error("Online Board sign-in was not completed."));
+      rejectCode(new Error(`Planban sign-in was not completed${callback.searchParams.get("error") ? ` (${callback.searchParams.get("error")})` : ""}.`));
       return;
     }
     res.end("Signed in to Planban. You can close this window.");
-    resolveCode(code);
+    resolveCode(received);
   });
-  await new Promise<void>((resolve, reject) => {
-    listener.once("error", reject);
-    listener.listen(0, "127.0.0.1", resolve);
-  });
-  const address = listener.address();
-  if (!address || typeof address === "string") throw new Error("Could not start sign-in callback listener.");
-  const redirectUri = `http://127.0.0.1:${address.port}/callback`;
-  const timeout = setTimeout(() => rejectCode(new Error("Online Board sign-in timed out. Run login again.")), 5 * 60_000);
-  try {
-    const metadata = await authorizationMetadata(url);
-    const registered = await fetch(metadata.register, {
-      method: "POST", headers: { "Content-Type": "application/json" }, redirect: "error",
-      signal: AbortSignal.timeout(30_000),
-      body: JSON.stringify({ client_name: "Planban CLI", redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }),
+  for (const port of ports) {
+    const listening = await new Promise<boolean>((resolve) => {
+      listener.once("error", () => resolve(false));
+      listener.listen(port, "127.0.0.1", () => resolve(true));
     });
-    if (!registered.ok) throw new Error("Online Board client registration failed.");
-    const registration = await registered.json();
-    if (typeof registration.client_id !== "string") throw new Error("Online Board registration did not return a client id.");
-    const clientId = registration.client_id;
-    const authorize = new URL(metadata.authorize);
-    authorize.search = new URLSearchParams({
-      response_type: "code", client_id: clientId, redirect_uri: redirectUri, state,
-      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-      code_challenge_method: "S256", resource: url, scope: "planban:read planban:write offline_access",
-    }).toString();
-    let code: string;
-    if (options.user && password) {
-      const page = await fetch(authorize, { redirect: "error", signal: AbortSignal.timeout(30_000) });
-      if (!page.ok) throw new Error("Online Board sign-in page could not be loaded.");
-      const cookies = page.headers.getSetCookie().map((cookie) => cookie.split(";")[0]).join("; ");
-      if (!cookies) throw new Error("Online Board sign-in page did not set a consent cookie.");
-      const response = await fetch(metadata.authorize, {
-        method: "POST", redirect: "manual", signal: AbortSignal.timeout(30_000),
-        headers: { Cookie: cookies },
-        body: new URLSearchParams({ handle: hiddenHandle(await page.text()), person: options.user, password, reach: options.access ?? "all", boardId: options.boards ?? "", decision: "approve" }),
-      });
-      const location = response.headers.get("location");
-      if (response.status !== 302 || !location) throw new Error("Online Board sign-in failed. Check the prototype user and password.");
-      const callback = new URL(location);
-      if (callback.origin + callback.pathname !== redirectUri || callback.searchParams.get("state") !== state || !callback.searchParams.get("code")) {
-        throw new Error("Online Board sign-in returned an invalid callback.");
-      }
-      if (callback.searchParams.has("iss") && callback.searchParams.get("iss") !== url) throw new Error("Online Board sign-in issuer does not match the service.");
-      code = callback.searchParams.get("code")!;
-    } else {
-      await (options.openBrowser ?? openBrowser)(authorize.href);
-      code = await codePromise;
+    if (listening) {
+      return {
+        redirectUri: `http://127.0.0.1:${port}/callback`, code, fail: rejectCode,
+        async close() {
+          listener.closeAllConnections();
+          await new Promise<void>((resolve) => listener.close(() => resolve()));
+        },
+      };
     }
-    const token = await tokenRequest(url, new URLSearchParams({
-      grant_type: "authorization_code", code, client_id: clientId,
-      code_verifier: verifier, redirect_uri: redirectUri, resource: url,
-    }));
-    await saveCredentials(url, {
-      clientId, accessToken: token.access_token, refreshToken: token.refresh_token,
-      expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(), person: options.user,
+  }
+  throw new Error(`Planban sign-in needs one of these local ports free: ${ports.join(", ")}.`);
+}
+
+/**
+ * Browser sign-in (owner decision 6): the person signs in with Clerk (email
+ * code or GitHub) as the Planban command line, a public OAuth client using
+ * PKCE. The token is then exchanged for this machine's own Planban sign-in,
+ * which lasts until sign-out or 90 days unused, with the person's full
+ * access. Nothing keeps Clerk's tokens: a refresh token, if issued, is
+ * revoked; its access tokens cannot be.
+ */
+export async function onlineLogin(urlInput: string, options: LoginOptions = {}) {
+  const url = serviceUrl(urlInput);
+  if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
+  if (!options.devUser && (options.access === "board" || options.boards)) {
+    throw new PlanbanValidationError("--access board and --boards apply only to development sign-in (--dev-user). Signing in through the browser gives this machine your full access; limit AI apps and keys from your connections instead.");
+  }
+  if (options.devUser) return devLogin(url, options);
+  if (options.keyEnv) return keyLogin(url, options.keyEnv);
+  const server = await signInEndpoints(url);
+  const verifier = randomBytes(32).toString("base64url");
+  const state = randomBytes(32).toString("base64url");
+  const callback = await callbackListener(server.ports, state, server.issuer);
+  const timeout = setTimeout(() => callback.fail(new Error("Planban sign-in timed out. Run login again.")), 5 * 60_000);
+  try {
+    const authorize = new URL(server.authorize);
+    authorize.search = new URLSearchParams({
+      response_type: "code", client_id: server.clientId, redirect_uri: callback.redirectUri, state, scope: server.scope,
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: url,
+    }).toString();
+    await (options.openBrowser ?? openBrowser)(authorize.href);
+    const code = await callback.code;
+    const exchanged = await fetch(server.token, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: server.clientId, code_verifier: verifier, redirect_uri: callback.redirectUri }),
     });
+    const tokens = await exchanged.json().catch(() => ({})) as { access_token?: string; refresh_token?: string };
+    if (!exchanged.ok || !tokens.access_token) throw new Error("The sign-in server did not complete the sign-in. Run login again.");
+    const machine = await fetch(`${url}/api/v1/auth/machine`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+      headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: `Planban CLI on ${hostname()}` }),
+    });
+    const signedIn = await machine.json().catch(() => ({})) as { token?: string; userId?: string; error?: { message?: string } };
+    if (!machine.ok || !signedIn.token) throw new Error(signedIn.error?.message ?? "This Online Board service did not accept the sign-in.");
+    // Nothing keeps the sign-in server's tokens. A refresh token, if one was
+    // issued, is revoked (best effort). Clerk's access tokens cannot be
+    // revoked; the service accepts this one for one exchange only.
+    if (server.revoke && tokens.refresh_token) {
+      await fetch(server.revoke, { method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000), body: new URLSearchParams({ token: tokens.refresh_token, client_id: server.clientId }) }).catch(() => undefined);
+    }
+    await saveCredentials(url, { clientId: "machine", accessToken: signedIn.token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(signedIn.userId ? { person: signedIn.userId } : {}) });
     return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
   } finally {
     clearTimeout(timeout);
-    listener.closeAllConnections();
-    await new Promise<void>((resolve) => listener.close(() => resolve()));
+    await callback.close();
   }
 }

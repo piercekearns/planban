@@ -60,6 +60,7 @@ async function fakeService() {
   const replies = new Map<string, unknown>();
   let dropNextReply = false;
   let failLiveToken = false;
+  const revoked: string[] = [];
   let failCopyCheck = false;
   let localTransfer: string | undefined;
   const revokedTokens = new Set<string>();
@@ -80,49 +81,49 @@ async function fakeService() {
       const body = raw && req.method !== "PUT" ? (req.headers["content-type"]?.includes("application/json") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : undefined;
       requests.push({ method: req.method!, path, body });
       const json = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
+      // The fake also plays Clerk, the sign-in server.
+      if (path === "/.well-known/planban.json") return json(200, { signIn: { issuer: url, cliClientId: "cli", redirectPorts: [53682, 53683, 53684, 53685, 53686], scope: "openid email profile" } });
       if (path === "/.well-known/oauth-authorization-server") return json(200, {
-        issuer: url, registration_endpoint: `${metadataOrigin ?? url}/oauth/register`, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
+        issuer: url, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
+        revocation_endpoint: `${metadataOrigin ?? url}/oauth/revoke`, code_challenge_methods_supported: ["S256"],
       });
-      if (path === "/oauth/register") {
-        assert.equal(body.client_name, "Planban CLI");
-        assert.equal(body.token_endpoint_auth_method, "none");
-        assert.match(body.redirect_uris[0], /^http:\/\/127\.0\.0\.1:\d+\/callback$/);
-        registration = body;
-        return json(201, { client_id: "cli" });
-      }
       if (path === "/authorize" && req.method === "GET") {
+        // A browser that is already signed in: straight back to the callback.
         auth = request;
+        assert.equal(auth.searchParams.get("client_id"), "cli");
         assert.equal(auth.searchParams.get("resource"), url);
-        assert.equal(auth.searchParams.get("scope"), "planban:read planban:write offline_access");
+        assert.equal(auth.searchParams.get("scope"), "openid email profile");
         assert.equal(auth.searchParams.get("code_challenge_method"), "S256");
-        res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": ["consent=secret; HttpOnly; SameSite=Lax", "second=yes; Path=/"] });
-        return res.end('<form><input type="hidden" name="handle" value="a&#38;b"></form>');
-      }
-      if (path === "/authorize" && req.method === "POST") {
-        assert.equal(req.headers.cookie, "consent=secret; second=yes");
-        assert.equal(body.handle, "a&b");
-        assert.equal(body.person, "owner");
-        assert.equal(body.password, "test-password");
-        assert.equal(body.decision, "approve");
-        const callback = new URL(auth!.searchParams.get("redirect_uri")!);
-        callback.search = new URLSearchParams({ code: "test-code", state: auth!.searchParams.get("state")!, iss: url }).toString();
+        assert.match(auth.searchParams.get("redirect_uri")!, /^http:\/\/127\.0\.0\.1:5368[2-6]\/callback$/);
+        const callback = new URL(auth.searchParams.get("redirect_uri")!);
+        callback.search = new URLSearchParams({ code: "test-code", state: auth.searchParams.get("state")!, iss: url }).toString();
         res.writeHead(302, { Location: callback.href });
         return res.end();
       }
       if (path === "/oauth/token") {
         assert.equal(body.client_id, "cli");
-        assert.equal(body.resource, url);
         if (body.grant_type === "refresh_token") {
+          assert.equal(body.resource, url);
           refreshes++;
           if (rejectRefresh || body.refresh_token !== refreshToken) return json(400, { error: "invalid_grant" });
         } else {
           assert.equal(body.code, "test-code");
-          assert.equal(body.redirect_uri, registration.redirect_uris[0]);
+          assert.equal(body.redirect_uri, auth!.searchParams.get("redirect_uri"));
           assert.equal(createHash("sha256").update(body.code_verifier).digest("base64url"), auth!.searchParams.get("code_challenge"));
+          return json(200, { access_token: "clerk-access", refresh_token: "clerk-refresh", expires_in: 86400 });
         }
         accessToken = `access-${requests.length}`;
         refreshToken = `refresh-${requests.length}`;
         return json(200, { access_token: accessToken, refresh_token: refreshToken, expires_in: 3600 });
+      }
+      if (path === "/oauth/revoke") {
+        revoked.push(body.token);
+        return json(200, {});
+      }
+      if (path === "/api/v1/auth/machine") {
+        if (req.headers.authorization !== "Bearer clerk-access") return json(401, { error: { code: "unauthorized", message: "Sign in again." } });
+        accessToken = "pbm_machine-token";
+        return json(201, { token: accessToken, userId: "dev-owner" });
       }
       if (rejectAccess || req.headers.authorization !== `Bearer ${accessToken}`) {
         res.setHeader("WWW-Authenticate", 'Bearer resource_metadata="' + url + '/.well-known/oauth-protected-resource"');
@@ -323,7 +324,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -357,66 +358,38 @@ test("online manifest accepts origins without secrets and rejects unsafe origins
   }
 });
 
-test("headless CLI login discovers OAuth endpoints, preserves cookies and sends PKCE and resource", async () => {
+test("browser sign-in uses the service's sign-in server with PKCE, then keeps only this machine's own sign-in", async () => {
   await saveCredentials(fake.url, null);
-  const { stdout } = await execFileAsync(process.execPath, ["--import", "tsx/esm", "src/cli.ts", "online", "login", fake.url, "--user", "owner", "--password-env", "PLANBAN_ONLINE_TEST_PASSWORD", "--access", "board", "--boards", "demo"], { env: process.env });
-  assert.equal(JSON.parse(stdout).identity.userId, "dev-owner");
-  const consent = fake.requests.find((req) => req.path === "/authorize" && req.method === "POST")!;
-  assert.equal(consent.body.reach, "board");
-  assert.equal(consent.body.boardId, "demo");
-  const file = await readCredentials();
-  assert.match(file.services[fake.url]!.refreshToken, /^refresh-/);
+  const result = await onlineLogin(fake.url, { openBrowser: async (authorizeUrl) => {
+    const toCallback = (await fetch(authorizeUrl, { redirect: "manual" })).headers.get("location")!;
+    const forged = new URL(toCallback);
+    forged.searchParams.set("state", "wrong");
+    assert.equal((await fetch(forged)).status, 400, "a callback with another state is refused");
+    assert.equal((await fetch(toCallback)).status, 200);
+  } });
+  assert.equal(result.signedIn, true);
+  const credentials = (await readCredentials()).services[fake.url]!;
+  assert.equal(credentials.accessToken, "pbm_machine-token");
+  assert.equal(credentials.refreshToken, "");
+  assert.deepEqual(fake.revoked, ["clerk-refresh"], "the sign-in server's refresh token is revoked");
   // Windows has no owner-only file modes.
   if (process.platform !== "win32") assert.equal((await stat(join(credentialsRoot(), "credentials.json"))).mode & 0o777, 0o600);
-  const status = await onlineStatus();
-  assert.equal(status[0]?.person, "owner");
-  assert.equal(JSON.stringify(status).includes("Token"), false);
+  assert.equal(JSON.stringify(await onlineStatus()).includes("machine-token"), false);
 });
 
-test("browser login accepts only the state-bound loopback callback", async () => {
-  const loggedIn = await onlineLogin(fake.url, { openBrowser: async (url) => {
-    const page = await fetch(url);
-    const consent = await fetch(`${fake.url}/authorize`, { method: "POST", redirect: "manual", headers: { Cookie: page.headers.getSetCookie().map((cookie) => cookie.split(";")[0]).join("; ") }, body: new URLSearchParams({ handle: "a&b", person: "owner", password: "test-password", decision: "approve", reach: "all", boardId: "" }) });
-    const valid = new URL(consent.headers.get("location")!);
-    const invalid = new URL(valid);
-    invalid.searchParams.set("state", "wrong");
-    assert.equal((await fetch(invalid)).status, 400);
-    assert.equal((await fetch(valid)).status, 200);
-  } });
-  assert.equal(loggedIn.signedIn, true);
+
+
+
+
+test("board-limited access is refused for browser sign-in, which always gives the machine full access", async () => {
+  await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { access: "board", boards: "demo" }), /only to development sign-in/);
+  await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { boards: "demo" }), /only to development sign-in/);
 });
 
-test("401 refresh rotates and persists credentials once across concurrent calls", async () => {
-  fake.expireAccess();
-  const results = await Promise.all(Array.from({ length: 6 }, () => onlineRequest(fake.url, "/api/v1/me")));
-  assert.equal(results.length, 6);
-  assert.equal(fake.refreshes, 1);
-  assert.notEqual((await readCredentials()).services[fake.url]!.refreshToken, "refresh-0");
-  await onlineRequest(fake.url, "/api/v1/me");
-  assert.equal(fake.refreshes, 1);
-});
-
-test("near-expiry refresh is serialized between separate CLI processes", async () => {
-  const credentials = (await readCredentials()).services[fake.url]!;
-  await saveCredentials(fake.url, { ...credentials, expiresAt: new Date(Date.now() + 5000).toISOString() });
-  const script = `import {onlineRequest} from './src/core/online/client.ts'; await onlineRequest(process.env.TEST_ONLINE_URL, '/api/v1/me');`;
-  await Promise.all(Array.from({ length: 3 }, () => execFileAsync(process.execPath, ["--import", "tsx/esm", "--input-type=module", "-e", script], { env: { ...process.env, TEST_ONLINE_URL: fake.url } })));
-  assert.equal(fake.refreshes, 1);
-});
-
-test("revoked or failed refresh connections give a sign-in error without retry loops", async () => {
-  fake.rejectAccess();
-  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), (error: any) => error instanceof OnlineAuthenticationError && error.message.includes("online login"));
-  assert.equal(fake.refreshes, 1);
-  fake.rejectRefresh();
-  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), OnlineAuthenticationError);
-  assert.equal(fake.refreshes, 2);
-});
-
-test("OAuth metadata cannot send client credentials to another origin", async () => {
+test("the sign-in server's endpoints must belong to it", async () => {
   fake.setMetadataOrigin("https://other.example");
-  await assert.rejects(onlineLogin(fake.url, { user: "owner", passwordEnv: "PLANBAN_ONLINE_TEST_PASSWORD" }), /must belong to the service origin/);
-  assert.equal(fake.requests.some((req) => req.path === "/oauth/register"), false);
+  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("no browser should open") }), /must belong to it/);
+  assert.equal(fake.requests.some((req) => req.path === "/oauth/token"), false);
 });
 
 test("dispatch preserves state and result shapes for all card operations", async () => {
@@ -862,7 +835,9 @@ test("signing in checks the machine's local boards for stale copies", async () =
   // On the second machine, its own registry lists its local copy.
   await registerBoardFromCwd(second);
   resetCopyChecks();
-  const result: any = await onlineLogin(fake.url, { user: "owner", passwordEnv: "PLANBAN_ONLINE_TEST_PASSWORD" });
+  const result: any = await onlineLogin(fake.url, { openBrowser: async (authorizeUrl) => {
+    await fetch((await fetch(authorizeUrl, { redirect: "manual" })).headers.get("location")!);
+  } });
   assert.ok(result.staleLocalCopies?.some((copy: { repoId: string; onlineBoard: string }) => copy.repoId === "demo" && copy.onlineBoard === "demo"));
 });
 
@@ -985,4 +960,10 @@ test("take-local never writes an attachment outside the board's folder, whatever
   await assert.rejects(takeLocal(cwd), /Unsafe card id/);
   assert.equal(await storage.pathExists(join(root, "home", "outside", "proof.txt")), false);
   assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("a sign-in the service no longer accepts asks the person to sign in again", async () => {
+  fake.rejectAccess();
+  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), (error: any) => error instanceof OnlineAuthenticationError && error.message.includes("online login"));
+  assert.equal(fake.requests.filter((req) => req.path === "/api/v1/me").length, 1, "no retry loop");
 });

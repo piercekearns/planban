@@ -1,5 +1,5 @@
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
-import { readCredentials, saveCredentials, serviceUrl, withCredentialsLock, type OnlineCredentials } from "./credentials";
+import { readCredentials, serviceUrl, type OnlineCredentials } from "./credentials";
 
 export class OnlineAuthenticationError extends Error {
   constructor(message: string, public readonly statusCode = 401) {
@@ -12,60 +12,10 @@ function loginRequired(url: string) {
   return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run planban online login ${url}.`);
 }
 
-export async function authorizationMetadata(urlInput: string) {
-  const url = serviceUrl(urlInput);
-  const response = await fetch(`${url}/.well-known/oauth-authorization-server`, {
-    redirect: "error", signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw new Error("Online Board OAuth metadata could not be loaded.");
-  const metadata = await response.json();
-  const endpoint = (name: string) => {
-    const value = metadata[name];
-    if (typeof value !== "string" || new URL(value).origin !== url) {
-      throw new Error(`Online Board OAuth ${name} must belong to the service origin.`);
-    }
-    return value;
-  };
-  return { token: endpoint("token_endpoint"), register: endpoint("registration_endpoint"), authorize: endpoint("authorization_endpoint") };
-}
-
 export async function requireCredentials(url: string): Promise<OnlineCredentials> {
   const credentials = (await readCredentials()).services[serviceUrl(url)];
   if (!credentials) throw loginRequired(url);
   return credentials;
-}
-
-export async function tokenRequest(url: string, form: URLSearchParams): Promise<{
-  access_token: string; refresh_token: string; expires_in: number;
-}> {
-  const metadata = await authorizationMetadata(url);
-  const response = await fetch(metadata.token, {
-    method: "POST", body: form, redirect: "error", signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw loginRequired(url);
-  const token = await response.json();
-  if (!token.access_token || !token.refresh_token || !Number.isFinite(token.expires_in)) {
-    throw new Error("Online Board token response is invalid.");
-  }
-  return token;
-}
-
-async function refresh(url: string, previous: OnlineCredentials) {
-  // Serialize rotating refresh tokens across CLI, MCP and Board processes.
-  return withCredentialsLock(async () => {
-    const current = await requireCredentials(url);
-    if (current.accessToken !== previous.accessToken) return current;
-    const token = await tokenRequest(url, new URLSearchParams({
-      grant_type: "refresh_token", refresh_token: current.refreshToken,
-      client_id: current.clientId, resource: url,
-    })).catch(() => { throw loginRequired(url); });
-    const credentials = {
-      ...current, accessToken: token.access_token, refreshToken: token.refresh_token,
-      expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
-    };
-    await saveCredentials(url, credentials);
-    return credentials;
-  });
 }
 
 export interface OnlineRequestOptions {
@@ -100,12 +50,9 @@ export async function requestBytes(urlInput: string, path: string): Promise<Uint
 
 async function authorizedResponse(urlInput: string, path: string, body: unknown, options: OnlineRequestOptions): Promise<Response> {
   const url = serviceUrl(urlInput);
-  let credentials = await requireCredentials(url);
-  let refreshed = false;
-  if (Date.parse(credentials.expiresAt) <= Date.now() + 60_000) {
-    credentials = await refresh(url, credentials);
-    refreshed = true;
-  }
+  // Machine sign-ins, keys and development sign-ins do not expire by time or
+  // refresh; when the service stops accepting one, the person signs in again.
+  const credentials = await requireCredentials(url);
   const raw = body instanceof RawBody;
   const payload = body === undefined ? undefined : raw ? new Blob([body.bytes as Uint8Array<ArrayBuffer>]) : JSON.stringify(body);
   const send = () => fetch(`${url}${path}`, {
@@ -128,12 +75,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
       return send();
     }
   };
-  let response = await request();
-  if (response.status === 401 && !refreshed) {
-    await response.body?.cancel();
-    credentials = await refresh(url, credentials);
-    response = await request();
-  }
+  const response = await request();
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     const message = payload.error?.message ?? `Online Board request failed (${response.status}).`;

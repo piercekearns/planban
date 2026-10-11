@@ -4,7 +4,8 @@ import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { httpAction, type ActionCtx } from "./_generated/server";
-import { authenticate, devAuthEnabled, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
+import { authenticate, devAuthEnabled, publicOrigin, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
+import { clerkConfigured, verifyClerkAccessToken } from "./model/clerk";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
@@ -96,6 +97,15 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
   if (parts[0] === "connections" && parts.length === 1 && method === "GET") return json(await ctx.runQuery(internal.connections.list, { connectionId }));
   if (parts[0] === "connections" && parts.length === 3 && parts[2] === "revoke" && method === "POST") {
     return json(await ctx.runMutation(internal.connections.revoke, { connectionId, targetId: parts[1]! }));
+  }
+  if (parts[0] === "connections" && parts.length === 3 && parts[2] === "access" && method === "POST") {
+    const input = await body(request);
+    const level = input.level === "read" || input.level === "plan" || input.level === "complete" ? input.level : undefined;
+    const boards = input.boards === "all" ? "all" as const : Array.isArray(input.boards) ? input.boards.map(String) : undefined;
+    return json(await ctx.runMutation(internal.connections.setAccess, { connectionId, targetId: parts[1]!, ...(level ? { level } : {}), ...(boards !== undefined ? { boards } : {}) }));
+  }
+  if (parts[0] === "connections" && parts.length === 3 && parts[2] === "restore" && method === "POST") {
+    return json(await ctx.runMutation(internal.connections.restore, { connectionId, targetId: parts[1]! }));
   }
   if (parts[0] === "keys" && parts.length === 1 && method === "POST") {
     const input = await body(request);
@@ -268,11 +278,6 @@ const devToken = httpAction(async (ctx, request) => {
   return json({ token, connectionId, userId }, 201);
 });
 
-/** The public address clients see (app.planban.ai once deployed); the Convex site URL until then. */
-function publicOrigin() {
-  return (process.env.PLANBAN_PUBLIC_URL ?? process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
-}
-
 /**
  * Remote MCP over Streamable HTTP. An unauthenticated request gets the
  * standard challenge pointing at the protected resource metadata, which
@@ -283,7 +288,7 @@ const mcp = httpAction(async (ctx, request) => {
     const auth = await authenticate(ctx, request);
     if (!auth) {
       return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
-        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource"`,
+        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp"`,
       });
     }
     return await handleMcp(request, new McpService(ctx, auth.connectionId), publicOrigin());
@@ -292,21 +297,75 @@ const mcp = httpAction(async (ctx, request) => {
   }
 });
 
-/** RFC 9728 metadata. The sign-in server is Clerk once its application exists (PLANBAN_OAUTH_ISSUER). */
-const protectedResource = httpAction(async () => json({
+/** RFC 9728 metadata: Clerk is the sign-in server (CLERK_ISSUER). */
+function protectedResourceFor(path: string) {
+  return httpAction(async () => json({
+    resource: `${publicOrigin()}${path}`,
+    authorization_servers: process.env.CLERK_ISSUER ? [process.env.CLERK_ISSUER] : [],
+    bearer_methods_supported: ["header"],
+    scopes_supported: ["openid", "profile", "email", "offline_access"],
+    resource_name: "Planban Online",
+  }, 200, { "Cache-Control": "public, max-age=300" }));
+}
+
+// AI apps require the resource to equal the address they were given exactly,
+// so the MCP endpoint has its own document naming /mcp.
+const protectedResource = protectedResourceFor("");
+const protectedMcpResource = protectedResourceFor("/mcp");
+
+
+/**
+ * The command line's browser sign-in, last step: it presents the Clerk access
+ * token it just received for the Planban command-line client, and gets a
+ * Planban sign-in for this machine (owner decision 6: it lasts until sign-out
+ * or 90 days unused). Only fresh tokens for that client are accepted.
+ */
+const machineSignIn = httpAction(async (ctx, request) => {
+  try {
+    const input = await body(request);
+    const match = /^Bearer\s+(\S+)$/i.exec(request.headers.get("Authorization") ?? "");
+    const token = match ? await verifyClerkAccessToken(ctx, match[1]!, publicOrigin()) : null;
+    if (!token || token.clientId !== process.env.PLANBAN_CLI_CLIENT_ID) {
+      return json({ error: { code: "unauthorized", message: "Sign in again: the sign-in was not for the Planban command line." } }, 401);
+    }
+    const secret = randomSecret("pbm_");
+    // The age check happens inside the mutation, with the token's use, so no
+    // delay between here and there can outlast the record of that use.
+    const { connectionId } = await ctx.runMutation(internal.connections.createMachine, {
+      userId: token.sub, tokenHash: await sha256Hex(secret), name: typeof input.name === "string" ? input.name : "",
+      exchangeHash: await sha256Hex(token.signed), issuedAt: token.issuedAt,
+    });
+    return json({ token: secret, connectionId, userId: token.sub }, 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+});
+
+/** What a Planban install needs to know to sign in here. */
+const serviceDiscovery = httpAction(async () => json({
+  service: "Planban Online",
   resource: publicOrigin(),
-  authorization_servers: process.env.PLANBAN_OAUTH_ISSUER ? [process.env.PLANBAN_OAUTH_ISSUER] : [],
-  bearer_methods_supported: ["header"],
-  scopes_supported: ["openid", "profile", "email", "offline_access"],
-  resource_name: "Planban Online",
+  ...(clerkConfigured() && process.env.PLANBAN_CLI_CLIENT_ID ? {
+    signIn: {
+      issuer: process.env.CLERK_ISSUER,
+      cliClientId: process.env.PLANBAN_CLI_CLIENT_ID,
+      // The command-line client's registered loopback addresses.
+      redirectPorts: [53682, 53683, 53684, 53685, 53686],
+      // No offline_access: the command line keeps none of Clerk's tokens.
+      scope: "openid email profile",
+    },
+  } : {}),
+  devSignIn: devAuthEnabled(),
 }, 200, { "Cache-Control": "public, max-age=300" }));
 
 const http = httpRouter();
 for (const method of ["GET", "POST", "PUT"] as const) http.route({ pathPrefix: "/api/v1/", method, handler: api });
 http.route({ path: "/dev/token", method: "POST", handler: devToken });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
+http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
+http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
-http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedResource });
+http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedMcpResource });
 http.route({
   path: "/.well-known/jwks.json",
   method: "GET",

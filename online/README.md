@@ -20,7 +20,25 @@ CONVEX_AGENT_MODE=anonymous node scripts/setup-local.mjs   # once: development s
 ```
 
 Development sign-in (`planban online login http://127.0.0.1:3211 --dev-user owner`)
-works only on a local backend with `PLANBAN_DEV_AUTH=1`. Real sign-in uses Clerk.
+works only on a local backend with `PLANBAN_DEV_AUTH=1`.
+
+Real sign-in uses Clerk. The backend's environment names the Clerk instance
+(`CLERK_ISSUER`, `CLERK_JWKS_URL`) and the public OAuth client the command
+line uses (`PLANBAN_CLI_CLIENT_ID`, registered with redirect addresses
+`http://127.0.0.1:53682/callback` to `:53686`). `planban online login <url>`
+then opens the browser to sign in with Clerk and keeps only this machine's own
+Planban sign-in. AI apps (ChatGPT, Claude) sign in through Clerk with client ID
+metadata documents; the service publishes `/.well-known/oauth-protected-resource/mcp`.
+
+Clerk behaviour seen on the development instance, which the code relies on:
+its access tokens are JWTs with `client_id`, `iat`, `jti` and no `sid` or
+`aud`, last 24 hours and cannot be revoked (so the service accepts the command
+line's token for one exchange only); and it sends codes to any loopback port,
+not just the registered ones, as RFC 8252 allows. The Clerk instance must serve
+Planban alone, since its tokens do not name an audience. Clerk gives every OAuth
+app refresh tokens; each new access token can be exchanged once, but only
+someone who completed the sign-in as that person ever holds a refresh token,
+and the command line does not ask for one.
 
 ## Checks
 
@@ -34,6 +52,7 @@ PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/transfers-convex.
 PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/live-convex.ts   # live updates
 node --import tsx/esm online/scripts/access-convex.ts                    # connections, sign-out, personal access keys
 PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/attachments-convex.ts   # card attachments
+node --import tsx/esm online/scripts/clerk-tokens-convex.ts               # sign-in server tokens (see the script for its settings)
 (cd online/service && node scripts/mcp-sdk-check.mjs)                  # remote MCP with the official MCP SDK client
 online/scripts/demo-convex.sh                                            # two machines, CLI and local MCP
 ```

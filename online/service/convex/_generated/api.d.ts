@@ -21,6 +21,7 @@ import type * as members from "../members.js";
 import type * as model_access from "../model/access.js";
 import type * as model_auth from "../model/auth.js";
 import type * as model_blobs from "../model/blobs.js";
+import type * as model_clerk from "../model/clerk.js";
 import type * as model_codec from "../model/codec.js";
 import type * as model_errors from "../model/errors.js";
 import type * as model_history from "../model/history.js";
@@ -29,6 +30,7 @@ import type * as model_mcp from "../model/mcp.js";
 import type * as model_rows from "../model/rows.js";
 import type * as model_sha256 from "../model/sha256.js";
 import type * as model_transfer from "../model/transfer.js";
+import type * as signingKeys from "../signingKeys.js";
 import type * as transfers from "../transfers.js";
 
 import type {
@@ -51,6 +53,7 @@ declare const fullApi: ApiFromModules<{
   "model/access": typeof model_access;
   "model/auth": typeof model_auth;
   "model/blobs": typeof model_blobs;
+  "model/clerk": typeof model_clerk;
   "model/codec": typeof model_codec;
   "model/errors": typeof model_errors;
   "model/history": typeof model_history;
@@ -59,6 +62,7 @@ declare const fullApi: ApiFromModules<{
   "model/rows": typeof model_rows;
   "model/sha256": typeof model_sha256;
   "model/transfer": typeof model_transfer;
+  signingKeys: typeof signingKeys;
   transfers: typeof transfers;
 }>;
 
