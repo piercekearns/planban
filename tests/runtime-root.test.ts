@@ -75,6 +75,10 @@ test("Codex local-folder marketplaces resolve through config.toml after the Git 
     assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
     await config("git", JSON.stringify(folder));
     assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+    // Declaring the table twice is invalid TOML, so even a complete runtime in the second declaration is not used.
+    const decoy = await runtime(join(root, "decoy"));
+    await writeFile(join(home, "config.toml"), `[marketplaces.planban]\nsource_type = "local"\n\n[marketplaces.planban]\nsource = ${JSON.stringify(decoy)}\n`);
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
 
     await config("local", JSON.stringify(folder));
     assert.equal(resolvePlanbanRuntime(cache, env), folder);

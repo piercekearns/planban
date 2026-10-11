@@ -169,4 +169,62 @@ source = ["/real"]
   { name: "duplicate key", toml: "[marketplaces.planban]\nsource_type = \"local\"\nsource = \"/real\"\nsource = \"/decoy\"\n", expected: null },
   { name: "invalid escape", toml: "[marketplaces.planban]\nsource_type = \"local\"\nsource = \"C:\\Users\"\n", expected: null },
   { name: "bare value", toml: "[marketplaces.planban]\nsource_type = local\nsource = \"/real\"\n", expected: null },
+  {
+    name: "table reopened later in the file",
+    toml: "[marketplaces.planban]\nsource_type = \"local\"\n\n[marketplaces.paper]\n\n[marketplaces.planban]\nsource = \"/decoy\"\n",
+    expected: null,
+  },
+  {
+    name: "inline table reopened by a header",
+    toml: "[marketplaces]\nplanban = { source_type = \"local\" }\n\n[marketplaces.planban]\nsource = \"/decoy\"\n",
+    expected: null,
+  },
+  { name: "inline table extended by a dotted key", toml: "marketplaces.planban = { source_type = \"local\" }\nmarketplaces.planban.source = \"/decoy\"\n", expected: null },
+  {
+    name: "table made by dotted keys reopened by a header",
+    toml: "marketplaces.planban.source_type = \"local\"\n\n[marketplaces.planban]\nsource = \"/decoy\"\n",
+    expected: null,
+  },
+  {
+    name: "table made by a header extended by dotted keys from a parent header",
+    toml: "[marketplaces.planban]\nsource_type = \"local\"\n\n[marketplaces]\nplanban.source = \"/decoy\"\n",
+    expected: null,
+  },
+  { name: "array reopened as an array of tables", toml: "marketplaces = []\n\n[[marketplaces]]\nsource = \"/decoy\"\n", expected: null },
+  { name: "array of tables reopened as a table", toml: "[[profiles]]\n[profiles]\n[marketplaces.planban]\nsource_type = \"local\"\nsource = \"/real\"\n", expected: null },
+  {
+    name: "parent declared after its child, and sub-tables under dotted and header tables",
+    toml: String.raw`[marketplaces.planban.extra]
+[marketplaces]
+paper.source = "/paper"
+[marketplaces.paper.extra]
+[marketplaces.planban]
+source_type = "local"
+source = "/real"
+nested.value = 1
+[marketplaces.planban.nested.deeper]
+`,
+    expected: local,
+  },
+  { name: "control character in a comment", toml: "# \u0007\n[marketplaces.planban]\nsource_type = \"local\"\nsource = \"/real\"\n", expected: null },
+  { name: "TOML 1.1 escape", toml: "[marketplaces.planban]\nsource_type = \"local\"\nsource = \"/re\\x61l\"\n", expected: null },
+  { name: "multi-line inline table", toml: "[marketplaces]\nplanban = {\n  source_type = \"local\", source = \"/real\" }\n", expected: null },
+  { name: "inline table trailing comma", toml: "[marketplaces]\nplanban = { source_type = \"local\", source = \"/real\", }\n", expected: null },
+  ...[
+    "2024-02-29", "1979-05-27T07:32:00.999-08:00", "1979-05-27 07:32:00z", "07:32:00.5", "0", "-0", "+1_000", "0x1F_ab", "0o17",
+    "0b1_01", "1_000.5e-0_3", "1e05", "-inf", "+nan", "true",
+  ].map((scalar): CodexConfigCase => ({
+    name: `valid scalar ${scalar}`,
+    toml: `when = ${scalar}\n[marketplaces.planban]\nsource_type = "local"\nsource = "/real"\n`,
+    expected: local,
+  })),
+  ...[
+    "123garbage", "01", "2026-99-99", "2023-02-29", "2023-04-31", "0000-01-01", "1979-05-27T24:00:00", "1979-05-27T07:60:00",
+    "1979-05-27T07:32:60", "1979-05-27T07:32", "1979-05-27T07:32:00+24:00", "1979-05-27T07:32:00.", "1979-5-27", "7:32:00",
+    "0x_1", "+0x1", "0b2", "1__0", "_1", "1_", "1.", ".1", "1.e5", "1e", "1e_5", "00.1", "Inf", "NaN", "True",
+  ].map((scalar): CodexConfigCase => ({
+    name: `invalid scalar ${scalar}`,
+    toml: `when = ${scalar}\n[marketplaces.planban]\nsource_type = "local"\nsource = "/real"\n`,
+    expected: null,
+  })),
 ];
