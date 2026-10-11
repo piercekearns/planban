@@ -45,6 +45,7 @@ import { loadOnlineState, onlineCacheRoot, onlineOperation, refuseOnline } from 
 import { boardPath, onlineRequest } from "./online/client";
 import { assertNotStaleCopy, checkInBackground, STALE_MARKER } from "./online/copyCheck";
 import { credentialsPath } from "./online/credentials";
+import { ensureBoardIdentity } from "./boardIdentity";
 import type { PlanbanHistoryPayload } from "./types";
 
 import {
@@ -241,6 +242,7 @@ export async function initializeProject(input: {
   await mkdir(dirname(liveRoadmapPath), { recursive: true });
 
   await atomicWriteFile(manifestPath(cwd), JSON.stringify(manifest, null, 2) + "\n");
+  await ensureBoardIdentity(planningRoot);
   await atomicWriteFile(
     agentContextPath(cwd),
     buildAgentContext({

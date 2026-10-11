@@ -6,8 +6,8 @@
 //
 // Refreshes are incremental: the history entries since the last backup say
 // which documents changed, so only those are downloaded.
-import { createHash } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { cp, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { PlanbanDocPayload, PlanbanHistoryPayload, PlanbanRoadmap } from "../types";
 import { defaultPlanbanRoot } from "../paths";
@@ -34,8 +34,15 @@ export function backupRoot(url: string, boardId: string) {
   return join(defaultPlanbanRoot(), "online", "backups", service, encodeURIComponent(boardId));
 }
 
-function docFile(root: string, cardId: string, kind: "spec" | "plan") {
-  return join(root, "latest", "docs", `${encodeURIComponent(cardId)}.${kind}.md`);
+function docFile(folder: string, cardId: string, kind: "spec" | "plan") {
+  return join(folder, "docs", `${encodeURIComponent(cardId)}.${kind}.md`);
+}
+
+/** A crash between the two renames of a refresh leaves the last good copy aside; put it back. */
+async function recoverLatest(root: string) {
+  if (await exists(join(root, "latest"))) return;
+  const aside = (await readdir(root).catch(() => [] as string[])).filter((name) => name.startsWith("latest.previous-"));
+  if (aside[0]) await rename(join(root, aside[0]), join(root, "latest"));
 }
 
 async function readMeta(root: string): Promise<BackupMeta | null> {
@@ -59,6 +66,7 @@ export async function refreshBackup(url: string, boardId: string, options: { for
   lastAttempt.set(root, Date.now());
   try {
     return await withBoardWriteLock(root, async () => {
+      await recoverLatest(root);
       const previous = await readMeta(root);
       if (!options.force && previous && Date.now() - Date.parse(previous.savedAt) < REFRESH_INTERVAL_MS) return previous;
       const board = await onlineRequest<{ roadmap?: PlanbanRoadmap; unchanged?: boolean; revision?: number }>(
@@ -70,49 +78,69 @@ export async function refreshBackup(url: string, boardId: string, options: { for
         return meta;
       }
       const roadmap = board.roadmap!;
+      // History is read after the roadmap, so it may include later changes.
+      // Only changes up to the roadmap's revision are applied now and the
+      // cursor never moves past them; later ones are picked up next time.
       const history = await onlineRequest<PlanbanHistoryPayload>(url, boardPath(boardId, `/history?after=${previous?.historyVersion ?? 0}`));
+      const covered = history.entries.filter((entry) => entry.roadmapRevision <= roadmap.revision);
       const live = new Set(roadmap.roadmapItems.map((item) => item.id));
       // If versions since the last backup were pruned, or the board was taken
       // online again, the change list is incomplete: download every document.
       const oldest = Math.min(...history.entries.map((entry) => entry.version));
       const complete = previous && (history.entries.length === 0 || oldest === previous.historyVersion + 1)
         && !history.entries.some((entry) => entry.operation === "board.take-online");
-      if (!complete) {
-        await rm(join(root, "latest"), { recursive: true, force: true });
-        for (let offset: number | null = 0; offset !== null;) {
-          const page: { docs: Array<{ cardId: string; kind: "spec" | "plan"; markdown: string }>; nextOffset: number | null } =
-            await onlineRequest(url, boardPath(boardId, `/export/docs?offset=${offset}&limit=${DOCS_PAGE}`));
-          for (const doc of page.docs) await atomicWriteFile(docFile(root, doc.cardId, doc.kind), doc.markdown);
-          offset = page.nextOffset;
-        }
-      } else {
-        const changed = new Map<string, { cardId: string; kind: "spec" | "plan" }>();
-        for (const entry of history.entries) {
-          for (const doc of entry.affectedDocs) changed.set(`${doc.cardId}/${doc.kind}`, doc);
-          for (const cardId of entry.affectedCards) {
-            if (!live.has(cardId)) for (const kind of ["spec", "plan"] as const) await rm(docFile(root, cardId, kind), { force: true });
+      // The new copy is built beside the current one and swapped in only when
+      // complete, so a failed refresh never damages the last good backup.
+      const staging = join(root, `latest.staging-${randomUUID()}`);
+      try {
+        if (complete) await cp(join(root, "latest"), staging, { recursive: true });
+        else await mkdir(join(staging, "docs"), { recursive: true });
+        if (!complete) {
+          for (let offset: number | null = 0; offset !== null;) {
+            const page: { docs: Array<{ cardId: string; kind: "spec" | "plan"; markdown: string }>; nextOffset: number | null } =
+              await onlineRequest(url, boardPath(boardId, `/export/docs?offset=${offset}&limit=${DOCS_PAGE}`));
+            for (const doc of page.docs) if (live.has(doc.cardId)) await atomicWriteFile(docFile(staging, doc.cardId, doc.kind), doc.markdown);
+            offset = page.nextOffset;
+          }
+        } else {
+          const changed = new Map<string, { cardId: string; kind: "spec" | "plan" }>();
+          for (const entry of covered) for (const doc of entry.affectedDocs) changed.set(`${doc.cardId}/${doc.kind}`, doc);
+          for (const { cardId, kind } of changed.values()) {
+            if (!live.has(cardId)) continue;
+            const doc = await onlineRequest<PlanbanDocPayload>(url, boardPath(boardId, `/docs/${encodeURIComponent(cardId)}/${kind}`));
+            if (doc.exists) await atomicWriteFile(docFile(staging, cardId, kind), doc.markdown);
+            else await rm(docFile(staging, cardId, kind), { force: true });
+          }
+          // Documents of cards that are gone.
+          for (const name of await readdir(join(staging, "docs")).catch(() => [] as string[])) {
+            const match = /^(.*)\.(spec|plan)\.md$/.exec(name);
+            if (match && !live.has(decodeURIComponent(match[1]!))) await rm(join(staging, "docs", name), { force: true });
           }
         }
-        for (const { cardId, kind } of changed.values()) {
-          if (!live.has(cardId)) continue;
-          const doc = await onlineRequest<PlanbanDocPayload>(url, boardPath(boardId, `/docs/${encodeURIComponent(cardId)}/${kind}`));
-          if (doc.exists) await atomicWriteFile(docFile(root, cardId, kind), doc.markdown);
-          else await rm(docFile(root, cardId, kind), { force: true });
-        }
+        await atomicWriteFile(join(staging, "roadmap.json"), JSON.stringify(roadmap, null, 2) + "\n");
+        const meta: BackupMeta = {
+          version: 1, url: serviceUrl(url), boardId, revision: roadmap.revision,
+          historyVersion: Math.max(complete ? previous!.historyVersion : 0, ...covered.map((entry) => entry.version)),
+          savedAt: new Date().toISOString(),
+        };
+        await atomicWriteFile(join(staging, "backup.json"), JSON.stringify(meta, null, 2) + "\n");
+        const retired = join(root, `latest.previous-${randomUUID()}`);
+        if (await exists(join(root, "latest"))) await rename(join(root, "latest"), retired);
+        await rename(staging, join(root, "latest"));
+        await rm(retired, { recursive: true, force: true });
+        await keepDailyCopy(root);
+        return meta;
+      } finally {
+        await rm(staging, { recursive: true, force: true }).catch(() => undefined);
       }
-      await atomicWriteFile(join(root, "latest", "roadmap.json"), JSON.stringify(roadmap, null, 2) + "\n");
-      const meta: BackupMeta = {
-        version: 1, url: serviceUrl(url), boardId, revision: roadmap.revision,
-        historyVersion: Math.max(complete ? previous!.historyVersion : 0, ...history.entries.map((entry) => entry.version)),
-        savedAt: new Date().toISOString(),
-      };
-      await atomicWriteFile(join(root, "latest", "backup.json"), JSON.stringify(meta, null, 2) + "\n");
-      await keepDailyCopy(root);
-      return meta;
     });
   } catch {
     return null;
   }
+}
+
+async function exists(path: string) {
+  return stat(path).then(() => true, () => false);
 }
 
 async function keepDailyCopy(root: string) {

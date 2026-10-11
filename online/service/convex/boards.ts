@@ -244,6 +244,7 @@ export const exportMeta = internalQuery({
       format: "planban-board-bundle" as const, version: 1 as const, authority: board.authority,
       roadmap: await currentRoadmap(ctx, at), retiredIds: [...await retiredIds(ctx, at)], historyVersions: versions,
       ...(board.retention === undefined ? {} : { retention: board.retention }),
+      ...(board.uid ? { uid: board.uid } : {}),
     };
   },
 });
@@ -357,8 +358,14 @@ export const fence = internalMutation({
 export const finishTakeLocal = internalMutation({
   args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string() },
   handler: async (ctx, { connectionId, boardId, transferId }) => {
-    const { board } = await readableBoard(ctx, connectionId, boardId);
-    if (board.localTransfer?.transferId === transferId) await ctx.db.patch(board._id, { localTransfer: undefined });
+    const access = await readableBoard(ctx, connectionId, boardId);
+    if (!access.canAdminister) fail("forbidden", "Moving a board between Online and Local Mode is kept for the board owner's own connection.");
+    const frozen = access.board.localTransfer;
+    if (frozen?.transferId === transferId) {
+      if (frozen.userId !== access.connection.userId) fail("forbidden", "Only the person who started this Take Local can finish it.");
+      await ctx.db.patch(access.board._id, { localTransfer: undefined });
+    }
+    // Finishing again, or after the freeze lapsed, is harmless.
     return { finished: true };
   },
 });

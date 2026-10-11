@@ -33,13 +33,26 @@ export default defineSchema({
      * its downloads read exactly this generation. Cleared when it finishes.
      */
     localTransfer: v.optional(v.object({ transferId: v.string(), generation: v.number(), userId: v.string(), at: v.string() })),
+    /** The board's durable identity, carried by every local copy of it. */
+    uid: v.optional(v.string()),
     /** When the board last became editable online (Take Online commit). */
     onlineSince: v.optional(v.string()),
     /** Local history retention settings carried through Take Online so Take Local restores them. */
     retention: v.optional(v.any()),
     createdAt: v.string(),
     updatedAt: v.string(),
-  }).index("by_boardId", ["boardId"]),
+  }).index("by_boardId", ["boardId"]).index("by_uid", ["uid"]),
+
+  /**
+   * Fingerprints ("version|createdAt|operation") of every history entry a
+   * board arrived with, kept even after that history is trimmed, so an old
+   * local copy can still be recognised.
+   */
+  boardFingerprints: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    key: v.string(),
+  }).index("by_key", ["key"]).index("by_board_generation", ["boardId", "generation"]),
 
   /** The whole roadmap, deflate-compressed: the shared planning rules need all of it. */
   boardState: defineTable({
@@ -138,6 +151,7 @@ export default defineSchema({
     /** Highest history version uploaded so far. */
     maxVersion: v.number(),
     retention: v.optional(v.any()),
+    uid: v.optional(v.string()),
     createdAt: v.string(),
     updatedAt: v.string(),
   }).index("by_transferId", ["transferId"]).index("by_board_state", ["boardId", "state"]).index("by_state_updated", ["state", "updatedAt"]),

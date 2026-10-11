@@ -57,6 +57,8 @@ async function fakeService() {
   let failCopyCheck = false;
   let localTransfer: string | undefined;
   const revokedTokens = new Set<string>();
+  let failExportDocs = false;
+  let boardUid: string | undefined;
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -126,7 +128,10 @@ async function fakeService() {
         const matchedVersions = body.fingerprints
           .filter((print: any) => bundle!.history.some(({ entry }) => entry.version === print.version && entry.createdAt === print.createdAt && entry.operation === print.operation))
           .map((print: any) => print.version);
-        return json(200, { matches: matchedVersions.length ? [{ boardId: "demo", title: bundle.roadmap.project.title, onlineSince: "2026-10-11T12:00:00.000Z", matchedVersions }] : [] });
+        // Like the service: the same identity, or at least two shared entries.
+        const identified = !!body.uid && body.uid === boardUid;
+        const found = identified || matchedVersions.length >= Math.min(2, body.fingerprints.length);
+        return json(200, { matches: found ? [{ boardId: "demo", title: bundle.roadmap.project.title, onlineSince: "2026-10-11T12:00:00.000Z", matchedVersions }] : [] });
       }
       if (path === "/api/v1/live-token" && failLiveToken) return json(503, { error: { code: "unavailable", message: "Live updates are down." } });
       if (path.startsWith("/error/")) return json(Number(path.split("/")[2]), { error: { code: "fixture", message: "Fixture refusal", currentRevision: 19 } });
@@ -150,6 +155,7 @@ async function fakeService() {
         if (existing) return json(200, { state: existing.state, receivedParts: [...existing.parts.keys()] });
         if (bundle && authority !== "returned-local") return json(409, { error: { code: "conflict", message: "Board exists" } });
         transfers.set(body.transferId, { begin: body, parts: new Map(), state: "open" });
+        if (body.uid) boardUid = body.uid;
         return json(200, { state: "open", receivedParts: [] });
       }
       if (path.startsWith("/api/v1/transfers/")) {
@@ -188,6 +194,7 @@ async function fakeService() {
         return json(200, { format: "planban-board-bundle", version: 1, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], historyVersions: bundle.history.map(({ entry }) => entry.version), ...(bundle.retention ? { retention: bundle.retention } : {}) });
       }
       if (suffix === "/export/docs") {
+        if (failExportDocs) return json(500, { error: { message: "Export interrupted" } });
         const all = [...docs.values()].map(({ cardId, kind, markdown }) => ({ cardId, kind, markdown }));
         const offset = Number(request.searchParams.get("offset") ?? 0);
         return json(200, offset === 0 ? { docs: all, nextOffset: null } : { docs: [], nextOffset: null });
@@ -274,7 +281,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens,
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -856,4 +863,54 @@ test("signing out while the service is unreachable still forgets the sign-in and
   assert.equal(result.revoked, false);
   assert.match(result.note ?? "", /stays active until you revoke it/);
   assert.equal((await readCredentials()).services[unreachable], undefined);
+});
+
+test("a backup refresh that fails keeps the last good backup", async () => {
+  await takeOnline(fake.url, cwd);
+  const latest = join(backupRoot(fake.url, "demo"), "latest");
+  await rm(join(latest, "backup.json"));
+  fake.failExportDocs(true);
+  assert.equal(await refreshBackup(fake.url, "demo", { force: true }), null);
+  assert.equal(JSON.parse(await readFile(join(latest, "roadmap.json"), "utf8")).roadmapItems[0].id, "alpha");
+  assert.equal(await readFile(join(latest, "docs", "alpha.spec.md"), "utf8"), "# Original spec");
+});
+
+test("take-local killed right after switching the project tells the service before the board is taken online again", async () => {
+  await takeOnline(fake.url, cwd);
+  await killedAt("take-local:after-publish", ["online", "take-local", "--cwd", cwd]);
+  const local = await storage.loadState(cwd);
+  assert.equal(local.manifest.storage?.kind, "local");
+  assert.ok(await storage.pathExists(join(local.planningRoot, "online-transfer.json")));
+  const start = fake.requests.length;
+  await takeOnline(fake.url, cwd);
+  const steps = fake.requests.slice(start).map((req) => req.path);
+  assert.ok(steps.indexOf("/api/v1/boards/demo/take-local/finish") >= 0);
+  assert.ok(steps.indexOf("/api/v1/boards/demo/take-local/finish") < steps.indexOf("/api/v1/transfers"));
+});
+
+test("a stale copy is recognised by the board's identity however many edits it has made since", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  fake.failCopyCheck(true);
+  resetCopyChecks();
+  for (let index = 0; index < 60; index += 1) await storage.createCard({ cwd: second, title: `Offline ${index}`, baseRevision: await revisionOf(second) });
+  fake.failCopyCheck(false);
+  resetCopyChecks();
+  const refusal = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanStaleCopyError);
+});
+
+test("a copy of a board made before identities existed is still recognised by its oldest shared history", async () => {
+  await rm(join((await storage.loadState(cwd)).planningRoot, "board-identity.json"));
+  const { second, copyRoot } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  await rm(join(copyRoot, "board-identity.json"), { force: true });
+  fake.failCopyCheck(true);
+  resetCopyChecks();
+  for (let index = 0; index < 60; index += 1) await storage.createCard({ cwd: second, title: `Offline ${index}`, baseRevision: await revisionOf(second) });
+  fake.failCopyCheck(false);
+  resetCopyChecks();
+  const refusal = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanStaleCopyError);
+  assert.equal(refusal.stale.unsyncedChanges.length, 60);
 });

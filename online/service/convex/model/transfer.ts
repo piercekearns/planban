@@ -23,6 +23,7 @@ export const STALE_TRANSFER_MS = 10 * 60 * 1000;
 
 export interface BeginInput {
   transferId: string;
+  uid?: string;
   roadmap: unknown;
   retention?: unknown;
   retiredIds?: string[];
@@ -130,6 +131,7 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
     transferId: input.transferId, userId: connection.userId, boardId, generation, state: "open",
     previousRevision, maxVersion: 0, createdAt: now, updatedAt: now,
     ...(input.retention === undefined ? {} : { retention: input.retention }),
+    ...(input.uid && /^[a-f0-9-]{36}$/.test(input.uid) ? { uid: input.uid } : {}),
   });
   return { transferId: input.transferId, boardId, state: "open" as const, receivedParts: [] as number[] };
 }
@@ -166,6 +168,7 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
       throw asServiceError(error);
     }
     await importHistoryVersion(ctx, at, version.entry, historical);
+    await ctx.db.insert("boardFingerprints", { ...at, key: `${number}|${version.entry.createdAt}|${version.entry.operation}` });
     // Every id the board ever used that is not live now stays retired.
     for (const item of historical.roadmapItems) {
       if (!live.has(item.id) && !retired.has(item.id)) {
@@ -217,6 +220,7 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
     title: roadmap.project.title,
     updatedAt: now,
     ...(transfer.retention === undefined ? {} : { retention: transfer.retention }),
+    ...(transfer.uid ? { uid: transfer.uid } : {}),
   });
   await recordHistory(ctx, {
     board: { ...board!, generation: transfer.generation, historyVersion: baseVersion },

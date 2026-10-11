@@ -16,6 +16,7 @@ import { markIndependent, readStaleMarker, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
 import { serviceUrl } from "./credentials";
 import { buildAgentContext } from "../protocol";
+import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
 
 const historyEntrySchema = z.object({
   version: z.number().int().positive(), roadmapRevision: z.number().int().nonnegative(),
@@ -32,6 +33,8 @@ export const bundleSchema = z.object({
   retiredIds: z.array(z.string()).optional(),
   /** Local history retention settings, so Take Local restores them. */
   retention: z.record(z.string(), z.unknown()).optional(),
+  /** The board's durable identity. */
+  uid: z.string().optional(),
 });
 export type BoardBundle = z.infer<typeof bundleSchema>;
 
@@ -63,7 +66,7 @@ const journalSchema = z.object({
   /** Take Online, once committed: where the local roadmap is moved, and local changes the upload missed. */
   snapshot: z.string().optional(),
   unsyncedLocalChanges: z.array(z.object({ version: z.number(), createdAt: z.string(), summary: z.string() })).optional(),
-  phase: z.enum(["uploading", "committed", "fencing", "fenced", "staged", "finished"]),
+  phase: z.enum(["uploading", "committed", "fencing", "fenced", "staged", "published"]),
   startedAt: z.string(),
 });
 type TransferJournal = z.infer<typeof journalSchema>;
@@ -188,6 +191,8 @@ export async function takeOnline(urlInput: string, cwdInput: string) {
   const planningRoot = resolvePlanningRoot(manifest);
   const boardId = manifest.repoId;
   return withBoardWriteLock(planningRoot, async () => {
+    // A Take Local that switched this project but could not tell the service yet.
+    await finishLocalTransfer(planningRoot);
     let journal = await readJournal(planningRoot);
     if (journal && (journal.direction !== "online" || journal.url !== url || journal.boardId !== boardId)) {
       throw new PlanbanValidationError(`An unfinished transfer of this board to ${journal.url} is recorded at ${transferJournalPath(planningRoot)}. Finish it first.`);
@@ -209,8 +214,9 @@ export async function takeOnline(urlInput: string, cwdInput: string) {
         await writeJournal(planningRoot, journal);
       }
       crashPoint("take-online:after-journal");
+      const uid = await ensureBoardIdentity(planningRoot);
       const begun = await onlineRequest<{ state: string; receivedParts: number[] }>(url, "/api/v1/transfers", {
-        transferId: journal.transferId, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [],
+        transferId: journal.transferId, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], uid,
         ...(bundle.retention ? { retention: bundle.retention } : {}),
       });
       if (begun.state !== "committed") {
@@ -273,7 +279,7 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   const base = boardPath(storage.boardId, "/export");
   // During Take Local, every page must come from the generation that was frozen.
   const bound = transferId ? `&transferId=${encodeURIComponent(transferId)}` : "";
-  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown> }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
+  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown>; uid?: string }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
   const docs: BoardBundle["docs"] = [];
   for (let offset: number | null = 0; offset !== null;) {
     const page: { docs: BoardBundle["docs"]; nextOffset: number | null } = await onlineRequest(storage.url, `${base}/docs?offset=${offset}&limit=${DOCS_PAGE}${bound}`);
@@ -292,7 +298,7 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   }
   const bundle = bundleSchema.parse({
     format: "planban-board-bundle", version: 1, roadmap: meta.roadmap, docs, history, historyDocs, retiredIds: meta.retiredIds,
-    ...(meta.retention ? { retention: meta.retention } : {}),
+    ...(meta.retention ? { retention: meta.retention } : {}), ...(meta.uid ? { uid: meta.uid } : {}),
   });
   if (out) await writeJson(resolve(out), bundle);
   return bundle;
@@ -336,8 +342,21 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90, ...(bundle.retention ?? {}) },
     entries: bundle.history.map(({ entry }) => entry).sort((a, b) => a.version - b.version),
   });
+  if (bundle.uid) await writeBoardIdentity(root, bundle.uid);
   await writeJson(join(root, "roadmap.json"), roadmap);
   return roadmap;
+}
+
+/**
+ * After Take Local switched a project to its new local folder, tells the
+ * service the transfer finished so the board may be taken online again.
+ * Safe to repeat; a no-op when nothing is pending.
+ */
+export async function finishLocalTransfer(planningRoot: string) {
+  const journal = await readJournal(planningRoot);
+  if (!journal || journal.direction !== "local" || journal.phase !== "published") return;
+  await onlineRequest(journal.url, boardPath(journal.boardId, "/take-local/finish"), { transferId: journal.transferId });
+  await rm(transferJournalPath(planningRoot), { force: true });
 }
 
 /**
@@ -385,17 +404,28 @@ export async function takeLocal(cwdInput: string) {
       await step({ ...journal, phase: "staged" });
     }
     crashPoint("take-local:after-stage");
-    if (journal.phase === "staged") {
-      await onlineRequest(storage.url, boardPath(storage.boardId, "/take-local/finish"), { transferId: journal.transferId });
-      await step({ ...journal, phase: "finished" });
-    }
-    crashPoint("take-local:after-finish");
+    // Still frozen for this transfer? A freeze that lapsed while this machine
+    // was away may have let the board be taken online again; then the staged
+    // copy must not become a second authority.
+    await onlineRequest(storage.url, boardPath(storage.boardId, "/take-local/fence"), { transferId: journal.transferId, expectedGeneration: journal.generation })
+      .catch((error) => {
+        if (error instanceof PlanbanConflictError) {
+          throw new PlanbanConflictError(`This board was taken online again elsewhere while this Take Local was unfinished. The downloaded copy is kept at ${root} but was not used; this project still uses the online board.`);
+        }
+        throw error;
+      });
     const roadmap = normalizeRoadmap(JSON.parse(await readFile(join(root, "roadmap.json"), "utf8")));
     const localManifest: PlanbanProjectManifest = { ...manifest, storage: { kind: "local", root } };
     const state: PlanbanResolvedState = { cwd, manifest: localManifest, manifestPath: manifestPath(cwd),
       agentContextPath: agentContextPath(cwd), planningRoot: root, roadmapPath: join(root, "roadmap.json"), roadmap };
+    // The journal moves with the board: the new local folder records that the
+    // service still has to be told, so the next attempt to take it online finishes it.
+    await writeJournal(root, { ...journal, phase: "published" });
     await publishManifest(cwd, localManifest, state);
     await rm(transferJournalPath(lockRoot), { force: true });
+    crashPoint("take-local:after-publish");
+    // Only now that this project is local is the online freeze lifted.
+    await finishLocalTransfer(root).catch(() => undefined);
     return { boardId: storage.boardId, planningRoot: root };
   });
 }
@@ -465,6 +495,8 @@ export async function keepLocalCopy(cwdInput: string, newId: string, title?: str
   const marker = await readStaleMarker(planningRoot);
   if (!marker) throw new PlanbanValidationError("This board is not marked as a stale copy of an Online Board.");
   await markIndependent(planningRoot, marker);
+  // A separate board is a different board: it gets its own identity.
+  await writeBoardIdentity(planningRoot);
   const localManifest: PlanbanProjectManifest = { ...manifest, repoId: newId, storage: { kind: "local", root: planningRoot } };
   await writeJson(manifestPath(cwd), localManifest);
   const state = await loadState(cwd);

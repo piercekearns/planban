@@ -67,6 +67,12 @@ export interface PlanbanRoadmap {
 }
 
 export interface PlanbanResolvedState {
+  /**
+   * Online Boards only: set when a retried edit was recognised as already
+   * applied. The result is the original; the roadmap is the current one when
+   * the roadmap as it was right after the edit is no longer available.
+   */
+  onlineReplay?: { replayed: true; originalRevision?: number } | undefined;
   cwd: string;
   manifestPath: string;
   agentContextPath: string;

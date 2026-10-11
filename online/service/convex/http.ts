@@ -66,6 +66,7 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     if (parts.length === 1) {
       return json(await ctx.runMutation(internal.transfers.begin, {
         connectionId, transferId: String(input.transferId ?? ""), roadmap: input.roadmap,
+        ...(typeof input.uid === "string" ? { uid: input.uid } : {}),
         ...(input.retention === undefined ? {} : { retention: input.retention }),
         ...(Array.isArray(input.retiredIds) ? { retiredIds: input.retiredIds.map(String) } : {}),
       }));
@@ -88,7 +89,7 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
       .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
       .map((item) => ({ version: Number(item.version), createdAt: String(item.createdAt ?? ""), operation: String(item.operation ?? "") }))
       .filter((item) => Number.isInteger(item.version)) : [];
-    return json(await ctx.runQuery(internal.copies.check, { connectionId, fingerprints }));
+    return json(await ctx.runQuery(internal.copies.check, { connectionId, fingerprints, ...(typeof input.uid === "string" ? { uid: input.uid } : {}) }));
   }
   if (parts[0] === "connections" && parts.length === 1 && method === "GET") return json(await ctx.runQuery(internal.connections.list, { connectionId }));
   if (parts[0] === "connections" && parts.length === 3 && parts[2] === "revoke" && method === "POST") {

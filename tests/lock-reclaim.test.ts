@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -33,6 +33,31 @@ test("processes that find a dead owner's lock at the same time never hold it tog
     assert.equal(lines.length, 8);
     for (let index = 0; index < lines.length; index += 2) assert.deepEqual(lines.slice(index, index + 2), ["enter", "exit"], `overlap in ${lines.join(",")}`);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an old lock whose holder is still alive is never taken away", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-lock-"));
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"]);
+  try {
+    const planningRoot = join(root, "board");
+    const lock = join(planningRoot, ".planban-write.lock");
+    await mkdir(lock, { recursive: true });
+    await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: holder.pid, token: "alive", createdAt: new Date(0).toISOString() }));
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(lock, old, old);
+    const { withBoardWriteLock } = await import("../src/core/persistence");
+    let entered = false;
+    const waiting = withBoardWriteLock(planningRoot, async () => { entered = true; });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1500));
+    assert.equal(entered, false, "the live holder's lock was taken");
+    holder.kill("SIGKILL");
+    await new Promise((resolveExit) => holder.once("exit", resolveExit));
+    await waiting;
+    assert.equal(entered, true);
+  } finally {
+    holder.kill("SIGKILL");
     await rm(root, { recursive: true, force: true });
   }
 });

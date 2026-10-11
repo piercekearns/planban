@@ -13,7 +13,7 @@ const attributionOf = (connection: { _id: string; userId: string; clientName: st
   ({ userId: connection.userId, clientName: connection.clientName, actor: "user" as const, connectionId: connection._id });
 
 export const begin = internalMutation({
-  args: { connectionId: v.id("connections"), transferId: v.string(), roadmap: v.any(), retention: v.optional(v.any()), retiredIds: v.optional(v.array(v.string())) },
+  args: { connectionId: v.id("connections"), transferId: v.string(), roadmap: v.any(), retention: v.optional(v.any()), retiredIds: v.optional(v.array(v.string())), uid: v.optional(v.string()) },
   handler: async (ctx, { connectionId, ...input }) => beginTransfer(ctx, await liveConnection(ctx, connectionId), input),
 });
 
@@ -48,14 +48,14 @@ export const importBundle = internalMutation({
   handler: async (ctx, { connectionId, transferId, bundle }) => {
     const connection = await liveConnection(ctx, connectionId);
     if (bundle?.format !== "planban-board-bundle" || bundle.version !== 1) fail("validation", "Expected a planban-board-bundle, version 1.");
-    await beginTransfer(ctx, connection, { transferId, roadmap: bundle.roadmap, retention: bundle.retention, retiredIds: bundle.retiredIds });
+    await beginTransfer(ctx, connection, { transferId, roadmap: bundle.roadmap, retention: bundle.retention, retiredIds: bundle.retiredIds, uid: bundle.uid });
     await putPart(ctx, connection, { transferId, seq: 0, docs: bundle.docs, history: bundle.history, historyDocs: bundle.historyDocs });
     return commitTransfer(ctx, connection, { transferId, partCount: 1 }, attributionOf(connection));
   },
 });
 
-async function deleteSome(ctx: MutationCtx, table: "boardState" | "docs" | "history" | "historyPayloads" | "historyDocs" | "retiredIds", boardId: string, generation: number) {
-  const index = table === "boardState" ? "by_board_generation" : table === "docs" ? "by_board_card_kind" : table === "retiredIds" ? "by_board_card" : "by_board_version";
+async function deleteSome(ctx: MutationCtx, table: "boardState" | "docs" | "history" | "historyPayloads" | "historyDocs" | "retiredIds" | "boardFingerprints", boardId: string, generation: number) {
+  const index = table === "boardState" || table === "boardFingerprints" ? "by_board_generation" : table === "docs" ? "by_board_card_kind" : table === "retiredIds" ? "by_board_card" : "by_board_version";
   const rows = await (ctx.db.query(table) as any).withIndex(index, (q: any) => q.eq("boardId", boardId).eq("generation", generation)).take(CLEANUP_BATCH);
   for (const row of rows) await ctx.db.delete(row._id);
   return rows.length;
@@ -67,7 +67,7 @@ export const cleanupGeneration = internalMutation({
     const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", boardId)).unique();
     if (board && board.generation === generation) return; // never remove the live board
     let removed = 0;
-    for (const table of ["historyDocs", "historyPayloads", "history", "docs", "retiredIds", "boardState"] as const) {
+    for (const table of ["historyDocs", "historyPayloads", "history", "docs", "retiredIds", "boardFingerprints", "boardState"] as const) {
       removed += await deleteSome(ctx, table, boardId, generation);
       if (removed >= CLEANUP_BATCH) break;
     }

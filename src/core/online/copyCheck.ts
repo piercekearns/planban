@@ -10,12 +10,13 @@ import { join } from "node:path";
 import { PlanbanConflictError } from "../boardOperations";
 import { historyIndexPath } from "../paths";
 import { atomicWriteFile } from "../persistence";
+import { readBoardIdentity } from "../boardIdentity";
 import { onlineRequest } from "./client";
 import { readCredentials } from "./credentials";
 
 export const STALE_MARKER = "STALE-COPY.json";
 export const INDEPENDENT_MARKER = "INDEPENDENT-COPY.json";
-const FINGERPRINTS = 20;
+const FINGERPRINTS = 50;
 const CHECK_TIMEOUT_MS = 2000;
 /** A write re-asks the service when the last answer is older than this. */
 const RECHECK_MS = 10 * 60 * 1000;
@@ -97,19 +98,24 @@ async function ask(planningRoot: string): Promise<{ stale: StaleCopy | null; unr
   if (history.length === 0) return { stale: null, unreachable: false };
   const ignored = new Set((await readJsonFile<Array<{ url: string; boardId: string }>>(join(planningRoot, INDEPENDENT_MARKER)) ?? [])
     .map((entry) => `${entry.url} ${entry.boardId}`));
-  const fingerprints = history.slice(0, FINGERPRINTS).map(({ version, createdAt, operation }) => ({ version, createdAt, operation }));
+  // The newest and the oldest entries: edits made since a copy was taken push
+  // shared entries out of the newest, but the oldest ones stay shared.
+  const chosen = new Map<number, HistoryIndexEntry>();
+  for (const entry of [...history.slice(0, FINGERPRINTS), ...history.slice(-FINGERPRINTS)]) chosen.set(entry.version, entry);
+  const fingerprints = [...chosen.values()].map(({ version, createdAt, operation }) => ({ version, createdAt, operation }));
+  const uid = await readBoardIdentity(planningRoot);
   let unreachable = false;
   for (const url of services) {
     let matches: Array<{ boardId: string; title: string; onlineSince: string; matchedVersions: number[] }>;
     try {
-      ({ matches } = await onlineRequest<{ matches: typeof matches }>(url, "/api/v1/copy-check", { fingerprints }, { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) }));
+      ({ matches } = await onlineRequest<{ matches: typeof matches }>(url, "/api/v1/copy-check", { fingerprints, ...(uid ? { uid } : {}) }, { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) }));
     } catch {
       unreachable = true;
       continue;
     }
     const match = matches.find((candidate) => !ignored.has(`${url} ${candidate.boardId}`));
     if (!match) continue;
-    const shared = Math.max(...match.matchedVersions);
+    const shared = match.matchedVersions.length ? Math.max(...match.matchedVersions) : 0;
     return {
       unreachable,
       stale: {
@@ -140,7 +146,12 @@ export async function assertNotStaleCopy(planningRoot: string, cwd: string, repo
   if (marker) throw new PlanbanStaleCopyError(marker, cwd, repoId);
   const previous = checked.get(planningRoot);
   if (previous && Date.now() - previous.checkedAt < RECHECK_MS) return;
-  const { stale, unreachable } = await refresh(planningRoot);
+  // One deadline for the whole check, sign-in refresh included. A check that
+  // overruns finishes in the background and is used by the next write.
+  const { stale, unreachable } = await Promise.race([
+    refresh(planningRoot).catch(() => ({ stale: null, unreachable: true })),
+    new Promise<{ stale: null; unreachable: true }>((resolve) => setTimeout(() => resolve({ stale: null, unreachable: true }), CHECK_TIMEOUT_MS).unref()),
+  ]);
   if (stale) throw new PlanbanStaleCopyError(stale, cwd, repoId);
   if (unreachable && !warned.has(planningRoot)) {
     warned.add(planningRoot);

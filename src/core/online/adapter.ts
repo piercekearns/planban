@@ -32,11 +32,13 @@ export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectMa
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
   const { cwd: _cwd, idempotencyKey, ...body } = input;
   // One key per logical edit: a retry after a lost response cannot apply it twice.
-  const response = await onlineRequest<{ roadmap: PlanbanRoadmap; result: T }>(manifest.storage.url, boardPath(manifest.storage.boardId, `/ops/${op}`), body,
+  const response = await onlineRequest<{ roadmap: PlanbanRoadmap; result: T; replayed?: boolean; originalRevision?: number }>(manifest.storage.url, boardPath(manifest.storage.boardId, `/ops/${op}`), body,
     { idempotencyKey: idempotencyKey ?? randomUUID() });
   // Every machine that changes an Online Board keeps a local backup of it.
   void refreshBackup(manifest.storage.url, manifest.storage.boardId);
-  return { state: onlineState(cwd, manifest, response.roadmap), result: response.result };
+  const state = onlineState(cwd, manifest, response.roadmap);
+  if (response.replayed) state.onlineReplay = { replayed: true, ...(response.originalRevision === undefined ? {} : { originalRevision: response.originalRevision }) };
+  return { state, result: response.result };
 }
 
 export function refuseOnline(operation: string): never {

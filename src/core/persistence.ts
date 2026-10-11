@@ -93,39 +93,50 @@ async function readLockOwner(lockPath: string): Promise<LockOwner | null> {
   }
 }
 
-/**
- * A lock is stale when it is older than STALE_LOCK_MS, or when the process
- * that holds it has gone (a crash, a power cut, or the transfer crash tests),
- * so a killed transfer does not block the next attempt for two minutes.
- * Planning roots are on this machine's disk, so the owner's pid is local.
- */
-function lockIsStale(owner: LockOwner | null, createdMs: number): boolean {
-  if (Date.now() - createdMs > STALE_LOCK_MS) return true;
-  // The owner file is written just after the lock; give a live owner time to write it.
-  if (!owner) return Date.now() - createdMs > 10_000;
-  const pid = owner.pid;
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+function processIsAlive(pid: unknown): boolean | null {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
+  if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
-    return false;
+    return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
+    return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : true;
   }
 }
 
 /**
+ * A lock is stale when the process that holds it has gone (a crash, a power
+ * cut, or the transfer crash tests), so a killed transfer does not block the
+ * next attempt. A lock whose holder is still alive is never taken away, however
+ * old. Only a lock with no identifiable owner falls back to its age.
+ * Planning roots are on this machine's disk, so the owner's pid is local.
+ */
+function lockIsStale(owner: LockOwner | null, createdMs: number): boolean {
+  // The owner file is written just after the lock; give a live owner time to write it.
+  if (!owner) return Date.now() - createdMs > 10_000;
+  const alive = processIsAlive(owner.pid);
+  if (alive === null) return Date.now() - createdMs > STALE_LOCK_MS;
+  return !alive;
+}
+
+/**
  * Removes a stale lock, but only the exact lock that was judged stale.
- * Reclaimers take turns through a second lock and re-read the owner under it,
- * so two waiters can never both remove locks and enter together.
+ * Reclaimers take turns through a second lock, which has an owner too, and
+ * re-read the board lock's owner under it, so two waiters can never both
+ * remove locks and enter together.
  */
 async function reclaimStaleLock(lockPath: string, observed: LockOwner | null): Promise<boolean> {
   const reclaimPath = `${lockPath}.reclaim`;
+  const token = randomUUID();
   try {
     await mkdir(reclaimPath);
+    await writeFile(join(reclaimPath, "owner.json"), JSON.stringify({ pid: process.pid, token }) + "\n", "utf8");
   } catch {
     const info = await stat(reclaimPath).catch(() => null);
-    // A reclaimer takes milliseconds; one that died mid-way is cleared after 30 s.
-    if (info && Date.now() - info.mtimeMs > 30_000) await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+    // A reclaimer takes milliseconds; one whose process died is cleared.
+    if (info && lockIsStale(await readLockOwner(reclaimPath), info.mtimeMs)) {
+      await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+    }
     return false;
   }
   try {
@@ -137,7 +148,7 @@ async function reclaimStaleLock(lockPath: string, observed: LockOwner | null): P
     }
     return true;
   } finally {
-    await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+    if ((await readLockOwner(reclaimPath))?.token === token) await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -177,7 +188,7 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
 
   const nextLocks = new Set(activeLocks ?? []);
   nextLocks.add(planningRoot);
-  // A long hold (a large Take Online) keeps its lock fresh so it never looks stale.
+  // A long hold (a large Take Online) keeps its lock's time current.
   const heartbeat = setInterval(() => {
     const now = new Date();
     void utimes(lockPath, now, now).catch(() => undefined);
