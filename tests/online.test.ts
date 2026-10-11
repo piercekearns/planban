@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,8 +15,10 @@ import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/re
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
-import { attachOnline, buildLocalBundle, exportOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
+import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
+import { backupRoot, refreshBackup } from "../src/core/online/backup";
 import { startServer } from "../src/server/server";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
 
@@ -51,6 +53,7 @@ async function fakeService() {
   const replies = new Map<string, unknown>();
   let dropNextReply = false;
   let failLiveToken = false;
+  let failCopyCheck = false;
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -110,6 +113,14 @@ async function fakeService() {
         return json(401, { error: "unauthorized" });
       }
       if (path === "/api/v1/me") return json(200, { userId: "dev-owner", scope: "all" });
+      if (path === "/api/v1/copy-check") {
+        if (failCopyCheck) return json(503, { error: { code: "unavailable", message: "Down for maintenance." } });
+        if (!bundle || authority !== "online") return json(200, { matches: [] });
+        const matchedVersions = body.fingerprints
+          .filter((print: any) => bundle!.history.some(({ entry }) => entry.version === print.version && entry.createdAt === print.createdAt && entry.operation === print.operation))
+          .map((print: any) => print.version);
+        return json(200, { matches: matchedVersions.length ? [{ boardId: "demo", title: bundle.roadmap.project.title, onlineSince: "2026-10-11T12:00:00.000Z", matchedVersions }] : [] });
+      }
       if (path === "/api/v1/live-token" && failLiveToken) return json(503, { error: { code: "unavailable", message: "Live updates are down." } });
       if (path.startsWith("/error/")) return json(Number(path.split("/")[2]), { error: { code: "fixture", message: "Fixture refusal", currentRevision: 19 } });
       const importBundle = (input: BoardBundle) => {
@@ -187,7 +198,7 @@ async function fakeService() {
         bundle.roadmap = domain.committedRoadmap(roadmap(), new Date().toISOString());
         return json(200, { authority });
       }
-      if (suffix === "/history") return json(200, { currentVersion: Math.max(...bundle.history.map(({ entry }) => entry.version)), retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90 }, entries: bundle.history.map(({ entry }) => entry).reverse() });
+      if (suffix === "/history") return json(200, { currentVersion: Math.max(...bundle.history.map(({ entry }) => entry.version)), retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90 }, entries: bundle.history.map(({ entry }) => entry).filter((entry) => entry.version > Number(request.searchParams.get("after") ?? 0)).reverse() });
       if (suffix.startsWith("/docs/")) {
         const [, , cardId, kind] = suffix.split("/").map(decodeURIComponent);
         return json(200, docs.get(`${cardId}/${kind}`) ?? { cardId, kind, exists: false, path: null, markdown: "", mtimeMs: null });
@@ -249,7 +260,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, transfers,
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers,
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -669,4 +680,139 @@ test("when live updates fail, the board server checks for changes instead", asyn
     assert.ok(fake.requests.some((req) => req.path.endsWith("/changes")), "fell back to checking for changes");
     assert.ok(changed.stateVersion > live.stateVersion);
   } finally { await server.close(); }
+});
+
+/** Another machine's local copy of the demo board: a copy of its planning root, used from a second project. */
+async function secondMachineCopy() {
+  const source = (await storage.loadState(cwd)).planningRoot;
+  const copyRoot = join(root, "second-machine-planning");
+  await cp(source, copyRoot, { recursive: true });
+  const second = join(root, "second-machine-project");
+  await mkdir(join(second, ".planban"), { recursive: true });
+  await writeFile(manifestPath(second), JSON.stringify({ version: 1, repoId: "demo", enabled: true, storage: { kind: "local", root: copyRoot } }));
+  resetCopyChecks();
+  return { second, copyRoot };
+}
+
+const revisionOf = async (project: string) => (await storage.loadState(project)).roadmap.revision;
+
+test("a local copy of a board taken online elsewhere refuses writes and says how to continue", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Before it went online", baseRevision: await revisionOf(second) });
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "Too late", baseRevision: await revisionOf(second) }),
+    (error: any) => error instanceof PlanbanStaleCopyError && /taken online/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy/.test(error.message));
+  assert.equal((await storage.loadState(second)).roadmap.roadmapItems[0]!.summary, "Before it went online", "reads still work");
+  assert.ok(await storage.pathExists(join(copyRoot, STALE_MARKER)));
+  // The refusal survives the service being unreachable.
+  fake.failCopyCheck(true);
+  resetCopyChecks();
+  await assert.rejects(storage.writeDoc({ cwd: second, cardId: "alpha", kind: "spec", markdown: "x" }), PlanbanStaleCopyError);
+});
+
+test("a stale copy with unsynced edits reports them and keeps them when attaching to the online board", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  // Edited on the second machine, never synced, while the first machine takes the board online.
+  await storage.createCard({ cwd: second, title: "Only on the second machine", baseRevision: await revisionOf(second) });
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  const refusal = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanStaleCopyError);
+  assert.deepEqual(refusal.stale.unsyncedChanges.map((change: { summary: string }) => change.summary), ["Created Only on the second machine"]);
+  assert.match(refusal.message, /1 change\(s\) on this machine never reached the online board/);
+  await assert.rejects(attachOnline(fake.url, "demo", second), /already has a different board/);
+  const attached = await attachOnline(fake.url, "demo", second, { replaceStaleCopy: true });
+  assert.equal((await storage.loadState(second)).manifest.storage?.kind, "online");
+  assert.deepEqual(attached.staleCopy?.unsyncedChanges.map((change) => change.summary), ["Created Only on the second machine"]);
+  assert.match(await readFile(attached.staleCopy!.report, "utf8"), /Only on the second machine/);
+  assert.ok(JSON.parse(await readFile(attached.staleCopy!.snapshot, "utf8")).roadmapItems.some((item: { title: string }) => item.title === "Only on the second machine"));
+  assert.equal(await storage.pathExists(join(copyRoot, "roadmap.json")), false);
+});
+
+test("when the service cannot be reached, a local write goes ahead and is reported later if the copy turns out stale", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  fake.failCopyCheck(true);
+  resetCopyChecks();
+  await storage.createCard({ cwd: second, title: "Written offline", baseRevision: await revisionOf(second) });
+  fake.failCopyCheck(false);
+  resetCopyChecks();
+  const refusal = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanStaleCopyError);
+  assert.deepEqual(refusal.stale.unsyncedChanges.map((change: { summary: string }) => change.summary), ["Created Written offline"]);
+});
+
+test("a board with the same id but unrelated history is not treated as a stale copy", async () => {
+  await takeOnline(fake.url, cwd);
+  const other = join(root, "unrelated");
+  await storage.initializeProject({ cwd: other, repoId: "unrelated-board", title: "Unrelated", updateAgents: false });
+  const otherRoot = (await storage.loadState(other)).planningRoot;
+  await writeFile(manifestPath(other), JSON.stringify({ version: 1, repoId: "demo", enabled: true, storage: { kind: "local", root: otherRoot } }));
+  resetCopyChecks();
+  await storage.createCard({ cwd: other, title: "Fine", baseRevision: await revisionOf(other) });
+  assert.ok(fake.requests.some((req) => req.path === "/api/v1/copy-check"));
+});
+
+test("keeping a stale copy as a separate local board renames it and stops the checks for it", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  const kept = await keepLocalCopy(second, "demo-local");
+  assert.equal(kept.repoId, "demo-local");
+  resetCopyChecks();
+  const state = await storage.loadState(second);
+  assert.equal(state.manifest.repoId, "demo-local");
+  assert.match(state.roadmap.project.title, /local copy/);
+  await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Mine now", baseRevision: state.roadmap.revision });
+  assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), false);
+});
+
+test("a machine that never signed in makes no network calls for local boards", async () => {
+  await saveCredentials(fake.url, null);
+  resetCopyChecks();
+  const start = fake.requests.length;
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "Offline machine", baseRevision: await revisionOf(cwd) });
+  await storage.loadState(cwd);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(fake.requests.length, start);
+});
+
+test("signing in checks the machine's local boards for stale copies", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  // On the second machine, its own registry lists its local copy.
+  await registerBoardFromCwd(second);
+  resetCopyChecks();
+  const result: any = await onlineLogin(fake.url, { user: "owner", passwordEnv: "PLANBAN_ONLINE_TEST_PASSWORD" });
+  assert.ok(result.staleLocalCopies?.some((copy: { repoId: string; onlineBoard: string }) => copy.repoId === "demo" && copy.onlineBoard === "demo"));
+});
+
+test("every machine keeps a local backup of an Online Board it uses, and it restores into a new local board", async () => {
+  await takeOnline(fake.url, cwd);
+  const backup = join(backupRoot(fake.url, "demo"), "latest");
+  assert.equal(JSON.parse(await readFile(join(backup, "roadmap.json"), "utf8")).roadmapItems[0].id, "alpha");
+  assert.equal(await readFile(join(backup, "docs", "alpha.spec.md"), "utf8"), "# Original spec");
+  const second = join(root, "second-machine");
+  await attachOnline(fake.url, "demo", second);
+  const doc = await storage.readDoc({ cwd: second, cardId: "alpha", kind: "spec" });
+  await storage.writeDoc({ cwd: second, cardId: "alpha", kind: "spec", markdown: "# Changed online", expectedMtimeMs: doc.mtimeMs });
+  await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Backed up", baseRevision: await revisionOf(second) });
+  const before = fake.requests.length;
+  await refreshBackup(fake.url, "demo", { force: true });
+  const fetched = fake.requests.slice(before).filter((req) => req.path.includes("/docs/")).map((req) => req.path);
+  assert.deepEqual(fetched, ["/api/v1/boards/demo/docs/alpha/spec"], "only the changed document is downloaded");
+  assert.equal(await readFile(join(backup, "docs", "alpha.spec.md"), "utf8"), "# Changed online");
+  assert.equal(JSON.parse(await readFile(join(backup, "roadmap.json"), "utf8")).roadmapItems[0].summary, "Backed up");
+  const today = new Date().toISOString().slice(0, 10);
+  assert.ok(await storage.pathExists(join(backupRoot(fake.url, "demo"), "daily", today, "roadmap.json")));
+
+  const restoredCwd = join(root, "restored");
+  const restored = await restoreBackup(backup, restoredCwd, "demo-restored");
+  assert.equal(restored.cards, 1);
+  const state = await storage.loadState(restoredCwd);
+  assert.equal(state.manifest.storage?.kind, "local");
+  assert.equal(state.roadmap.roadmapItems[0]!.summary, "Backed up");
+  assert.equal((await storage.readDoc({ cwd: restoredCwd, cardId: "alpha", kind: "spec" })).markdown, "# Changed online");
 });

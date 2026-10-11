@@ -81,6 +81,14 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     if (parts[2] === "commit" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.commit, { connectionId, transferId, partCount: Number(input.partCount) }));
     if (parts[2] === "abort" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.abort, { connectionId, transferId }));
   }
+  if (parts[0] === "copy-check" && parts.length === 1 && method === "POST") {
+    const input = await body(request);
+    const fingerprints = Array.isArray(input.fingerprints) ? input.fingerprints
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+      .map((item) => ({ version: Number(item.version), createdAt: String(item.createdAt ?? ""), operation: String(item.operation ?? "") }))
+      .filter((item) => Number.isInteger(item.version)) : [];
+    return json(await ctx.runQuery(internal.copies.check, { connectionId, fingerprints }));
+  }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {
@@ -101,7 +109,10 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
     return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8) }));
   }
-  if (rest[0] === "history" && method === "GET") return json(await ctx.runQuery(internal.boards.history, { connectionId, boardId }));
+  if (rest[0] === "history" && method === "GET") {
+    const after = url.searchParams.get("after");
+    return json(await ctx.runQuery(internal.boards.history, { connectionId, boardId, ...(after === null ? {} : { after: Number(after) }) }));
+  }
   if (rest[0] === "changes" && method === "GET") {
     // Live updates use Convex subscriptions; this one-shot check remains for
     // clients that cannot subscribe.

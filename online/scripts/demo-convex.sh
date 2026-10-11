@@ -41,14 +41,29 @@ macbook create-card "Write the FAQ" --cwd "$MACBOOK_REPO" -o json >/dev/null
 macbook create-card "Pick a domain" --status up-next --cwd "$MACBOOK_REPO" -o json >/dev/null
 macbook list-cards --cwd "$MACBOOK_REPO" -o json | titles
 
+step "Mac mini: an older local copy of the same board, with an idea added offline"
+mkdir -p "$MINI_HOME/repos" "$MINI_REPO/.planban"
+cp -R "$MACBOOK_HOME/repos/$BOARD" "$MINI_HOME/repos/$BOARD"
+printf '{"version":1,"repoId":"%s","enabled":true}\n' "$BOARD" > "$MINI_REPO/.planban/project.json"
+mini create-card "Mini offline idea" --cwd "$MINI_REPO" -o json >/dev/null
+mini list-cards --cwd "$MINI_REPO" -o json | titles
+
 step "MacBook: sign in and Take Online"
 macbook online login "$URL" --dev-user owner >/dev/null
 macbook online take-online "$URL" --cwd "$MACBOOK_REPO" >/dev/null
 echo "    Board $BOARD is now online at $URL"
+[ -f "$MACBOOK_HOME/online/backups/"*"/$BOARD/latest/roadmap.json" ] && echo "    ok - the MacBook keeps a local backup of the online board"
 
-step "Mac mini: sign in, attach the same board, add a card"
-mini online login "$URL" --dev-user owner >/dev/null
-mini online attach "$URL" "$BOARD" --cwd "$MINI_REPO" >/dev/null
+step "Mac mini: signs in and is told its local copy is out of date"
+mini online login "$URL" --dev-user owner | grep -q '"staleLocalCopies"' && echo "    ok - sign-in found the stale local copy"
+if mini create-card "Edit to the stale copy" --cwd "$MINI_REPO" -o json >/dev/null 2>"$DEMO/stale.txt"; then
+  echo "    Unexpected: the stale copy accepted an edit."; exit 1
+fi
+sed 's/^/    /' "$DEMO/stale.txt" | head -8
+
+step "Mac mini: attach to the online board; the offline idea is kept in a report"
+mini online attach "$URL" "$BOARD" --cwd "$MINI_REPO" --replace-stale-copy > "$DEMO/attach.json"
+grep -q "Mini offline idea" "$DEMO/attach.json" && echo "    ok - the unsynced change is listed and kept"
 mini create-card "Added on the Mac mini" --summary "Created by the mini's CLI." --base-revision "$(rev "$MINI_HOME" "$MINI_REPO")" --cwd "$MINI_REPO" -o json >/dev/null
 mini list-cards --cwd "$MINI_REPO" -o json | titles
 

@@ -30,6 +30,8 @@ export default defineSchema({
     lastGeneration: v.number(),
     /** Latest history version number; versions keep their numbers across transfers. */
     historyVersion: v.number(),
+    /** When the board last became editable online (Take Online commit). */
+    onlineSince: v.optional(v.string()),
     /** Local history retention settings carried through Take Online so Take Local restores them. */
     retention: v.optional(v.any()),
     createdAt: v.string(),

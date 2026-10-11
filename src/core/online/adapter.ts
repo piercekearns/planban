@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { agentContextPath, defaultPlanbanRoot, manifestPath } from "../paths";
 import { normalizeRoadmap, PlanbanValidationError } from "../boardOperations";
 import type { PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap } from "../types";
+import { refreshBackup } from "./backup";
 import { boardPath, onlineRequest } from "./client";
 import { serviceUrl } from "./credentials";
 
@@ -23,6 +24,7 @@ export function onlineState(cwd: string, manifest: PlanbanProjectManifest, roadm
 export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManifest) {
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
   const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(manifest.storage.url, boardPath(manifest.storage.boardId));
+  void refreshBackup(manifest.storage.url, manifest.storage.boardId);
   return onlineState(cwd, manifest, roadmap);
 }
 
@@ -32,6 +34,8 @@ export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectMa
   // One key per logical edit: a retry after a lost response cannot apply it twice.
   const response = await onlineRequest<{ roadmap: PlanbanRoadmap; result: T }>(manifest.storage.url, boardPath(manifest.storage.boardId, `/ops/${op}`), body,
     { idempotencyKey: idempotencyKey ?? randomUUID() });
+  // Every machine that changes an Online Board keeps a local backup of it.
+  void refreshBackup(manifest.storage.url, manifest.storage.boardId);
   return { state: onlineState(cwd, manifest, response.roadmap), result: response.result };
 }
 

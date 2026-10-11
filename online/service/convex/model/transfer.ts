@@ -194,6 +194,7 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   await ctx.db.patch(board!._id, {
     generation: transfer.generation,
     authority: "online",
+    onlineSince: now,
     revision: committed.revision,
     historyVersion: baseVersion,
     title: roadmap.project.title,

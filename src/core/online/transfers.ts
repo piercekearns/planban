@@ -8,10 +8,12 @@ import { agentContextPath, defaultPlanbanRoot, historyDocPath, historyIndexPath,
 import { atomicWriteFile, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
-import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolvePlanningRoot } from "../storage";
+import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
+import { markIndependent, readStaleMarker, type StaleCopy } from "./copyCheck";
+import { readBackup, refreshBackup } from "./backup";
 import { serviceUrl } from "./credentials";
 import { buildAgentContext } from "../protocol";
 
@@ -221,6 +223,7 @@ export async function takeOnline(urlInput: string, cwdInput: string) {
     await publishManifest(cwd, manifest, onlineState(cwd, manifest, committedRoadmap));
     crashPoint("take-online:after-publish");
     await rm(transferJournalPath(state.planningRoot), { force: true });
+    await refreshBackup(url, boardId, { force: true });
     return { boardId, url, localSnapshot: snapshot, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
   });
 }
@@ -346,17 +349,93 @@ export async function takeLocal(cwdInput: string) {
   });
 }
 
-export async function attachOnline(urlInput: string, boardId: string, cwdInput: string) {
+export async function attachOnline(urlInput: string, boardId: string, cwdInput: string, options: { replaceStaleCopy?: boolean } = {}) {
   const url = serviceUrl(urlInput);
   const cwd = resolve(cwdInput);
   const existing = await readManifest(cwd);
-  if (existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId)) {
-    throw new PlanbanValidationError("This directory already has a different board. Use an empty directory or its existing board transfer command.");
-  }
   if (!boardId.trim()) throw new PlanbanValidationError("boardId is required.");
+  let staleCopy: { snapshot: string; report: string; unsyncedChanges: StaleCopy["unsyncedChanges"] } | undefined;
+  if (existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId)) {
+    const planningRoot = existing.storage?.kind === "online" ? null : resolvePlanningRoot(existing);
+    const marker = planningRoot ? await readStaleMarker(planningRoot) : null;
+    if (!options.replaceStaleCopy || !marker || marker.url !== url || marker.boardId !== boardId) {
+      throw new PlanbanValidationError("This directory already has a different board. Use an empty directory or its existing board transfer command.");
+    }
+    // Check the online board is reachable before setting the local copy aside.
+    await loadOnlineState(cwd, { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } });
+    staleCopy = await setStaleCopyAside(planningRoot!, marker);
+  }
   const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } };
   const state = await loadOnlineState(cwd, manifest);
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, state);
-  return { boardId, url, cwd };
+  await refreshBackup(url, boardId, { force: true });
+  return { boardId, url, cwd, ...(staleCopy ? { staleCopy } : {}) };
+}
+
+/**
+ * The stale copy stays on disk as recovery evidence, with a report of the
+ * changes that never reached the online board; its live roadmap file is
+ * renamed so nothing edits it by accident.
+ */
+async function setStaleCopyAside(planningRoot: string, marker: StaleCopy) {
+  return withBoardWriteLock(planningRoot, async () => {
+    const stamp = Date.now();
+    const snapshot = join(planningRoot, `roadmap.stale-copy-${stamp}.json`);
+    if (await pathExists(join(planningRoot, "roadmap.json"))) await rename(join(planningRoot, "roadmap.json"), snapshot);
+    const report = join(planningRoot, `STALE-COPY-REPORT-${stamp}.md`);
+    await atomicWriteFile(report, [
+      "# Stale local copy set aside",
+      "",
+      `This board was taken online as "${marker.title}" (${marker.boardId} at ${marker.url}). This machine's local copy was set aside on ${new Date(stamp).toISOString()}.`,
+      `The roadmap as it was is in ${snapshot}; its documents and history are in this folder.`,
+      "",
+      marker.unsyncedChanges.length
+        ? "Changes made here that never reached the online board (re-apply any you still want):"
+        : "Every change in this copy had already reached the online board.",
+      ...marker.unsyncedChanges.map((change) => `- v${change.version}, ${change.createdAt}: ${change.summary}`),
+      "",
+    ].join("\n"));
+    await atomicWriteFile(join(planningRoot, "ONLINE-BOARD.txt"), `Authority moved to ${marker.url}, board ${marker.boardId}.\nThe files here are recovery evidence. Do not edit them.\n`);
+    return { snapshot, report, unsyncedChanges: marker.unsyncedChanges };
+  });
+}
+
+/**
+ * Keep a stale copy as its own local board, under a new id, never flagged
+ * against that online board again. Its changes stay where they are.
+ */
+export async function keepLocalCopy(cwdInput: string, newId: string, title?: string) {
+  const cwd = resolveProjectCwd(cwdInput);
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled || manifest.storage?.kind === "online") throw new PlanbanValidationError("This project does not hold a local board.");
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(newId) || newId === manifest.repoId) throw new PlanbanValidationError("Choose a new board id: lowercase letters, digits and dashes.");
+  const planningRoot = resolvePlanningRoot(manifest);
+  const marker = await readStaleMarker(planningRoot);
+  if (!marker) throw new PlanbanValidationError("This board is not marked as a stale copy of an Online Board.");
+  await markIndependent(planningRoot, marker);
+  const localManifest: PlanbanProjectManifest = { ...manifest, repoId: newId, storage: { kind: "local", root: planningRoot } };
+  await writeJson(manifestPath(cwd), localManifest);
+  const state = await loadState(cwd);
+  const roadmap = { ...state.roadmap, project: { ...state.roadmap.project, id: newId, title: title ?? `${state.roadmap.project.title} (local copy)` } };
+  const saved = await saveRoadmap(state, roadmap, { actor: "user", operation: "board.keep-local-copy", summary: `Kept as a separate local board after ${marker.boardId} went online`, affectedCards: [] });
+  await publishManifest(cwd, localManifest, { ...state, roadmap: saved });
+  return { repoId: newId, planningRoot, unsyncedChanges: marker.unsyncedChanges };
+}
+
+/** Turns a backup folder (its latest copy, or one day's) into a new local board. */
+export async function restoreBackup(folder: string, cwdInput: string, repoId: string) {
+  const cwd = resolve(cwdInput);
+  if (await readManifest(cwd)) throw new PlanbanValidationError("This directory already has a board. Restore into an empty directory.");
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(repoId)) throw new PlanbanValidationError("Choose a board id: lowercase letters, digits and dashes.");
+  const root = join(defaultPlanbanRoot(), "repos", repoId);
+  if (await pathExists(root)) throw new PlanbanValidationError(`A local board folder already exists at ${root}. Choose another id.`);
+  const { roadmap, docs } = await readBackup(folder);
+  const restored = await stageBundle(root, bundleSchema.parse({
+    format: "planban-board-bundle", version: 1, roadmap: { ...roadmap, project: { ...roadmap.project, id: repoId } }, docs, history: [],
+  }));
+  const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId, storage: { kind: "local", root } };
+  await mkdir(dirname(manifestPath(cwd)), { recursive: true });
+  await publishManifest(cwd, manifest, { cwd, manifest, manifestPath: manifestPath(cwd), agentContextPath: agentContextPath(cwd), planningRoot: root, roadmapPath: join(root, "roadmap.json"), roadmap: restored });
+  return { repoId, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length };
 }

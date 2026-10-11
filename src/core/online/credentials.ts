@@ -31,6 +31,10 @@ export function credentialsRoot() {
   return join(defaultPlanbanRoot(), "online");
 }
 
+export function credentialsPath() {
+  return join(credentialsRoot(), "credentials.json");
+}
+
 export function withCredentialsLock<T>(run: () => Promise<T>): Promise<T> {
   return withBoardWriteLock(credentialsRoot(), run);
 }

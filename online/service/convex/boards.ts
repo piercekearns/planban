@@ -188,10 +188,10 @@ export const readDoc = internalQuery({
 });
 
 export const history = internalQuery({
-  args: { connectionId: v.id("connections"), boardId: v.string() },
-  handler: async (ctx, { connectionId, boardId }): Promise<PlanbanHistoryPayload> => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), after: v.optional(v.number()) },
+  handler: async (ctx, { connectionId, boardId, after }): Promise<PlanbanHistoryPayload> => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
-    const entries = await historyEntries(ctx, live(board));
+    const entries = await historyEntries(ctx, live(board), after ?? 0);
     return {
       currentVersion: board.historyVersion,
       retention: { boardVersions: 1000, cardVersions: 1000, documentVersions: 1000, hourlyDays: 0, maxAgeDays: 0 },

@@ -43,6 +43,8 @@ import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { loadOnlineState, onlineCacheRoot, onlineOperation, refuseOnline } from "./online/adapter";
 import { boardPath, onlineRequest } from "./online/client";
+import { assertNotStaleCopy, checkInBackground, STALE_MARKER } from "./online/copyCheck";
+import { credentialsPath } from "./online/credentials";
 import type { PlanbanHistoryPayload } from "./types";
 
 import {
@@ -128,7 +130,23 @@ export async function withRoadmapWriteLock<T>(cwdInput: string, callback: () => 
   if (!manifest || !manifest.enabled) {
     throw new Error(`Planban is not initialized in ${cwd}`);
   }
-  return withBoardWriteLock(resolvePlanningRoot(manifest), callback);
+  const planningRoot = resolvePlanningRoot(manifest);
+  if (manifest.storage?.kind !== "online") await guardLocalCopy(planningRoot, cwd, manifest.repoId);
+  return withBoardWriteLock(planningRoot, callback);
+}
+
+/**
+ * A local copy of a board that was taken online elsewhere refuses writes
+ * (owner decision 14). Costs two file checks unless this machine has signed
+ * in to an online service or the copy is already marked stale.
+ */
+async function guardLocalCopy(planningRoot: string, cwd: string, repoId: string) {
+  if (!(await pathExists(join(planningRoot, STALE_MARKER))) && !(await pathExists(credentialsPath()))) return;
+  await assertNotStaleCopy(planningRoot, cwd, repoId);
+}
+
+async function checkLocalCopyInBackground(planningRoot: string) {
+  if (await pathExists(credentialsPath())) checkInBackground(planningRoot);
 }
 
 export async function readManifest(cwd: string): Promise<PlanbanProjectManifest | null> {
@@ -161,6 +179,7 @@ export async function loadState(cwdInput: string): Promise<PlanbanResolvedState>
     roadmap: normalizeRoadmap(await readJson(liveRoadmapPath)),
   };
   await ensureHistoryBaseline(state);
+  void checkLocalCopyInBackground(planningRoot).catch(() => undefined);
   return state;
 }
 
@@ -262,6 +281,7 @@ export async function saveRoadmap(
   },
 ) {
   if (state.manifest.storage?.kind === "online") refuseOnline("Raw roadmap saving");
+  await guardLocalCopy(state.planningRoot, state.cwd, state.manifest.repoId);
   return withBoardWriteLock(state.planningRoot, async () => {
   assertCommittable(roadmap);
   if (history !== false) await ensureHistoryBaseline(state);

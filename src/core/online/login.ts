@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { defaultPlanbanRoot } from "../paths";
 import { spawn } from "node:child_process";
 import { serviceUrl, saveCredentials } from "./credentials";
 import { authorizationMetadata, onlineRequest, tokenRequest } from "./client";
@@ -15,6 +18,32 @@ export interface LoginOptions {
   devUser?: string | undefined;
 }
 
+/**
+ * A machine that has just signed in checks every local board it holds, so a
+ * copy of a board that went online while this machine was signed out is
+ * caught now rather than at its next edit.
+ */
+async function staleCopiesAfterSignIn() {
+  const { listBoards } = await import("../registry");
+  const { readManifest, resolvePlanningRoot } = await import("../storage");
+  const boards = new Map<string, { planningRoot: string; repoId: string }>();
+  for (const board of await listBoards()) {
+    const manifest = await readManifest(board.cwd).catch(() => null);
+    if (manifest?.enabled && manifest.storage?.kind !== "online") boards.set(resolvePlanningRoot(manifest), { planningRoot: resolvePlanningRoot(manifest), repoId: manifest.repoId });
+  }
+  // Board folders copied onto this machine may not be in its board list yet.
+  const repos = join(defaultPlanbanRoot(), "repos");
+  for (const name of await readdir(repos).catch(() => [] as string[])) {
+    const planningRoot = join(repos, name);
+    if (boards.has(planningRoot) || await stat(join(planningRoot, "ONLINE-BOARD.txt")).then(() => true, () => false)) continue;
+    const roadmap = await readFile(join(planningRoot, "roadmap.json"), "utf8").then((text) => JSON.parse(text), () => null);
+    if (roadmap?.project?.id) boards.set(planningRoot, { planningRoot, repoId: roadmap.project.id });
+  }
+  const { scanLocalCopies } = await import("./copyCheck");
+  const found = await scanLocalCopies([...boards.values()]);
+  return found.length ? { staleLocalCopies: found.map(({ repoId, stale }) => ({ repoId, onlineBoard: stale.boardId, url: stale.url, unsyncedChanges: stale.unsyncedChanges.length })) } : {};
+}
+
 async function devLogin(url: string, options: LoginOptions) {
   const response = await fetch(`${url}/dev/token`, {
     method: "POST", headers: { "Content-Type": "application/json" }, redirect: "error",
@@ -28,7 +57,7 @@ async function devLogin(url: string, options: LoginOptions) {
   const { token } = await response.json() as { token: string };
   // Development tokens do not expire or refresh; signing out revokes them.
   await saveCredentials(url, { clientId: "dev", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", person: options.devUser });
-  return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me") };
+  return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
 }
 
 async function openBrowser(url: string) {
@@ -142,7 +171,7 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
       clientId, accessToken: token.access_token, refreshToken: token.refresh_token,
       expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(), person: options.user,
     });
-    return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me") };
+    return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
   } finally {
     clearTimeout(timeout);
     listener.closeAllConnections();

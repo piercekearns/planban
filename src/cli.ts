@@ -28,7 +28,7 @@ import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
 import { onlineLogin } from "./core/online/login";
 import { onlineStatus, saveCredentials } from "./core/online/credentials";
-import { attachOnline, exportOnline, takeLocal, takeOnline } from "./core/online/transfers";
+import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -128,7 +128,14 @@ online.command("export").option("--cwd <path>", "project directory").requiredOpt
 online.command("take-local").option("--cwd <path>", "project directory")
   .action(async (options) => print(await takeLocal(cwdOption(options.cwd)), {}));
 online.command("attach <url> <boardId>").requiredOption("--cwd <path>", "project directory")
-  .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd)), {}));
+  .option("--replace-stale-copy", "set aside this project's out-of-date local copy of the board")
+  .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd), { replaceStaleCopy: !!options.replaceStaleCopy }), {}));
+online.command("restore-backup").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
+  .requiredOption("--cwd <path>", "empty project directory").requiredOption("--repo-id <id>", "id for the restored local board")
+  .action(async (options) => print(await restoreBackup(options.from, cwdOption(options.cwd), options.repoId), {}));
+online.command("keep-local-copy").requiredOption("--cwd <path>", "project directory").requiredOption("--new-id <id>", "id for the separate local board")
+  .option("--title <title>", "title for the separate local board")
+  .action(async (options) => print(await keepLocalCopy(cwdOption(options.cwd), options.newId, options.title), {}));
 
 program
   .command("init")

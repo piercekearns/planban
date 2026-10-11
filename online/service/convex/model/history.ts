@@ -55,10 +55,6 @@ function apply(previous: PlanbanRoadmap, delta: Delta): PlanbanRoadmap {
   } as PlanbanRoadmap;
 }
 
-function versionRange(ctx: QueryCtx, at: BoardRows) {
-  return ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation));
-}
-
 async function payload(ctx: QueryCtx, at: BoardRows, version: number) {
   const row = await ctx.db.query("historyPayloads")
     .withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("version", version)).unique();
@@ -102,10 +98,11 @@ export async function historyPage(ctx: QueryCtx, at: BoardRows, after: number, l
   return page;
 }
 
-/** The small per-version rows only, newest first. */
-export async function historyEntries(ctx: QueryCtx, at: BoardRows): Promise<PlanbanHistoryEntry[]> {
+/** The small per-version rows only, newest first; with `after`, only versions newer than it. */
+export async function historyEntries(ctx: QueryCtx, at: BoardRows, after = 0): Promise<PlanbanHistoryEntry[]> {
   const entries: PlanbanHistoryEntry[] = [];
-  for await (const row of versionRange(ctx, at).order("desc")) entries.push(row.entry as PlanbanHistoryEntry);
+  const rows = ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).gt("version", after));
+  for await (const row of rows.order("desc")) entries.push(row.entry as PlanbanHistoryEntry);
   return entries;
 }
 
