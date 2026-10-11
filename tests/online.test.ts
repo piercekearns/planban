@@ -50,6 +50,7 @@ async function fakeService() {
   const transfers = new Map<string, { begin: any; parts: Map<number, any>; state: "open" | "committed" | "aborted" }>();
   const replies = new Map<string, unknown>();
   let dropNextReply = false;
+  let failLiveToken = false;
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -109,6 +110,7 @@ async function fakeService() {
         return json(401, { error: "unauthorized" });
       }
       if (path === "/api/v1/me") return json(200, { userId: "dev-owner", scope: "all" });
+      if (path === "/api/v1/live-token" && failLiveToken) return json(503, { error: { code: "unavailable", message: "Live updates are down." } });
       if (path.startsWith("/error/")) return json(Number(path.split("/")[2]), { error: { code: "fixture", message: "Fixture refusal", currentRevision: 19 } });
       const importBundle = (input: BoardBundle) => {
         assert.equal(input.roadmap.project.id, "demo");
@@ -247,7 +249,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, transfers,
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, transfers,
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -648,4 +650,23 @@ test("an edit whose response is lost is retried with its idempotency key and app
 test("online edits must state the version they were based on", async () => {
   await takeOnline(fake.url, cwd);
   await assert.rejects(storage.updateCard({ cwd, cardId: "alpha", summary: "No base" }), (error: any) => error instanceof storage.PlanbanValidationError && /baseRevision/.test(error.message));
+});
+
+test("when live updates fail, the board server checks for changes instead", async () => {
+  await takeOnline(fake.url, cwd);
+  fake.failLiveToken();
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  try {
+    const live = await (await fetch(`${server.url}/api/live?repoId=demo`)).json();
+    await storage.updateCard({ cwd, cardId: "alpha", summary: "Changed elsewhere", baseRevision: (await storage.loadState(cwd)).roadmap.revision });
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    const changed = await (await fetch(`${server.url}/api/live?repoId=demo`)).json();
+    assert.ok(fake.requests.some((req) => req.path === "/api/v1/live-token"));
+    assert.ok(fake.requests.some((req) => req.path.endsWith("/changes")), "fell back to checking for changes");
+    assert.ok(changed.stateVersion > live.stateVersion);
+  } finally { await server.close(); }
 });

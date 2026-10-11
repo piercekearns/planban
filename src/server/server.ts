@@ -1734,17 +1734,26 @@ export async function startServer(options: ServeOptions) {
   // is watching, subscribe to its revision (Convex pushes changes) and raise
   // the same state signal the board page already polls. Services without live
   // updates are checked every few seconds instead, without overlapping checks.
-  const onlineWatches = new Map<string, { repoId: string; watch: LiveWatch | null | "starting" }>();
+  // A board whose subscription is unavailable or failed is checked every few
+  // seconds instead, and the subscription is retried after a minute.
+  const SUBSCRIBE_RETRY_MS = 60_000;
+  type WatchState = { repoId: string; mode: "starting" } | { repoId: string; mode: "live"; watch: LiveWatch } | { repoId: string; mode: "poll"; retryAt: number };
+  const onlineWatches = new Map<string, WatchState>();
   const signalRevision = (key: string, repoId: string, revision: number) => {
     if (onlineRevisions.get(key) !== revision && onlineRefresh) {
       onlineRevisions.set(key, revision);
       sendEvent("state", { repoId });
     }
   };
+  const fallBackToPolling = (key: string, repoId: string, retryAt = Date.now() + SUBSCRIBE_RETRY_MS) => {
+    const entry = onlineWatches.get(key);
+    if (entry?.mode === "live") void entry.watch.close().catch(() => undefined);
+    if (entry) onlineWatches.set(key, { repoId, mode: "poll", retryAt });
+  };
   const dropWatch = (key: string) => {
     const entry = onlineWatches.get(key);
     onlineWatches.delete(key);
-    if (entry?.watch && entry.watch !== "starting") void entry.watch.close().catch(() => undefined);
+    if (entry?.mode === "live") void entry.watch.close().catch(() => undefined);
   };
   closeOnlineWatches = () => {
     for (const key of [...onlineWatches.keys()]) dropWatch(key);
@@ -1766,26 +1775,31 @@ export async function startServer(options: ServeOptions) {
           const storage = manifest.storage;
           const repoId = manifest.repoId;
           const key = `${storage.url}/${storage.boardId}`;
-          const existing = onlineWatches.get(key);
-          if (existing && existing.watch !== null) return;
-          if (!existing) {
-            onlineWatches.set(key, { repoId, watch: "starting" });
+          let entry = onlineWatches.get(key);
+          if (entry?.mode === "poll" && Date.now() >= entry.retryAt) {
+            onlineWatches.delete(key);
+            entry = undefined;
+          }
+          if (!entry) {
+            onlineWatches.set(key, { repoId, mode: "starting" });
             try {
               const { watchRevision } = await import("../core/online/live");
               const watch = await watchRevision(storage.url, storage.boardId,
                 (revision) => signalRevision(key, repoId, revision),
-                () => dropWatch(key));
-              if (onlineWatches.get(key)?.watch !== "starting" || !onlineRefresh) {
+                () => fallBackToPolling(key, repoId));
+              if (onlineWatches.get(key)?.mode !== "starting" || !onlineRefresh) {
                 await watch?.close();
                 return;
               }
-              onlineWatches.set(key, { repoId, watch });
-              if (watch) return;
-            } catch (error) {
-              onlineWatches.delete(key);
-              throw error;
+              // A service without live updates is always checked instead.
+              if (watch) onlineWatches.set(key, { repoId, mode: "live", watch });
+              else onlineWatches.set(key, { repoId, mode: "poll", retryAt: Infinity });
+            } catch {
+              onlineWatches.set(key, { repoId, mode: "poll", retryAt: Date.now() + SUBSCRIBE_RETRY_MS });
             }
+            entry = onlineWatches.get(key);
           }
+          if (entry?.mode !== "poll") return;
           const remote = await onlineRequest<{ revision: number }>(storage.url, boardPath(storage.boardId, `/changes?since=${onlineRevisions.get(key) ?? 0}&waitMs=0`), undefined, { signal: onlineAbort.signal });
           signalRevision(key, repoId, remote.revision);
         } catch {

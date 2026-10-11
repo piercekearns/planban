@@ -56,15 +56,22 @@ export default defineSchema({
   }).index("by_board_card_kind", ["boardId", "generation", "cardId", "kind"]),
 
   /**
-   * One row per history version. Every SNAPSHOT_EVERY versions (and the first
-   * after an import) keeps a full compressed roadmap; the rest keep only what
-   * changed since the previous version.
+   * One small row per history version: what happened, who and when. Its
+   * roadmap lives in historyPayloads, so listing history stays cheap.
    */
   history: defineTable({
     boardId: v.string(),
     generation: v.number(),
     version: v.number(),
     entry: v.any(),
+    /** True when the payload is a full roadmap rather than the changes since the previous version. */
+    snapshot: v.boolean(),
+  }).index("by_board_version", ["boardId", "generation", "version"]),
+
+  historyPayloads: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    version: v.number(),
     snapshot: v.optional(v.bytes()),
     delta: v.optional(v.bytes()),
   }).index("by_board_version", ["boardId", "generation", "version"]),
@@ -76,7 +83,8 @@ export default defineSchema({
     cardId: v.string(),
     kind: docKind,
     markdown: v.bytes(),
-  }).index("by_board_version", ["boardId", "generation", "version"]),
+  }).index("by_board_version", ["boardId", "generation", "version"])
+    .index("by_board_doc_version", ["boardId", "generation", "cardId", "kind", "version"]),
 
   /** Ids of deleted cards, never reused, so history keeps one meaning per id. */
   retiredIds: defineTable({

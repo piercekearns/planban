@@ -28,6 +28,8 @@ From the repository root, with the backend running:
 
 ```sh
 node --import tsx/esm online/scripts/smoke-convex.ts                     # REST API end to end
+node --import tsx/esm online/scripts/history-convex.ts                   # history rebuilds and pruning
+PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/transfers-convex.ts   # killed transfers resume
 PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/live-convex.ts   # live updates
 online/scripts/demo-convex.sh                                            # two machines, CLI and local MCP
 ```

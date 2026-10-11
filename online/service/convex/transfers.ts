@@ -54,7 +54,7 @@ export const importBundle = internalMutation({
   },
 });
 
-async function deleteSome(ctx: MutationCtx, table: "boardState" | "docs" | "history" | "historyDocs" | "retiredIds", boardId: string, generation: number) {
+async function deleteSome(ctx: MutationCtx, table: "boardState" | "docs" | "history" | "historyPayloads" | "historyDocs" | "retiredIds", boardId: string, generation: number) {
   const index = table === "boardState" ? "by_board_generation" : table === "docs" ? "by_board_card_kind" : table === "retiredIds" ? "by_board_card" : "by_board_version";
   const rows = await (ctx.db.query(table) as any).withIndex(index, (q: any) => q.eq("boardId", boardId).eq("generation", generation)).take(CLEANUP_BATCH);
   for (const row of rows) await ctx.db.delete(row._id);
@@ -67,7 +67,7 @@ export const cleanupGeneration = internalMutation({
     const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", boardId)).unique();
     if (board && board.generation === generation) return; // never remove the live board
     let removed = 0;
-    for (const table of ["historyDocs", "history", "docs", "retiredIds", "boardState"] as const) {
+    for (const table of ["historyDocs", "historyPayloads", "history", "docs", "retiredIds", "boardState"] as const) {
       removed += await deleteSome(ctx, table, boardId, generation);
       if (removed >= CLEANUP_BATCH) break;
     }

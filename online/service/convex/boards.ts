@@ -22,7 +22,7 @@ import { internalMutation, internalQuery, type MutationCtx } from "./_generated/
 import { boardAccess, liveConnection, reaches } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
-import { historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
+import { historyEntries, historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
 import { DOC_KINDS, currentRoadmap, docPayload, docRow, live, retiredIds, stateRow, type DocKind } from "./model/rows";
 
 export const BOARD_OPERATIONS = [
@@ -191,10 +191,7 @@ export const history = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string() },
   handler: async (ctx, { connectionId, boardId }): Promise<PlanbanHistoryPayload> => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
-    const entries: PlanbanHistoryEntry[] = [];
-    for await (const row of ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation)).order("desc")) {
-      entries.push(row.entry as PlanbanHistoryEntry);
-    }
+    const entries = await historyEntries(ctx, live(board));
     return {
       currentVersion: board.historyVersion,
       retention: { boardVersions: 1000, cardVersions: 1000, documentVersions: 1000, hourlyDays: 0, maxAgeDays: 0 },
