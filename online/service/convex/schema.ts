@@ -139,7 +139,9 @@ export default defineSchema({
     lastUsedAt: v.string(),
     expiresAt: v.optional(v.string()),
     revokedAt: v.optional(v.string()),
-  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]),
+    /** For an AI app's connection: the OAuth client it was authorised for. */
+    oauthClientId: v.optional(v.string()),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"]),
 
   /** Take Online uploads, sent in parts under one transfer id. */
   transfers: defineTable({

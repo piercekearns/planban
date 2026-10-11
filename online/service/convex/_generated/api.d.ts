@@ -21,6 +21,7 @@ import type * as members from "../members.js";
 import type * as model_access from "../model/access.js";
 import type * as model_auth from "../model/auth.js";
 import type * as model_blobs from "../model/blobs.js";
+import type * as model_clerk from "../model/clerk.js";
 import type * as model_codec from "../model/codec.js";
 import type * as model_errors from "../model/errors.js";
 import type * as model_history from "../model/history.js";
@@ -51,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   "model/access": typeof model_access;
   "model/auth": typeof model_auth;
   "model/blobs": typeof model_blobs;
+  "model/clerk": typeof model_clerk;
   "model/codec": typeof model_codec;
   "model/errors": typeof model_errors;
   "model/history": typeof model_history;

@@ -1,10 +1,11 @@
 // The authentication boundary. A verifier turns a request's credential into a
-// Planban connection id, or null. Planban-issued secrets (development tokens
-// now; machine sign-ins and personal access keys later) resolve by hash.
-// Clerk OAuth tokens get their own verifier once the Clerk application exists.
+// Planban connection id, or null. Planban-issued secrets (machine sign-ins,
+// personal access keys, development tokens) resolve by hash. Clerk OAuth
+// access tokens from AI apps resolve to that person's connection for the app.
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
+import { clientNameOf, verifyClerkAccessToken } from "./clerk";
 
 export interface Authenticated {
   connectionId: Id<"connections">;
@@ -38,7 +39,21 @@ export const planbanTokenVerifier: AuthVerifier = {
   },
 };
 
-const verifiers: AuthVerifier[] = [planbanTokenVerifier];
+/** The service's public address, which Clerk tokens may name as their audience. */
+export function publicOrigin() {
+  return (process.env.PLANBAN_PUBLIC_URL ?? process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
+}
+
+export const clerkVerifier: AuthVerifier = {
+  async authenticate(ctx, bearer) {
+    const token = await verifyClerkAccessToken(bearer, publicOrigin());
+    // The command line's own client signs in only through the machine exchange.
+    if (!token || token.clientId === process.env.PLANBAN_CLI_CLIENT_ID) return null;
+    return ctx.runMutation(internal.connections.forOAuthClient, { userId: token.sub, clientId: token.clientId, clientName: clientNameOf(token.clientId) });
+  },
+};
+
+const verifiers: AuthVerifier[] = [planbanTokenVerifier, clerkVerifier];
 
 export async function authenticate(ctx: ActionCtx, request: Request): Promise<Authenticated | null> {
   const header = request.headers.get("Authorization") ?? "";

@@ -111,10 +111,8 @@ program.name("planban").description("Local, agent-native planning board for Code
 
 const online = program.command("online").description("Sign in and move boards between local and online authority");
 online.command("login <url>")
-  .option("--user <id>", "prototype headless user")
-  .option("--password-env <name>", "environment variable holding the prototype password")
   .addOption(new Option("--access <scope>", "connection access").choices(["all", "board"]).default("all"))
-  .option("--boards <id>", "board id for prototype board access")
+  .option("--boards <id>", "with --dev-user: the one board the connection reaches")
   .option("--dev-user <id>", "development sign-in on a local Online Board backend")
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
   .action(async (url, options) => print(await onlineLogin(url, options), {}));
