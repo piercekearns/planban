@@ -803,7 +803,7 @@ export async function startServer(options: ServeOptions) {
       }
 
       const repoId = req.params.repoId as string;
-      const cwdForBoard = await boardCwd(repoId);
+      const cwdForBoard = await boardCwd(repoId, false);
       const { replayed, value: nextState } = await runApiMutation(req, cwdForBoard, async () => {
         const state = await loadState(cwdForBoard);
         let found = false;
@@ -843,7 +843,7 @@ export async function startServer(options: ServeOptions) {
 
   app.post("/api/boards/:repoId/cards/:id/codex-thread/sync", async (req, res, next) => {
     try {
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: result } = await runApiMutation(req, cwdForBoard, async () => {
         const state = await loadState(cwdForBoard);
         const item = state.roadmap.roadmapItems.find((entry) => entry.id === req.params.id);
@@ -909,9 +909,14 @@ export async function startServer(options: ServeOptions) {
     }
   });
 
-  async function boardCwd(repoId: string) {
+  /**
+   * Reading a board records it as recently opened. Changing one does not:
+   * a card write must take the board before writing anything, so it can give
+   * up cleanly if another process is stuck holding it.
+   */
+  async function boardCwd(repoId: string, recordOpened = true) {
     const board = await resolveBoardCwd(repoId);
-    await touchBoard(repoId);
+    if (recordOpened) await touchBoard(repoId);
     return board;
   }
 
@@ -992,7 +997,7 @@ export async function startServer(options: ServeOptions) {
     try {
       const exportId = typeof req.body?.exportId === "string" ? req.body.exportId : "";
       if (!exportId) throw new PlanbanValidationError("exportId is required.");
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: result } = await runApiMutation(req, cwdForBoard, () => exportFlatVersion1({ cwd: cwdForBoard, exportId }));
       res.json(result);
     } catch (error) { next(error); }
@@ -1002,7 +1007,7 @@ export async function startServer(options: ServeOptions) {
     try {
       const groups = req.body?.groups ?? req.body?.programmes;
       if (!Array.isArray(groups)) throw new PlanbanValidationError("groups must be an array.");
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => reconstructHierarchy({
         cwd: cwdForBoard,
         groups,
@@ -1045,7 +1050,7 @@ export async function startServer(options: ServeOptions) {
         return;
       }
       const repoId = req.params.repoId as string;
-      const cwdForBoard = await boardCwd(repoId);
+      const cwdForBoard = await boardCwd(repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createCard({
         cwd: cwdForBoard,
         title,
@@ -1081,7 +1086,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` }); return;
       }
       const repoId = req.params.repoId as string;
-      const cwdForBoard = await boardCwd(repoId);
+      const cwdForBoard = await boardCwd(repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createGroup({
         cwd: cwdForBoard,
         title,
@@ -1111,7 +1116,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "parentId must be a non-empty card id or null" }); return;
       }
       const status = typeof req.body?.status === "string" && isStatus(req.body.status) ? req.body.status : undefined;
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createCards({
         cwd: cwdForBoard, titles: req.body.titles, status,
         parentId: typeof req.body?.parentId === "string" ? req.body.parentId : null,
@@ -1138,7 +1143,7 @@ export async function startServer(options: ServeOptions) {
 
   app.patch("/api/boards/:repoId/cards/:id", async (req, res, next) => {
     try {
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const update = parseCardUpdate(req.body);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => updateCard({
         cwd: cwdForBoard,
@@ -1172,7 +1177,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Reorder payload must include items with valid id and status" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => reorderCards({
         cwd: cwdForBoard,
         items: parsed as Array<{ id: string; status: PlanbanStatus }>,
@@ -1203,7 +1208,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "A status, parentId, or afterId is required" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => moveCard({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1225,7 +1230,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "parentId must be a non-empty card id or null" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => setCardParent({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1244,7 +1249,7 @@ export async function startServer(options: ServeOptions) {
   ] as const) {
     app.post(`/api/boards/:repoId/cards/:id/${route}`, async (req, res, next) => {
       try {
-        const cwdForBoard = await boardCwd(req.params.repoId);
+        const cwdForBoard = await boardCwd(req.params.repoId, false);
         const { value: state } = await runApiMutation(req, cwdForBoard, () =>
           setCardStatus(cwdForBoard, req.params.id, status),
         );
@@ -1258,7 +1263,7 @@ export async function startServer(options: ServeOptions) {
 
   app.delete("/api/boards/:repoId/cards/:id", async (req, res, next) => {
     try {
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => deleteArchivedCard({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1296,7 +1301,7 @@ export async function startServer(options: ServeOptions) {
         typeof req.body?.expectedMtimeMs === "number" || req.body?.expectedMtimeMs === null
           ? req.body.expectedMtimeMs
           : undefined;
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: payload } = await runApiMutation(req, cwdForBoard, () => writeDoc({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1339,7 +1344,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Invalid history version" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => restoreBoardVersion({
         cwd: cwdForBoard,
         version,
@@ -1359,7 +1364,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Invalid history version" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => restoreCardVersion({
         cwd: cwdForBoard,
         version,
@@ -1395,7 +1400,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Invalid history document restore request" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: payload } = await runApiMutation(req, cwdForBoard, () => restoreDocVersion({
         cwd: cwdForBoard,
         version,

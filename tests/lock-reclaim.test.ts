@@ -242,6 +242,7 @@ test("a card edit from the board page gives up with the same explanation", async
     await new Promise<void>((resolveClose) => probe.close(() => resolveClose()));
     const server = await startServer({ cwd: project, port, useVite: false });
     try {
+      const registryBefore = await readFile(join(home, "index.json"), "utf8");
       const started = Date.now();
       const response = await fetch(`${server.url}/api/boards/page-board/cards/${created.createdCard.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -250,6 +251,7 @@ test("a card edit from the board page gives up with the same explanation", async
       assert.equal(response.status, 409);
       assert.match((await response.json()).error, new RegExp(`held by process ${held.holder.pid}`));
       assert.ok(Date.now() - started < 4000);
+      assert.equal(await readFile(join(home, "index.json"), "utf8"), registryBefore, "nothing was changed, not even the board list");
     } finally {
       await server.close();
       await held.stop();
