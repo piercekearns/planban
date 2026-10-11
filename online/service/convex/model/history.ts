@@ -175,11 +175,15 @@ export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: numb
   }
   for (const row of old) {
     for (const doc of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("version", row.version)).collect()) {
-      const newer = await ctx.db.query("historyDocs")
-        .withIndex("by_board_doc_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("cardId", doc.cardId).eq("kind", doc.kind).gt("version", doc.version))
+      // The body that applies at the first kept version is the newest one at
+      // or before it. If that is this pruned body, it moves to the first kept
+      // version; otherwise a later body already covers the kept versions.
+      const applies = first && await ctx.db.query("historyDocs")
+        .withIndex("by_board_doc_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("cardId", doc.cardId).eq("kind", doc.kind).lte("version", first.version))
+        .order("desc")
         .first();
-      if (newer || !first) await ctx.db.delete(doc._id);
-      else await ctx.db.patch(doc._id, { version: first.version });
+      if (first && applies?._id === doc._id) await ctx.db.patch(doc._id, { version: first.version });
+      else await ctx.db.delete(doc._id);
     }
     await ctx.db.delete((await payload(ctx, at, row.version))._id);
     await ctx.db.delete(row._id);

@@ -54,6 +54,7 @@ async function fakeService() {
   let dropNextReply = false;
   let failLiveToken = false;
   let failCopyCheck = false;
+  let localTransfer: string | undefined;
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -192,11 +193,18 @@ async function fakeService() {
         const versions = new Set(page.map(({ entry }) => entry.version));
         return json(200, { history: page, historyDocs: (bundle.historyDocs ?? []).filter((doc) => versions.has(doc.version)) });
       }
-      if (suffix === "/authority") {
+      if (suffix === "/take-local/fence") {
+        if (localTransfer === body.transferId) return json(200, { generation: 1 });
+        if (authority !== "online") return json(409, { error: { code: "conflict", message: "Already being taken local." } });
         beforeFence?.();
         authority = "returned-local";
+        localTransfer = body.transferId;
         bundle.roadmap = domain.committedRoadmap(roadmap(), new Date().toISOString());
-        return json(200, { authority });
+        return json(200, { generation: 1 });
+      }
+      if (suffix === "/take-local/finish") {
+        if (localTransfer === body.transferId) localTransfer = undefined;
+        return json(200, { finished: true });
       }
       if (suffix === "/history") return json(200, { currentVersion: Math.max(...bundle.history.map(({ entry }) => entry.version)), retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90 }, entries: bundle.history.map(({ entry }) => entry).filter((entry) => entry.version > Number(request.searchParams.get("after") ?? 0)).reverse() });
       if (suffix.startsWith("/docs/")) {
@@ -433,8 +441,8 @@ test("take-local fences before export, preserves history docs and can re-take on
   fake.beforeFence(() => { fake.bundle.roadmap.roadmapItems[0]!.summary = "Last remote edit"; });
   const start = fake.requests.length;
   const returned = await takeLocal(cwd);
-  const calls = fake.requests.slice(start).filter((req) => req.path.endsWith("/authority") || req.path.includes("/export/"));
-  assert.deepEqual(calls.slice(0, 2).map((req) => req.path.split("/").at(-1)), ["authority", "meta"]);
+  const calls = fake.requests.slice(start).filter((req) => req.path.endsWith("/fence") || req.path.includes("/export/"));
+  assert.deepEqual(calls.slice(0, 2).map((req) => req.path.split("/").at(-1)), ["fence", "meta"]);
   assert.equal(fake.authority, "returned-local");
   const local = await storage.loadState(cwd);
   assert.equal(local.manifest.storage?.kind, "local");
@@ -634,6 +642,17 @@ test("take-local killed mid-download keeps the online board intact, and running 
   assert.deepEqual(local.roadmap.roadmapItems.map((item) => item.id), online.roadmap.roadmapItems.map((item) => item.id));
   assert.equal((await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, "# Original spec");
   assert.equal(await storage.pathExists(join(onlineCacheRoot({ kind: "online", url: fake.url, boardId: "demo" }), "online-transfer.json")), false);
+});
+
+test("take-online killed between setting the local roadmap aside and switching the project finishes on retry", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-rename", ["online", "take-online", fake.url, "--cwd", cwd]);
+  assert.equal(await storage.pathExists(before.roadmapPath), false);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+  const result = await takeOnline(fake.url, cwd);
+  assert.equal((await storage.loadState(cwd)).manifest.storage?.kind, "online");
+  assert.deepEqual(JSON.parse(await readFile(result.localSnapshot, "utf8")), before.roadmap);
+  assert.equal([...fake.transfers.values()].filter((transfer) => transfer.state === "committed").length, 1);
 });
 
 test("take-local killed after writing the local copy resumes into the same folder", async () => {

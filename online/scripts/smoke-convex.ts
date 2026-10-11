@@ -208,9 +208,11 @@ for (let index = 0; index < 30; index += 1) {
   revision = response.json.roadmap.revision;
 }
 
-const returned = await api(owner, "POST", `/api/v1/boards/${boardId}/authority`, { state: "returned-local" });
+const localTransfer = `smoke-local-${Date.now()}`;
+const returned = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: localTransfer });
 assert.equal(returned.status, 200, JSON.stringify(returned.json));
 const exported = await api(owner, "GET", `/api/v1/boards/${boardId}/export`);
+assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/finish`, { transferId: localTransfer })).status, 200);
 assert.equal(exported.json.format, "planban-board-bundle");
 assert.ok(exported.json.docs.some((doc: { markdown: string }) => doc.markdown.includes("Edited online")));
 for (const version of exported.json.history) assert.equal(version.roadmap.revision, version.entry.roadmapRevision, `version ${version.entry.version}`);

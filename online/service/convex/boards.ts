@@ -233,9 +233,10 @@ export const exportBoard = internalQuery({
 
 /** Paged export, first page: the roadmap, retention, retired ids and the list of history versions. */
 export const exportMeta = internalQuery({
-  args: { connectionId: v.id("connections"), boardId: v.string() },
-  handler: async (ctx, { connectionId, boardId }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, transferId }) => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
+    requireLocalTransfer(board, transferId);
     const at = live(board);
     const versions: number[] = [];
     for await (const row of ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation))) versions.push(row.version);
@@ -247,31 +248,62 @@ export const exportMeta = internalQuery({
   },
 });
 
+/**
+ * Pages stay well under Convex's 16 MiB limit on a function's result: a page
+ * stops once it holds PAGE_BYTES of content, and always holds at least one
+ * item so a single large one still gets through.
+ */
+const PAGE_BYTES = 6 * 1024 * 1024;
+
 /** Paged export: current documents, a page of cards at a time. */
 export const exportDocs = internalQuery({
-  args: { connectionId: v.id("connections"), boardId: v.string(), offset: v.number(), limit: v.number() },
-  handler: async (ctx, { connectionId, boardId, offset, limit }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), offset: v.number(), limit: v.number(), transferId: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, offset, limit, transferId }) => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
+    requireLocalTransfer(board, transferId);
     const at = live(board);
     const roadmap = await currentRoadmap(ctx, at);
-    const items = roadmap.roadmapItems.slice(offset, offset + Math.min(Math.max(limit, 1), 200));
-    const docs = await allDocs(ctx, at, { ...roadmap, roadmapItems: items });
-    return { docs, nextOffset: offset + items.length < roadmap.roadmapItems.length ? offset + items.length : null };
+    const docs: BoardBundle["docs"] = [];
+    let index = offset;
+    let bytes = 0;
+    const end = Math.min(roadmap.roadmapItems.length, offset + Math.min(Math.max(limit, 1), 200));
+    for (; index < end && (bytes < PAGE_BYTES || index === offset); index += 1) {
+      const item = roadmap.roadmapItems[index]!;
+      for (const kind of ["spec", "plan"] as const) {
+        const row = await docRow(ctx, at, item.id, kind);
+        if (!row) continue;
+        const markdown = unpackText(row.markdown);
+        bytes += markdown.length;
+        docs.push({ cardId: item.id, kind, markdown });
+      }
+    }
+    return { docs, nextOffset: index < roadmap.roadmapItems.length ? index : null };
   },
 });
 
 /** Paged export: history versions after `after`, each with its roadmap and document bodies. */
 export const exportHistory = internalQuery({
-  args: { connectionId: v.id("connections"), boardId: v.string(), after: v.number(), limit: v.number() },
-  handler: async (ctx, { connectionId, boardId, after, limit }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), after: v.number(), limit: v.number(), transferId: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, after, limit, transferId }) => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
+    requireLocalTransfer(board, transferId);
     const at = live(board);
-    const history = await historyPage(ctx, at, after, Math.min(Math.max(limit, 1), 20));
+    const candidates = await historyPage(ctx, at, after, Math.min(Math.max(limit, 1), 20));
+    const history: typeof candidates = [];
     const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
-    for (const { entry } of history) {
-      for (const row of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation).eq("version", entry.version)).collect()) {
-        historyDocs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) });
+    let bytes = 0;
+    for (const version of candidates) {
+      const docs = [];
+      let size = JSON.stringify(version.roadmap).length;
+      for (const row of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation).eq("version", version.entry.version)).collect()) {
+        const markdown = unpackText(row.markdown);
+        size += markdown.length;
+        docs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown });
       }
+      if (history.length > 0 && bytes + size > PAGE_BYTES) break;
+      history.push(version);
+      historyDocs.push(...docs);
+      bytes += size;
     }
     return { history, historyDocs };
   },
@@ -279,34 +311,55 @@ export const exportHistory = internalQuery({
 
 // ---- writes -------------------------------------------------------------
 
-export const setAuthority = internalMutation({
-  args: { connectionId: v.id("connections"), boardId: v.string(), state: v.union(v.literal("online"), v.literal("returned-local")) },
-  handler: async (ctx, { connectionId, boardId, state }) => {
+/** Take Local downloads stay frozen to one generation; anything else is a conflict. */
+function requireLocalTransfer(board: Doc<"boards">, transferId: string | undefined) {
+  if (transferId === undefined) return;
+  if (board.localTransfer?.transferId !== transferId || board.localTransfer.generation !== board.generation) {
+    fail("conflict", "This board changed since this Take Local started. Run Take Local again.");
+  }
+}
+
+/**
+ * Take Local, first step: freeze the board for one transfer. Retrying with
+ * the same transfer id is safe; a different transfer, or a board that has
+ * changed generation since, is refused, so a retry can never freeze a
+ * board someone else has since taken online again.
+ */
+export const fence = internalMutation({
+  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string(), expectedGeneration: v.optional(v.number()) },
+  handler: async (ctx, { connectionId, boardId, transferId, expectedGeneration }) => {
     const access = await readableBoard(ctx, connectionId, boardId);
     if (!access.canAdminister) fail("forbidden", "Moving a board between Online and Local Mode is kept for the board owner's own connection.");
-    // Fencing is idempotent: Take Local retries it after a failure.
-    if (access.board.authority === state) return { authority: state, revision: access.board.revision };
+    const board = access.board;
+    if (board.localTransfer?.transferId === transferId) return { generation: board.localTransfer.generation, revision: board.revision };
+    if (!/^[A-Za-z0-9-]{8,80}$/.test(transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
+    if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
+    if (board.authority !== "online") fail("conflict", "This board is already being taken local, or is local already.");
     const now = new Date().toISOString();
-    const previous = await currentRoadmap(ctx, live(access.board));
+    const previous = await currentRoadmap(ctx, live(board));
     const committed = committedRoadmap(previous, now);
-    await ctx.db.patch((await stateRow(ctx, live(access.board)))._id, { roadmap: packJson(committed) });
+    await ctx.db.patch((await stateRow(ctx, live(board)))._id, { roadmap: packJson(committed) });
     // Bumping the revision tells every watching client the board changed.
-    await ctx.db.patch(access.board._id, { authority: state, revision: committed.revision, updatedAt: now });
-    await recordHistory(ctx, {
-      board: access.board,
-      previous,
-      committed,
-      history: {
-        actor: "user",
-        operation: state === "online" ? "board.take-online" : "board.take-local",
-        summary: state === "online" ? "Made the board editable online again" : "Took the board back to Local Mode",
-        affectedCards: [],
-      },
-      docs: [],
-      attribution: attributionFor(access.connection, "user"),
-      now,
+    await ctx.db.patch(board._id, {
+      authority: "returned-local", revision: committed.revision, updatedAt: now,
+      localTransfer: { transferId, generation: board.generation, userId: access.connection.userId, at: now },
     });
-    return { authority: state, revision: committed.revision };
+    await recordHistory(ctx, {
+      board, previous, committed,
+      history: { actor: "user", operation: "board.take-local", summary: "Took the board back to Local Mode", affectedCards: [] },
+      docs: [], attribution: attributionFor(access.connection, "user"), now,
+    });
+    return { generation: board.generation, revision: committed.revision };
+  },
+});
+
+/** Take Local, last step: the local copy is in place, so the board may be taken online again. */
+export const finishTakeLocal = internalMutation({
+  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string() },
+  handler: async (ctx, { connectionId, boardId, transferId }) => {
+    const { board } = await readableBoard(ctx, connectionId, boardId);
+    if (board.localTransfer?.transferId === transferId) await ctx.db.patch(board._id, { localTransfer: undefined });
+    return { finished: true };
   },
 });
 
@@ -314,6 +367,7 @@ interface Outcome {
   result: unknown;
   version: number;
   revision: number;
+  generation?: number;
 }
 
 export const run = internalMutation({
@@ -335,9 +389,14 @@ export const run = internalMutation({
       const seen = await ctx.db.query("operations").withIndex("by_user_key", (q) => q.eq("userId", access.connection.userId).eq("key", idempotencyKey)).unique();
       if (seen) {
         if (seen.requestHash !== requestHash || seen.boardId !== boardId) fail("validation", "This idempotency key was already used for a different request.");
+        // The original result is returned exactly. The roadmap as it was right
+        // after the edit is rebuilt from history; if that version is gone (the
+        // board was taken online again, or history was trimmed), the current
+        // roadmap is returned and says which revision the edit produced.
         const outcome = unpackJson<Outcome>(seen.outcome);
-        const roadmap = (await roadmapAtVersion(ctx, at, outcome.version)) ?? await currentRoadmap(ctx, at);
-        return { roadmap, result: outcome.result, replayed: true };
+        const original = outcome.generation === at.generation ? await roadmapAtVersion(ctx, at, outcome.version) : null;
+        if (original) return { roadmap: original, result: outcome.result, replayed: true };
+        return { roadmap: await currentRoadmap(ctx, at), result: outcome.result, replayed: true, originalRevision: outcome.revision };
       }
     }
     if (!BOARD_OPERATIONS.includes(op as BoardOperation)) fail("not_found", `Unknown operation: ${op}`);
@@ -408,7 +467,7 @@ export const run = internalMutation({
     if (idempotencyKey) {
       await ctx.db.insert("operations", {
         userId: access.connection.userId, key: idempotencyKey, requestHash: requestHash!, boardId,
-        outcome: packJson({ result: outcome.result, version: outcome.version, revision: outcome.committed.revision } satisfies Outcome),
+        outcome: packJson({ result: outcome.result, version: outcome.version, revision: outcome.committed.revision, generation: at.generation } satisfies Outcome),
         createdAt: now,
       });
     }

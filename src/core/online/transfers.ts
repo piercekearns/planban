@@ -58,7 +58,12 @@ const journalSchema = z.object({
   localRevision: z.number().optional(),
   /** Take Local: the fresh folder the board is being written into. */
   root: z.string().optional(),
-  phase: z.enum(["uploading", "committed", "fenced"]),
+  /** Take Local: the generation the board was frozen at. */
+  generation: z.number().optional(),
+  /** Take Online, once committed: where the local roadmap is moved, and local changes the upload missed. */
+  snapshot: z.string().optional(),
+  unsyncedLocalChanges: z.array(z.object({ version: z.number(), createdAt: z.string(), summary: z.string() })).optional(),
+  phase: z.enum(["uploading", "committed", "fencing", "fenced", "staged", "finished"]),
   startedAt: z.string(),
 });
 type TransferJournal = z.infer<typeof journalSchema>;
@@ -160,72 +165,99 @@ function historyAfter(bundle: BoardBundle, revision: number) {
     .map(({ entry }) => ({ version: entry.version, createdAt: entry.createdAt, summary: entry.summary }));
 }
 
+/** Local changes recorded after `revision`, from the board's history index. */
+async function localChangesAfter(planningRoot: string, revision: number) {
+  const index = await readFile(historyIndexPath(planningRoot), "utf8").then((text) => JSON.parse(text) as { entries?: Array<{ version: number; roadmapRevision: number; createdAt: string; summary: string }> }, () => null);
+  return (index?.entries ?? []).filter((entry) => entry.roadmapRevision > revision).sort((a, b) => a.version - b.version)
+    .map(({ version, createdAt, summary }) => ({ version, createdAt, summary }));
+}
+
 /**
  * Take Online. Survives being killed at any point: a journal in the board's
  * folder records the upload, every step is idempotent under one transfer id,
- * and the board only becomes live online at commit. Running it again resumes.
+ * and the board only becomes live online at commit. Running it again resumes,
+ * including after the upload committed but before this project switched.
  */
 export async function takeOnline(urlInput: string, cwdInput: string) {
   const url = serviceUrl(urlInput);
   await requireCredentials(url);
   const cwd = resolveProjectCwd(cwdInput);
-  const initial = await loadState(cwd);
-  if (initial.manifest.storage?.kind === "online") throw new PlanbanValidationError("This board is already online.");
-  return withBoardWriteLock(initial.planningRoot, async () => {
-    const state = await loadState(cwd);
-    const bundle = await buildLocalBundle(cwd);
-    const boardId = state.manifest.repoId;
-    bundle.roadmap.project.id = boardId;
-    let journal = await readJournal(state.planningRoot);
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled) throw new PlanbanValidationError(`Planban is not initialized in ${cwd}`);
+  if (manifest.storage?.kind === "online") throw new PlanbanValidationError("This board is already online.");
+  const planningRoot = resolvePlanningRoot(manifest);
+  const boardId = manifest.repoId;
+  return withBoardWriteLock(planningRoot, async () => {
+    let journal = await readJournal(planningRoot);
     if (journal && (journal.direction !== "online" || journal.url !== url || journal.boardId !== boardId)) {
-      throw new PlanbanValidationError(`An unfinished transfer of this board to ${journal.url} is recorded at ${transferJournalPath(state.planningRoot)}. Finish it first.`);
+      throw new PlanbanValidationError(`An unfinished transfer of this board to ${journal.url} is recorded at ${transferJournalPath(planningRoot)}. Finish it first.`);
     }
-    if (journal?.phase === "uploading" && journal.localRevision !== bundle.roadmap.revision) {
-      // The board changed locally since the interrupted upload: cancel it and upload the current board.
-      // If the service says that upload already finished, the board is online:
-      // keep the journal so the local changes since then are reported below.
-      const finished = await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {})
-        .then(() => false, (error) => error instanceof PlanbanConflictError);
-      if (!finished) journal = null;
-    }
-    if (!journal) {
-      journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString() };
-      await writeJournal(state.planningRoot, journal);
-    }
-    crashPoint("take-online:after-journal");
-    let committedRoadmap: PlanbanResolvedState["roadmap"] | null = null;
-    const begun = await onlineRequest<{ state: string; receivedParts: number[] }>(url, "/api/v1/transfers", {
-      transferId: journal.transferId, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [],
-      ...(bundle.retention ? { retention: bundle.retention } : {}),
-    });
-    if (begun.state !== "committed") {
-      const parts = uploadParts(bundle);
-      const received = new Set(begun.receivedParts);
-      for (const [seq, part] of parts.entries()) {
-        if (received.has(seq)) continue;
-        await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/parts`, { seq, ...part });
-        crashPoint("take-online:after-part");
+    if (journal?.phase !== "committed") {
+      const bundle = await buildLocalBundle(cwd);
+      bundle.roadmap.project.id = boardId;
+      if (journal?.phase === "uploading" && journal.localRevision !== bundle.roadmap.revision) {
+        // The board changed locally since the interrupted upload: cancel it and
+        // upload the current board. If the service says that upload already
+        // finished, the board is online: finish switching and report the
+        // local changes since then.
+        const finished = await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {})
+          .then(() => false, (error) => error instanceof PlanbanConflictError);
+        if (!finished) journal = null;
       }
-      committedRoadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/commit`, { partCount: parts.length })).roadmap;
+      if (!journal) {
+        journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString() };
+        await writeJournal(planningRoot, journal);
+      }
+      crashPoint("take-online:after-journal");
+      const begun = await onlineRequest<{ state: string; receivedParts: number[] }>(url, "/api/v1/transfers", {
+        transferId: journal.transferId, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [],
+        ...(bundle.retention ? { retention: bundle.retention } : {}),
+      });
+      if (begun.state !== "committed") {
+        const parts = uploadParts(bundle);
+        const received = new Set(begun.receivedParts);
+        for (const [seq, part] of parts.entries()) {
+          if (received.has(seq)) continue;
+          await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/parts`, { seq, ...part });
+          crashPoint("take-online:after-part");
+        }
+        await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/commit`, { partCount: parts.length });
+      }
+      crashPoint("take-online:after-commit");
+      journal = {
+        ...journal, phase: "committed",
+        snapshot: join(planningRoot, `roadmap.local-before-online-${Date.now()}.json`),
+        // Edits made locally after an upload that had already committed are not online.
+        unsyncedLocalChanges: journal.localRevision === undefined ? [] : historyAfter(bundle, journal.localRevision),
+      };
+      await writeJournal(planningRoot, journal);
     }
-    crashPoint("take-online:after-commit");
-    // Edits made locally after an upload that had already committed are not online.
-    const unsyncedLocalChanges = journal.localRevision === undefined ? [] : historyAfter(bundle, journal.localRevision);
-    journal = { ...journal, phase: "committed" };
-    await writeJournal(state.planningRoot, journal);
-    committedRoadmap ??= (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(url, boardPath(boardId))).roadmap;
+    return finishTakeOnline(cwd, manifest, planningRoot, journal);
+  });
+}
+
+/** Switches the project to the online board once the upload has committed. Safe to repeat. */
+async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, planningRoot: string, journal: TransferJournal) {
+  const { url, boardId } = journal;
+  const snapshot = journal.snapshot!;
+  let unsyncedLocalChanges = journal.unsyncedLocalChanges ?? [];
+  const live = join(planningRoot, "roadmap.json");
+  if (await pathExists(live)) {
+    // Still here after a crash: count any local edits made since the upload.
+    if (journal.localRevision !== undefined) unsyncedLocalChanges = await localChangesAfter(planningRoot, journal.localRevision);
     // Retain every local byte, but remove the live filename so other checkouts
     // with an old local manifest cannot continue editing the uploaded board.
-    const snapshot = join(state.planningRoot, `roadmap.local-before-online-${Date.now()}.json`);
-    if (await pathExists(state.roadmapPath)) await rename(state.roadmapPath, snapshot);
-    await atomicWriteFile(join(state.planningRoot, "ONLINE-BOARD.txt"), `Authority moved to ${url}, board ${boardId}.\nThe roadmap snapshot, documents and history here are recovery evidence. Do not edit them.\n`);
-    const manifest: PlanbanProjectManifest = { ...state.manifest, storage: { kind: "online", url, boardId } };
-    await publishManifest(cwd, manifest, onlineState(cwd, manifest, committedRoadmap));
-    crashPoint("take-online:after-publish");
-    await rm(transferJournalPath(state.planningRoot), { force: true });
-    await refreshBackup(url, boardId, { force: true });
-    return { boardId, url, localSnapshot: snapshot, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
-  });
+    await rename(live, snapshot);
+  }
+  crashPoint("take-online:after-rename");
+  await atomicWriteFile(join(planningRoot, "ONLINE-BOARD.txt"), `Authority moved to ${url}, board ${boardId}.\nThe roadmap snapshot, documents and history here are recovery evidence. Do not edit them.\n`);
+  const roadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(url, boardPath(boardId))).roadmap;
+  const onlineManifest: PlanbanProjectManifest = { ...manifest, storage: { kind: "online", url, boardId } };
+  await publishManifest(cwd, onlineManifest, onlineState(cwd, onlineManifest, roadmap));
+  crashPoint("take-online:after-publish");
+  await rm(transferJournalPath(planningRoot), { force: true });
+  await refreshBackup(url, boardId, { force: true });
+  return { boardId, url, localSnapshot: snapshot, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
 }
 
 async function requireOnline(cwdInput: string) {
@@ -236,20 +268,22 @@ async function requireOnline(cwdInput: string) {
 }
 
 /** Downloads a board page by page; large boards do not fit in one response. */
-export async function exportOnline(cwd: string, out?: string): Promise<BoardBundle> {
+export async function exportOnline(cwd: string, out?: string, transferId?: string): Promise<BoardBundle> {
   const { storage } = await requireOnline(cwd);
   const base = boardPath(storage.boardId, "/export");
-  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown> }>(storage.url, `${base}/meta`);
+  // During Take Local, every page must come from the generation that was frozen.
+  const bound = transferId ? `&transferId=${encodeURIComponent(transferId)}` : "";
+  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown> }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
   const docs: BoardBundle["docs"] = [];
   for (let offset: number | null = 0; offset !== null;) {
-    const page: { docs: BoardBundle["docs"]; nextOffset: number | null } = await onlineRequest(storage.url, `${base}/docs?offset=${offset}&limit=${DOCS_PAGE}`);
+    const page: { docs: BoardBundle["docs"]; nextOffset: number | null } = await onlineRequest(storage.url, `${base}/docs?offset=${offset}&limit=${DOCS_PAGE}${bound}`);
     docs.push(...page.docs);
     offset = page.nextOffset;
   }
   const history: BoardBundle["history"] = [];
   const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
   for (let after = 0; ;) {
-    const page: { history: BoardBundle["history"]; historyDocs: NonNullable<BoardBundle["historyDocs"]> } = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}`);
+    const page: { history: BoardBundle["history"]; historyDocs: NonNullable<BoardBundle["historyDocs"]> } = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}${bound}`);
     if (page.history.length === 0) break;
     history.push(...page.history);
     historyDocs.push(...page.historyDocs);
@@ -307,10 +341,12 @@ async function stageBundle(root: string, bundle: BoardBundle) {
 }
 
 /**
- * Take Local. The online board is frozen first, so no edit can land after the
- * download; then the board is written into a fresh local folder and only then
- * does the project switch to it. Killed at any point, running it again
- * resumes from the journal; the online board stays intact and read-only.
+ * Take Local. The online board is frozen first, for this transfer only, so
+ * no edit can land after the download and every page comes from the frozen
+ * board. The board is written into a fresh local folder, the service is told
+ * the transfer finished, and only then does the project switch to the local
+ * copy. Killed at any point, running it again resumes from the journal; the
+ * online board stays intact and read-only meanwhile.
  */
 export async function takeLocal(cwdInput: string) {
   const { cwd, manifest, storage } = await requireOnline(cwdInput);
@@ -327,19 +363,34 @@ export async function takeLocal(cwdInput: string) {
     }
     if (!journal) {
       journal = { version: 1, direction: "local", transferId: randomUUID(), url: storage.url, boardId: storage.boardId,
-        root: join(defaultPlanbanRoot(), "repos", `online-return-${randomUUID()}`), phase: "fenced", startedAt: new Date().toISOString() };
+        root: join(defaultPlanbanRoot(), "repos", `online-return-${randomUUID()}`), phase: "fencing", startedAt: new Date().toISOString() };
       await writeJournal(lockRoot, journal);
     }
     const root = journal.root!;
+    const step = async (next: TransferJournal) => {
+      journal = next;
+      await writeJournal(lockRoot, next);
+    };
     crashPoint("take-local:before-fence");
-    // Fence first: after this succeeds, every export describes a frozen board.
-    await onlineRequest(storage.url, boardPath(storage.boardId, "/authority"), { state: "returned-local" });
-    crashPoint("take-local:after-fence");
-    const bundle = await exportOnline(cwd);
-    // The folder is this transfer's own; a partial earlier attempt is replaced.
-    await rm(root, { recursive: true, force: true });
-    const roadmap = await stageBundle(root, bundle);
+    if (journal.phase === "fencing" || journal.phase === "fenced") {
+      const fenced = await onlineRequest<{ generation: number }>(storage.url, boardPath(storage.boardId, "/take-local/fence"), {
+        transferId: journal.transferId, ...(journal.generation === undefined ? {} : { expectedGeneration: journal.generation }),
+      });
+      if (journal.phase === "fencing") await step({ ...journal, phase: "fenced", generation: fenced.generation });
+      crashPoint("take-local:after-fence");
+      const bundle = await exportOnline(cwd, undefined, journal.transferId);
+      // The folder is this transfer's own; a partial earlier attempt is replaced.
+      await rm(root, { recursive: true, force: true });
+      await stageBundle(root, bundle);
+      await step({ ...journal, phase: "staged" });
+    }
     crashPoint("take-local:after-stage");
+    if (journal.phase === "staged") {
+      await onlineRequest(storage.url, boardPath(storage.boardId, "/take-local/finish"), { transferId: journal.transferId });
+      await step({ ...journal, phase: "finished" });
+    }
+    crashPoint("take-local:after-finish");
+    const roadmap = normalizeRoadmap(JSON.parse(await readFile(join(root, "roadmap.json"), "utf8")));
     const localManifest: PlanbanProjectManifest = { ...manifest, storage: { kind: "local", root } };
     const state: PlanbanResolvedState = { cwd, manifest: localManifest, manifestPath: manifestPath(cwd),
       agentContextPath: agentContextPath(cwd), planningRoot: root, roadmapPath: join(root, "roadmap.json"), roadmap };

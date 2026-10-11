@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 const LOCK_DIR = ".planban-write.lock";
@@ -80,25 +80,64 @@ export async function appendLineDurably(path: string, line: string) {
   }
 }
 
+interface LockOwner {
+  pid?: number;
+  token?: string;
+}
+
+async function readLockOwner(lockPath: string): Promise<LockOwner | null> {
+  try {
+    return JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")) as LockOwner;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * A lock left by a process that was killed (a crash, a power cut, or the
- * transfer crash tests) is released at once instead of after STALE_LOCK_MS.
+ * A lock is stale when it is older than STALE_LOCK_MS, or when the process
+ * that holds it has gone (a crash, a power cut, or the transfer crash tests),
+ * so a killed transfer does not block the next attempt for two minutes.
  * Planning roots are on this machine's disk, so the owner's pid is local.
  */
-async function lockOwnerIsGone(lockPath: string, createdMs: number): Promise<boolean> {
-  let pid: unknown;
-  try {
-    pid = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")).pid;
-  } catch {
-    // The owner file is written just after the lock; give a live owner time to write it.
-    return Date.now() - createdMs > 10_000;
-  }
+function lockIsStale(owner: LockOwner | null, createdMs: number): boolean {
+  if (Date.now() - createdMs > STALE_LOCK_MS) return true;
+  // The owner file is written just after the lock; give a live owner time to write it.
+  if (!owner) return Date.now() - createdMs > 10_000;
+  const pid = owner.pid;
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
   try {
     process.kill(pid, 0);
     return false;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+/**
+ * Removes a stale lock, but only the exact lock that was judged stale.
+ * Reclaimers take turns through a second lock and re-read the owner under it,
+ * so two waiters can never both remove locks and enter together.
+ */
+async function reclaimStaleLock(lockPath: string, observed: LockOwner | null): Promise<boolean> {
+  const reclaimPath = `${lockPath}.reclaim`;
+  try {
+    await mkdir(reclaimPath);
+  } catch {
+    const info = await stat(reclaimPath).catch(() => null);
+    // A reclaimer takes milliseconds; one that died mid-way is cleared after 30 s.
+    if (info && Date.now() - info.mtimeMs > 30_000) await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
+    return false;
+  }
+  try {
+    const info = await stat(lockPath).catch(() => null);
+    if (!info) return true;
+    const owner = await readLockOwner(lockPath);
+    if (owner?.token === observed?.token && owner?.pid === observed?.pid && lockIsStale(owner, info.mtimeMs)) {
+      await rm(lockPath, { recursive: true, force: true });
+    }
+    return true;
+  } finally {
+    await rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -109,6 +148,7 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
 
   await mkdir(planningRoot, { recursive: true });
   const lockPath = join(planningRoot, LOCK_DIR);
+  const token = randomUUID();
   let acquired = false;
 
   while (!acquired) {
@@ -116,6 +156,7 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
       await mkdir(lockPath);
       await writeFile(join(lockPath, "owner.json"), JSON.stringify({
         pid: process.pid,
+        token,
         createdAt: new Date().toISOString(),
       }) + "\n", "utf8");
       acquired = true;
@@ -123,9 +164,12 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
       const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
       if (code !== "EEXIST") throw error;
       const info = await stat(lockPath).catch(() => null);
-      if (info && (Date.now() - info.mtimeMs > STALE_LOCK_MS || await lockOwnerIsGone(lockPath, info.mtimeMs))) {
-        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
-        continue;
+      if (info) {
+        const owner = await readLockOwner(lockPath);
+        if (lockIsStale(owner, info.mtimeMs)) {
+          if (!(await reclaimStaleLock(lockPath, owner))) await sleep(LOCK_RETRY_MS);
+          continue;
+        }
       }
       await sleep(LOCK_RETRY_MS);
     }
@@ -133,10 +177,18 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
 
   const nextLocks = new Set(activeLocks ?? []);
   nextLocks.add(planningRoot);
+  // A long hold (a large Take Online) keeps its lock fresh so it never looks stale.
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    void utimes(lockPath, now, now).catch(() => undefined);
+  }, 30_000);
+  heartbeat.unref();
   try {
     return await heldLocks.run(nextLocks, callback);
   } finally {
-    await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+    clearInterval(heartbeat);
+    // Only ever remove this process's own lock.
+    if ((await readLockOwner(lockPath))?.token === token) await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 

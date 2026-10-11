@@ -26,10 +26,13 @@ export default defineSchema({
      * or abandoned upload never changes the live board.
      */
     generation: v.number(),
-    /** Highest generation ever allocated, so a cancelled upload's rows never collide with a new one. */
-    lastGeneration: v.number(),
     /** Latest history version number; versions keep their numbers across transfers. */
     historyVersion: v.number(),
+    /**
+     * A Take Local in progress: the board is frozen for this transfer, and
+     * its downloads read exactly this generation. Cleared when it finishes.
+     */
+    localTransfer: v.optional(v.object({ transferId: v.string(), generation: v.number(), userId: v.string(), at: v.string() })),
     /** When the board last became editable online (Take Online commit). */
     onlineSince: v.optional(v.string()),
     /** Local history retention settings carried through Take Online so Take Local restores them. */
@@ -157,4 +160,10 @@ export default defineSchema({
     outcome: v.bytes(),
     createdAt: v.string(),
   }).index("by_user_key", ["userId", "key"]).index("by_createdAt", ["createdAt"]),
+
+  /** Counters shared across boards. Generations are numbered globally so rows of a deleted and re-created board never collide. */
+  counters: defineTable({
+    name: v.string(),
+    value: v.number(),
+  }).index("by_name", ["name"]),
 });

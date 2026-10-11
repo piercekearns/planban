@@ -102,12 +102,14 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     return json(await ctx.runQuery(internal.boards.getBoard, { connectionId, boardId, ...(since === null ? {} : { since: Number(since) }) }));
   }
   if (rest[0] === "export" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.boards.exportBoard, { connectionId, boardId }));
-  if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId }));
+  const transfer = url.searchParams.get("transferId");
+  const bound = transfer === null ? {} : { transferId: transfer };
+  if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId, ...bound }));
   if (rest[0] === "export" && rest[1] === "docs" && method === "GET") {
-    return json(await ctx.runQuery(internal.boards.exportDocs, { connectionId, boardId, offset: Number(url.searchParams.get("offset") ?? 0), limit: Number(url.searchParams.get("limit") ?? 100) }));
+    return json(await ctx.runQuery(internal.boards.exportDocs, { connectionId, boardId, offset: Number(url.searchParams.get("offset") ?? 0), limit: Number(url.searchParams.get("limit") ?? 100), ...bound }));
   }
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
-    return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8) }));
+    return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound }));
   }
   if (rest[0] === "history" && method === "GET") {
     const after = url.searchParams.get("after");
@@ -125,12 +127,16 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     const role = input.role === "viewer" ? "viewer" : "editor";
     return json({ members: await ctx.runMutation(internal.members.add, { connectionId, boardId, userId: String(input.userId ?? ""), role }) });
   }
-  if (rest[0] === "authority" && method === "POST") {
+  if (rest[0] === "take-local" && rest[1] === "fence" && method === "POST") {
     const input = await body(request);
-    if (input.state !== "online" && input.state !== "returned-local") {
-      return json({ error: { code: "validation", message: "state must be online or returned-local." } }, 400);
-    }
-    return json(await ctx.runMutation(internal.boards.setAuthority, { connectionId, boardId, state: input.state }));
+    return json(await ctx.runMutation(internal.boards.fence, {
+      connectionId, boardId, transferId: String(input.transferId ?? ""),
+      ...(typeof input.expectedGeneration === "number" ? { expectedGeneration: input.expectedGeneration } : {}),
+    }));
+  }
+  if (rest[0] === "take-local" && rest[1] === "finish" && method === "POST") {
+    const input = await body(request);
+    return json(await ctx.runMutation(internal.boards.finishTakeLocal, { connectionId, boardId, transferId: String(input.transferId ?? "") }));
   }
   if (rest[0] === "ops" && rest.length === 2 && method === "POST") {
     // A retried edit carries the same Idempotency-Key and byte-identical body.

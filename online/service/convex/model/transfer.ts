@@ -55,6 +55,19 @@ async function ownedOpenTransfer(ctx: MutationCtx, connection: Doc<"connections"
   return transfer!;
 }
 
+/**
+ * Generation numbers are unique across all boards and never reused, so a
+ * clean-up job for an old upload can never touch a newer one, even if the
+ * board was deleted and its id taken again.
+ */
+async function nextGeneration(ctx: MutationCtx) {
+  const counter = await ctx.db.query("counters").withIndex("by_name", (q) => q.eq("name", "generation")).unique();
+  const value = (counter?.value ?? 0) + 1;
+  if (counter) await ctx.db.patch(counter._id, { value });
+  else await ctx.db.insert("counters", { name: "generation", value });
+  return value;
+}
+
 export async function abortTransfer(ctx: MutationCtx, transfer: Doc<"transfers">) {
   if (transfer.state !== "open") return;
   await ctx.db.patch(transfer._id, { state: "aborted", updatedAt: new Date().toISOString() });
@@ -89,6 +102,10 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
     const member = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId).eq("userId", connection.userId)).unique();
     if (member?.role !== "owner") fail("conflict", `An Online Board called ${boardId} already exists.`);
     if (board.authority === "online") fail("conflict", "This board is already online. Take it local first, or edit it online.");
+    // A Take Local still downloading reads the current generation; let it finish first.
+    if (board.localTransfer && Date.now() - Date.parse(board.localTransfer.at) < 24 * 60 * 60 * 1000) {
+      fail("conflict", "This board is still being taken local on a machine. Finish that Take Local first.");
+    }
     for (const open of await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", boardId).eq("state", "open")).collect()) {
       if (Date.now() - Date.parse(open.updatedAt) < STALE_TRANSFER_MS) fail("conflict", `${boardId} is being taken online right now. Try again in a few minutes.`);
       await abortTransfer(ctx, open);
@@ -97,13 +114,12 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
   } else {
     const id = await ctx.db.insert("boards", {
       boardId, title: roadmap.project.title, ownerId: connection.userId, authority: "importing",
-      revision: roadmap.revision, generation: 0, lastGeneration: 0, historyVersion: 0, createdAt: now, updatedAt: now,
+      revision: roadmap.revision, generation: 0, historyVersion: 0, createdAt: now, updatedAt: now,
     });
     await ctx.db.insert("members", { boardId, userId: connection.userId, role: "owner" });
     board = (await ctx.db.get(id))!;
   }
-  const generation = board.lastGeneration + 1;
-  await ctx.db.patch(board._id, { lastGeneration: generation });
+  const generation = await nextGeneration(ctx);
   const at = { boardId, generation };
   await ctx.db.insert("boardState", { ...at, roadmap: packJson(roadmap) });
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
@@ -194,6 +210,7 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   await ctx.db.patch(board!._id, {
     generation: transfer.generation,
     authority: "online",
+    localTransfer: undefined,
     onlineSince: now,
     revision: committed.revision,
     historyVersion: baseVersion,
