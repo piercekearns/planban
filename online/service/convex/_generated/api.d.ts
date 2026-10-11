@@ -27,6 +27,7 @@ import type * as model_history from "../model/history.js";
 import type * as model_liveToken from "../model/liveToken.js";
 import type * as model_mcp from "../model/mcp.js";
 import type * as model_rows from "../model/rows.js";
+import type * as model_sha256 from "../model/sha256.js";
 import type * as model_transfer from "../model/transfer.js";
 import type * as transfers from "../transfers.js";
 
@@ -56,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   "model/liveToken": typeof model_liveToken;
   "model/mcp": typeof model_mcp;
   "model/rows": typeof model_rows;
+  "model/sha256": typeof model_sha256;
   "model/transfer": typeof model_transfer;
   transfers: typeof transfers;
 }>;

@@ -52,13 +52,15 @@ const post = async (path: string, body: unknown, token: string = credentials.acc
   return { status: response.status, json: await response.json() as any };
 };
 const other = randomBytes(1024);
+const put = async (boardIdFor: string, uploadId: string, index: number, bytes: Uint8Array, token: string = credentials.accessToken) =>
+  (await fetch(`${origin}/api/v1/boards/${boardIdFor}/attachments/uploads/${uploadId}/parts/${index}`, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" }, body: new Blob([bytes as Uint8Array<ArrayBuffer>]) })).status;
 const begun = await post(`/api/v1/boards/${boardId}/attachments/begin`, { cardId: "vest", path: "lie.bin", sha256: sha(other), size: other.length, contentType: "application/octet-stream" });
 assert.equal(begun.json.done, false);
-const uploaded = await fetch(begun.json.upload.url, { method: "POST", headers: begun.json.upload.headers, body: randomBytes(1024) });
-const { storageId } = await uploaded.json() as { storageId: string };
-const lie = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: begun.json.uploadId, uploadResult: storageId });
+assert.equal(await put(boardId, begun.json.uploadId, 0, randomBytes(1024)), 200);
+const lie = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: begun.json.uploadId });
 assert.equal(lie.status, 400);
-assert.equal((await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: begun.json.uploadId, uploadResult: storageId })).status, 400, "a refused upload stays refused");
+assert.equal((await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: begun.json.uploadId })).status, 400, "a refused upload stays refused");
+assert.equal(await put(boardId, begun.json.uploadId, 0, other), 409, "a refused upload takes no more parts");
 for (const path of ["../escape", "SPEC.md", "Plan.MD"]) {
   assert.equal((await post(`/api/v1/boards/${boardId}/attachments/begin`, { cardId: "vest", path, sha256: sha(other), size: other.length, contentType: "text/plain" })).status, 400, path);
 }
@@ -67,25 +69,32 @@ ok("mismatched uploads stay refused, and paths outside the card's folder or nami
 // Finishing again returns the same attachment and never removes its contents.
 const fresh = randomBytes(2048);
 const started = await post(`/api/v1/boards/${boardId}/attachments/begin`, { cardId: "vest", path: "fresh.bin", sha256: sha(fresh), size: fresh.length, contentType: "application/octet-stream" });
-const freshId = (await (await fetch(started.json.upload.url, { method: "POST", headers: started.json.upload.headers, body: fresh })).json() as { storageId: string }).storageId;
-const first = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: started.json.uploadId, uploadResult: freshId });
-const finishedAgain = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: started.json.uploadId, uploadResult: freshId });
+assert.equal(await put(boardId, started.json.uploadId, 0, fresh), 200);
+const first = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: started.json.uploadId });
+const finishedAgain = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: started.json.uploadId });
 assert.equal(finishedAgain.json.attachment.id, first.json.attachment.id);
 assert.equal(sha(await downloadAttachment(origin, boardId, first.json.attachment.id)), sha(fresh));
 ok("finishing an upload again returns the same attachment and keeps its contents");
 
-// Someone else cannot claim stored bytes, even knowing their storage id.
+// Nobody can add to, finish or hijack someone else's upload.
 const stranger = (await (await fetch(`${origin}/dev/token`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: `stranger-${Date.now().toString(36)}` }) })).json()).token as string;
 const strangerBoard = `${boardId}-stranger`;
 const now = new Date().toISOString();
 const strangerRoadmap = planCreateCard(createEmptyRoadmap({ repoId: strangerBoard, title: "Stranger", now }), { title: "Card" }, { now }).roadmap;
 assert.equal((await post("/api/v1/boards/import", { format: "planban-board-bundle", version: 1, roadmap: strangerRoadmap, docs: [], history: [] }, stranger)).status, 201);
-const theirs = await post(`/api/v1/boards/${strangerBoard}/attachments/begin`, { cardId: "card", path: "stolen.bin", sha256: sha(fresh), size: fresh.length, contentType: "application/octet-stream" }, stranger);
-assert.equal(theirs.json.done, false, "the stranger's board does not hold these contents");
-assert.equal((await post(`/api/v1/boards/${strangerBoard}/attachments/finish`, { uploadId: theirs.json.uploadId, uploadResult: freshId }, stranger)).status, 400);
-assert.equal((await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: theirs.json.uploadId, uploadResult: freshId }, stranger)).status, 404);
-assert.equal(sha(await downloadAttachment(origin, boardId, first.json.attachment.id)), sha(fresh));
-ok("another person cannot claim stored bytes by their storage id, nor finish someone else's upload");
+const victimBytes = randomBytes(3000);
+const victim = await post(`/api/v1/boards/${boardId}/attachments/begin`, { cardId: "vest", path: "victim.bin", sha256: sha(victimBytes), size: victimBytes.length, contentType: "application/octet-stream" });
+assert.equal(await put(boardId, victim.json.uploadId, 0, victimBytes), 200);
+const theirs = await post(`/api/v1/boards/${strangerBoard}/attachments/begin`, { cardId: "card", path: "stolen.bin", sha256: sha(victimBytes), size: victimBytes.length, contentType: "application/octet-stream" }, stranger);
+assert.equal(theirs.json.done, false);
+assert.equal(await put(boardId, victim.json.uploadId, 0, randomBytes(3000), stranger), 404, "a stranger cannot write into someone's upload");
+assert.equal((await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: victim.json.uploadId }, stranger)).status, 404);
+assert.equal((await post(`/api/v1/boards/${strangerBoard}/attachments/finish`, { uploadId: victim.json.uploadId }, stranger)).status, 404);
+assert.equal((await post(`/api/v1/boards/${strangerBoard}/attachments/finish`, { uploadId: theirs.json.uploadId }, stranger)).status, 409, "an upload with no parts cannot finish");
+const victimDone = await post(`/api/v1/boards/${boardId}/attachments/finish`, { uploadId: victim.json.uploadId });
+assert.equal(victimDone.status, 200, JSON.stringify(victimDone.json));
+assert.equal(sha(await downloadAttachment(origin, boardId, victimDone.json.attachment.id)), sha(victimBytes));
+ok("nobody can write into, finish or claim someone else's upload");
 
 // Two paths that differ only in letter case are one file.
 const upper = await uploadAttachment(origin, boardId, "vest", "Notes.txt", Buffer.from("one"));
@@ -113,6 +122,29 @@ assert.equal(again.attachments.alreadyStored, again.attachments.files);
 await new Promise((resolve) => setTimeout(resolve, 2000));
 files = await listAttachments(origin, boardId, "vest");
 assert.equal(sha(await downloadAttachment(origin, boardId, files.find((file) => file.path === "proof/vest.glb")!.id)), sha(model));
-assert.equal(files.length, 3, "every file is still attached after the old generation is cleaned up");
+assert.equal(files.length, 4, "every file is still attached after the old generation is cleaned up");
 ok("Take Local brings the files back, and taking the board online again re-links them without uploading, after old copies are cleaned up");
+// Many files, taken local straight after the board went online again.
+const many = await mkdtemp(join(tmpdir(), "planban-many-"));
+const manyId = `many-${Date.now().toString(36)}`;
+await storage.initializeProject({ cwd: many, title: "Many files", repoId: manyId, updateAgents: false });
+await storage.createCard({ cwd: many, title: "Album", baseRevision: (await storage.loadState(many)).roadmap.revision });
+const manyRoot = (await storage.loadState(many)).planningRoot;
+await mkdir(join(manyRoot, "items", "album", "photos"), { recursive: true });
+for (let index = 0; index < 250; index += 1) await writeFile(join(manyRoot, "items", "album", "photos", `${index}.txt`), `photo ${index}`);
+await takeOnline(origin, many, { attachments: true });
+await takeLocal(many);
+await takeOnline(origin, many, { attachments: true });
+let back: Awaited<ReturnType<typeof takeLocal>> | null = null;
+for (let attempt = 0; attempt < 40 && !back; attempt += 1) {
+  back = await takeLocal(many).catch((error) => {
+    if (!/still moving its files/.test(String(error?.message))) throw error;
+    return null;
+  });
+  if (!back) await new Promise((resolve) => setTimeout(resolve, 500));
+}
+assert.ok(back, "Take Local finished");
+const { readdir } = await import("node:fs/promises");
+assert.equal((await readdir(join(back!.planningRoot, "items", "album", "photos"))).length, 250);
+ok("taking a board with 250 files local straight after it went online again keeps every file");
 console.log(`All ${step} checks passed.`);

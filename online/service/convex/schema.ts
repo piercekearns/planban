@@ -35,6 +35,8 @@ export default defineSchema({
     localTransfer: v.optional(v.object({ transferId: v.string(), generation: v.number(), userId: v.string(), at: v.string() })),
     /** The board's durable identity, carried by every local copy of it. */
     uid: v.optional(v.string()),
+    /** Files of this earlier generation are still moving to the live one; the board cannot be frozen meanwhile. */
+    carryFrom: v.optional(v.number()),
     /** When the board last became editable online (Take Online commit). */
     onlineSince: v.optional(v.string()),
     /** Local history retention settings carried through Take Online so Take Local restores them. */
@@ -231,4 +233,16 @@ export default defineSchema({
     createdAt: v.string(),
     attachmentId: v.optional(v.string()),
   }).index("by_state_created", ["state", "createdAt"]),
+
+  /**
+   * The bytes of an upload, in parts stored by Planban's own upload endpoint
+   * for that upload only. A finished upload's parts become its blob (the
+   * blob's storageKey is the upload's id).
+   */
+  uploadParts: defineTable({
+    uploadId: v.string(),
+    index: v.number(),
+    storageId: v.id("_storage"),
+    size: v.number(),
+  }).index("by_upload_index", ["uploadId", "index"]),
 });

@@ -243,7 +243,11 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   });
   await ctx.db.patch(transfer._id, { state: "committed", updatedAt: now });
   if (previousGeneration > 0) {
-    // Cleaning up the previous generation also carries its files over (see attachments.ts).
+    // Cleaning up the previous generation also carries its files over (see
+    // attachments.ts); until that finishes the board cannot be frozen.
+    if (await ctx.db.query("attachments").withIndex("by_board_generation", (q) => q.eq("boardId", board!.boardId).eq("generation", previousGeneration)).first()) {
+      await ctx.db.patch(board!._id, { carryFrom: previousGeneration });
+    }
     await ctx.scheduler.runAfter(0, internal.transfers.cleanupGeneration, { boardId: board!.boardId, generation: previousGeneration });
   }
   return { boardId: board!.boardId, roadmap: committed };

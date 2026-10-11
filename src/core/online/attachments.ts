@@ -7,9 +7,10 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { PlanbanValidationError } from "../boardOperations";
 import { isPathInsideRoot } from "../paths";
-import { boardPath, onlineRequest, requestBytes } from "./client";
+import { boardPath, onlineRequest, putBytes, requestBytes } from "./client";
 
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const SAFE_CARD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** Files left behind by Take Online's attachment upload (design note recommendation). */
 const SKIPPED_NAMES = new Set([".DS_Store", "Thumbs.db"]);
@@ -46,14 +47,15 @@ export async function listAttachments(url: string, boardId: string, cardId?: str
 export async function uploadAttachment(url: string, boardId: string, cardId: string, path: string, bytes: Uint8Array, contentType = contentTypeFor(path)) {
   if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new PlanbanValidationError(`Attachments are at most ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB: ${path}`);
   const file = { cardId, path, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.byteLength, contentType };
-  const begun = await onlineRequest<{ done: boolean; attachment?: AttachmentRecord; uploadId?: string; upload?: { url: string; method: "POST" | "PUT"; headers: Record<string, string> } }>(
+  const begun = await onlineRequest<{ done: boolean; attachment?: AttachmentRecord; uploadId?: string; partBytes?: number; partCount?: number }>(
     url, boardPath(boardId, "/attachments/begin"), file);
   if (begun.done) return { attachment: begun.attachment!, uploaded: false };
-  const response = await fetch(begun.upload!.url, { method: begun.upload!.method, headers: begun.upload!.headers, body: new Blob([bytes as Uint8Array<ArrayBuffer>]), redirect: "error", signal: AbortSignal.timeout(10 * 60_000) });
-  if (!response.ok) throw new Error(`The attachment upload failed (${response.status}): ${path}`);
-  // Convex storage answers with the stored file's id; other stores answer with nothing.
-  const uploadResult = (await response.json().catch(() => ({})) as { storageId?: string }).storageId ?? "";
-  const finished = await onlineRequest<{ attachment: AttachmentRecord }>(url, boardPath(boardId, "/attachments/finish"), { uploadId: begun.uploadId, uploadResult });
+  // The bytes go in parts to Planban's own endpoint for this upload only.
+  for (let index = 0; index < begun.partCount!; index += 1) {
+    const part = bytes.subarray(index * begun.partBytes!, (index + 1) * begun.partBytes!);
+    await putBytes(url, boardPath(boardId, `/attachments/uploads/${encodeURIComponent(begun.uploadId!)}/parts/${index}`), part);
+  }
+  const finished = await onlineRequest<{ attachment: AttachmentRecord }>(url, boardPath(boardId, "/attachments/finish"), { uploadId: begun.uploadId });
   return { attachment: finished.attachment, uploaded: true };
 }
 
@@ -70,6 +72,8 @@ export async function localAttachments(planningRoot: string, cardIds: Iterable<s
   const files: Array<{ cardId: string; path: string; absolute: string; size: number }> = [];
   const skipped: Array<{ cardId: string; path: string; reason: string }> = [];
   for (const cardId of cardIds) {
+    // Only plain card ids name folders; anything else could point outside the board.
+    if (!SAFE_CARD_ID.test(cardId) || cardId.includes("..")) continue;
     const folder = join(planningRoot, "items", cardId);
     const walk = async (dir: string): Promise<void> => {
       for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -118,8 +122,11 @@ export async function uploadLocalAttachments(url: string, boardId: string, plann
 export async function downloadAttachments(url: string, boardId: string, planningRoot: string) {
   const attachments = await listAttachments(url, boardId);
   const written = new Set<string>();
+  const items = join(planningRoot, "items");
   for (const attachment of attachments) {
-    const folder = join(planningRoot, "items", attachment.cardId);
+    if (!SAFE_CARD_ID.test(attachment.cardId) || attachment.cardId.includes("..")) throw new PlanbanValidationError(`Unsafe card id for an attachment: ${attachment.cardId}`);
+    const folder = join(items, attachment.cardId);
+    if (!isPathInsideRoot(items, folder)) throw new PlanbanValidationError(`Unsafe card id for an attachment: ${attachment.cardId}`);
     const destination = join(folder, ...attachment.path.split("/"));
     const key = relative(planningRoot, destination).normalize("NFC").toLowerCase();
     // Never let a file replace a card's documents or another file, in any letter case.

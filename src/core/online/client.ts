@@ -83,6 +83,15 @@ export async function onlineRequest<T>(urlInput: string, path: string, body?: un
   return (await authorizedResponse(urlInput, path, body, options)).json() as Promise<T>;
 }
 
+/** Raw bytes sent with PUT (one part of an attachment upload). Safe to repeat. */
+class RawBody {
+  constructor(readonly bytes: Uint8Array) {}
+}
+
+export async function putBytes<T>(urlInput: string, path: string, bytes: Uint8Array): Promise<T> {
+  return (await authorizedResponse(urlInput, path, new RawBody(bytes), { timeoutMs: 5 * 60_000 })).json() as Promise<T>;
+}
+
 /** A GET whose answer is a file. */
 export async function requestBytes(urlInput: string, path: string): Promise<Uint8Array> {
   const response = await authorizedResponse(urlInput, path, undefined, { timeoutMs: 10 * 60_000 });
@@ -97,18 +106,19 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     credentials = await refresh(url, credentials);
     refreshed = true;
   }
-  const payload = body === undefined ? undefined : JSON.stringify(body);
+  const raw = body instanceof RawBody;
+  const payload = body === undefined ? undefined : raw ? new Blob([body.bytes as Uint8Array<ArrayBuffer>]) : JSON.stringify(body);
   const send = () => fetch(`${url}${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: body === undefined ? "GET" : raw ? "PUT" : "POST",
     headers: {
-      Authorization: `Bearer ${credentials.accessToken}`, "Content-Type": "application/json",
+      Authorization: `Bearer ${credentials.accessToken}`, "Content-Type": raw ? "application/octet-stream" : "application/json",
       ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
     },
     ...(payload === undefined ? {} : { body: payload }),
     redirect: "error", signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 30_000)]) : AbortSignal.timeout(options.timeoutMs ?? 30_000),
   });
   // Reads and keyed writes are safe to repeat after a network failure.
-  const retryable = body === undefined || !!options.idempotencyKey;
+  const retryable = body === undefined || raw || !!options.idempotencyKey;
   const request = async () => {
     try {
       return await send();

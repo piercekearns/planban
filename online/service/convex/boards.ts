@@ -349,6 +349,7 @@ export const fence = internalMutation({
     if (!/^[A-Za-z0-9-]{8,80}$/.test(transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
     if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
     if (board.authority !== "online") fail("conflict", "This board is already being taken local, or is local already.");
+    if (board.carryFrom !== undefined) fail("conflict", "This board is still moving its files after being taken online. Try Take Local again in a minute.");
     const now = new Date().toISOString();
     const previous = await currentRoadmap(ctx, live(board));
     const committed = committedRoadmap(previous, now);

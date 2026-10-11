@@ -77,15 +77,9 @@ async function fakeService() {
       const path = request.pathname;
       const rawBytes = await readBytes(req);
       const raw = rawBytes.toString("utf8");
-      const body = raw && path !== "/upload" ? (req.headers["content-type"]?.includes("application/json") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : undefined;
+      const body = raw && req.method !== "PUT" ? (req.headers["content-type"]?.includes("application/json") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : undefined;
       requests.push({ method: req.method!, path, body });
       const json = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
-      // The upload URL is a signed blob-store address, not an authenticated API call.
-      if (path === "/upload" && req.method === "POST") {
-        const storageId = `blob-${uploads.size + 1}`;
-        uploads.set(storageId, Buffer.from(rawBytes));
-        return json(200, { storageId });
-      }
       if (path === "/.well-known/oauth-authorization-server") return json(200, {
         issuer: url, registration_endpoint: `${metadataOrigin ?? url}/oauth/register`, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
       });
@@ -241,13 +235,13 @@ async function fakeService() {
       if (suffix === "/attachments/begin" || suffix === "/attachments/finish") {
         if (suffix === "/attachments/begin" && !blobs.has(body.sha256)) {
           const uploadId = `upload-${sessions.size + 1}`;
-          sessions.set(uploadId, body);
-          return json(200, { done: false, uploadId, upload: { url: `${url}/upload`, method: "POST", headers: { "Content-Type": body.contentType } } });
+          sessions.set(uploadId, { ...body, parts: new Map<number, Buffer>() });
+          return json(200, { done: false, uploadId, partBytes: 4, partCount: Math.max(1, Math.ceil(body.size / 4)) });
         }
         let file = body;
         if (suffix === "/attachments/finish") {
           file = sessions.get(body.uploadId);
-          const uploaded = uploads.get(body.uploadResult);
+          const uploaded = file && Buffer.concat([...file.parts.entries()].sort(([a]: [number], [b]: [number]) => a - b).map(([, part]: [number, Buffer]) => part));
           if (!file || !uploaded || createHash("sha256").update(uploaded).digest("hex") !== file.sha256) return json(400, { error: { code: "validation", message: "Upload mismatch." } });
           blobs.set(file.sha256, uploaded);
         }
@@ -255,6 +249,11 @@ async function fakeService() {
         const record = { id, cardId: file.cardId, path: file.path, sha256: file.sha256, size: file.size, contentType: file.contentType, uploadedBy: "dev-owner", uploadedAt: new Date().toISOString() };
         attachments.set(id, record);
         return json(200, { done: true, attachment: record });
+      }
+      if (suffix.startsWith("/attachments/uploads/") && req.method === "PUT") {
+        const [, , , uploadId, , index] = suffix.split("/");
+        sessions.get(uploadId!)?.parts.set(Number(index), Buffer.from(rawBytes));
+        return json(200, { stored: true });
       }
       if (suffix.startsWith("/attachments/") && req.method === "GET") {
         const record = attachments.get(decodeURIComponent(suffix.split("/")[2]!));
@@ -974,4 +973,13 @@ test("take-online with attachments uploads card files once, and take-local bring
   const returned = await takeLocal(cwd);
   assert.deepEqual([...await readFile(join(returned.planningRoot, "items", "alpha", "renders", "front.png"))], [137, 80, 78, 71, 1, 2, 3]);
   assert.equal(await readFile(join(returned.planningRoot, "items", "alpha", "notes.txt"), "utf8"), "Fabric notes");
+});
+
+test("take-local never writes an attachment outside the board's folder, whatever the card id", async () => {
+  await takeOnline(fake.url, cwd);
+  fake.blobs.set("f".repeat(64), Buffer.from("escape"));
+  fake.attachments.set("evil", { id: "evil", cardId: "../../outside", path: "proof.txt", sha256: "f".repeat(64), size: 6, contentType: "text/plain", uploadedBy: "x", uploadedAt: new Date().toISOString() });
+  await assert.rejects(takeLocal(cwd), /Unsafe card id/);
+  assert.equal(await storage.pathExists(join(root, "home", "outside", "proof.txt")), false);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
 });
