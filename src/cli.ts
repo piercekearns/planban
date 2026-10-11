@@ -115,7 +115,11 @@ online.command("login <url>")
   .option("--boards <id>", "with --dev-user: the one board the connection reaches")
   .option("--dev-user <id>", "development sign-in on a local Online Board backend")
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
-  .action(async (url, options) => print(await onlineLogin(url, options), {}));
+  .option("--no-browser", "print the sign-in link instead of opening a browser (for remote machines)")
+  .action(async (url, options) => print(await onlineLogin(url, {
+    ...options,
+    ...(options.browser === false ? { openBrowser: async (link: string) => { process.stderr.write(`Open this link to sign in to Planban:\n${link}\n`); } } : {}),
+  }), {}));
 online.command("logout <url>").description("sign out on this machine and revoke its connection")
   .action(async (url) => print(await onlineLogout(url), {}));
 online.command("connections <url>").description("list this person's machines, agents and keys")
