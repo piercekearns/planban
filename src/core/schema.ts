@@ -7,12 +7,21 @@ export const manifestSchema = z.object({
   version: z.literal(1),
   repoId: z.string().min(1),
   enabled: z.boolean(),
-  storage: z
-    .object({
+  storage: z.discriminatedUnion("kind", [
+    z.object({
       kind: z.literal("local"),
       root: z.string().min(1).optional(),
-    })
-    .optional(),
+    }),
+    z.object({
+      kind: z.literal("online"),
+      url: z.url().refine((value) => {
+        const url = new URL(value);
+        return !url.username && !url.password && !url.search && !url.hash && url.pathname === "/"
+          && (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)));
+      }, "Use an HTTPS origin, or HTTP on loopback for development."),
+      boardId: z.string().min(1),
+    }),
+  ]).optional(),
 });
 
 const roadmapItemBaseSchema = z.object({

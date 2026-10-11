@@ -32,6 +32,7 @@ import {
   getStatus,
   initializeProject,
   loadState,
+  readManifest,
   moveCard,
   PlanbanConflictError,
   PlanbanNotFoundError,
@@ -57,6 +58,7 @@ import {
   exportFlatVersion1,
   reconstructHierarchy,
 } from "../core/storage";
+import { boardPath, onlineRequest } from "../core/online/client";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
 import { PlanbanQueryValidationError, queryWorkItems, workItemQueryFromSearchParams } from "../core/workItemQuery";
 import {
@@ -436,6 +438,13 @@ export async function startServer(options: ServeOptions) {
   let vite: ViteDevServer | null = null;
   let watcher: FSWatcher | null = null;
   let activitySweep: NodeJS.Timeout | null = null;
+  let onlineRefresh: NodeJS.Timeout | null = null;
+  let onlineRefreshRunning = false;
+  const onlineRevisions = new Map<string, number>();
+  const onlineAbort = new AbortController();
+  // Online Boards are only polled while a browser is watching (it polls /api/live),
+  // so an idle background server costs the hosted service nothing.
+  let lastLiveRequestAt = 0;
   const activityStore = new PlanbanActivityStore();
   let liveVersion = 0;
   let stateVersion = 0;
@@ -470,6 +479,11 @@ export async function startServer(options: ServeOptions) {
   }
 
   async function closeServer() {
+    onlineAbort.abort();
+    if (onlineRefresh) {
+      clearInterval(onlineRefresh);
+      onlineRefresh = null;
+    }
     if (activitySweep) {
       clearInterval(activitySweep);
       activitySweep = null;
@@ -564,6 +578,7 @@ export async function startServer(options: ServeOptions) {
   }
 
   app.get("/api/live", (_req, res) => {
+    lastLiveRequestAt = Date.now();
     res.set("Cache-Control", "no-store").json({
       liveVersion,
       stateVersion,
@@ -1710,6 +1725,35 @@ export async function startServer(options: ServeOptions) {
   } catch {
     // Uninitialized projects can still be served so the UI can show onboarding.
   }
+
+  // Online authority has no local file events. Refresh the same state signal
+  // consumed by the Board's existing live polling, without overlapping polls.
+  onlineRefresh = setInterval(() => {
+    if (onlineRefreshRunning || Date.now() - lastLiveRequestAt > 15_000) return;
+    onlineRefreshRunning = true;
+    void (async () => {
+      const boards = await listBoards();
+      await Promise.all([...new Set([cwd, ...boards.map((board) => board.cwd)])].map(async (boardCwd) => {
+        if (!onlineRefresh) return;
+        try {
+          const manifest = await readManifest(boardCwd);
+          if (!manifest?.enabled || manifest.storage?.kind !== "online") return;
+          const storage = manifest.storage;
+          const key = `${storage.url}/${storage.boardId}`;
+          const remote = await onlineRequest<{ revision: number }>(storage.url, boardPath(storage.boardId, `/changes?since=${onlineRevisions.get(key) ?? 0}&waitMs=0`), undefined, { signal: onlineAbort.signal });
+          const revision = remote.revision;
+          if (onlineRevisions.get(key) !== revision && onlineRefresh) {
+            onlineRevisions.set(key, revision);
+            sendEvent("state", { repoId: manifest.repoId });
+          }
+        } catch {
+          // Foreground reads surface connectivity/authentication errors. Never
+          // replace remote authority with an editable offline copy.
+        }
+      }));
+    })().catch(() => undefined).finally(() => { onlineRefreshRunning = false; });
+  }, 3000);
+  onlineRefresh.unref();
 
   await new Promise<void>((resolveListen) => {
     server.listen(options.port, "127.0.0.1", resolveListen);

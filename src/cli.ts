@@ -26,6 +26,9 @@ import { buildUpdateCommandPlan, runPlanbanUpdate } from "./core/updateRunner";
 import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
+import { onlineLogin } from "./core/online/login";
+import { onlineStatus, saveCredentials } from "./core/online/credentials";
+import { attachOnline, exportOnline, takeLocal, takeOnline } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -101,6 +104,30 @@ async function readStdin(): Promise<string> {
 
 const program = new Command();
 program.name("planban").description("Local, agent-native planning board for Codex and Claude Code").version(PLANBAN_VERSION);
+
+const online = program.command("online").description("Sign in and move boards between local and online authority");
+online.command("login <url>")
+  .option("--user <id>", "prototype headless user")
+  .option("--password-env <name>", "environment variable holding the prototype password")
+  .addOption(new Option("--access <scope>", "connection access").choices(["all", "board"]).default("all"))
+  .option("--boards <id>", "board id for prototype board access")
+  .action(async (url, options) => print(await onlineLogin(url, options), {}));
+online.command("logout <url>").action(async (url) => {
+  await saveCredentials(url, null);
+  print("Signed out on this machine.", {});
+});
+online.command("status").action(async () => print(await onlineStatus(), {}));
+online.command("take-online <url>").option("--cwd <path>", "project directory")
+  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
+online.command("export").option("--cwd <path>", "project directory").requiredOption("--out <file>", "bundle destination")
+  .action(async (options) => {
+    await exportOnline(cwdOption(options.cwd), options.out);
+    print({ exported: resolve(options.out) }, {});
+  });
+online.command("take-local").option("--cwd <path>", "project directory")
+  .action(async (options) => print(await takeLocal(cwdOption(options.cwd)), {}));
+online.command("attach <url> <boardId>").requiredOption("--cwd <path>", "project directory")
+  .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd)), {}));
 
 program
   .command("init")

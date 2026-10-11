@@ -15,6 +15,10 @@ export interface PlanbanProjectManifest {
   storage?: {
     kind: "local";
     root?: string | undefined;
+  } | {
+    kind: "online";
+    url: string;
+    boardId: string;
   } | undefined;
 }
 

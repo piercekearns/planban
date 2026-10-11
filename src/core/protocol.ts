@@ -8,21 +8,24 @@ export function buildAgentContext(input: {
   manifestPath: string;
   /** Board id used in the canonical Board URL. Defaults to the planning root folder name. */
   repoId?: string | undefined;
+  online?: { url: string; boardId: string } | undefined;
 }): string {
   const repoId = input.repoId ?? basename(input.planningRoot);
   return `# Planban Agent Context
 
 This repo uses Planban.
 
-Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
+${input.online ? `The planning authority is the Online Board at ${input.online.url}, board ${input.online.boardId}.
+Use Planban tools or the CLI for every read and edit. Local files are recovery evidence, not editable planning state.
+Sign in on this machine with \`planban online login ${input.online.url}\`.` : `Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
 
-- ${input.roadmapPath}
+- ${input.roadmapPath}`}
 
 Repo-local manifest:
 
 - ${input.manifestPath}
 
-Device-local planning root:
+${input.online ? "Local cache location (not planning authority)" : "Device-local planning root"}:
 
 - ${input.planningRoot}
 
