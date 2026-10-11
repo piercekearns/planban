@@ -111,7 +111,7 @@ program.name("planban").description("Local, agent-native planning board for Code
 
 const online = program.command("online").description("Sign in and move boards between local and online authority");
 online.command("login <url>")
-  .addOption(new Option("--access <scope>", "connection access").choices(["all", "board"]).default("all"))
+  .addOption(new Option("--access <scope>", "with --dev-user: connection access").choices(["all", "board"]).default("all"))
   .option("--boards <id>", "with --dev-user: the one board the connection reaches")
   .option("--dev-user <id>", "development sign-in on a local Online Board backend")
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")

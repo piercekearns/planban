@@ -381,6 +381,11 @@ test("browser sign-in uses the service's sign-in server with PKCE, then keeps on
 
 
 
+test("board-limited access is refused for browser sign-in, which always gives the machine full access", async () => {
+  await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { access: "board", boards: "demo" }), /only to development sign-in/);
+  await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { boards: "demo" }), /only to development sign-in/);
+});
+
 test("the sign-in server's endpoints must belong to it", async () => {
   fake.setMetadataOrigin("https://other.example");
   await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("no browser should open") }), /must belong to it/);

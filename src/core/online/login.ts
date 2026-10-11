@@ -168,12 +168,16 @@ async function callbackListener(ports: number[], state: string, issuer: string) 
  * Browser sign-in (owner decision 6): the person signs in with Clerk (email
  * code or GitHub) as the Planban command line, a public OAuth client using
  * PKCE. The token is then exchanged for this machine's own Planban sign-in,
- * which lasts until sign-out or 90 days unused, and the Clerk tokens are
- * revoked, since nothing keeps them.
+ * which lasts until sign-out or 90 days unused, with the person's full
+ * access. Nothing keeps Clerk's tokens: a refresh token, if issued, is
+ * revoked; its access tokens cannot be.
  */
 export async function onlineLogin(urlInput: string, options: LoginOptions = {}) {
   const url = serviceUrl(urlInput);
   if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
+  if (!options.devUser && (options.access === "board" || options.boards)) {
+    throw new PlanbanValidationError("--access board and --boards apply only to development sign-in (--dev-user). Signing in through the browser gives this machine your full access; limit AI apps and keys from your connections instead.");
+  }
   if (options.devUser) return devLogin(url, options);
   if (options.keyEnv) return keyLogin(url, options.keyEnv);
   const server = await signInEndpoints(url);
