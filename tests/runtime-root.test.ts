@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import test from "node:test";
 import { codexMarketplaceConfig, resolvePlanbanRuntime } from "../plugins/planban/scripts/runtime-root.mjs";
+import { codexConfigCases } from "./codex-config-fixtures.ts";
 
 async function runtime(root: string) {
   for (const file of ["bin/planban.mjs", "src/cli.ts", "src/core/storage.ts"]) {
@@ -63,7 +64,7 @@ test("Codex local-folder marketplaces resolve through config.toml after the Git 
     const folder = await runtime(join(root, "release folder"));
     const config = (sourceType: string, source: string) => writeFile(
       join(home, "config.toml"),
-      `model = "x"\n\n[marketplaces.planban]\nsource_type = "${sourceType}"\nsource = ${source}\n\n[marketplaces.paper]\nsource_type = "local"\nsource = "${join(root, "elsewhere")}"\n`,
+      `model = "x"\n\n[marketplaces.planban]\nsource_type = "${sourceType}"\nsource = ${source}\n\n[marketplaces.paper]\nsource_type = "local"\nsource = ${JSON.stringify(join(root, "elsewhere"))}\n`,
     );
 
     // Missing config, then a config that does not name a complete runtime, keep the existing error.
@@ -79,8 +80,11 @@ test("Codex local-folder marketplaces resolve through config.toml after the Git 
     assert.equal(resolvePlanbanRuntime(cache, env), folder);
     await config("local", `'${folder}'  # literal string`);
     assert.equal(resolvePlanbanRuntime(cache, env), folder);
+
+    // Codex stores local sources as absolute paths, so a relative source is ignored rather than guessed at.
     await config("local", JSON.stringify("../release folder"));
-    assert.equal(resolvePlanbanRuntime(cache, env), folder);
+    assert.throws(() => resolvePlanbanRuntime(cache, env), /runtime not found/u);
+    await config("local", JSON.stringify(folder));
 
     // CODEX_HOME is respected: the same layout under another home is not consulted.
     assert.throws(() => resolvePlanbanRuntime(cache, { CODEX_HOME: join(root, "other") }), /runtime not found/u);
@@ -91,20 +95,12 @@ test("Codex local-folder marketplaces resolve through config.toml after the Git 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("Codex marketplace config extraction reads only the named table's string keys", () => {
-  const text = [
-    "[marketplaces.paper]",
-    'source = "/paper"',
-    "[ marketplaces . \"planban\" ]  # comment",
-    'source_type = "local"\r',
-    'source = "C:\\\\Planban \\"1.1.6\\""',
-    "last_updated = 2026-10-11",
-    "[[profiles]]",
-    'source = "/not-this"',
-  ].join("\n");
-  assert.deepEqual(codexMarketplaceConfig(text, "planban"), { source_type: "local", source: 'C:\\Planban "1.1.6"' });
-  assert.equal(codexMarketplaceConfig(text, "missing"), null);
-  assert.equal(codexMarketplaceConfig("", "planban"), null);
+test("Codex marketplace config is read from every TOML form, never from inside strings or arrays", () => {
+  for (const { name, toml, expected } of codexConfigCases) {
+    const config = codexMarketplaceConfig(toml, "planban");
+    const settings = config && Object.fromEntries(["source_type", "source"].filter((key) => key in config).map((key) => [key, config[key]]));
+    assert.deepEqual(settings, expected, name);
+  }
 });
 
 test("Codex local marketplace sources expand a leading ~", async () => {
@@ -114,7 +110,7 @@ test("Codex local marketplace sources expand a leading ~", async () => {
     const cache = join(home, "plugins/cache/planban/planban/1.1.6");
     await mkdir(cache, { recursive: true });
     const folder = await runtime(join(root, "release"));
-    await writeFile(join(home, "config.toml"), `[marketplaces.planban]\nsource_type = "local"\nsource = "~/${folder.slice(homedir().length + 1)}"\n`);
+    await writeFile(join(home, "config.toml"), `[marketplaces.planban]\nsource_type = "local"\nsource = ${JSON.stringify(`~/${relative(homedir(), folder).split(sep).join("/")}`)}\n`);
     assert.equal(resolvePlanbanRuntime(cache, { CODEX_HOME: home }), folder);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

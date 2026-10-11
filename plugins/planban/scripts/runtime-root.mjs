@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isTomlTable, parseToml } from "./toml.mjs";
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
@@ -29,40 +30,22 @@ function installedCacheParts(hostHome, pluginRoot) {
   return { marketplace: parts[0], plugin: parts[1], version: parts[2] };
 }
 
-// Read one string value from a TOML line: a basic "..." string (with escapes) or a literal '...' string,
-// optionally followed by a comment. Anything else (arrays, inline tables, multi-line strings) is ignored.
-function tomlString(raw) {
-  const basic = raw.match(/^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/u);
-  if (basic) {
-    try { return JSON.parse(`"${basic[1]}"`); } catch { return null; }
-  }
-  return raw.match(/^'([^']*)'\s*(?:#.*)?$/u)?.[1] ?? null;
-}
-
-// Extract the string keys of one [marketplaces.<name>] table from Codex's config.toml without a TOML dependency.
+// Return the string settings of Codex's [marketplaces.<name>] entry, however config.toml spells it
+// (a table, dotted keys or an inline table), or null when the file is not valid TOML or has no such entry.
 export function codexMarketplaceConfig(configText, name) {
-  const header = /^\s*\[\s*marketplaces\s*\.\s*(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*(?:#.*)?$/u;
-  const values = {};
-  let inTable = false;
-  let found = false;
-  for (const line of configText.split(/\r?\n/u)) {
-    if (/^\s*\[/u.test(line)) {
-      const match = line.match(header);
-      inTable = Boolean(match) && (match[1] ?? match[2] ?? match[3]) === name;
-      found ||= inTable;
-      continue;
-    }
-    if (!inTable) continue;
-    const entry = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.*?)\s*$/u);
-    if (!entry) continue;
-    const value = tomlString(entry[2]);
-    if (value !== null) values[entry[1]] = value;
-  }
-  return found ? values : null;
+  let config;
+  try { config = parseToml(configText); } catch { return null; }
+  const marketplaces = config.marketplaces;
+  const entry = isTomlTable(marketplaces) && Object.hasOwn(marketplaces, name) ? marketplaces[name] : null;
+  if (!isTomlTable(entry)) return null;
+  return Object.fromEntries(Object.entries(entry).filter(([, value]) => typeof value === "string"));
 }
 
-function expandHome(value) {
-  return typeof value === "string" && (value === "~" || value.startsWith("~/")) ? join(homedir(), value.slice(1)) : value;
+// Codex stores local marketplace sources as absolute paths; a leading ~ is expanded, anything else relative is ignored.
+function codexLocalSource(value) {
+  if (typeof value !== "string") return null;
+  const expanded = value === "~" || value.startsWith("~/") || value.startsWith("~\\") ? join(homedir(), value.slice(1)) : value;
+  return isAbsolute(expanded) ? resolve(expanded) : null;
 }
 
 // Codex clones Git marketplaces to .tmp/marketplaces/planban; a local marketplace stays in the folder
@@ -76,7 +59,7 @@ function codexMarketplaceRuntime(env, pluginRoot) {
   try { configText = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { return null; }
   const configured = codexMarketplaceConfig(configText, "planban");
   if (configured?.source_type !== "local") return null;
-  const localRoot = configuredPath(expandHome(configured.source), codexHome);
+  const localRoot = codexLocalSource(configured.source);
   return localRoot && runtimeAt(localRoot) ? localRoot : null;
 }
 
