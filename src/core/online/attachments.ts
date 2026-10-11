@@ -46,14 +46,14 @@ export async function listAttachments(url: string, boardId: string, cardId?: str
 export async function uploadAttachment(url: string, boardId: string, cardId: string, path: string, bytes: Uint8Array, contentType = contentTypeFor(path)) {
   if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new PlanbanValidationError(`Attachments are at most ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB: ${path}`);
   const file = { cardId, path, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.byteLength, contentType };
-  const begun = await onlineRequest<{ done: boolean; attachment?: AttachmentRecord; upload?: { url: string; method: "POST" | "PUT"; headers: Record<string, string> } }>(
+  const begun = await onlineRequest<{ done: boolean; attachment?: AttachmentRecord; uploadId?: string; upload?: { url: string; method: "POST" | "PUT"; headers: Record<string, string> } }>(
     url, boardPath(boardId, "/attachments/begin"), file);
   if (begun.done) return { attachment: begun.attachment!, uploaded: false };
   const response = await fetch(begun.upload!.url, { method: begun.upload!.method, headers: begun.upload!.headers, body: new Blob([bytes as Uint8Array<ArrayBuffer>]), redirect: "error", signal: AbortSignal.timeout(10 * 60_000) });
   if (!response.ok) throw new Error(`The attachment upload failed (${response.status}): ${path}`);
   // Convex storage answers with the stored file's id; other stores answer with nothing.
   const uploadResult = (await response.json().catch(() => ({})) as { storageId?: string }).storageId ?? "";
-  const finished = await onlineRequest<{ attachment: AttachmentRecord }>(url, boardPath(boardId, "/attachments/finish"), { ...file, uploadResult });
+  const finished = await onlineRequest<{ attachment: AttachmentRecord }>(url, boardPath(boardId, "/attachments/finish"), { uploadId: begun.uploadId, uploadResult });
   return { attachment: finished.attachment, uploaded: true };
 }
 
@@ -117,9 +117,17 @@ export async function uploadLocalAttachments(url: string, boardId: string, plann
 /** Downloads every attachment of an Online Board into a local planning folder. */
 export async function downloadAttachments(url: string, boardId: string, planningRoot: string) {
   const attachments = await listAttachments(url, boardId);
+  const written = new Set<string>();
   for (const attachment of attachments) {
-    const destination = join(planningRoot, "items", attachment.cardId, ...attachment.path.split("/"));
-    if (!isPathInsideRoot(join(planningRoot, "items", attachment.cardId), destination)) throw new PlanbanValidationError(`Unsafe attachment path: ${attachment.path}`);
+    const folder = join(planningRoot, "items", attachment.cardId);
+    const destination = join(folder, ...attachment.path.split("/"));
+    const key = relative(planningRoot, destination).normalize("NFC").toLowerCase();
+    // Never let a file replace a card's documents or another file, in any letter case.
+    if (!isPathInsideRoot(folder, destination) || ["spec.md", "plan.md"].includes(attachment.path.normalize("NFC").toLowerCase())
+      || written.has(key) || await stat(destination).then(() => true, () => false)) {
+      throw new PlanbanValidationError(`Attachment ${attachment.cardId}/${attachment.path} would overwrite another file in the local copy.`);
+    }
+    written.add(key);
     const bytes = await downloadAttachment(url, boardId, attachment.id);
     if (createHash("sha256").update(bytes).digest("hex") !== attachment.sha256) throw new Error(`Attachment ${attachment.path} did not download intact.`);
     await mkdir(dirname(destination), { recursive: true });

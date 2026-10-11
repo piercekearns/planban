@@ -191,12 +191,15 @@ export default defineSchema({
     cardId: v.string(),
     /** Path inside the card's folder, with forward slashes. */
     path: v.string(),
+    /** The path as a case-insensitive file system sees it, so two paths can never land on one file. */
+    pathKey: v.string(),
     sha256: v.string(),
     size: v.number(),
     contentType: v.string(),
     uploadedBy: v.string(),
     uploadedAt: v.string(),
   }).index("by_board_card_path", ["boardId", "generation", "cardId", "path"])
+    .index("by_board_card_pathKey", ["boardId", "generation", "cardId", "pathKey"])
     .index("by_board_sha", ["boardId", "sha256"])
     .index("by_board_generation", ["boardId", "generation"]),
 
@@ -208,5 +211,24 @@ export default defineSchema({
     store: v.union(v.literal("convex"), v.literal("r2")),
     storageKey: v.string(),
     createdAt: v.string(),
-  }).index("by_board_sha", ["boardId", "sha256"]),
+  }).index("by_board_sha", ["boardId", "sha256"]).index("by_storageKey", ["storageKey"]),
+
+  /**
+   * An upload in progress: issued by `begin` to one person's connection for
+   * one board, card, path and content. `finish` only accepts stored bytes
+   * for an upload issued this way, so nobody can claim someone else's upload.
+   */
+  uploads: defineTable({
+    boardId: v.string(),
+    userId: v.string(),
+    connectionId: v.string(),
+    cardId: v.string(),
+    path: v.string(),
+    sha256: v.string(),
+    size: v.number(),
+    contentType: v.string(),
+    state: v.union(v.literal("open"), v.literal("finished"), v.literal("rejected")),
+    createdAt: v.string(),
+    attachmentId: v.optional(v.string()),
+  }).index("by_state_created", ["state", "createdAt"]),
 });

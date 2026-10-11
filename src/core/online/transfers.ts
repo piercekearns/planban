@@ -243,8 +243,13 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: { 
     if (!options.attachments) return result;
     // Card files go up once the board is online; re-running links files already stored.
     const roadmap = JSON.parse(await readFile(result.localSnapshot, "utf8")) as { roadmapItems: Array<{ id: string }> };
-    const attachments = await uploadLocalAttachments(url, boardId, planningRoot, roadmap.roadmapItems.map((item) => item.id));
-    return { ...result, attachments };
+    try {
+      const attachments = await uploadLocalAttachments(url, boardId, planningRoot, roadmap.roadmapItems.map((item) => item.id));
+      return { ...result, attachments };
+    } catch (error) {
+      // The board is online either way; the files can be sent again, and those already sent are only linked.
+      throw new PlanbanValidationError(`The board is online, but sending its files stopped (${error instanceof Error ? error.message : String(error)}). Finish with: planban online upload-files --cwd ${cwd} --from ${planningRoot}`);
+    }
   });
 }
 
@@ -528,4 +533,15 @@ export async function restoreBackup(folder: string, cwdInput: string, repoId: st
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, { cwd, manifest, manifestPath: manifestPath(cwd), agentContextPath: agentContextPath(cwd), planningRoot: root, roadmapPath: join(root, "roadmap.json"), roadmap: restored });
   return { repoId, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length };
+}
+
+/**
+ * Sends the files in a local board folder's card folders to this project's
+ * Online Board, for cards it has. Safe to repeat: files already stored are
+ * only linked. Used to finish an interrupted `take-online --attachments`.
+ */
+export async function uploadFiles(cwdInput: string, folder: string) {
+  const { storage } = await requireOnline(cwdInput);
+  const roadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(storage.url, boardPath(storage.boardId))).roadmap;
+  return uploadLocalAttachments(storage.url, storage.boardId, resolve(folder), roadmap.roadmapItems.map((item) => item.id));
 }

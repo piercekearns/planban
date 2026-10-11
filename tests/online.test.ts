@@ -68,6 +68,7 @@ async function fakeService() {
   const attachments = new Map<string, any>();
   const blobs = new Map<string, Buffer>();
   const uploads = new Map<string, Buffer>();
+  const sessions = new Map<string, any>();
   const requests: { method: string; path: string; body: any }[] = [];
   const errors: Error[] = [];
   const server = createServer(async (req, res) => {
@@ -238,14 +239,20 @@ async function fakeService() {
       if (suffix === "/history") return json(200, { currentVersion: Math.max(...bundle.history.map(({ entry }) => entry.version)), retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90 }, entries: bundle.history.map(({ entry }) => entry).filter((entry) => entry.version > Number(request.searchParams.get("after") ?? 0)).reverse() });
       if (suffix === "/attachments" && req.method === "GET") return json(200, { attachments: [...attachments.values()] });
       if (suffix === "/attachments/begin" || suffix === "/attachments/finish") {
-        if (suffix === "/attachments/begin" && !blobs.has(body.sha256)) return json(200, { done: false, upload: { url: `${url}/upload`, method: "POST", headers: { "Content-Type": body.contentType } } });
-        if (suffix === "/attachments/finish") {
-          const uploaded = uploads.get(body.uploadResult);
-          if (!uploaded || createHash("sha256").update(uploaded).digest("hex") !== body.sha256) return json(400, { error: { code: "validation", message: "Upload mismatch." } });
-          blobs.set(body.sha256, uploaded);
+        if (suffix === "/attachments/begin" && !blobs.has(body.sha256)) {
+          const uploadId = `upload-${sessions.size + 1}`;
+          sessions.set(uploadId, body);
+          return json(200, { done: false, uploadId, upload: { url: `${url}/upload`, method: "POST", headers: { "Content-Type": body.contentType } } });
         }
-        const id = `att-${body.cardId}-${body.path}`;
-        const record = { id, cardId: body.cardId, path: body.path, sha256: body.sha256, size: body.size, contentType: body.contentType, uploadedBy: "dev-owner", uploadedAt: new Date().toISOString() };
+        let file = body;
+        if (suffix === "/attachments/finish") {
+          file = sessions.get(body.uploadId);
+          const uploaded = uploads.get(body.uploadResult);
+          if (!file || !uploaded || createHash("sha256").update(uploaded).digest("hex") !== file.sha256) return json(400, { error: { code: "validation", message: "Upload mismatch." } });
+          blobs.set(file.sha256, uploaded);
+        }
+        const id = `att-${file.cardId}-${file.path}`;
+        const record = { id, cardId: file.cardId, path: file.path, sha256: file.sha256, size: file.size, contentType: file.contentType, uploadedBy: "dev-owner", uploadedAt: new Date().toISOString() };
         attachments.set(id, record);
         return json(200, { done: true, attachment: record });
       }

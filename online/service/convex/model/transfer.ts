@@ -18,9 +18,6 @@ import { asServiceError, fail } from "./errors";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
 
-/** Attachment records carried into a new generation in one commit (Revival has about 1,150). */
-const MAX_CARRIED_ATTACHMENTS = 4000;
-
 /** An open upload untouched for this long may be replaced by a new one. */
 export const STALE_TRANSFER_MS = 10 * 60 * 1000;
 
@@ -246,13 +243,7 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   });
   await ctx.db.patch(transfer._id, { state: "committed", updatedAt: now });
   if (previousGeneration > 0) {
-    // Files of cards that still exist stay attached, so their contents are
-    // kept rather than released with the old generation and uploaded again.
-    const liveCards = new Set(roadmap.roadmapItems.map((item) => item.id));
-    const carried = await ctx.db.query("attachments").withIndex("by_board_generation", (q) => q.eq("boardId", board!.boardId).eq("generation", previousGeneration)).take(MAX_CARRIED_ATTACHMENTS);
-    for (const { _id, _creationTime, generation: _old, ...row } of carried) {
-      if (liveCards.has(row.cardId)) await ctx.db.insert("attachments", { ...row, generation: transfer.generation });
-    }
+    // Cleaning up the previous generation also carries its files over (see attachments.ts).
     await ctx.scheduler.runAfter(0, internal.transfers.cleanupGeneration, { boardId: board!.boardId, generation: previousGeneration });
   }
   return { boardId: board!.boardId, roadmap: committed };

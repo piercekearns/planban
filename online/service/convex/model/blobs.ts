@@ -14,6 +14,8 @@ export interface StoredBlob {
   storageKey: string;
   sha256: string;
   size: number;
+  /** When the bytes were stored (ms since epoch). */
+  createdAt: number;
 }
 
 export interface BlobStore {
@@ -44,7 +46,7 @@ export const convexBlobStore: BlobStore = {
     const id = ctx.db.system.normalizeId("_storage", uploadResult);
     const file = id ? await ctx.db.system.get(id) : null;
     if (!file) return null;
-    return { storageKey: file._id, sha256: base64ToHex(file.sha256), size: file.size };
+    return { storageKey: file._id, sha256: base64ToHex(file.sha256), size: file.size, createdAt: file._creationTime };
   },
   async download(ctx, storageKey, contentType) {
     const blob = await ctx.storage.get(storageKey as Id<"_storage">);

@@ -32,7 +32,7 @@ import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
 import { downloadAttachment, listAttachments, removeAttachment, uploadAttachment } from "./core/online/attachments";
-import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline } from "./core/online/transfers";
+import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -161,6 +161,9 @@ online.command("get-file <attachmentId>").description("download an attachment").
     await writeFile(resolve(options.out), await downloadAttachment(storage.url, storage.boardId, attachmentId));
     print({ saved: resolve(options.out) }, {});
   });
+online.command("upload-files").description("send the card files in a local board folder (finishes an interrupted take-online --attachments)")
+  .option("--cwd <path>", "project directory").requiredOption("--from <folder>", "the local board folder")
+  .action(async (options) => print(await uploadFiles(cwdOption(options.cwd), options.from), {}));
 online.command("remove-file <attachmentId>").description("remove an attachment").option("--cwd <path>", "project directory")
   .action(async (attachmentId, options) => {
     const storage = await onlineBoardOf(cwdOption(options.cwd));

@@ -185,9 +185,13 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     }
     if ((rest[1] === "begin" || rest[1] === "finish") && rest.length === 2 && method === "POST") {
       const input = await body(request);
-      const file = { cardId: String(input.cardId ?? ""), path: String(input.path ?? ""), sha256: String(input.sha256 ?? ""), size: Number(input.size), contentType: String(input.contentType ?? "application/octet-stream") };
-      if (rest[1] === "begin") return json(await ctx.runMutation(internal.attachments.begin, { connectionId, boardId, ...file }));
-      return json(await ctx.runMutation(internal.attachments.finish, { connectionId, boardId, uploadResult: String(input.uploadResult ?? ""), ...file }));
+      if (rest[1] === "begin") {
+        const file = { cardId: String(input.cardId ?? ""), path: String(input.path ?? ""), sha256: String(input.sha256 ?? ""), size: Number(input.size), contentType: String(input.contentType ?? "application/octet-stream") };
+        return json(await ctx.runMutation(internal.attachments.begin, { connectionId, boardId, ...file }));
+      }
+      const finished = await ctx.runMutation(internal.attachments.finish, { connectionId, boardId, uploadId: String(input.uploadId ?? ""), uploadResult: String(input.uploadResult ?? "") });
+      if ("rejected" in finished) return json({ error: { code: "validation", message: finished.rejected } }, 400);
+      return json(finished);
     }
     if (rest.length === 3 && rest[2] === "delete" && method === "POST") return json(await ctx.runMutation(internal.attachments.remove, { connectionId, boardId, attachmentId: rest[1]! }));
     if (rest.length === 2 && method === "GET") {
