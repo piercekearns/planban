@@ -332,7 +332,7 @@ const machineSignIn = httpAction(async (ctx, request) => {
     const secret = randomSecret("pbm_");
     const { connectionId } = await ctx.runMutation(internal.connections.createMachine, {
       userId: token.sub, tokenHash: await sha256Hex(secret), name: typeof input.name === "string" ? input.name : "",
-      exchangeHash: await sha256Hex(match![1]!),
+      exchangeHash: await sha256Hex(token.signed),
       // Past this, the age check above refuses the token anyway (issue times may be up to the clock skew ahead).
       exchangeExpiresAt: new Date((token.issuedAt + MACHINE_EXCHANGE_SECONDS + CLOCK_SKEW_SECONDS) * 1000).toISOString(),
     });

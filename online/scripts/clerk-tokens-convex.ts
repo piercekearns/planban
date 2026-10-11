@@ -111,12 +111,17 @@ try {
   assert.equal((await api(token({ sub: person, client_id: "https://claude.ai/oauth/mcp-client-metadata" }), "POST", "/api/v1/auth/machine", {})).status, 401, "another app's token");
   ok("the command line's fresh sign-in becomes this machine's own sign-in; old or other apps' tokens do not");
   assert.equal((await api(cliToken, "POST", "/api/v1/auth/machine", {})).status, 401, "the same sign-in a second time");
+  // The same token spelled differently: padded, or with the signature's unused low bits changed.
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const respelled = `${cliToken.slice(0, -1)}${alphabet[alphabet.indexOf(cliToken.at(-1)!) ^ 1]}`;
+  assert.equal((await api(`${cliToken}=`, "POST", "/api/v1/auth/machine", {})).status, 401, "the same sign-in, padded");
+  assert.equal((await api(respelled, "POST", "/api/v1/auth/machine", {})).status, 401, "the same sign-in, respelled");
   const spareToken = token({ sub: person, client_id: "test-cli" });
   const spare = await api(spareToken, "POST", "/api/v1/auth/machine", { name: "Spare" });
   assert.equal(spare.status, 201);
   assert.equal((await api(spare.json.token, "POST", `/api/v1/connections/${spare.json.connectionId}/revoke`, {})).status, 200);
   assert.equal((await api(spareToken, "POST", "/api/v1/auth/machine", {})).status, 401, "the same sign-in after signing out");
-  ok("a command-line sign-in token works once, even after the machine signs out");
+  ok("a command-line sign-in token works once, however it is spelled and even after the machine signs out");
 
   const claudeId = me.json.connectionId as string;
   assert.equal((await api(machine.json.token, "POST", `/api/v1/connections/${claudeId}/access`, { level: "read" })).status, 200);

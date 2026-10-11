@@ -15,6 +15,11 @@ export interface ClerkAccessToken {
   clientId: string;
   /** When it was issued (seconds); never later than now plus the allowed clock skew. */
   issuedAt: number;
+  /**
+   * The signed part of the token (header and claims). Its signature can be
+   * written several ways, so this, not the token text, identifies the token.
+   */
+  signed: string;
 }
 
 export const CLOCK_SKEW_SECONDS = 60;
@@ -22,13 +27,19 @@ const KEYS_TTL_MS = 10 * 60 * 1000;
 /** The key set is refetched at most this often across the service, so made-up key ids cannot flood Clerk. */
 const KEYS_REFRESH_COOLDOWN_MS = 30 * 1000;
 const KEYS_FETCH_TIMEOUT_MS = 5000;
+/** A known key is still trusted this long after the last successful fetch while Clerk cannot be reached. */
+const KEYS_MAX_STALE_MS = 60 * 60 * 1000;
 type KeyWithId = JsonWebKey & { kid?: string };
 
 export function clerkConfigured() {
   return !!process.env.CLERK_ISSUER && !!process.env.CLERK_JWKS_URL;
 }
 
+/** Strict base64url (no padding, no stray characters), so one token has exactly one spelling. */
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
 function base64UrlDecode(part: string): Uint8Array<ArrayBuffer> {
+  if (!BASE64URL.test(part) || part.length % 4 === 1) throw new Error("Not base64url.");
   const base64 = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
   const binary = atob(base64);
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
@@ -49,16 +60,30 @@ async function fetchKeys(ctx: ActionCtx): Promise<KeyWithId[]> {
   return keys;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function signingKey(ctx: ActionCtx, kid: string): Promise<JsonWebKey | null> {
   const cached = await ctx.runQuery(internal.signingKeys.cached, {});
-  const keys: KeyWithId[] = cached ? JSON.parse(cached.keys) : [];
-  const known = keys.find((key) => key.kid === kid);
-  if (known && Date.now() - cached!.fetchedAt < KEYS_TTL_MS) return known;
-  // Stale keys, or an unknown key id (Clerk may have rotated its keys): refetch,
-  // unless another request did so within the cooldown. Until then a known key
-  // is still used; a key set never loaded at all is fetched regardless.
-  if (cached && cached.fetchedAt > 0 && !await ctx.runMutation(internal.signingKeys.claimRefresh, { cooldownMs: KEYS_REFRESH_COOLDOWN_MS })) return known ?? null;
-  return (await fetchKeys(ctx)).find((key) => key.kid === kid) ?? null;
+  const loaded = !!cached && cached.fetchedAt > 0;
+  const age = loaded ? Date.now() - cached!.fetchedAt : Infinity;
+  const known = loaded ? (JSON.parse(cached!.keys) as KeyWithId[]).find((key) => key.kid === kid) : undefined;
+  if (known && age < KEYS_TTL_MS) return known;
+  // Stale keys, or an unknown key id (Clerk may have rotated its keys): one
+  // request service-wide may refetch per cooldown.
+  if (await ctx.runMutation(internal.signingKeys.claimRefresh, { cooldownMs: KEYS_REFRESH_COOLDOWN_MS })) {
+    return (await fetchKeys(ctx)).find((key) => key.kid === kid) ?? null;
+  }
+  // Someone else is refreshing, or just did. A known key stays usable a while
+  // longer, but not indefinitely: Clerk may have withdrawn it.
+  if (known && age < KEYS_MAX_STALE_MS) return known;
+  if (loaded) return null;
+  // Never loaded yet: wait briefly for the request that is loading them.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await sleep(500);
+    const now = await ctx.runQuery(internal.signingKeys.cached, {});
+    if (now && now.fetchedAt > 0) return (JSON.parse(now.keys) as KeyWithId[]).find((key) => key.kid === kid) ?? null;
+  }
+  throw new Error("Clerk's signing keys could not be loaded yet. Try again shortly.");
 }
 
 const isTime = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -108,7 +133,7 @@ export async function verifyClerkAccessToken(ctx: ActionCtx, token: string, audi
     const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!audiences.includes(audience) && !audiences.includes(`${audience}/mcp`)) return null;
   }
-  return { sub: claims.sub, clientId, issuedAt: claims.iat };
+  return { sub: claims.sub, clientId, issuedAt: claims.iat, signed: `${parts[0]}.${parts[1]}` };
 }
 
 /** A readable name for an OAuth client: the host of a metadata document URL, or the client id. */
