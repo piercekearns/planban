@@ -220,23 +220,39 @@ class LockWait {
   private readonly started = Date.now();
   private noticed = false;
 
-  constructor(private readonly planningRoot: string) {}
+  /**
+   * One wait for one board, shared by both stages of taking it. `giveUp` is
+   * set only for a write's outermost lock, before anything has been
+   * written, so "nothing was changed" is always true when it gives up; a
+   * lock taken part-way through an operation waits instead.
+   */
+  constructor(private readonly planningRoot: string, private readonly giveUp: boolean) {}
 
   async check(holder: () => Promise<LockOwner | null>) {
     const waited = Date.now() - this.started;
-    if (waited < LOCK_NOTICE_MS) return;
     const limit = lockWaitLimitMs();
-    if (!this.noticed && waited < limit) {
+    if (this.giveUp && waited >= limit) {
+      throw new PlanbanBoardBusyError(`Gave up after waiting ${Math.round(waited / 1000)} seconds; nothing was changed.\n${describeLockHolder(this.planningRoot, await holder())}`);
+    }
+    if (!this.noticed && waited >= LOCK_NOTICE_MS) {
       this.noticed = true;
       process.stderr.write(`Waiting for another Planban process to finish writing.\n${describeLockHolder(this.planningRoot, await holder())}\n`);
-    }
-    if (waited >= limit) {
-      throw new PlanbanBoardBusyError(`Gave up after waiting ${Math.round(waited / 1000)} seconds; nothing was changed.\n${describeLockHolder(this.planningRoot, await holder())}`);
     }
   }
 }
 
-async function enterQueue(queue: string, id: string): Promise<string> {
+/**
+ * Who is actually holding the board: an older Planban version holding the
+ * original lock directory, or else the process at the front of the queue.
+ */
+async function currentHolder(planningRoot: string, front: LockOwner | null): Promise<LockOwner | null> {
+  const legacy = await readJsonFile<LockOwner>(join(planningRoot, LOCK_DIR, "owner.json"));
+  if (legacy && legacy.token !== front?.token && processIsAlive(legacy.pid) !== false) return legacy;
+  const at = legacy?.createdAt ?? front?.at;
+  return legacy && front && legacy.token === front.token && at ? { ...front, at } : front;
+}
+
+async function enterQueue(queue: string, id: string, wait: LockWait): Promise<string> {
   await mkdir(queue, { recursive: true });
   const owner = JSON.stringify({ pid: process.pid, token: id, at: new Date().toISOString(), command: ownCommand() }) + "\n";
   const choosing = join(queue, `choosing-${id}.json`);
@@ -248,14 +264,13 @@ async function enterQueue(queue: string, id: string): Promise<string> {
     ticket = join(queue, mine.name);
     await writeFile(ticket, owner, { flag: "wx" });
     await rm(choosing, { force: true });
-    const wait = new LockWait(dirname(queue));
     for (;;) {
       const entries = await liveEntries(queue);
       const blockers = entries.filter((entry) => entry.id !== id && (entry.kind === "choosing" || ahead(entry, mine)));
       if (blockers.length === 0) return ticket;
       await wait.check(async () => {
         const first = blockers.filter((entry) => entry.kind === "ticket").sort((a, b) => (ahead(a, b) ? -1 : 1))[0] ?? blockers[0]!;
-        return readJsonFile<LockOwner>(join(queue, first.name));
+        return currentHolder(dirname(queue), await readJsonFile<LockOwner>(join(queue, first.name)));
       });
       await sleep(LOCK_RETRY_MS);
     }
@@ -268,8 +283,7 @@ async function enterQueue(queue: string, id: string): Promise<string> {
 }
 
 /** The original lock directory, for older Planban versions writing the same board. */
-async function takeLegacyLock(lockPath: string, token: string) {
-  const wait = new LockWait(dirname(lockPath));
+async function takeLegacyLock(lockPath: string, token: string, wait: LockWait) {
   for (;;) {
     try {
       await mkdir(lockPath);
@@ -296,7 +310,16 @@ async function takeLegacyLock(lockPath: string, token: string) {
   }
 }
 
-export async function withBoardWriteLock<T>(planningRootInput: string, callback: () => Promise<T>): Promise<T> {
+export interface BoardLockOptions {
+  /**
+   * Give up (PlanbanBoardBusyError) after PLANBAN_LOCK_WAIT_MS instead of
+   * waiting for as long as the holder needs. Honoured only when no other
+   * board lock is held, so it applies before anything has been written.
+   */
+  giveUp?: boolean;
+}
+
+export async function withBoardWriteLock<T>(planningRootInput: string, callback: () => Promise<T>, options: BoardLockOptions = {}): Promise<T> {
   const planningRoot = resolve(planningRootInput);
   const activeLocks = heldLocks.getStore();
   if (activeLocks?.has(planningRoot)) return callback();
@@ -304,9 +327,10 @@ export async function withBoardWriteLock<T>(planningRootInput: string, callback:
   await mkdir(planningRoot, { recursive: true });
   const lockPath = join(planningRoot, LOCK_DIR);
   const token = randomUUID();
-  const ticket = await enterQueue(join(planningRoot, QUEUE_DIR), token);
+  const wait = new LockWait(planningRoot, !!options.giveUp && !activeLocks?.size);
+  const ticket = await enterQueue(join(planningRoot, QUEUE_DIR), token, wait);
   try {
-    await takeLegacyLock(lockPath, token);
+    await takeLegacyLock(lockPath, token, wait);
   } catch (error) {
     await rm(ticket, { force: true });
     throw error;

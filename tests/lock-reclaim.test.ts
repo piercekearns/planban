@@ -124,12 +124,14 @@ test("a write blocked by a stuck process says which process holds the board and 
     const holder = spawn(process.execPath, ["--import", "tsx/esm", script, "hung-agent-marker"], { env });
     await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
     try {
+      const started = Date.now();
       const failure = await cli(["create-card", "Blocked", "--cwd", project, "-o", "json"]).then(() => null, (error) => error);
       assert.ok(failure, "the write should give up");
       assert.match(failure.stderr, new RegExp(`held by process ${holder.pid}`));
       assert.match(failure.stderr, /hung-agent-marker/);
       assert.match(failure.stderr, new RegExp(`kill ${holder.pid}`));
       assert.match(failure.stderr, /nothing was changed/);
+      assert.ok(Date.now() - started < 4000, "a short limit is honoured without waiting for the notice");
       // An agent going through the local MCP server gets the same explanation.
       const mcp = spawn(process.execPath, ["plugins/planban/scripts/start-planban-mcp.mjs"], {
         env: { ...env, PLANBAN_REPO_ROOT: resolve("."), PLANBAN_ACTIVITY_URL: "http://127.0.0.1:9" }, stdio: ["pipe", "pipe", "pipe"],
@@ -148,6 +150,72 @@ test("a write blocked by a stuck process says which process holds the board and 
     }
     const created = JSON.parse((await cli(["create-card", "Unblocked", "--cwd", project, "-o", "json"])).stdout);
     assert.ok(JSON.stringify(created).includes("Unblocked"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function hang(root: string, lockedFolder: string, env: NodeJS.ProcessEnv, legacyOnly = false) {
+  const script = join(root, `hang-${Math.random().toString(36).slice(2)}.mjs`);
+  await writeFile(script, legacyOnly
+    // An older Planban version: only the original lock directory, no queue.
+    ? `import { mkdirSync, writeFileSync } from "node:fs";
+       mkdirSync(${JSON.stringify(join(lockedFolder, ".planban-write.lock"))}, { recursive: true });
+       writeFileSync(${JSON.stringify(join(lockedFolder, ".planban-write.lock", "owner.json"))}, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+       console.log("holding"); setInterval(() => {}, 1000);`
+    : `const { withBoardWriteLock } = await import(${JSON.stringify(resolve("src/core/persistence.ts"))});
+       await withBoardWriteLock(${JSON.stringify(lockedFolder)}, async () => { console.log("holding"); await new Promise(() => { setInterval(() => {}, 1000); }); });`);
+  const holder = spawn(process.execPath, ["--import", "tsx/esm", script, "older-or-hung-marker"], { env });
+  await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+  return {
+    holder,
+    async stop() {
+      const exited = holder.exitCode !== null || holder.signalCode !== null ? Promise.resolve() : new Promise((resolveExit) => holder.once("exit", resolveExit));
+      holder.kill("SIGKILL");
+      await exited;
+    },
+  };
+}
+
+test("a lock taken part-way through an operation waits rather than giving up with half the work done", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-lock-"));
+  const home = join(root, "home");
+  const env = { ...process.env, PLANBAN_HOME: home, PLANBAN_LOCK_WAIT_MS: "1000" };
+  try {
+    await mkdir(home, { recursive: true });
+    // Board creation writes the project files, then records the board in the
+    // machine's board list under that list's own lock, held here.
+    const held = await hang(root, home, env);
+    const init = execFileAsync(process.execPath, ["--import", "tsx/esm", resolve("src/cli.ts"), "init", "--cwd", join(root, "project"), "--repo-id", "nested", "--no-agents", "-o", "json"], { env });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 2500));
+    await held.stop();
+    await init;
+    assert.ok(JSON.parse(await readFile(join(home, "index.json"), "utf8")).boards.some((board: { repoId: string }) => board.repoId === "nested"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("when an older Planban version holds the board, that is the process named", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-lock-"));
+  const home = join(root, "home");
+  const project = join(root, "project");
+  const env = { ...process.env, PLANBAN_HOME: home, PLANBAN_LOCK_WAIT_MS: "1500" };
+  const cli = (args: string[]) => execFileAsync(process.execPath, ["--import", "tsx/esm", resolve("src/cli.ts"), ...args], { env });
+  try {
+    await cli(["init", "--cwd", project, "--repo-id", "legacy-held", "--no-agents", "-o", "json"]);
+    const held = await hang(root, join(home, "repos", "legacy-held"), env, true);
+    try {
+      // A modern process queues first and waits behind the older version...
+      const waiting = cli(["create-card", "First", "--cwd", project, "-o", "json"]).catch(() => null);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+      // ...and a second one must still name the older version's process.
+      const failure = await cli(["create-card", "Second", "--cwd", project, "-o", "json"]).then(() => null, (error) => error);
+      assert.match(failure?.stderr ?? "", new RegExp(`held by process ${held.holder.pid}`));
+      await waiting;
+    } finally {
+      await held.stop();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

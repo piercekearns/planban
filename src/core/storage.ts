@@ -133,7 +133,9 @@ export async function withRoadmapWriteLock<T>(cwdInput: string, callback: () => 
   }
   const planningRoot = resolvePlanningRoot(manifest);
   if (manifest.storage?.kind !== "online") await guardLocalCopy(planningRoot, cwd, manifest.repoId);
-  return withBoardWriteLock(planningRoot, callback);
+  // A card write takes the board first, before writing anything, so it can
+  // give up cleanly if another process is stuck holding the board.
+  return withBoardWriteLock(planningRoot, callback, { giveUp: true });
 }
 
 /**
@@ -303,7 +305,7 @@ export async function saveRoadmap(
     revision: updated.revision,
   }).catch(() => undefined);
   return updated;
-  });
+  }, { giveUp: true });
 }
 
 export async function appendEvent(planningRoot: string, event: Record<string, unknown>) {
