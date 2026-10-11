@@ -541,13 +541,14 @@ for (const polling of [false, true]) {
 
       await setCardStatus(cwd, "alpha", "in-progress");
       const afterRoadmapEdit = await waitForChange(baseline);
-      const doc = await writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Alpha spec\n" });
+      assert.equal((await readDoc({ cwd, cardId: "alpha", kind: "plan" })).exists, false);
+      const doc = await writeDoc({ cwd, cardId: "alpha", kind: "plan", markdown: "# Alpha plan\n" });
       const afterDocCreate = await waitForChange(afterRoadmapEdit);
       // An edit to the card doc alone, with no roadmap write, must still reach the page.
       await observe();
       const beforeDocEdit = await liveState();
       assert.ok(doc.path && afterDocCreate);
-      await writeFile(resolve(planningRoot, doc.path), "# Alpha spec, edited\n", "utf8");
+      await writeFile(resolve(planningRoot, doc.path), "# Alpha plan, edited\n", "utf8");
       await waitForChange(beforeDocEdit);
     } finally {
       await server.close();
