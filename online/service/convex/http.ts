@@ -7,6 +7,7 @@ import { httpAction, type ActionCtx } from "./_generated/server";
 import { authenticate, devAuthEnabled, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
+import { handleMcp, McpService } from "./model/mcp";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   conflict: 409,
@@ -208,9 +209,45 @@ const devToken = httpAction(async (ctx, request) => {
   return json({ token, connectionId, userId }, 201);
 });
 
+/** The public address clients see (app.planban.ai once deployed); the Convex site URL until then. */
+function publicOrigin() {
+  return (process.env.PLANBAN_PUBLIC_URL ?? process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
+}
+
+/**
+ * Remote MCP over Streamable HTTP. An unauthenticated request gets the
+ * standard challenge pointing at the protected resource metadata, which
+ * names the sign-in server MCP clients use for OAuth.
+ */
+const mcp = httpAction(async (ctx, request) => {
+  try {
+    const auth = await authenticate(ctx, request);
+    if (!auth) {
+      return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
+        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource"`,
+      });
+    }
+    return await handleMcp(request, new McpService(ctx, auth.connectionId), publicOrigin());
+  } catch (error) {
+    return errorResponse(error);
+  }
+});
+
+/** RFC 9728 metadata. The sign-in server is Clerk once its application exists (PLANBAN_OAUTH_ISSUER). */
+const protectedResource = httpAction(async () => json({
+  resource: publicOrigin(),
+  authorization_servers: process.env.PLANBAN_OAUTH_ISSUER ? [process.env.PLANBAN_OAUTH_ISSUER] : [],
+  bearer_methods_supported: ["header"],
+  scopes_supported: ["openid", "profile", "email", "offline_access"],
+  resource_name: "Planban Online",
+}, 200, { "Cache-Control": "public, max-age=300" }));
+
 const http = httpRouter();
 for (const method of ["GET", "POST"] as const) http.route({ pathPrefix: "/api/v1/", method, handler: api });
 http.route({ path: "/dev/token", method: "POST", handler: devToken });
+for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
+http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
+http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedResource });
 http.route({
   path: "/.well-known/jwks.json",
   method: "GET",

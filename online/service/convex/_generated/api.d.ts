@@ -23,6 +23,7 @@ import type * as model_codec from "../model/codec.js";
 import type * as model_errors from "../model/errors.js";
 import type * as model_history from "../model/history.js";
 import type * as model_liveToken from "../model/liveToken.js";
+import type * as model_mcp from "../model/mcp.js";
 import type * as model_rows from "../model/rows.js";
 import type * as model_transfer from "../model/transfer.js";
 import type * as transfers from "../transfers.js";
@@ -49,6 +50,7 @@ declare const fullApi: ApiFromModules<{
   "model/errors": typeof model_errors;
   "model/history": typeof model_history;
   "model/liveToken": typeof model_liveToken;
+  "model/mcp": typeof model_mcp;
   "model/rows": typeof model_rows;
   "model/transfer": typeof model_transfer;
   transfers: typeof transfers;
