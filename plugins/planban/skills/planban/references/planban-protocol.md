@@ -315,6 +315,18 @@ npm run planban -- read-doc <card-id> spec --cwd /path/to/repo -o json
 npm run planban -- demo -o json
 ```
 
+## Planban references
+
+Copy Reference in the Board puts one line on the clipboard: `\u201C<title>\u201D \u00B7 planban:<board>/<item>`. The `planban:` token is the identity; the quoted title is display context.
+
+Reading a reference:
+
+- `planban:<board>/<item>` names an Item or Group: `<board>` is the registered repo id and `<item>` is the card id. Resolve it with `planban_get_card` using `repoId` and `cardId`, or through the CLI `get-card`.
+- `planban:<board>` names a Board. Resolve it with `planban_status` or `planban_get_board` using `repoId`.
+- Trust the id over the title. If the resolved card's title differs from the quoted title, proceed with the id and mention the mismatch.
+
+Writing a reference: when citing or handing off an Item in a reply, prompt, or document, use the same one-line form. Do not invent longer labelled formats or absolute paths.
+
 ## Agent handoff prompts
 
 Planban handoff prompts for a new agent thread or session should include enough
