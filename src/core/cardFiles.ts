@@ -11,6 +11,8 @@ import { resolveInsideRoot } from "./paths";
 import { moveFilesOutCommand } from "./staleness";
 
 const LISTED_FILES = 8;
+/** Folder settings the operating system adds when a person opens a folder. */
+const SYSTEM_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 
 export class PlanbanCardHoldsFilesError extends PlanbanConflictError {
   readonly cardId: string;
@@ -77,10 +79,12 @@ export async function assertBoardIsIndex(planningRoot: string, roadmap: {
   project: unknown;
   roadmapItems: Array<{ id: string; title: string; specDoc?: string | null; planDoc?: string | null }>;
 }) {
-  const folders = (await readdir(join(planningRoot, "items"), { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name);
+  const entries = await readdir(join(planningRoot, "items"), { withFileTypes: true }).catch(() => []);
+  // Card folders, including ones that are links (filesInCard reports those), and anything else lying beside them.
+  const folders = entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map((entry) => entry.name);
+  const strays = entries.filter((entry) => !entry.isDirectory() && !entry.isSymbolicLink() && !SYSTEM_FILES.has(entry.name)).map((entry) => entry.name);
   const holding = Object.entries(await cardsHoldingFiles(planningRoot, folders));
+  if (strays.length) holding.push(["(beside the card folders)", strays]);
   if (holding.length) {
     const listed = holding.slice(0, 5).map(([id, files]) => `${id} (${listFiles(files, 3)})`).join("; ");
     const more = holding.length > 5 ? `; and ${holding.length - 5} more` : "";

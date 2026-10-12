@@ -527,6 +527,27 @@ test("a board holding files, or text that embeds one, is not duplicated", async 
     await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-b" }), /Not saved: the Spec of card alpha contains (?:an embedded file|a picture stored in the text)/u);
     assert.ok(!existsSync(join(home, "repos", "copy-b")));
     writeFileSync(join(folder("alpha"), "spec.md"), "# Alpha Spec\n");
+
+    // A card folder that is a link, for a current card or a deleted one, or a file beside the folders.
+    if (process.platform !== "win32") {
+      mkdirSync(join(home, "elsewhere"));
+      writeFileSync(join(home, "elsewhere", "evidence.bin"), "x");
+      await createCard({ cwd, title: "Linked", status: "up-next" });
+      rmSync(folder("linked"), { recursive: true });
+      symlinkSync(join(home, "elsewhere"), folder("linked"));
+      await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-d" }), /Not copied: a card folder holds files: linked \(\(this card's folder is a link to another folder\)\)/u);
+      assert.ok(!existsSync(join(home, "repos", "copy-d")));
+      rmSync(folder("linked"));
+      symlinkSync(join(home, "elsewhere"), folder("deleted-card"));
+      await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-e" }), /Not copied: .*deleted-card/u);
+      rmSync(folder("deleted-card"));
+      mkdirSync(folder("linked"));
+      writeFileSync(join(folder("linked"), "spec.md"), "# Linked Spec\n");
+    }
+    writeFileSync(join(folder("alpha"), "..", "notes.txt"), "stray");
+    await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-f" }), /Not copied: a card folder holds files: \(beside the card folders\) \(notes\.txt\)/u);
+    rmSync(join(folder("alpha"), "..", "notes.txt"));
+    writeFileSync(join(folder("alpha"), "..", ".DS_Store"), "");
     const copied = await duplicateBoard({ sourceRepoId: repoId, repoId: "copy-c" });
     assert.equal(copied.board.repoId, "copy-c");
   });
