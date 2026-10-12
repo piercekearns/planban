@@ -37,15 +37,14 @@ test("authorization freezes validated metadata and bindings, with independent ho
   const invalid = await authorizationResponse(ctx, authorize({ ...fields, redirect_uri: "https://attacker.example/callback" }), async () => client);
   assert.equal(invalid.status, 400);
   assert.equal(invalid.headers.get("Location"), null);
-  for (const override of [{ resource: "https://attacker.example" }, { scope: "planban:owner" }, { code_challenge_method: "plain" }, { response_type: "token" }]) {
-    const failed = await authorizationResponse(ctx, authorize({ ...fields, ...override }), async () => client);
-    assert.equal(failed.status, 303);
-    const redirect = new URL(failed.headers.get("Location")!);
-    assert.equal(redirect.origin, new URL(fields.redirect_uri).origin);
-    assert.equal(redirect.searchParams.get("iss"), origin);
-    assert.equal(redirect.searchParams.get("state"), fields.state);
-    assert.ok(redirect.searchParams.get("error"));
+  let invalidFetches = 0;
+  for (const override of [{ resource: "https://attacker.example" }, { scope: "planban:owner" }, { code_challenge_method: "plain" }, { code_challenge: "short" }, { response_type: "token" }, { state: "x".repeat(2049) }]) {
+    const failed = await authorizationResponse(ctx, authorize({ ...fields, ...override }), async () => { invalidFetches++; return client; });
+    assert.equal(failed.status, 400);
+    assert.equal(failed.headers.get("Location"), null, "unvalidated callbacks receive no error redirect");
+    assert.ok((await failed.json()).error);
   }
+  assert.equal(invalidFetches, 0, "independent malformed fields never fetch publisher metadata");
   assert.equal(stored.length, 1, "invalid requests create no pending rows");
 }));
 

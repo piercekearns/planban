@@ -62,18 +62,20 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
   if (!input) return rejected("invalid_request");
   const clientId = input.get("client_id") ?? "", redirectUri = input.get("redirect_uri") ?? "";
   const machine = clientId === MACHINE_CLIENT_ID;
-  const client = machine ? { clientId, name: "Planban CLI", redirectUris: CLI_REDIRECT_PORTS.map((port) => `http://127.0.0.1:${port}/callback`), native: true } : await loader(clientId);
-  if (!client || !redirectUri || !(machine ? client.redirectUris.includes(redirectUri) : clientRedirectAllowed(client, redirectUri))) return rejected("invalid_client");
+  if (!clientId || clientId.length > 2048 || !redirectUri || redirectUri.length > 2048) return rejected("invalid_client");
   const state = input.get("state") ?? "";
   if (state.length > 2048) return rejected("invalid_request");
-  const failed = (error: string) => new Response(null, { status: 303, headers: { Location: callback(redirectUri, state, { error }), "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
-  if (input.get("response_type") !== "code") return failed("unsupported_response_type");
+  // Reject independent malformed fields before any publisher fetch. Until
+  // metadata validates the callback, errors must not redirect to that URI.
+  if (input.get("response_type") !== "code") return rejected("unsupported_response_type");
   const resource = input.get("resource") ?? "";
-  if (![config.origin, `${config.origin}/mcp`].includes(resource) || (machine && resource !== config.origin)) return failed("invalid_target");
+  if (![config.origin, `${config.origin}/mcp`].includes(resource) || (machine && resource !== config.origin)) return rejected("invalid_target");
   const scopes = (input.get("scope") ?? (machine ? "planban:machine" : "planban:read")).split(" ");
-  if (!scopes.length || scopes.length > 4 || new Set(scopes).size !== scopes.length || (machine ? scopes.length !== 1 || scopes[0] !== "planban:machine" : !scopes.some((scope) => scope.startsWith("planban:")) || scopes.some((scope) => !(PLANBAN_SCOPES as readonly string[]).includes(scope)))) return failed("invalid_scope");
+  if (!scopes.length || scopes.length > 4 || new Set(scopes).size !== scopes.length || (machine ? scopes.length !== 1 || scopes[0] !== "planban:machine" : !scopes.some((scope) => scope.startsWith("planban:")) || scopes.some((scope) => !(PLANBAN_SCOPES as readonly string[]).includes(scope)))) return rejected("invalid_scope");
   const challenge = input.get("code_challenge") ?? "";
-  if (input.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return failed("invalid_request");
+  if (input.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return rejected("invalid_request");
+  const client = machine ? { clientId, name: "Planban CLI", redirectUris: CLI_REDIRECT_PORTS.map((port) => `http://127.0.0.1:${port}/callback`), native: true } : await loader(clientId);
+  if (!client || !(machine ? client.redirectUris.includes(redirectUri) : clientRedirectAllowed(client, redirectUri))) return rejected("invalid_client");
   const cookies = browserCookies(request, config.secure) ?? { browser: randomSecret("pbb_"), csrf: randomSecret("pbs_") };
   const requestSecret = randomSecret("pbe_");
   try {
