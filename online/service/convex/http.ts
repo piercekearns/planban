@@ -319,7 +319,10 @@ const mcp = httpAction(async (ctx, request) => {
     const auth = await authenticate(ctx, request);
     if (!auth) {
       return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
-        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp"`,
+        // Naming the scopes keeps AI apps from asking for everything the sign-in
+        // server offers (Clerk also lists public and private metadata, which
+        // Planban never uses), so the consent screen shows only what it needs.
+        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp", scope="${PLANBAN_SCOPES.join(" ")}"`,
       });
     }
     return await handleMcp(request, new McpService(ctx, auth.connectionId), publicOrigin());
@@ -328,13 +331,16 @@ const mcp = httpAction(async (ctx, request) => {
   }
 });
 
+/** The scopes Planban uses: who you are, your name and picture, your email, and staying signed in. */
+const PLANBAN_SCOPES = ["openid", "profile", "email", "offline_access"];
+
 /** RFC 9728 metadata: Clerk is the sign-in server (CLERK_ISSUER). */
 function protectedResourceFor(path: string) {
   return httpAction(async () => json({
     resource: `${publicOrigin()}${path}`,
     authorization_servers: process.env.CLERK_ISSUER ? [process.env.CLERK_ISSUER] : [],
     bearer_methods_supported: ["header"],
-    scopes_supported: ["openid", "profile", "email", "offline_access"],
+    scopes_supported: PLANBAN_SCOPES,
     resource_name: "Planban Online",
   }, 200, { "Cache-Control": "public, max-age=300" }));
 }
