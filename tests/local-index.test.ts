@@ -79,13 +79,13 @@ test("every local write refuses embedded files and oversized text, with advice o
     const refuses = (pattern: RegExp) => (error: unknown) => error instanceof PlanbanValidationError && pattern.test(error.message);
     const reference = /GitHub link.*local path labelled with its machine/su;
 
-    await assert.rejects(createCard({ cwd, title: "Beta", specMarkdown: dataUriSpec }), refuses(/the Spec of card Beta contains an embedded file/u));
+    await assert.rejects(createCard({ cwd, title: "Beta", specMarkdown: dataUriSpec }), refuses(/the Spec of card Beta contains (?:an embedded file|a picture stored in the text)/u));
     await assert.rejects(createCard({ cwd, title: "Beta", planMarkdown: pngBase64 }), refuses(/the Plan of card Beta contains an encoded file/u));
     await assert.rejects(createGroup({ cwd, title: "Gamma", summary: `Logo ${pngBase64}` }), refuses(/card gamma contains an encoded file/u));
     await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "spec", markdown: dataUriSpec }), refuses(reference));
     await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "plan", markdown: "word ".repeat(220 * 1024) }), refuses(/limit is 1024 KB/u));
-    await assert.rejects(updateCard({ cwd, cardId: card.id, summary: `Screenshot: data:image/png;base64,${pngBase64}` }), refuses(/card alpha contains an embedded file/u));
-    await assert.rejects(updateCard({ cwd, cardId: card.id, metadata: { logo: Array.from({ length: 4000 }, (_, index) => index % 256) } }), refuses(/long list of numbers/u));
+    await assert.rejects(updateCard({ cwd, cardId: card.id, summary: `Screenshot: data:image/png;base64,${pngBase64}` }), refuses(/card alpha contains (?:an embedded file|a picture stored in the text)/u));
+    await assert.rejects(updateCard({ cwd, cardId: card.id, metadata: { logo: Array.from({ length: 4000 }, (_, index) => index % 256) } }), refuses(/long lists? of numbers/u));
     await assert.rejects(updateCard({ cwd, cardId: card.id, summary: "y ".repeat(70 * 1024) }), refuses(/limit is 128 KB/u));
 
     // Nothing was written, and ordinary text, including a document the size of the largest real Plan, still saves.
@@ -236,7 +236,7 @@ test("the CLI refuses embedded files and flagged cards, and tidies with move-fil
     await createCard({ cwd, title: "Alpha", status: "up-next" });
     const embedded = cli(["write-doc", "alpha", "spec", "--cwd", cwd], home, dataUriSpec);
     assert.equal(embedded.status, 1);
-    assert.match(embedded.stderr, /^Not saved: the Spec of card alpha contains an embedded file.*local path labelled with its machine/su);
+    assert.match(embedded.stderr, /^Not saved: the Spec of card alpha contains (?:an embedded file|a picture stored in the text).*local path labelled with its machine/su);
 
     dropFiles(folder("alpha"));
     const refused = cli(["update-card", "alpha", "--summary", "Changed", "--cwd", cwd], home);
@@ -271,7 +271,7 @@ test("the web board's API refuses embedded files and flagged cards, and flags th
       });
       const embedded = await send("PUT", "/cards/beta/docs/spec", { markdown: dataUriSpec });
       assert.equal(embedded.status, 422);
-      assert.match(((await embedded.json()) as { error: string }).error, /^Not saved: the Spec of card beta contains an embedded file/u);
+      assert.match(((await embedded.json()) as { error: string }).error, /^Not saved: the Spec of card beta contains (?:an embedded file|a picture stored in the text)/u);
       const created = await send("POST", "/cards", { title: "Gamma", summary: `Logo ${pngBase64}` });
       assert.equal(created.status, 422);
 
@@ -337,7 +337,7 @@ test("MCP tools teach the rule, flag cards holding files, refuse writes to them,
     assert.match(responses[2].result.content[0].text, /\nThis card holds 2 files in its folder \(evidence\/run\.log, shot\.png\); changes are refused until they are moved out with `planban move-files-out alpha --to <folder>` or planban_move_files_out\. Planban is an index, not file storage\./u);
     assert.match(responses[3].result.content[0].text, /\n1 card holds files in its folder \(alpha\)\./u);
     assert.match(responses[4].error.message, /holds 2 files in its folder.*planban_move_files_out/su);
-    assert.match(responses[5].error.message, /^Not saved: the Spec of card Beta contains an embedded file/u);
+    assert.match(responses[5].error.message, /^Not saved: the Spec of card Beta contains (?:an embedded file|a picture stored in the text)/u);
     assert.match(responses[6].result.content[0].text, /^Dry run: nothing changed\. 2 files would move from card alpha to /u);
     assert.match(responses[7].result.content[0].text, /^Moved 2 files from card alpha to .* and added a Files section to its Spec\./u);
     assert.ok(existsSync(join(destination, "evidence", "run.log")));
@@ -423,7 +423,7 @@ test("board titles are checked too, when a board is created or duplicated", asyn
     const { duplicateBoard } = await import("../src/core/registry");
     await assert.rejects(
       initializeProject({ cwd: join(root, "other"), repoId: "other", title: `Logo data:image/png;base64,${pngBase64}`, updateAgents: false }),
-      /^PlanbanValidationError: Not saved: the board title contains an embedded file/u,
+      /^PlanbanValidationError: Not saved: the board title contains (?:an embedded file|a picture stored in the text)/u,
     );
     await assert.rejects(duplicateBoard({ sourceRepoId: repoId, title: pngBase64 }), /Not saved: the board title contains an encoded file/u);
   });
@@ -524,7 +524,7 @@ test("a board holding files, or text that embeds one, is not duplicated", async 
 
     // A Spec written before strict Local Mode, with a picture stored inside it.
     writeFileSync(join(folder("alpha"), "spec.md"), dataUriSpec);
-    await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-b" }), /Not saved: the Spec of card alpha contains an embedded file/u);
+    await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-b" }), /Not saved: the Spec of card alpha contains (?:an embedded file|a picture stored in the text)/u);
     assert.ok(!existsSync(join(home, "repos", "copy-b")));
     writeFileSync(join(folder("alpha"), "spec.md"), "# Alpha Spec\n");
     const copied = await duplicateBoard({ sourceRepoId: repoId, repoId: "copy-c" });

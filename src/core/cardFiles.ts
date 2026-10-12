@@ -43,10 +43,19 @@ export function cardHoldsFilesMessage(input: { cardId: string; title: string; fo
   ].join("\n");
 }
 
+/**
+ * What a card's folder holds besides its Spec and Plan, for flags and refusals. A folder Planban
+ * cannot read is listed too: it cannot be shown to be clean.
+ */
+export async function cardFolderEntries(planningRoot: string, cardId: string): Promise<string[]> {
+  const { files, unreadable } = await filesInCard(planningRoot, cardId);
+  return [...files, ...unreadable.map((path) => path === "." ? "(this card's folder, which could not be read)" : `${path}/ (could not be read)`)];
+}
+
 /** Refuses when any of the given cards holds files in its folder. */
 export async function assertCardsHoldNoFiles(planningRoot: string, cards: Array<{ id: string; title: string }>) {
   for (const card of cards) {
-    const files = await filesInCard(planningRoot, card.id);
+    const files = await cardFolderEntries(planningRoot, card.id);
     if (files.length) {
       throw new PlanbanCardHoldsFilesError({ cardId: card.id, title: card.title, folder: cardFolder(planningRoot, card.id), files });
     }
@@ -55,7 +64,7 @@ export async function assertCardsHoldNoFiles(planningRoot: string, cards: Array<
 
 /** Files held by each card that holds any, for flags on the board and in tool results. */
 export async function cardsHoldingFiles(planningRoot: string, cardIds: string[]): Promise<Record<string, string[]>> {
-  const entries = await Promise.all(cardIds.map(async (id) => [id, await filesInCard(planningRoot, id)] as const));
+  const entries = await Promise.all(cardIds.map(async (id) => [id, await cardFolderEntries(planningRoot, id)] as const));
   return Object.fromEntries(entries.filter(([, files]) => files.length > 0));
 }
 

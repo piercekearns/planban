@@ -242,9 +242,15 @@ export async function moveFilesOut(input: {
     const now = input.now ?? new Date();
     const destination = resolve(state.cwd, expandHome(input.to.trim()));
     const folder = cardFolder(state.planningRoot, item.id);
-    const files = await filesInCard(state.planningRoot, item.id);
+    const { files, unreadable } = await filesInCard(state.planningRoot, item.id);
     const base = { cardId: item.id, title: item.title, dryRun: input.dryRun === true, machine, destination };
-    if (!files.length) return { ...base, alreadyClean: true, moves: [], conflicts: [], specSection: "" };
+    if (!files.length && !unreadable.length) return { ...base, alreadyClean: true, moves: [], conflicts: [], specSection: "" };
+    if ((await lstat(folder).catch(() => null))?.isSymbolicLink()) {
+      throw new PlanbanValidationError(`Nothing was moved: this card's folder, ${friendlyPath(folder)}, is a link to another folder. Replace the link with a real folder holding only spec.md and plan.md, keeping the linked folder's files where they belong.`);
+    }
+    if (unreadable.length) {
+      throw new PlanbanValidationError(`Nothing was moved: Planban could not read ${unreadable.map((path) => path === "." ? "this card's folder" : path).join(", ")} in ${friendlyPath(folder)}. Fix its permissions, then run the command again.`);
+    }
 
     const realDestination = await realPathOf(destination);
     const planbanFolders = [state.planningRoot, defaultPlanbanRoot()];

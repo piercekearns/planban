@@ -5,10 +5,10 @@
 // document or point at files on this machine. Take Online refuses a board
 // that is not clean; strict Local Mode refuses changes to a card holding files.
 import { execFileSync } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { embeddedFileIn, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "./contentRules";
+import { checkIndexCard, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, MAX_DOCUMENT_BYTES, withoutCode } from "./contentRules";
 
 /** This machine's name as people know it, such as "Pierce's Mac mini". */
 export function machineName(): string {
@@ -45,50 +45,94 @@ const PLANBAN_SAVE_FILE = /^\.(spec|plan)\.md\.\d+\.\d+\.[0-9a-f-]{36}\.tmp$/;
 /** Folder settings the operating system adds when a person opens the folder; never a person's file. */
 const SYSTEM_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 
-/** Every file in a card's folder other than its Spec and Plan, with paths inside the folder. An empty folder is listed as `name/`. */
-export async function filesInCard(planningRoot: string, cardId: string): Promise<string[]> {
+/**
+ * Every file in a card's folder other than its Spec and Plan, with paths
+ * inside the folder (links are listed, not followed; an empty folder is
+ * listed as `name/`), and any folder inside it that could not be read.
+ */
+export async function filesInCard(planningRoot: string, cardId: string): Promise<{ files: string[]; unreadable: string[] }> {
+  const files: string[] = [];
+  const unreadable: string[] = [];
   // Only plain card ids name folders; anything else could point outside the board.
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cardId) || cardId.includes("..")) return [];
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cardId) || cardId.includes("..")) return { files, unreadable };
   const folder = join(planningRoot, "items", cardId);
-  const found: string[] = [];
+  // The card's folder itself may be a link to somewhere else: that is not the board's own text either.
+  const own = await lstat(folder).catch(() => null);
+  if (own?.isSymbolicLink()) return { files: ["(this card's folder is a link to another folder)"], unreadable };
   const walk = async (dir: string): Promise<void> => {
-    for (const entry of (await readdir(dir, { withFileTypes: true }).catch(() => [])).sort((a, b) => a.name.localeCompare(b.name))) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      // A card without a folder is fine; one that cannot be read is reported, never assumed empty.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") unreadable.push(relative(folder, dir).split(sep).join("/") || ".");
+      return;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const absolute = join(dir, entry.name);
       const path = relative(folder, absolute).split(sep).join("/");
       if (entry.isDirectory()) {
         // An empty folder is still something besides the card's text.
-        if ((await readdir(absolute).catch(() => null))?.length === 0) found.push(`${path}/`);
+        if ((await readdir(absolute).catch(() => null))?.length === 0) files.push(`${path}/`);
         else await walk(absolute);
         continue;
       }
-      if (dir === folder && (entry.name === "spec.md" || entry.name === "plan.md" || PLANBAN_SAVE_FILE.test(entry.name))) continue;
-      if (SYSTEM_FILES.has(entry.name)) continue;
+      if (dir === folder && entry.isFile() && (entry.name === "spec.md" || entry.name === "plan.md" || PLANBAN_SAVE_FILE.test(entry.name))) continue;
+      if (entry.isFile() && SYSTEM_FILES.has(entry.name)) continue;
       // Anything else (files, links, devices) is not Planban's own text.
-      found.push(path);
+      files.push(path);
     }
   };
   await walk(folder);
-  return found;
+  return { files, unreadable };
 }
 
-const MARKDOWN_IMAGE = /!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
-const HTML_IMAGE = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']*)["'][^>]*>/gi;
-const HTML_ALT = /\balt\s*=\s*["']([^"']*)["']/i;
+const MARKDOWN_IMAGE = /!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
+/** `![alt][ref]`, `![alt][]` and `![alt]`, with `[ref]: target` defined elsewhere. */
+const MARKDOWN_IMAGE_REF = /!\[([^\]\n]*)\](?:\[([^\]\n]*)\]|(?![(\[]))/g;
+const MARKDOWN_DEFINITION = /^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
+const HTML_IMAGE = /<(?:img|source)\b[^>]*>/gi;
+const HTML_ATTRIBUTE = (name: string) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+
+const safeDecode = (text: string) => {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text; // a literal file name such as "100%.png"
+  }
+};
 
 /** Pictures in a document that are stored in it or point at a file on this machine. Pictures on the web are fine. */
-export function picturesInTheWay(markdown: string, cardFolder: string): Array<{ alt: string; where: string }> {
+export function picturesInTheWay(document: string, cardFolder: string): Array<{ alt: string; where: string }> {
+  // A picture shown as an example in code is not a picture.
+  const markdown = withoutCode(document);
   const found: Array<{ alt: string; where: string }> = [];
   const consider = (alt: string, target: string) => {
+    if (!target) return;
     if (/^data:/i.test(target)) found.push({ alt, where: "stored in the document" });
     else if (/^(https?:)?\/\//i.test(target)) return;
     else if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !/^file:/i.test(target)) return;
     else {
-      const path = decodeURIComponent(target.replace(/^file:\/\//i, ""));
+      const path = safeDecode(target.replace(/^file:\/\//i, ""));
       found.push({ alt, where: friendlyPath(isAbsolute(path) ? path : resolve(cardFolder, path)) });
     }
   };
   for (const match of markdown.matchAll(MARKDOWN_IMAGE)) consider(match[1]!, match[2]!);
-  for (const match of markdown.matchAll(HTML_IMAGE)) consider(HTML_ALT.exec(match[0])?.[1] ?? "", match[1]!);
+  const definitions = new Map([...markdown.matchAll(MARKDOWN_DEFINITION)].map((match) => [match[1]!.trim().toLowerCase(), (match[2] ?? match[3])!]));
+  for (const match of markdown.matchAll(MARKDOWN_IMAGE_REF)) {
+    const target = definitions.get((match[2] || match[1])!.trim().toLowerCase());
+    if (target) consider(match[1]!, target);
+  }
+  for (const tag of markdown.matchAll(HTML_IMAGE)) {
+    const value = (name: string) => {
+      const match = HTML_ATTRIBUTE(name).exec(tag[0]);
+      return match ? (match[1] ?? match[2] ?? match[3] ?? "") : "";
+    };
+    const alt = value("alt");
+    consider(alt, value("src"));
+    // Every candidate in a srcset ("small.png 1x, large.png 2x").
+    for (const candidate of value("srcset").split(",")) consider(alt, candidate.trim().split(/\s+/)[0] ?? "");
+  }
   return found;
 }
 
@@ -97,6 +141,8 @@ export interface IndexReport {
   clean: boolean;
   machine: string;
   cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: "spec" | "plan"; alt: string; where: string }>; problems: string[] }>;
+  /** Problems with the board's own details rather than a card. */
+  boardProblems: string[];
   files: number;
   pictures: number;
   howToTidy: string;
@@ -110,6 +156,8 @@ export async function checkBoardIsIndex(input: {
   planningRoot: string;
   cards: Array<{ id: string; title: string } & Record<string, unknown>>;
   docs: Array<{ cardId: string; kind: "spec" | "plan"; markdown: string }>;
+  /** The board's own fields other than its cards (title, description, columns). */
+  details?: unknown;
 }): Promise<IndexReport> {
   const machine = machineName();
   const byCard = new Map<string, IndexReport["cards"][number]>();
@@ -123,13 +171,17 @@ export async function checkBoardIsIndex(input: {
   const titles = new Map(input.cards.map((card) => [card.id, card.title]));
   for (const card of input.cards) {
     const inFolder = await filesInCard(input.planningRoot, card.id);
-    if (inFolder.length) {
-      entry(card.id, card.title).files.push(...inFolder);
-      files += inFolder.length;
+    if (inFolder.files.length) {
+      entry(card.id, card.title).files.push(...inFolder.files);
+      files += inFolder.files.length;
     }
-    const text = Object.values(card).filter((value): value is string => typeof value === "string").join("\n");
-    if (embeddedFileIn(text)) entry(card.id, card.title).problems.push("Its fields contain an embedded file.");
-    if (new TextEncoder().encode(JSON.stringify(card)).length > MAX_CARD_BYTES) entry(card.id, card.title).problems.push("Its fields are larger than 128 KB.");
+    for (const folder of inFolder.unreadable) entry(card.id, card.title).problems.push(`Planban could not read the folder ${folder === "." ? "of this card" : folder} to check it.`);
+    // The same check every write uses: all fields, metadata and keys, added up.
+    try {
+      checkIndexCard(card);
+    } catch (error) {
+      entry(card.id, card.title).problems.push((error as Error).message.replace(/^Not saved: card \S+ /, "Its fields ").replace(/\. (?:Online Boards|Planban boards) hold.*$/s, "."));
+    }
   }
   for (const doc of input.docs) {
     const title = titles.get(doc.cardId) ?? doc.cardId;
@@ -140,11 +192,19 @@ export async function checkBoardIsIndex(input: {
       pictures += found.length;
     }
     // Embedded content that is not a picture (pictures are already listed).
-    const withoutPictures = doc.markdown.replace(MARKDOWN_IMAGE, "").replace(HTML_IMAGE, "");
+    const withoutPictures = doc.markdown.replace(MARKDOWN_IMAGE, "").replace(HTML_IMAGE, "").replace(MARKDOWN_DEFINITION, "");
     const embedded = embeddedFileIn(withoutPictures);
     if (embedded) entry(doc.cardId, title).problems.push(`Its ${label} contains ${embedded}.`);
     if (new TextEncoder().encode(doc.markdown).length > MAX_DOCUMENT_BYTES) entry(doc.cardId, title).problems.push(`Its ${label} is larger than 1 MB.`);
   }
+  const boardProblems: string[] = [];
+  if (input.details !== undefined) {
+    try {
+      checkIndexValue(input.details, "the board's details", MAX_DETAILS_BYTES);
+    } catch (error) {
+      boardProblems.push((error as Error).message.replace(/^Not saved: /, "").replace(/\. (?:Online Boards|Planban boards) hold.*$/s, "."));
+    }
+  }
   const cards = [...byCard.values()];
-  return { clean: cards.length === 0, machine, cards, files, pictures, howToTidy: howToTidy(machine) };
+  return { clean: cards.length === 0 && boardProblems.length === 0, machine, cards, boardProblems, files, pictures, howToTidy: howToTidy(machine) };
 }
