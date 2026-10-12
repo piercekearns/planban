@@ -11,6 +11,7 @@ import { agentLevel } from "./schema";
 import { metadataClientAllowed } from "./model/oauthClient";
 
 export const REQUEST_MS = 10 * 60_000;
+export const MACHINE_REQUEST_MS = 5 * 60_000;
 export const CODE_MS = 60_000;
 export const ACCESS_MS = 5 * 60_000;
 export const REFRESH_IDLE_MS = 90 * 24 * 60 * 60_000;
@@ -26,6 +27,52 @@ export function scopeLevel(scopes: string[]) {
 async function requestRow(ctx: MutationCtx, requestHash: string) {
   return ctx.db.query("oauthRequests").withIndex("by_requestHash", (q) => q.eq("requestHash", requestHash)).unique();
 }
+
+async function meterRequest(ctx: MutationCtx, clientId: string) {
+  const bucket = Math.floor(Date.now() / REQUEST_MS);
+  const usage = await ctx.db.query("oauthUsage").withIndex("by_client_bucket", (q) => q.eq("clientId", clientId).eq("bucket", bucket)).unique();
+  if ((usage?.requests ?? 0) >= 100) fail("rate_limited", "Too many authorization requests. Try again later.");
+  if (usage) await ctx.db.patch(usage._id, { requests: usage.requests + 1 });
+  else await ctx.db.insert("oauthUsage", { clientId, bucket, requests: 1 });
+}
+
+/** One service-owned lease begins before browser opening; no client wall clock is trusted. */
+export const startMachine = internalMutation({
+  args: { launchHash: hash, requestHash: hash, redirectUri: v.string(), resource: v.string(), challenge: v.string(), state: v.string() },
+  handler: async (ctx, args) => {
+    if (![args.launchHash, args.requestHash].every((h) => /^[a-f0-9]{64}$/.test(h)) || !/^[A-Za-z0-9_-]{43}$/.test(args.challenge) || !args.state || args.state.length > 2048 || args.resource.length > 2048 || !/^http:\/\/127\.0\.0\.1:5368[2-6]\/callback$/.test(args.redirectUri)) fail("validation", "Invalid machine start.");
+    await meterRequest(ctx, MACHINE_CLIENT_ID);
+    const serverNow = Date.now(), expiresAt = serverNow + MACHINE_REQUEST_MS;
+    await ctx.db.insert("oauthRequests", { ...args, clientId: MACHINE_CLIENT_ID, clientName: "Planban CLI", scopes: ["planban:machine"], level: "complete", purpose: "machine", status: "awaiting_browser", expiresAt });
+    await scheduleCleanup(ctx, MACHINE_REQUEST_MS + CODE_MS);
+    return { serverNow, expiresAt };
+  },
+});
+
+/** Launch is a single claim; replay cannot replace the browser binding or renew a lease. */
+export const claimMachine = internalMutation({
+  args: { launchHash: hash, requestHash: hash, browserHash: hash, csrfHash: hash },
+  handler: async (ctx, args) => {
+    if (!Object.values(args).every((h) => /^[a-f0-9]{64}$/.test(h))) return false;
+    const row = await ctx.db.query("oauthRequests").withIndex("by_launchHash", (q) => q.eq("launchHash", args.launchHash)).unique();
+    if (!row || row.purpose !== "machine" || row.status !== "awaiting_browser" || row.browserHash || row.csrfHash || row.expiresAt <= Date.now()) return false;
+    await ctx.db.patch(row._id, { requestHash: args.requestHash, browserHash: args.browserHash, csrfHash: args.csrfHash, status: "pending" });
+    return true;
+  },
+});
+
+/** PKCE ownership can end only this unredeemed request, never another connection or session. */
+export const cancelMachine = internalMutation({
+  args: { launchHash: hash, challenge: v.string() },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.query("oauthRequests").withIndex("by_launchHash", (q) => q.eq("launchHash", args.launchHash)).unique();
+    if (!row || row.purpose !== "machine" || row.challenge !== args.challenge || row.status === "consumed") return;
+    const grant = row.connectionId ? await ctx.db.get(row.connectionId) : null;
+    if (grant && !grant.oauthPending) return;
+    if (grant?.oauthPending && !grant.revokedAt) await ctx.db.patch(grant._id, { revokedAt: new Date().toISOString() });
+    await ctx.db.patch(row._id, { status: "denied" });
+  },
+});
 
 async function cleanupState(ctx: MutationCtx) {
   return ctx.db.query("oauthCleanup").withIndex("by_name", (q) => q.eq("name", "requests")).unique();
@@ -64,11 +111,7 @@ export const createRequest = internalMutation({
     if (args.purpose === "machine") {
       if (args.clientId !== MACHINE_CLIENT_ID || args.scopes.length !== 1 || args.scopes[0] !== "planban:machine" || args.level !== "complete") fail("validation", "Invalid machine authorization.");
     } else if (!args.scopes.some((scope) => scope.startsWith("planban:")) || args.scopes.some((scope) => !SCOPES.has(scope)) || args.level !== scopeLevel(args.scopes)) fail("validation", "Invalid authorization scopes.");
-    const bucket = Math.floor(Date.now() / REQUEST_MS);
-    const usage = await ctx.db.query("oauthUsage").withIndex("by_client_bucket", (q) => q.eq("clientId", args.clientId).eq("bucket", bucket)).unique();
-    if ((usage?.requests ?? 0) >= 100) fail("rate_limited", "Too many authorization requests. Try again later.");
-    if (usage) await ctx.db.patch(usage._id, { requests: usage.requests + 1 });
-    else await ctx.db.insert("oauthUsage", { clientId: args.clientId, bucket, requests: 1 });
+    await meterRequest(ctx, args.clientId);
     await ctx.db.insert("oauthRequests", { ...args, status: "pending", expiresAt: Date.now() + REQUEST_MS });
     await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);
     return { created: true };
@@ -81,7 +124,7 @@ export const inspect = internalQuery({
   handler: async (ctx, args) => {
     const row = await ctx.db.query("oauthRequests").withIndex("by_requestHash", (q) => q.eq("requestHash", args.requestHash)).unique();
     if (!row || row.browserHash !== args.browserHash || row.expiresAt <= Date.now() || row.status !== "pending") return null;
-    return { clientId: row.clientId, clientName: row.clientName, redirectUri: row.redirectUri, resource: row.resource, scopes: row.scopes, purpose: row.purpose, userId: row.userId };
+    return { clientId: row.clientId, clientName: row.clientName, redirectUri: row.redirectUri, resource: row.resource, scopes: row.scopes, purpose: row.purpose, userId: row.userId, expiresAt: row.expiresAt, serverNow: Date.now() };
   },
 });
 
@@ -132,8 +175,8 @@ export const approve = internalMutation({
       oauthClientId: row!.clientId, oauthResource: row!.resource, authorizationVersion: 2, oauthPending: true,
       ...(row!.purpose === "oauth" ? { expiresAt: new Date(Date.now() + GRANT_MS).toISOString() } : {}),
     });
-    const codeExpiresAt = Date.now() + CODE_MS;
-    await ctx.db.patch(row!._id, { status: "approved", connectionId, codeHash: args.codeHash, codeExpiresAt, expiresAt: codeExpiresAt, ...(args.approverConnectionId ? { approverConnectionId: args.approverConnectionId } : {}) });
+    const codeExpiresAt = row!.purpose === "machine" ? Math.min(Date.now() + CODE_MS, row!.expiresAt) : Date.now() + CODE_MS;
+    await ctx.db.patch(row!._id, { status: "approved", connectionId, codeHash: args.codeHash, codeExpiresAt, expiresAt: row!.purpose === "machine" ? row!.expiresAt : codeExpiresAt, ...(args.approverConnectionId ? { approverConnectionId: args.approverConnectionId } : {}) });
     return { denied: false, redirectUri: row!.redirectUri, state: row!.state };
   },
 });
@@ -162,7 +205,7 @@ export const redeem = internalMutation({
   args: { codeHash: hash, clientId: v.string(), redirectUri: v.string(), resource: v.string(), challenge: v.string(), accessHash: hash, refreshHash: hash, sessionId: v.optional(v.string()), sessionUserId: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const row = await ctx.db.query("oauthRequests").withIndex("by_codeHash", (q) => q.eq("codeHash", args.codeHash)).unique();
-    if (!row || row.status !== "approved" || !row.connectionId || (row.codeExpiresAt ?? 0) <= Date.now() || row.clientId !== args.clientId || row.redirectUri !== args.redirectUri || row.resource !== args.resource || row.challenge !== args.challenge) return invalid();
+    if (!row || row.status !== "approved" || !row.connectionId || (row.purpose === "machine" && row.expiresAt <= Date.now()) || (row.codeExpiresAt ?? 0) <= Date.now() || row.clientId !== args.clientId || row.redirectUri !== args.redirectUri || row.resource !== args.resource || row.challenge !== args.challenge) return invalid();
     const connection = await ctx.db.get(row.connectionId);
     if (!connection || connection.revokedAt || !connection.oauthPending) return invalid();
     if (row.approverConnectionId && !connectionIsUsable(await ctx.db.get(row.approverConnectionId))) return invalid();
@@ -183,7 +226,7 @@ export const redemptionContext = internalQuery({
   args: { codeHash: hash },
   handler: async (ctx, { codeHash }) => {
     const row = await ctx.db.query("oauthRequests").withIndex("by_codeHash", (q) => q.eq("codeHash", codeHash)).unique();
-    return row?.status === "approved" && (row.codeExpiresAt ?? 0) > Date.now()
+    return row?.status === "approved" && (row.purpose !== "machine" || row.expiresAt > Date.now()) && (row.codeExpiresAt ?? 0) > Date.now()
       ? { sessionId: row.approverConnectionId ? undefined : row.sessionId, userId: row.userId }
       : null;
   },

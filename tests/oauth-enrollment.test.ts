@@ -66,6 +66,66 @@ function fixture() {
   return { ctx, rows, db, jobs, runDueCleanup, cleanupNow, addMachine, request, approve, redeem, accessId };
 }
 
+test("machine lease starts before browser claim, cannot be replayed or extended by approval, and refuses exact expiry", async () => {
+  const original = Date.now; let now = 100000; Date.now = () => now;
+  try {
+    const f = fixture();
+    const start = { launchHash: digest("launch"), requestHash: digest("unclaimed"), redirectUri: "http://127.0.0.1:53682/callback", resource: "https://planban.example", challenge: "a".repeat(43), state: "opaque" };
+    const lease = await handler(oauth.startMachine, f.ctx, start);
+    assert.equal(lease.expiresAt, now + 300000);
+    const row = f.rows.find(r => r.table === "oauthRequests");
+    assert.equal(row.browserHash, undefined);
+    assert.equal(row.status, "awaiting_browser");
+    const claim = { launchHash: start.launchHash, requestHash: digest("claimed"), browserHash: digest("browser"), csrfHash: digest("csrf") };
+    now += 120000;
+    assert.equal(await handler(oauth.claimMachine, f.ctx, claim), true);
+    assert.equal(await handler(oauth.claimMachine, f.ctx, { ...claim, browserHash: digest("other") }), false);
+    assert.equal(row.browserHash, claim.browserHash);
+    assert.equal(row.expiresAt, lease.expiresAt);
+    assert.equal(f.rows.find(r => r.table === "oauthUsage").requests, 1, "claim neither meters nor allocates again");
+    const admin = await f.addMachine();
+    now = lease.expiresAt - 1;
+    await handler(oauth.bindIdentity, f.ctx, { ...claim, userId: "person" });
+    await handler(oauth.approve, f.ctx, { ...claim, userId: "person", approverConnectionId: admin, codeHash: digest("code"), deny: false });
+    assert.equal(row.expiresAt, lease.expiresAt);
+    assert.equal(row.codeExpiresAt, lease.expiresAt, "near-end code must not extend the lease");
+    now = lease.expiresAt;
+    assert.equal(await handler(oauth.redemptionContext, f.ctx, { codeHash: row.codeHash }), null);
+    assert.equal((await handler(oauth.redeem, f.ctx, { ...start, codeHash: row.codeHash, clientId: "planban-cli", accessHash: digest("access"), refreshHash: digest("refresh") })).error, "invalid_grant");
+    assert.equal(await handler(oauth.inspect, f.ctx, claim), null);
+    assert.equal((await f.db.get(row.connectionId)).oauthPending, true);
+  } finally { Date.now = original; }
+});
+
+test("PKCE-owned cancellation wins before claim or redemption and leaves consumed independent machines unchanged", async () => {
+  const f = fixture();
+  const start = { launchHash: digest("cancel-launch"), requestHash: digest("unclaimed"), redirectUri: "http://127.0.0.1:53682/callback", resource: "https://planban.example", challenge: "a".repeat(43), state: "opaque" };
+  await handler(oauth.startMachine, f.ctx, start);
+  const row = f.rows.find(r => r.table === "oauthRequests");
+  await handler(oauth.cancelMachine, f.ctx, { launchHash: start.launchHash, challenge: "wrong" });
+  assert.equal(row.status, "awaiting_browser");
+  const claim = { launchHash: start.launchHash, requestHash: digest("claimed"), browserHash: digest("browser"), csrfHash: digest("csrf") };
+  assert.equal(await handler(oauth.claimMachine, f.ctx, claim), true);
+  const admin = await f.addMachine();
+  await handler(oauth.bindIdentity, f.ctx, { ...claim, userId: "person" });
+  await handler(oauth.approve, f.ctx, { ...claim, userId: "person", approverConnectionId: admin, codeHash: digest("code"), deny: false });
+  await handler(oauth.cancelMachine, f.ctx, start);
+  assert.equal(row.status, "denied");
+  assert.ok((await f.db.get(row.connectionId)).revokedAt);
+  assert.equal((await f.db.get(admin)).revokedAt, undefined);
+  const tombstone = (await f.db.get(row.connectionId)).revokedAt;
+  await handler(oauth.cancelMachine, f.ctx, start);
+  assert.equal((await f.db.get(row.connectionId)).revokedAt, tombstone);
+  await handler(oauth.startMachine, f.ctx, { ...start, launchHash: digest("second-launch"), requestHash: digest("second") });
+  const second = f.rows.find(r => r.launchHash === digest("second-launch"));
+  await handler(oauth.cancelMachine, f.ctx, { launchHash: second.launchHash, challenge: start.challenge });
+  assert.equal(await handler(oauth.claimMachine, f.ctx, { ...claim, launchHash: second.launchHash }), false);
+  row.status = "consumed"; (await f.db.get(row.connectionId)).oauthPending = false;
+  await handler(oauth.cancelMachine, f.ctx, start);
+  assert.equal(row.status, "consumed", "consumed row cannot be rewritten by cancellation");
+  assert.equal((await f.db.get(row.connectionId)).revokedAt, tombstone, "cancellation cannot revive or replace tombstones");
+});
+
 test("explicit approval creates an independently revocable pending grant and one code redemption activates it", async () => {
   const f = fixture(), machine = await f.addMachine(), args = await f.request("first");
   const grant = await f.approve(args, machine);

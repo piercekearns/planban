@@ -76,8 +76,15 @@ async function openBrowser(url: string) {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: "ignore" });
     child.on("error", reject);
-    child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`Could not open sign-in page: ${url}`)));
+    child.on("exit", (code) => code === 0 ? resolve() : reject(new Error("Could not open the Planban sign-in page.")));
   });
+}
+
+async function boundedJson(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader(); if (!reader) throw new Error("Missing sign-in response.");
+  let text = "", size = 0; const decoder = new TextDecoder("utf-8", { fatal: true });
+  try { while (true) { const { done, value } = await reader.read(); if(done) break; size += value.byteLength; if(size > 8192) throw new Error("Sign-in response is too large."); text += decoder.decode(value, { stream: true }); } text += decoder.decode(); return JSON.parse(text); }
+  finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
 }
 
 interface SignInConfig {
@@ -120,12 +127,12 @@ async function signInEndpoints(url: string) {
   if (metadata.authorization_response_iss_parameter_supported !== true) throw new Error("The sign-in server must identify itself in its callback.");
   return {
     issuer, clientId: config.cliClientId, ports: config.redirectPorts, scope: config.scope,
-    authorize: endpoint("authorization_endpoint")!, token: endpoint("token_endpoint")!, revoke: endpoint("revocation_endpoint", false),
+    start: endpoint("planban_machine_start_endpoint")!, cancel: endpoint("planban_machine_cancel_endpoint")!, authorize: endpoint("authorization_endpoint")!, token: endpoint("token_endpoint")!, revoke: endpoint("revocation_endpoint", false),
   };
 }
 
 /** Listens for the sign-in callback on the first free registered loopback port. */
-async function callbackListener(ports: number[], state: string, issuer: string) {
+async function callbackListener(ports: number[], state: string, issuer: string, waiting: () => boolean) {
   let resolveCode!: (code: string) => void;
   let rejectCode!: (error: Error) => void;
   const code = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
@@ -133,7 +140,7 @@ async function callbackListener(ports: number[], state: string, issuer: string) 
   void code.catch(() => undefined);
   const listener = createServer((req, res) => {
     const callback = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (callback.pathname !== "/callback" || callback.searchParams.get("state") !== state
+    if (!waiting() || callback.pathname !== "/callback" || callback.searchParams.get("state") !== state
       || callback.searchParams.getAll("state").length !== 1 || callback.searchParams.getAll("iss").length !== 1 || callback.searchParams.get("iss") !== issuer) {
       res.writeHead(400).end("Invalid sign-in callback.");
       return;
@@ -182,26 +189,55 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
   const server = await signInEndpoints(url);
   const verifier = randomBytes(32).toString("base64url");
   const state = randomBytes(32).toString("base64url");
-  const callback = await callbackListener(server.ports, state, server.issuer);
-  const timeout = setTimeout(() => callback.fail(new Error("Planban sign-in timed out. Run login again.")), 5 * 60_000);
+  let deadline = 0, launch = "", redeemedToken = "", saved = false;
+  const callback = await callbackListener(server.ports, state, server.issuer, () => deadline > performance.now());
+  const controller = new AbortController();
+  const ended = new Promise<never>((_resolve, reject) => controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true }));
+  void ended.catch(() => undefined);
+  const stop = (reason: Error) => { controller.abort(reason); callback.fail(reason); };
+  const interrupted = () => stop(new Error("Planban sign-in was interrupted."));
+  process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const within = <T>(operation: Promise<T>) => Promise.race([operation, ended]);
+  const checkDeadline = () => { if (performance.now() >= deadline || controller.signal.aborted) throw new Error("Planban sign-in timed out. Run login again."); };
   try {
-    const authorize = new URL(server.authorize);
-    authorize.search = new URLSearchParams({
-      response_type: "code", client_id: server.clientId, redirect_uri: callback.redirectUri, state, scope: server.scope,
-      code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: url,
-    }).toString();
-    await (options.openBrowser ?? openBrowser)(authorize.href);
-    const code = await callback.code;
-    const exchanged = await fetch(server.token, {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+    const start = await within(fetch(server.start, {
+      method: "POST", redirect: "error", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+      body: new URLSearchParams({ client_id: server.clientId, redirect_uri: callback.redirectUri, scope: server.scope,
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: url, state }),
+    }));
+    const lease = await within(boundedJson(start)) as { launch?: string; launchUrl?: string; serverNow?: number; expiresAt?: number };
+    const remaining = Number(lease.expiresAt) - Number(lease.serverNow);
+    if (!start.ok || !Number.isSafeInteger(lease.expiresAt) || !Number.isSafeInteger(lease.serverNow) || !(remaining > 0 && remaining <= 300_000) || !/^pbl_[A-Za-z0-9_-]{43}$/.test(lease.launch ?? "") || lease.launchUrl !== `${server.issuer}/oauth/machine/launch?launch=${lease.launch}`) throw new Error("The service did not issue a valid bounded sign-in request.");
+    launch = lease.launch!;
+    // The reply arrives after serverNow. Waiting its remaining duration from receipt
+    // is an upper bound on service expiry, independent of the local wall clock.
+    deadline = performance.now() + remaining;
+    timeout = setTimeout(() => stop(new Error("Planban sign-in timed out. Run login again.")), remaining);
+    await within(Promise.race([(options.openBrowser ?? openBrowser)(lease.launchUrl!), callback.code.then(() => undefined)]));
+    const code = await within(callback.code);
+    checkDeadline();
+    const exchanged = await within(fetch(server.token, {
+      method: "POST", redirect: "error", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(Math.min(30_000, Math.max(1, Math.floor(deadline - performance.now()))))]),
       body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: server.clientId, code_verifier: verifier, redirect_uri: callback.redirectUri, resource: url }),
-    });
-    const tokens = await exchanged.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; token_type?: string; scope?: string; user_id?: string };
+    }));
+    const tokens = await within(boundedJson(exchanged).catch(() => ({}))) as { access_token?: string; refresh_token?: string; token_type?: string; scope?: string; user_id?: string };
     if (!exchanged.ok || !/^pbm_[A-Za-z0-9_-]{43}$/.test(tokens.access_token ?? "") || tokens.token_type !== "Bearer" || tokens.scope !== "planban:machine" || tokens.refresh_token) throw new Error("The sign-in server did not issue this machine's own Planban sign-in. Run login again.");
-    await saveCredentials(url, { clientId: "machine", accessToken: tokens.access_token!, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(tokens.user_id ? { person: tokens.user_id } : {}) });
+    redeemedToken = tokens.access_token!;
+    checkDeadline();
+    await saveCredentials(url, { clientId: "machine", accessToken: redeemedToken, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(tokens.user_id ? { person: tokens.user_id } : {}) });
+    saved = true;
     return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
   } finally {
     clearTimeout(timeout);
+    process.off("SIGINT", interrupted); process.off("SIGTERM", interrupted);
     await callback.close();
+    if (!saved && launch) {
+      // Bounded proof-owned cancellation cannot revoke a consumed independent machine.
+      await fetch(server.cancel, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000), body: new URLSearchParams({ launch, code_verifier: verifier }) }).catch(() => undefined);
+    }
+    if (!saved && redeemedToken && server.revoke) {
+      await fetch(server.revoke, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000), body: new URLSearchParams({ client_id: server.clientId, token: redeemedToken }) }).catch(() => undefined);
+    }
   }
 }

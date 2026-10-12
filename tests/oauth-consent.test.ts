@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { Script } from "node:vm";
 import { test } from "node:test";
 import { getFunctionName } from "convex/server";
-import { authorizationResponse, approvalResponse, consentResponse } from "../online/service/convex/model/oauthConsent";
+import { authorizationResponse, approvalResponse, consentResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse } from "../online/service/convex/model/oauthConsent";
 import { serviceDiscovery, authorizationServerDiscovery } from "../online/service/convex/http";
 import { CLAUDE_CODE_CLIENT_ID, parseClientMetadata } from "../online/service/convex/model/oauthClient";
 
@@ -161,4 +161,40 @@ test("consent escapes frozen metadata and approval requires origin, independent 
   const denied = await approvalResponse(ctx, post({ ...input, decision: "deny" }), async () => { throw new Error("denial needs no identity"); });
   assert.equal(new URL((await denied.json()).redirect).searchParams.get("error"), "access_denied");
   assert.deepEqual(calls.map(({ fn }) => fn), ["oauth:denyRequest"]);
+}));
+
+
+test("machine start freezes before browser claim and direct legacy authorization cannot bypass the lease", async () => configured(async () => {
+  const calls: any[] = []; const ctx: any = { runMutation: async (fn: any, args: any) => { calls.push({ fn: getFunctionName(fn), args }); return { serverNow: 1000, expiresAt: 301000 }; } };
+  const values = { ...fields, client_id: "planban-cli", scope: "planban:machine", redirect_uri: "http://127.0.0.1:53682/callback", resource: origin };
+  const post = (fields: any) => new Request(origin + "/oauth/machine/start", { method: "POST", body: new URLSearchParams(fields) });
+  assert.equal((await authorizationResponse(ctx, authorize(values))).status, 400);
+  for(const bad of [{ ...values, redirect_uri: "http://localhost:53682/callback" },{ ...values, resource: origin + "/mcp" },{ ...values, code_challenge_method: "plain" }]) assert.equal((await machineStartResponse(ctx, post(bad))).status, 400);
+  assert.equal(calls.length, 0);
+  const response = await machineStartResponse(ctx, post(values));
+  const lease = await response.json();
+  assert.match(lease.launch, /^pbl_[A-Za-z0-9_-]{43}$/);
+  assert.equal(calls[0].fn, "oauth:startMachine");
+  assert.equal(calls[0].args.launchHash, hash(lease.launch));
+  assert.ok(!JSON.stringify(calls).includes(lease.launch));
+  assert.equal((await machineCancelResponse(ctx, new Request(origin + "/oauth/machine/cancel", { method: "POST", body: new URLSearchParams({ launch: lease.launch }) }))).status, 400);
+  const verifier = "v".repeat(43);
+  await machineCancelResponse(ctx, new Request(origin + "/oauth/machine/cancel", { method: "POST", body: new URLSearchParams({ launch: lease.launch, code_verifier: verifier }) }));
+  assert.equal(calls[1].args.challenge, createHash("sha256").update(verifier).digest("base64url"));
+  assert.ok(!JSON.stringify(calls).includes(verifier));
+}));
+
+test("validity is browser/CSRF/origin-bound, minimal, read-only and generic on invalid requests", async () => configured(async () => {
+  const browser = "pbb_" + "b".repeat(43), csrf = "pbs_" + "c".repeat(43), secret = "pbe_" + "r".repeat(43);
+  let reads = 0;
+  const ctx: any = { runMutation: () => assert.fail("validity mutates"), runQuery: async () => { reads++; return { clientName: "Private", expiresAt: 301000, serverNow: 1000 }; } };
+  const make = (originHeader = origin) => new Request(origin + "/oauth/validity", { method: "POST", headers: { Origin: originHeader, Cookie: `__Host-planban_browser=${browser}; __Host-planban_csrf=${csrf}` }, body: new URLSearchParams({ request: secret, csrf }) });
+  assert.deepEqual(await (await consentValidityResponse(ctx, make("https://attacker.example"))).json(), { valid: false });
+  assert.equal(reads, 0);
+  assert.deepEqual(await (await consentValidityResponse(ctx, make())).json(), { valid: true, expiresAt: 301000, serverNow: 1000 });
+  assert.equal(reads, 1);
+  const ended = await consentResponse({ runQuery: async () => null } as any, new Request(origin + "/oauth/consent?request=" + secret));
+  assert.equal(ended.status, 200);
+  assert.match(await ended.text(), /Start a new sign-in/);
+  assert.match(ended.headers.get("Content-Security-Policy")!, /frame-ancestors 'none'/);
 }));

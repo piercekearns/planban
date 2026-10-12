@@ -11,7 +11,7 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
-import { authorizationResponse, consentResponse, approvalResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
+import { authorizationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
@@ -388,6 +388,8 @@ export const serviceDiscovery = httpAction(async () => json({
 
 export const authorizationServerDiscovery = httpAction(async () => enrollmentConfigured() ? json({
   issuer: publicOrigin(), authorization_endpoint: `${publicOrigin()}/oauth/authorize`,
+  planban_machine_start_endpoint: `${publicOrigin()}/oauth/machine/start`,
+  planban_machine_cancel_endpoint: `${publicOrigin()}/oauth/machine/cancel`,
   token_endpoint: `${publicOrigin()}/oauth/token`, revocation_endpoint: `${publicOrigin()}/oauth/revoke`,
   response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
   code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
@@ -404,6 +406,10 @@ http.route({ path: "/oauth/token", method: "POST", handler: httpAction(tokenResp
 http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(revocationResponse) });
 http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(authorizationResponse) });
 http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(consentResponse) });
+http.route({ path: "/oauth/machine/start", method: "POST", handler: httpAction(machineStartResponse) });
+http.route({ path: "/oauth/machine/launch", method: "GET", handler: httpAction(machineLaunchResponse) });
+http.route({ path: "/oauth/machine/cancel", method: "POST", handler: httpAction(machineCancelResponse) });
+http.route({ path: "/oauth/validity", method: "POST", handler: httpAction(consentValidityResponse) });
 http.route({ path: "/oauth/approve", method: "POST", handler: httpAction(approvalResponse) });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
 http.route({ path: "/.well-known/oauth-authorization-server", method: "GET", handler: authorizationServerDiscovery });

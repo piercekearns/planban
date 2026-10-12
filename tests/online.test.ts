@@ -58,6 +58,7 @@ async function fakeService() {
   let failExport = false;
   let metadataOrigin: string | undefined;
   let loginTokenOverride: Record<string, unknown> | undefined;
+  let leaseMs = 300000;
   let beforeFence: (() => void) | undefined;
   const docs = new Map<string, PlanbanDocPayload>();
   const transfers = new Map<string, { begin: any; parts: Map<number, any>; state: "open" | "committed" | "aborted" }>();
@@ -99,10 +100,17 @@ async function fakeService() {
         issuer: url, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
         revocation_endpoint: `${metadataOrigin ?? url}/oauth/revoke`, code_challenge_methods_supported: ["S256"],
         authorization_response_iss_parameter_supported: true,
+        planban_machine_start_endpoint: `${metadataOrigin ?? url}/oauth/machine/start`, planban_machine_cancel_endpoint: `${metadataOrigin ?? url}/oauth/machine/cancel`,
       });
-      if (path === "/authorize" && req.method === "GET") {
+      if (path === "/oauth/machine/start") {
+        auth = new URL(url + "/authorize?" + new URLSearchParams(body));
+        const launch = "pbl_" + "l".repeat(43);
+        return json(200, { launch, launchUrl: url + "/oauth/machine/launch?launch=" + launch, serverNow: Date.now(), expiresAt: Date.now() + leaseMs });
+      }
+      if (path === "/oauth/machine/cancel") return json(200, { ended: true });
+      if (path === "/oauth/machine/launch" && req.method === "GET") {
         // A browser that is already signed in: straight back to the callback.
-        auth = request;
+        assert.ok(auth);
         assert.equal(auth.searchParams.get("client_id"), "planban-cli");
         assert.equal(auth.searchParams.get("resource"), url);
         assert.equal(auth.searchParams.get("scope"), "planban:machine");
@@ -367,6 +375,7 @@ async function fakeService() {
   url = `http://127.0.0.1:${(server.address() as any).port}`;
   return {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
+    setMachineLease(ms: number) { leaseMs = ms; },
     setLoginTokenResponse(value: Record<string, unknown>) { loginTokenOverride = value; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
@@ -427,6 +436,25 @@ test("browser sign-in uses the service's sign-in server with PKCE, then keeps on
 
 
 
+
+test("machine wait closes a hanging opener and sends PKCE-owned cancellation without saving credentials", async () => {
+  await saveCredentials(fake.url, null);
+  fake.setMachineLease(80);
+  const started = performance.now();
+  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => new Promise<void>(() => {}) }), /timed out/);
+  assert.ok(performance.now() - started < 2000);
+  const start = fake.requests.find(r => r.path === "/oauth/machine/start")!;
+  const cancel = fake.requests.find(r => r.path === "/oauth/machine/cancel")!;
+  assert.equal(createHash("sha256").update(cancel.body.code_verifier).digest("base64url"), start.body.code_challenge);
+  assert.equal((await readCredentials()).services[fake.url], undefined);
+  assert.equal(fake.requests.some(r => r.path === "/oauth/revoke"), false);
+});
+
+test("malformed machine lease fails before browser opening and leaves existing credentials untouched", async () => {
+  const before = await readCredentials(); fake.setMachineLease(300001);
+  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("invalid lease opened browser") }), /valid bounded/);
+  assert.deepEqual(await readCredentials(), before);
+});
 
 test("board-limited access is refused for browser sign-in, which always gives the machine full access", async () => {
   await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { access: "board", boards: "demo" }), /only to development sign-in/);

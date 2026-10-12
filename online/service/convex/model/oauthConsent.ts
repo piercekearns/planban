@@ -1,3 +1,4 @@
+import { consentPage } from "./oauthConsentPage";
 import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
 import { MACHINE_CLIENT_ID, REQUEST_MS, scopeLevel } from "../oauth";
@@ -8,8 +9,6 @@ import { readOAuthForm } from "./oauthHttp";
 
 export const CLI_REDIRECT_PORTS = [53682, 53683, 53684, 53685, 53686] as const;
 export const PLANBAN_SCOPES = ["planban:read", "planban:plan", "planban:complete", "offline_access"] as const;
-const escape = (value: string) => value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
-const jsonLiteral = (value: unknown) => JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
 const rejected = (code: string, status = 400) => json({ error: code }, status);
 
@@ -64,6 +63,8 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
   if (!input) return rejected("invalid_request");
   const clientId = input.get("client_id") ?? "", redirectUri = input.get("redirect_uri") ?? "";
   const machine = clientId === MACHINE_CLIENT_ID;
+  // Machine requests must start their service lease before browser opening.
+  if (machine) return rejected("invalid_request");
   if (!clientId || clientId.length > 2048 || !redirectUri || redirectUri.length > 2048) return rejected("invalid_client");
   const state = input.get("state") ?? "";
   if (state.length > 2048) return rejected("invalid_request");
@@ -95,6 +96,62 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
   } catch { return rejected("temporarily_unavailable", 503); }
 }
 
+export async function machineStartResponse(ctx: ActionCtx, request: Request): Promise<Response> {
+  const config = configuration(), input = await readOAuthForm(request);
+  if (!config) return rejected("temporarily_unavailable", 503);
+  if (!input || input.get("client_id") !== MACHINE_CLIENT_ID || input.get("resource") !== config.origin || input.get("scope") !== "planban:machine" || input.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(input.get("code_challenge") ?? "") || !input.get("state") || input.get("state")!.length > 2048 || !CLI_REDIRECT_PORTS.some((port) => input.get("redirect_uri") === `http://127.0.0.1:${port}/callback`)) return rejected("invalid_request");
+  const launch = randomSecret("pbl_");
+  try {
+    const lease = await ctx.runMutation(internal.oauth.startMachine, { launchHash: await sha256Hex(launch), requestHash: await sha256Hex(randomSecret("pbe_")), challenge: input.get("code_challenge")!, state: input.get("state")!, redirectUri: input.get("redirect_uri")!, resource: config.origin });
+    return json({ ...lease, launch, launchUrl: `${config.origin}/oauth/machine/launch?launch=${launch}` });
+  } catch { return rejected("temporarily_unavailable", 503); }
+}
+
+export async function machineLaunchResponse(ctx: ActionCtx, request: Request): Promise<Response> {
+  const config = configuration(), input = await query(request);
+  if (!config) return rejected("temporarily_unavailable", 503);
+  const launch = input?.get("launch") ?? "";
+  if (!/^pbl_[A-Za-z0-9_-]{43}$/.test(launch) || [...input!.keys()].some((k) => k !== "launch")) return rejected("invalid_request");
+  const cookies = browserCookies(request, config.secure) ?? { browser: randomSecret("pbb_"), csrf: randomSecret("pbs_") };
+  const secret = randomSecret("pbe_");
+  const claimed = await ctx.runMutation(internal.oauth.claimMachine, { launchHash: await sha256Hex(launch), requestHash: await sha256Hex(secret), browserHash: await sha256Hex(cookies.browser), csrfHash: await sha256Hex(cookies.csrf) });
+  if (!claimed) return endedResponse(config);
+  const headers = new Headers({ Location: `${config.origin}/oauth/consent?request=${secret}`, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+  const names = cookieNames(config.secure);
+  for (const name of ["browser", "csrf"] as const) headers.append("Set-Cookie", `${names[name]}=${cookies[name]}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${REQUEST_MS / 1000}${config.secure ? "; Secure" : ""}`);
+  return new Response(null, { status: 303, headers });
+}
+
+export async function machineCancelResponse(ctx: ActionCtx, request: Request): Promise<Response> {
+  const input = await readOAuthForm(request), verifier = input?.get("code_verifier") ?? "";
+  if (!configuration()) return rejected("temporarily_unavailable", 503);
+  if (!input || !/^pbl_[A-Za-z0-9_-]{43}$/.test(input.get("launch") ?? "") || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return rejected("invalid_request");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  await ctx.runMutation(internal.oauth.cancelMachine, { launchHash: await sha256Hex(input.get("launch")!), challenge });
+  return json({ ended: true });
+}
+
+/** Indexed browser-bound read only: neither a human session nor approval authority. */
+export async function consentValidityResponse(ctx: ActionCtx, request: Request): Promise<Response> {
+  const config = configuration(), input = await readOAuthForm(request);
+  if (!config) return rejected("temporarily_unavailable", 503);
+  const cookies = browserCookies(request, config.secure), secret = input?.get("request") ?? "";
+  if (request.headers.get("Origin") !== config.origin || !cookies || input?.get("csrf") !== cookies.csrf || !/^pbe_[A-Za-z0-9_-]{43}$/.test(secret)) return json({ valid: false });
+  const row = await ctx.runQuery(internal.oauth.inspect, { requestHash: await sha256Hex(secret), browserHash: await sha256Hex(cookies.browser) });
+  return json(row ? { valid: true, expiresAt: row.expiresAt, serverNow: row.serverNow } : { valid: false });
+}
+
+function endedResponse(config: NonNullable<ReturnType<typeof configuration>>): Response {
+  const nonce = randomSecret("");
+  const html = consentPage({ nonce, frontend: config.frontend, key: config.key, returnTo: "", secret: "", csrf: "", clientId: "", clientName: "", permission: "", machine: false, offline: false, ended: true });
+  return pageResponse(html, nonce, config.frontend);
+}
+
+function pageResponse(html: string, nonce: string, frontend: string): Response {
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}' ${frontend} https://challenges.cloudflare.com https://*.protect.clerk.com; style-src 'unsafe-inline'; connect-src 'self' ${frontend} https://*.protect.clerk.com:*; img-src ${frontend} https://img.clerk.com data:; frame-src ${frontend} https://challenges.cloudflare.com https://*.protect.clerk.com; worker-src 'self' blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` } });
+}
+
 /** Approval can use only the browser-bound, frozen request and verified user. */
 export async function approvalResponse(ctx: ActionCtx, request: Request, verify: (request: Request) => Promise<HumanIdentity | null> = verifyHumanSession): Promise<Response> {
   const config = configuration();
@@ -123,53 +180,14 @@ export async function consentResponse(ctx: ActionCtx, request: Request): Promise
   const config = configuration(), input = await query(request);
   if (!config) return rejected("temporarily_unavailable", 503);
   const cookies = browserCookies(request, config.secure), secret = input?.get("request") ?? "";
-  if (!cookies || !/^pbe_[A-Za-z0-9_-]{43}$/.test(secret)) return rejected("access_denied", 403);
+  if (!cookies || !/^pbe_[A-Za-z0-9_-]{43}$/.test(secret)) return endedResponse(config);
   const frozen = await ctx.runQuery(internal.oauth.inspect, { requestHash: await sha256Hex(secret), browserHash: await sha256Hex(cookies.browser) });
-  if (!frozen) return rejected("access_denied", 403);
+  if (!frozen) return endedResponse(config);
   const nonce = randomSecret("");
   const returnTo = `${config.origin}/oauth/consent?request=${secret}`;
   const permission = frozen.purpose === "machine" ? "Sign in this computer with your full access." : frozen.scopes.includes("planban:complete") ? "Read boards, change plans and mark work complete." : frozen.scopes.includes("planban:plan") ? "Read boards and change plans." : "Read boards and their history.";
-  const script = `(()=>{
-    const status=document.getElementById('status'),signin=document.getElementById('signin');
-    const allow=document.getElementById('allow'),deny=document.getElementById('deny');
-    let mounted=false,deciding=false;
-    async function decide(decision){
-      if(deciding)return;deciding=true;
-      allow.disabled=true;deny.disabled=true;
-      try{
-        const headers={'Content-Type':'application/x-www-form-urlencoded'};
-        if(decision==='allow'){
-          const token=await Clerk.session?.getToken();
-          if(!token)throw Error();
-          headers.Authorization='Bearer '+token;
-        }
-        const response=await fetch('/oauth/approve',{method:'POST',redirect:'error',headers,
-          body:new URLSearchParams({request:${jsonLiteral(secret)},csrf:${jsonLiteral(cookies.csrf)},decision})});
-        const result=await response.json();
-        if(!response.ok||!result.redirect)throw Error();
-        window.location.assign(result.redirect);
-      }catch{status.textContent='Authorization failed or expired. Start again from your app.';}
-    }
-    allow.addEventListener('click',()=>decide('allow'));
-    deny.addEventListener('click',()=>decide('deny'));
-    window.addEventListener('load',async()=>{
-    try{
-      await Clerk.load({nonce:${jsonLiteral(nonce)},ui:{ClerkUI:window.__internal_ClerkUICtor}});
-      const render=()=>{
-        const active=Clerk.session&&Clerk.session.status==='active';
-        allow.disabled=!active||deciding;
-        if(!deciding)status.textContent=active?'Signed in as '+(Clerk.user?.primaryEmailAddress?.emailAddress||'your account')+'. Review the access above, then choose Allow.':'Sign in to review and approve this connection.';
-        if(active&&mounted){Clerk.unmountSignIn(signin);mounted=false;}
-        else if(!active&&!mounted){
-          Clerk.mountSignIn(signin,{routing:'hash',forceRedirectUrl:${jsonLiteral(returnTo)},signUpForceRedirectUrl:${jsonLiteral(returnTo)}});
-          mounted=true;
-        }
-      };
-      Clerk.addListener(render);render();
-    }catch{status.textContent='Sign-in could not load. Cancel or start again from your app.';}
-    });
-  })();`;
-
-  const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Connect to Planban</title><style nonce="${nonce}">body{font:16px/1.6 system-ui;max-width:620px;margin:48px auto;padding:0 20px}button{padding:10px 18px;margin:12px 12px 0 0}code{overflow-wrap:anywhere}#status{color:#555}</style><h1>${escape(frozen.purpose === "machine" ? "Sign in to Planban" : `Connect ${frozen.clientName} to Planban`)}</h1><p>${escape(permission)}</p><p>This applies to boards you can access. Your current board permissions and agent limits still apply.</p>${frozen.scopes.includes("offline_access") ? "<p>This app can stay connected until you revoke it, or it is unused for 90 days. Authorization ends after one year.</p>" : ""}<p>App: <code>${escape(frozen.clientId)}</code></p><div id="signin"></div><p id="status">Loading sign-in…</p><button id="allow" disabled>Allow</button><button id="deny">Cancel</button><script nonce="${nonce}" defer crossorigin="anonymous" src="${escape(config.frontend)}/npm/@clerk/ui@1.40.0/dist/ui.browser.js"></script><script nonce="${nonce}" defer crossorigin="anonymous" data-clerk-publishable-key="${escape(config.key)}" src="${escape(config.frontend)}/npm/@clerk/clerk-js@6.39.0/dist/clerk.browser.js"></script><script nonce="${nonce}">${script}</script></html>`;
-  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}' ${config.frontend} https://challenges.cloudflare.com https://*.protect.clerk.com; style-src 'unsafe-inline'; connect-src 'self' ${config.frontend} https://*.protect.clerk.com:*; img-src ${config.frontend} https://img.clerk.com data:; frame-src ${config.frontend} https://challenges.cloudflare.com https://*.protect.clerk.com; worker-src 'self' blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` } });
+  const html = consentPage({ nonce, frontend: config.frontend, key: config.key, returnTo, secret, csrf: cookies.csrf,
+    clientId: frozen.clientId, clientName: frozen.clientName, permission,
+    machine: frozen.purpose === "machine", offline: frozen.scopes.includes("offline_access"), expiresAt: frozen.expiresAt, serverNow: frozen.serverNow });
+  return pageResponse(html, nonce, config.frontend);
 }

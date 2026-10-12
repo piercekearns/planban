@@ -205,15 +205,15 @@ export default defineSchema({
 
   /** Explicit consent, frozen client/redirect/resource/PKCE and one-use code. */
   oauthRequests: defineTable({
-    requestHash: v.string(), browserHash: v.string(), csrfHash: v.string(),
+    requestHash: v.string(), browserHash: v.optional(v.string()), csrfHash: v.optional(v.string()), launchHash: v.optional(v.string()),
     clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(),
     scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(),
     purpose: v.union(v.literal("oauth"), v.literal("machine")),
-    status: v.union(v.literal("pending"), v.literal("approved"), v.literal("denied"), v.literal("consumed")),
+    status: v.union(v.literal("awaiting_browser"), v.literal("pending"), v.literal("approved"), v.literal("denied"), v.literal("consumed")),
     expiresAt: v.number(), userId: v.optional(v.string()), sessionId: v.optional(v.string()),
     approverConnectionId: v.optional(v.id("connections")),
     connectionId: v.optional(v.id("connections")), codeHash: v.optional(v.string()), codeExpiresAt: v.optional(v.number()),
-  }).index("by_requestHash", ["requestHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
+  }).index("by_requestHash", ["requestHash"]).index("by_launchHash", ["launchHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
 
   /** Rotating refresh family, including spent hashes for replay detection. */
   oauthRefresh: defineTable({
