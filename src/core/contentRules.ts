@@ -1,8 +1,9 @@
-// Planban is an index, not storage (owner decision 18). An Online Board holds
-// only its own text: cards, Specs, Plans and their history. Files stay where
-// they live, and a card refers to them. These rules are shared by every write
-// path into an Online Board (the hosted API, remote and local MCP, Take
-// Online), so no route can turn a board into file storage.
+// Planban is an index, not storage (owner decisions 18 and 20). A board, local
+// or online, holds only its own text: cards, Specs, Plans and their history.
+// Files stay where they live, and a card refers to them. These rules are shared
+// by every write path into a board (local MCP, the CLI and the web board's API
+// in Local Mode; the hosted API, remote MCP and Take Online for Online Boards),
+// so no route can turn a board into file storage.
 import { PlanbanValidationError } from "./boardOperations";
 
 /** Larger than any real Spec or Plan seen so far (the largest is about 0.5 MB). */
@@ -13,7 +14,7 @@ export const MAX_CARD_BYTES = 128 * 1024;
 /** How to point at a file instead of embedding it; shown in errors, tool descriptions and the protocol. */
 export const HOW_TO_REFER = "Refer to files where they live instead: a GitHub link, any web address, or a local path labelled with its machine, for example \"Mac mini: ~/Projects/northfold/renders/front.png\".";
 
-export const INDEX_NOT_STORAGE = `Online Boards hold text only: cards, Specs, Plans and their history. Planban does not store files. ${HOW_TO_REFER}`;
+export const INDEX_NOT_STORAGE = `Planban boards hold text only: cards, Specs, Plans and their history. Planban does not store files. ${HOW_TO_REFER}`;
 
 /**
  * A data: address carrying a payload. A short one is an example in prose or

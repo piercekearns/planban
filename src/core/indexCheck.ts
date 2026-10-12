@@ -3,7 +3,7 @@
 // This check finds what is in the way on a board on this machine: files in
 // card folders, and pictures in Specs and Plans that are stored inside the
 // document or point at files on this machine. Take Online refuses a board
-// that is not clean; strict Local Mode will use the same check.
+// that is not clean; strict Local Mode refuses changes to a card holding files.
 import { execFileSync } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
@@ -36,8 +36,14 @@ export function howToTidy(machine = machineName()) {
     "- Move each file in its folder to where it belongs (the project's repository, a shared drive or a website), and link to it from the card's Spec or Plan: a GitHub link, a web address, or a path labelled with its machine, such as "
       + `"${machine}: ~/Projects/app/renders/front.png".`,
     "- Replace each picture that is stored in a Spec or Plan, or points at a file on this machine, with such a link or labelled path.",
+    "- Or run `planban move-files-out <card> --to <folder>` (add --dry-run to preview): it moves the folder's files to that folder without overwriting anything, and adds a Files section to the card's Spec that refers to them.",
   ].join("\n");
 }
+
+/** Planban's own short-lived files while it saves a Spec or Plan (see atomicWriteFile). */
+const PLANBAN_SAVE_FILE = /^\.(spec|plan)\.md\.\d+\.\d+\.[0-9a-f-]{36}\.tmp$/;
+/** Folder settings the operating system adds when a person opens the folder; never a person's file. */
+const SYSTEM_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 
 /** Every file in a card's folder other than its Spec and Plan, with paths inside the folder. */
 export async function filesInCard(planningRoot: string, cardId: string): Promise<string[]> {
@@ -53,7 +59,8 @@ export async function filesInCard(planningRoot: string, cardId: string): Promise
         await walk(absolute);
         continue;
       }
-      if (dir === folder && (entry.name === "spec.md" || entry.name === "plan.md")) continue;
+      if (dir === folder && (entry.name === "spec.md" || entry.name === "plan.md" || PLANBAN_SAVE_FILE.test(entry.name))) continue;
+      if (SYSTEM_FILES.has(entry.name)) continue;
       // Anything else (files, links, devices) is not Planban's own text.
       found.push(path);
     }
