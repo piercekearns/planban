@@ -11,6 +11,7 @@ import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveTok
 import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
+import { tokenResponse, revocationResponse } from "./model/oauthHttp";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -392,6 +393,8 @@ for (const method of ["GET", "POST", "PUT"] as const) http.route({ pathPrefix: "
 http.route({ path: "/dev/token", method: "POST", handler: devToken });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
+http.route({ path: "/oauth/token", method: "POST", handler: httpAction(tokenResponse) });
+http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(revocationResponse) });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
 http.route({ pathPrefix: "/invite/", method: "GET", handler: invitePage });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
