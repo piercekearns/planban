@@ -88,6 +88,10 @@ const smuggling: Array<[string, (bundle: any) => void]> = [
   ["a card summary in short pieces", (bundle) => { bundle.roadmap.roadmapItems[0].summary = randomBytes(3000).toString("base64").match(/.{1,32}/g)!.join(" "); }],
   ["a plain payload in pieces", (bundle) => { bundle.roadmap.roadmapItems[0].summary = Buffer.alloc(24 * 1024, 5).toString("base64").match(/.{1,48}/g)!.join("\n\n"); }],
   ["nested number lists", (bundle) => { bundle.roadmap.roadmapItems[0].metadata = { a: Array(600).fill(7), b: { c: Array(600).fill(9) } }; }],
+  ["wrapped hex", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: randomBytes(4096).toString("hex").match(/.{1,60}/g)!.join("\n") }]; }],
+  ["base64url", (bundle) => { bundle.roadmap.roadmapItems[0].summary = Buffer.alloc(4096, 255).toString("base64url"); }],
+  ["numbers in a document", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: `[${[...randomBytes(4096)].join(", ")}]` }]; }],
+  ["an upper-case picture address", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "spec", markdown: "![pixel](DATA:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)" }]; }],
   ["a one-pixel picture", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "spec", markdown: "![pixel](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)" }]; }],
 ];
 for (const [what, change] of smuggling) {

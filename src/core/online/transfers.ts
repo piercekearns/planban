@@ -16,7 +16,7 @@ import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, wri
 import { readBackup, refreshBackup } from "./backup";
 import { serviceUrl } from "./credentials";
 import { checkBoardIsIndex, machineName, type IndexReport } from "../indexCheck";
-import { checkIndexCard, checkIndexValue, MAX_DETAILS_BYTES, withoutEmbeddedFiles, withoutEmbeddedValue } from "../contentRules";
+import { checkIndexCard, checkIndexDocument, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, withoutEmbeddedFiles, withoutEmbeddedValue } from "../contentRules";
 import { buildAgentContext } from "../protocol";
 import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
 
@@ -254,8 +254,9 @@ export class PlanbanNotReadyForOnline extends PlanbanValidationError {
 /**
  * History records what was and cannot be tidied: anything embedded in an old
  * version (documents, cards, board details, the entry itself) becomes a note
- * in the online copy. What still would not pass is replaced by the note
- * outright. The copy on this machine keeps everything.
+ * in the online copy. Whatever still would not pass is replaced, field by
+ * field, by the note, so a tidy board is never held back by its past. The
+ * copy on this machine keeps everything.
  */
 function historyForOnline(bundle: BoardBundle): BoardBundle {
   const note = `[file kept in the copy of this board on ${machineName()}]`;
@@ -267,34 +268,45 @@ function historyForOnline(bundle: BoardBundle): BoardBundle {
       return false;
     }
   };
-  // The same card repeats across many versions: check each distinct one once.
+  /** Every string becomes the note except the keys that identify things; lists of numbers and metadata go. */
+  const bounded = <T,>(value: T, keep: Set<string>): T => {
+    const walk = (entry: unknown, key: string | null): unknown => {
+      if (typeof entry === "string") return key !== null && keep.has(key) && entry.length <= 200 && !embeddedFileIn(entry) ? entry : note;
+      if (Array.isArray(entry)) return entry.every((item) => typeof item === "number") ? [] : entry.map((item) => walk(item, key));
+      if (entry && typeof entry === "object") {
+        return Object.fromEntries(Object.entries(entry).filter(([name]) => name !== "metadata" && !embeddedFileIn(name)).map(([name, item]) => [name, walk(item, name)]));
+      }
+      return entry;
+    };
+    return walk(value, null) as T;
+  };
+  const IDS = new Set(["id", "status", "parentId", "cardId", "kind", "path", "actor", "operation", "createdAt", "updatedAt", "completedAt", "affectedCards", "blockedBy", "specDoc", "planDoc"]);
   const seen = new Map<string, unknown>();
   const card = <T extends { id: string }>(item: T): T => {
     const key = JSON.stringify(item);
-    if (!seen.has(key)) seen.set(key, cleanCard(item));
+    if (!seen.has(key)) {
+      const cleaned = withoutEmbeddedValue(item, note);
+      seen.set(key, passes(() => checkIndexCard(cleaned)) ? cleaned : bounded(item, IDS));
+    }
     return seen.get(key) as T;
-  };
-  const cleanCard = <T extends { id: string }>(item: T): T => {
-    const cleaned = withoutEmbeddedValue(item, note);
-    if (passes(() => checkIndexCard(cleaned))) return cleaned;
-    // Keep what the card was; replace what it said.
-    const { metadata: _metadata, ...rest } = cleaned as T & { metadata?: unknown };
-    return Object.fromEntries(Object.entries(rest).map(([key, value]) => [key, typeof value === "string" && !["id", "status", "parentId"].includes(key) ? note : value])) as T;
   };
   const roadmap = (value: BoardBundle["roadmap"]) => {
     const { roadmapItems, ...details } = value;
-    const cleanedDetails = withoutEmbeddedValue(details, note);
-    return { ...(passes(() => checkIndexValue(cleanedDetails, "details", MAX_DETAILS_BYTES)) ? cleanedDetails : details), roadmapItems: roadmapItems.map(card) } as BoardBundle["roadmap"];
+    const cleaned = withoutEmbeddedValue(details, note);
+    const kept = passes(() => checkIndexValue(cleaned, "details", MAX_DETAILS_BYTES)) ? cleaned : bounded(details, new Set([...IDS, "version", "title"]));
+    return { ...kept, roadmapItems: roadmapItems.map(card) } as BoardBundle["roadmap"];
   };
   const entry = (value: BoardBundle["history"][number]["entry"]) => {
     const cleaned = withoutEmbeddedValue(value, note);
-    return passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES))
-      ? cleaned
-      : { version: value.version, roadmapRevision: value.roadmapRevision, createdAt: value.createdAt, actor: value.actor, operation: value.operation, summary: note, affectedCards: value.affectedCards, affectedDocs: value.affectedDocs };
+    return passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES)) ? cleaned : bounded(value, IDS);
+  };
+  const document = (markdown: string, cardId: string, kind: string) => {
+    const cleaned = withoutEmbeddedFiles(markdown, note);
+    return passes(() => checkIndexDocument(cleaned, cardId, kind)) ? cleaned : `${note}\n`;
   };
   return {
     ...bundle,
-    historyDocs: (bundle.historyDocs ?? []).map((doc) => ({ ...doc, markdown: withoutEmbeddedFiles(doc.markdown, note) })),
+    historyDocs: (bundle.historyDocs ?? []).map((doc) => ({ ...doc, markdown: document(doc.markdown, doc.cardId, doc.kind) })),
     history: bundle.history.map((version) => ({ entry: entry(version.entry), roadmap: roadmap(version.roadmap) })),
   };
 }

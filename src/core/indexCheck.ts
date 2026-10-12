@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { lstat, readdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { checkIndexCard, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, MAX_DOCUMENT_BYTES } from "./contentRules";
+import { checkIndexCard, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, MAX_DOCUMENT_BYTES, withoutCode } from "./contentRules";
 
 /** This machine's name as people know it, such as "Pierce's Mac mini". */
 export function machineName(): string {
@@ -94,7 +94,9 @@ const safeDecode = (text: string) => {
 };
 
 /** Pictures in a document that are stored in it or point at a file on this machine. Pictures on the web are fine. */
-export function picturesInTheWay(markdown: string, cardFolder: string): Array<{ alt: string; where: string }> {
+export function picturesInTheWay(document: string, cardFolder: string): Array<{ alt: string; where: string }> {
+  // A picture shown as an example in code is not a picture.
+  const markdown = withoutCode(document);
   const found: Array<{ alt: string; where: string }> = [];
   const consider = (alt: string, target: string) => {
     if (!target) return;

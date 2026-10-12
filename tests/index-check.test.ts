@@ -68,3 +68,8 @@ test("a card folder that is a link, nested metadata and board details are all ch
   assert.match(report.cards[0]!.problems.join(" "), /embedded file/);
   assert.match(report.boardProblems.join(" "), /board's details contains an embedded file/);
 });
+
+test("pictures shown as examples in code are not in the way", () => {
+  const markdown = "Use `![photo](images/photo.png)` like this:\n\n```md\n![photo](images/photo.png)\n```\n\n~~~\n![x](x.png)\n~~~\n";
+  assert.deepEqual(picturesInTheWay(markdown, "/board/items/alpha"), []);
+});

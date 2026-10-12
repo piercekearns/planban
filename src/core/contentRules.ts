@@ -4,6 +4,12 @@
 // path into an Online Board (the hosted API, remote and local MCP, Take
 // Online), so no route can turn a board into file storage; strict Local Mode
 // can use the same rules.
+//
+// What this can and cannot do: it refuses files embedded the ordinary ways
+// and with the standard encoders (data: addresses, base64 and base64url,
+// hex, byte lists), whole, wrapped or split into pieces. No check on text can
+// rule out data deliberately disguised as ordinary text (a file written out
+// as words, say); the size limits below are the hard ceiling on that.
 import { PlanbanValidationError } from "./boardOperations";
 
 /** Larger than any real Spec or Plan seen so far (the largest is about 0.5 MB). */
@@ -19,7 +25,7 @@ export const HOW_TO_REFER = "Refer to files where they live instead: a GitHub li
 export const INDEX_NOT_STORAGE = `Online Boards hold text only: cards, Specs, Plans and their history. Planban does not store files. ${HOW_TO_REFER}`;
 
 /** A data: address and its payload. */
-const DATA_URI = /data:[^\s,]{0,100},([^\s)"'<>\]]*)/gi;
+const DATA_URI = /data:[^\s,`]{0,100},([^\s)"'`<>\]]*)/gi;
 /**
  * All data: payloads in one value together. A short example in prose or code
  * (`data:image/png;base64,AAAA`) is fine; a file needs far more, even split
@@ -35,6 +41,8 @@ const WEB_ADDRESS = /\bhttps?:\/\/[^\s<>()"'`]{1,8192}/gi;
  */
 const ENCODED_TOKEN = /[A-Za-z0-9+/=_-]{24,}/g;
 const ENCODED_LIMIT = 2048;
+const HEX_PIECES_LIMIT = 4096;
+const NUMBERS_IN_TEXT_LIMIT = 1024;
 /**
  * Base64 of a real file mixes upper case, lower case and digits throughout
  * (about 40%, 40% and 15%); paths, ids, UUIDs, hashes and CamelCase names are
@@ -48,21 +56,38 @@ function looksEncoded(token: string) {
   if (upper >= 0.12 && lower >= 0.12 && digits >= 0.04) return true;
   return /^(.{1,8}?)\1{5,}/.test(token) && /[A-Z]/.test(token) && !/^[a-z-]+$/.test(token);
 }
-/** Any payload, however plain, as one unbroken run of base64. */
-const ENCODED_RUN = /[A-Za-z0-9+/]{2048,}={0,2}/;
+/** Any payload, however plain, as one unbroken run of base64 or base64url. */
+const ENCODED_RUN = /[A-Za-z0-9+/]{2048,}={0,2}|[A-Za-z0-9_-]{2048,}/;
 /** Or as encoders wrap it: whole lines of nothing but base64, added up block by block. */
-const ENCODED_LINE_SHAPE = /^[\s>]*[A-Za-z0-9+/]{60,}={0,2}\s*$/;
-/** A column of hex hashes is never mistaken for wrapped base64. */
-const isEncodedLine = (line: string) => ENCODED_LINE_SHAPE.test(line) && /[g-zG-Z+/]/.test(line);
+const ENCODED_LINE_SHAPE = /^[\s>]*(?:[A-Za-z0-9+/]{60,}={0,2}|[A-Za-z0-9_-]{60,})\s*$/;
+/** A column of hex hashes (counted separately) or of plain slugs is never mistaken for wrapped base64. */
+const isEncodedLine = (line: string) => ENCODED_LINE_SHAPE.test(line) && /[g-zG-Z+/_]/.test(line) && !/^[\s>]*[a-z0-9-]+\s*$/.test(line);
 /** A hex dump; lists of hashes are fine. */
 const HEX_RUN = /[0-9a-fA-F]{4096,}/;
+/**
+ * Hex in pieces, as `xxd -p` and similar tools write it: runs of 32 or more
+ * hex characters, added up, leaving out the lengths of common hashes and ids
+ * (32, 40, 64 and 128).
+ */
+const HEX_TOKEN = /(?<![0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])/g;
+const HASH_LENGTHS = new Set([32, 40, 64, 128]);
+/** Bytes written as numbers in text: long comma-separated lists of small numbers ("137, 80, 78, 71, …" or "0x89, 0x50, …"). */
+const NUMBER_LIST = /(?:\b(?:0x[0-9a-fA-F]{1,2}|\d{1,3})\s*,\s*){32,}(?:0x[0-9a-fA-F]{1,2}|\d{1,3})\b/g;
 /** Control characters other than tab, newline and carriage return mean binary content. */
 const BINARY = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 /** A picture whose destination is the file itself, however small. */
 const DATA_IMAGE = /!\[[^\]\n]*\]\(\s*<?data:|<(?:img|source)\b[^>]*\b(?:src|srcset)\s*=\s*["']?\s*data:|^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?data:/im;
-/** Code shows examples; it is not a picture. */
-const CODE = /```[\s\S]*?(?:```|$)|`[^`\n]*`/g;
+/**
+ * Markdown with its code taken out: fenced blocks (``` or ~~~, any length)
+ * and inline code spans (any number of backticks). Code shows examples; a
+ * picture or address in code is not one.
+ */
+export function withoutCode(markdown: string): string {
+  return markdown
+    .replace(/^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]{0,3}\1[`~]*[ \t]*$|(?![\s\S]))/gm, " ")
+    .replace(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ");
+}
 
 interface Payload {
   binary: boolean;
@@ -73,18 +98,24 @@ interface Payload {
   /** A plain payload: an unbroken run, or a block of wrapped lines. */
   run: boolean;
   hex: boolean;
+  /** Hex in pieces that are not hash-shaped, added up. */
+  hexPieces: number;
+  /** Small numbers in long comma-separated lists, added up. */
+  numbers: number;
 }
 
-const nothing = (): Payload => ({ binary: false, image: false, data: 0, encoded: 0, run: false, hex: false });
+const nothing = (): Payload => ({ binary: false, image: false, data: 0, encoded: 0, run: false, hex: false, hexPieces: 0, numbers: 0 });
 
 /** Adds the file-like content in one piece of text to `into`. */
 function measure(text: string, into: Payload) {
   if (BINARY.test(text)) into.binary = true;
-  if (text.includes("data:") && DATA_IMAGE.test(text.replace(CODE, ""))) into.image = true;
+  if (/data:/i.test(text) && DATA_IMAGE.test(withoutCode(text))) into.image = true;
   for (const match of text.matchAll(DATA_URI)) into.data += match[1]!.length;
   const rest = text.replace(DATA_URI, " ").replace(WEB_ADDRESS, " ");
   for (const match of rest.matchAll(ENCODED_TOKEN)) if (looksEncoded(match[0])) into.encoded += match[0].length;
   if (HEX_RUN.test(rest)) into.hex = true;
+  for (const match of rest.matchAll(HEX_TOKEN)) if (!HASH_LENGTHS.has(match[0].length)) into.hexPieces += match[0].length;
+  for (const match of rest.matchAll(NUMBER_LIST)) into.numbers += match[0].split(",").length;
   if (ENCODED_RUN.test(rest)) into.run = true;
   let block = 0;
   for (const line of rest.split(/\r?\n/)) {
@@ -98,7 +129,8 @@ function verdict(payload: Payload): string | null {
   if (payload.binary) return "binary content";
   if (payload.image) return "a picture stored in the text (a data: address)";
   if (payload.data > DATA_PAYLOAD_LIMIT) return "an embedded file (data: addresses)";
-  if (payload.hex) return "an encoded file (a long run of hex)";
+  if (payload.hex || payload.hexPieces > HEX_PIECES_LIMIT) return "an encoded file (hex)";
+  if (payload.numbers > NUMBERS_IN_TEXT_LIMIT) return "a file written as a list of numbers";
   if (payload.encoded > ENCODED_LIMIT || payload.run) return "an encoded file (base64)";
   return null;
 }
@@ -113,7 +145,10 @@ export function withoutEmbeddedFiles(text: string, placeholder: string): string 
   if (!embeddedFileIn(text)) return text;
   const cleaned = text
     .replace(new RegExp(BINARY.source, "g"), "")
-    .replace(DATA_URI, (whole, payload: string) => payload.length > 16 ? placeholder : whole)
+    // History only: every data: address goes, however short.
+    .replace(DATA_URI, () => placeholder)
+    .replace(NUMBER_LIST, placeholder)
+    .replace(HEX_TOKEN, (token) => HASH_LENGTHS.has(token.length) ? token : placeholder)
     .replace(new RegExp(HEX_RUN.source, "g"), placeholder)
     .replace(new RegExp(ENCODED_RUN.source, "g"), placeholder)
     .replace(ENCODED_TOKEN, (token) => looksEncoded(token) ? placeholder : token)

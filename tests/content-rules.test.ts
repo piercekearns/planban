@@ -52,7 +52,7 @@ test("history keeps its text when the files embedded in it are taken out", async
   const wrapped = pngBase64.match(/.{1,76}/g)!.join("\n");
   const cleaned = withoutEmbeddedFiles(`Before\n![x](data:image/png;base64,${pngBase64})\n${wrapped}\nAfter, see \`data:image/png;base64,AAAA\``, "[kept on the Mac]");
   assert.equal(embeddedFileIn(cleaned), null);
-  assert.match(cleaned, /^Before\n!\[x\]\(\[kept on the Mac\]\)\n\[kept on the Mac\]\nAfter, see `data:image\/png;base64,AAAA`$/);
+  assert.match(cleaned, /^Before\n!\[x\]\(\[kept on the Mac\]\)\n\[kept on the Mac\]\nAfter, see `\[kept on the Mac\]`$/);
 });
 
 import { randomBytes } from "node:crypto";
@@ -89,4 +89,28 @@ test("short pieces, plain repetitive payloads, nested byte lists and tiny pictur
   assert.equal(embeddedFileIn(`Use \`![pixel](data:image/gif;base64,${gif})\` as the test image.`), null);
   assert.equal(embeddedFileIn(`\`\`\`md\n![pixel](data:image/gif;base64,${gif})\n\`\`\``), null);
   checkIndexValue({ scores: [1, 2, 3], weights: [[0.5, 0.25]] }, "card alpha", 128 * 1024);
+});
+
+test("standard encoders are refused: wrapped hex, base64url, numbers in text, and pictures in any case", () => {
+  const bytes = randomBytes(4096);
+  assert.match(embeddedFileIn(bytes.toString("hex").match(/.{1,60}/g)!.join("\n"))!, /hex/);
+  assert.match(embeddedFileIn(Buffer.alloc(4096, 255).toString("base64url"))!, /base64/);
+  assert.match(embeddedFileIn(`const logo = [${[...bytes].join(", ")}];`)!, /list of numbers/);
+  assert.match(embeddedFileIn(`unsigned char logo[] = { ${[...bytes].map((b) => `0x${b.toString(16)}`).join(", ")} };`)!, /list of numbers/);
+  const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+  assert.match(embeddedFileIn(`![pixel](DATA:image/gif;base64,${gif})`)!, /picture stored/);
+  assert.match(embeddedFileIn(`[pixel]: Data:image/gif;base64,${gif}`)!, /picture stored/);
+});
+
+test("hash lists, code examples and ordinary numbers stay fine", () => {
+  const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+  const text = [
+    Array.from({ length: 100 }, () => randomBytes(32).toString("hex")).join("\n"),
+    Array.from({ length: 100 }, () => randomBytes(20).toString("hex")).join(" "),
+    `~~~md\n![pixel](data:image/gif;base64,${gif})\n~~~`,
+    "````\n```\n![pixel](data:image/gif;base64," + gif + ")\n```\n````",
+    "Use ``![pixel](data:image/gif;base64," + gif + ")`` in the test.",
+    "Sizes: 1, 2, 3, 5, 8, 13, 21, 34 and 55.",
+  ].join("\n\n");
+  assert.equal(embeddedFileIn(text), null);
 });

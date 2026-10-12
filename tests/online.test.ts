@@ -4,12 +4,12 @@ import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import * as storage from "../src/core/storage";
 import * as domain from "../src/core/boardOperations";
-import { historyDocPath, historyRoadmapPath, manifestPath } from "../src/core/paths";
+import { historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath } from "../src/core/paths";
 import { manifestSchema } from "../src/core/schema";
 import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/registry";
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
@@ -22,7 +22,7 @@ import { backupRoot, refreshBackup } from "../src/core/online/backup";
 import { onlineLogout } from "../src/core/online/connections";
 import { startServer } from "../src/server/server";
 import { listHistory } from "../src/core/history";
-import { checkIndexCard } from "../src/core/contentRules";
+import { checkIndexCard, checkIndexDocument, checkIndexValue } from "../src/core/contentRules";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
 
 const execFileAsync = promisify(execFile);
@@ -1126,6 +1126,33 @@ test("old versions in history that hold embedded files go online with notes in t
   assert.doesNotThrow(() => checkIndexCard(card));
   assert.match(JSON.stringify(card), /file kept in the copy of this board on/);
   assert.equal(await readFile(path, "utf8"), JSON.stringify(roadmap), "the copy here is unchanged");
+});
+
+test("old history that would still break the rules after cleaning goes online as notes, so a tidy board is never held back", async () => {
+  const before = await storage.loadState(cwd);
+  const history = await listHistory(before);
+  const version = history.entries[0]!;
+  const path = historyRoadmapPath(before.planningRoot, version.version);
+  const roadmap = JSON.parse(await readFile(path, "utf8"));
+  roadmap.project.description = "word ".repeat(15 * 1024);
+  await writeFile(path, JSON.stringify(roadmap));
+  const index = JSON.parse(await readFile(historyIndexPath(before.planningRoot), "utf8"));
+  index.entries[0].summary = "word ".repeat(15 * 1024);
+  await writeFile(historyIndexPath(before.planningRoot), JSON.stringify(index));
+  const doc = version.affectedDocs[0] ?? { cardId: "alpha", kind: "spec" };
+  await mkdir(dirname(historyDocPath(before.planningRoot, version.version, doc.cardId, doc.kind)), { recursive: true });
+  await writeFile(historyDocPath(before.planningRoot, version.version, doc.cardId, doc.kind), `${"word ".repeat(250 * 1024)}\n![s](data:image/svg+xml;base64,PHN2Zy8+)`);
+  await takeOnline(fake.url, cwd);
+  const sent = [...[...fake.transfers.values()].at(-1)!.parts.values()];
+  for (const part of sent as any[]) {
+    for (const old of part.history ?? []) {
+      assert.doesNotThrow(() => checkIndexValue(old.entry, "entry", 64 * 1024));
+      const { roadmapItems, ...details } = old.roadmap;
+      assert.doesNotThrow(() => checkIndexValue(details, "details", 64 * 1024));
+      for (const card of roadmapItems) assert.doesNotThrow(() => checkIndexCard(card));
+    }
+    for (const old of part.historyDocs ?? []) assert.doesNotThrow(() => checkIndexDocument(old.markdown, old.cardId, old.kind));
+  }
 });
 
 test("a resumed take-online is checked again, so files added meanwhile stop it until tidied", async () => {
