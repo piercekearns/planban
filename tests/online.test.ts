@@ -15,7 +15,7 @@ import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/re
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
-import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanNotReadyForOnline, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
@@ -1062,45 +1062,40 @@ test("a copy of a board made before identities existed is still recognised by it
   assert.equal(refusal.stale.unsyncedChanges.length, 60);
 });
 
-test("taking a board online sends text only: card files and local pictures become references, after the person confirms", async () => {
+test("a board goes online only when it is clean: files and local pictures in the way are listed with how to tidy them", async () => {
   const before = await storage.loadState(cwd);
   const folder = join(before.planningRoot, "items", "alpha");
-  await mkdir(join(folder, "renders", "node_modules", "x"), { recursive: true });
+  await mkdir(join(folder, "renders"), { recursive: true });
   await writeFile(join(folder, "renders", "front.png"), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
-  await writeFile(join(folder, "renders", "node_modules", "x", "index.js"), "x");
-  const spec = "# Alpha\n\n![Front view](renders/front.png)\n\n![Logo](data:image/png;base64,iVBORw0KGgo=)\n\n![Diagram](https://example.com/diagram.png)\n";
   const current = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
-  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: spec, expectedMtimeMs: current.exists ? current.mtimeMs : null });
+  const spec = "# Alpha\n\n![Front view](renders/front.png)\n\n![Logo](data:image/png;base64,iVBORw0KGgo=)\n\n![Diagram](https://example.com/diagram.png)\n";
+  const written = await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: spec, expectedMtimeMs: current.exists ? current.mtimeMs : null });
 
   const refusal: any = await takeOnline(fake.url, cwd).then(() => null, (error) => error);
-  assert.ok(refusal instanceof PlanbanConfirmationNeeded, String(refusal));
-  assert.match(refusal.message, /2 file\(s\) and 2 picture\(s\).*not copied.*Nothing on this machine changes/s);
-  assert.deepEqual(refusal.summary.cards[0].files, ["renders/front.png", "renders/node_modules/"]);
-  assert.equal(fake.transfers.size, 0, "nothing moved before confirming");
+  assert.ok(refusal instanceof PlanbanNotReadyForOnline, String(refusal));
+  assert.match(refusal.message, /cannot go online yet; nothing has moved\. 1 file\(s\) and 2 picture\(s\) are in the way/);
+  assert.match(refusal.message, /file renders\/front\.png; picture in the Spec \(Front view\), .*items\/alpha\/renders\/front\.png; picture in the Spec \(Logo\), stored in the document/);
+  assert.match(refusal.message, /Move each file in its folder to where it belongs.*labelled with its machine/s);
+  assert.equal(fake.transfers.size, 0, "nothing moved");
+  assert.equal(await readFile(join(folder, "spec.md"), "utf8"), spec, "nothing on this machine changed");
 
-  await takeOnline(fake.url, cwd, { confirmReferences: true });
-  const sent = fake.requests.filter((req) => req.path.endsWith("/parts")).flatMap((req) => req.body.docs ?? []);
-  const online = sent.find((doc: any) => doc.cardId === "alpha" && doc.kind === "spec").markdown as string;
-  assert.doesNotMatch(online, /data:image|!\[Front view\]\(renders/);
-  assert.match(online, /\[Picture: Front view, on .*: .*items\/alpha\/renders\/front\.png\]/);
-  assert.match(online, /\[Picture: Logo, embedded in the copy of this board on .*; not taken online\]/);
-  assert.match(online, /!\[Diagram\]\(https:\/\/example\.com\/diagram\.png\)/, "pictures on the web stay");
-  assert.match(online, /## Files on .*\n[\s\S]*- .*: .*renders\/front\.png\n- .*: .*renders\/node_modules \(folder\)/);
-  // The copy on this machine keeps everything as it was.
-  assert.equal(await readFile(join(before.planningRoot, "items", "alpha", "spec.md"), "utf8"), spec);
-  assert.equal(await storage.pathExists(join(folder, "renders", "front.png")), true);
+  // Tidied: the file lives elsewhere and the Spec refers to it; pictures on the web are fine.
+  await rm(join(folder, "renders"), { recursive: true });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Alpha\n\nFront view: Mac mini: ~/Projects/demo/renders/front.png\n\n![Diagram](https://example.com/diagram.png)\n", expectedMtimeMs: written.mtimeMs });
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
 });
 
-test("a resumed take-online starts again if the card files changed, so the online text is never a mix", async () => {
+test("a resumed take-online is checked again, so files added meanwhile stop it until tidied", async () => {
   const before = await storage.loadState(cwd);
   await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
   await mkdir(join(before.planningRoot, "items", "alpha"), { recursive: true });
   await writeFile(join(before.planningRoot, "items", "alpha", "notes.txt"), "added meanwhile");
-  await takeOnline(fake.url, cwd, { confirmReferences: true });
-  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted", "committed"]);
-  const sent = [...fake.transfers.values()].at(-1)!.parts;
-  const spec = [...sent.values()].flatMap((part: any) => part.docs ?? []).find((doc: any) => doc.cardId === "alpha" && doc.kind === "spec");
-  assert.match(spec.markdown, /notes\.txt/);
+  await assert.rejects(takeOnline(fake.url, cwd), (error: unknown) => error instanceof PlanbanNotReadyForOnline && /notes\.txt/.test((error as Error).message));
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["open"], "the interrupted upload is left to resume");
+  await rm(join(before.planningRoot, "items", "alpha", "notes.txt"));
+  await takeOnline(fake.url, cwd);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["committed"]);
 });
 
 test("a take-online that fails removes the partly copied online board and leaves this machine's board unchanged", async () => {

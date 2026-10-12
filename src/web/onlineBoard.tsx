@@ -21,6 +21,7 @@ export interface MoveJob {
   error: string | null;
   /** For a failed move: where the board stands, said plainly, and what trying again would do. */
   outcome: { unchanged: boolean; location: "local" | "online"; message: string; retry: string | null } | null;
+  noteCommit: string | null;
 }
 
 export interface OnlineStatus {
@@ -129,7 +130,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   const [signInLink, setSignInLink] = useState<string | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
   const others = (status.people ?? []).filter((person) => !person.you);
-  const [conversion, setConversion] = useState<{ machine: string; files: number; pictures: number; problems: string[]; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string }> }> } | null>(null);
+  const [conversion, setConversion] = useState<{ clean: boolean; machine: string; files: number; pictures: number; howToTidy: string; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string; where: string }>; problems: string[] }> } | null>(null);
   useEffect(() => {
     if (view !== "confirm-online") return;
     setConversion(null);
@@ -169,7 +170,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   }
 
   const takeOnline = () => act(async () => {
-    await request(`${base}/take-online`, { confirmReferences: true });
+    await request(`${base}/take-online`, {});
     setView("progress");
   });
   const takeLocal = () => act(async () => {
@@ -218,7 +219,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
     const preview = conversion;
     return (
       <Modal eyebrow="Board settings" title={`Take ${boardTitle} online?`} onClose={onClose}
-        footer={<><button onClick={() => setView("settings")}>Cancel</button><button className="primary update-now-action" disabled={busy || !conversion || conversion.problems.length > 0} onClick={() => void takeOnline()}><Cloud size={14} /> Take online</button></>}>
+        footer={<><button onClick={() => setView("settings")}>Cancel</button><button className="primary update-now-action" disabled={busy || !conversion || !conversion.clean} onClick={() => void takeOnline()}><Cloud size={14} /> Take online</button></>}>
         <div className="online-board-body">
           <ul>
             <li>The whole board, including specs, plans and history, is copied to your Planban account.</li>
@@ -226,14 +227,13 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
             <li>Agents on this Mac keep working. Each one will ask you to sign in once.</li>
             <li>Nobody else can see the board until you invite them.</li>
           </ul>
-          {!preview ? <p className="muted">Checking the board's files…</p> : preview.problems.length ? (
-            <div className="online-board-calm"><b>This board cannot go online yet.</b> Planban online holds text only:<ul>{preview.problems.map((problem) => <li key={problem}>{problem}</li>)}</ul></div>
-          ) : preview.files || preview.pictures ? (
+          {!preview ? <p className="muted">Checking the board…</p> : !preview.clean ? (
             <div className="online-board-calm">
-              <b>Files stay on this Mac.</b> Online boards hold text only, so {preview.files ? `${preview.files} file${preview.files === 1 ? "" : "s"}` : ""}{preview.files && preview.pictures ? " and " : ""}{preview.pictures ? `${preview.pictures} picture${preview.pictures === 1 ? "" : "s"}` : ""} will be listed as references to where they are on {preview.machine}, not copied:
+              <b>Tidy this board first.</b> Planban holds text only and refers to files where they live, so {preview.files ? `${preview.files} file${preview.files === 1 ? "" : "s"}` : "some content"}{preview.files && preview.pictures ? " and " : ""}{preview.pictures ? `${preview.pictures} picture${preview.pictures === 1 ? "" : "s"}` : ""} must move out of the board before it can go online. Nothing has moved.
               <ul className="conversion-list">{preview.cards.map((card) => (
-                <li key={card.cardId}><b>{card.title}</b>: {[...card.files, ...card.pictures.map((picture) => `picture in the ${picture.kind === "plan" ? "Plan" : "Spec"}${picture.alt ? ` (${picture.alt})` : ""}`)].join(", ")}</li>
+                <li key={card.cardId}><b>{card.title}</b>: {[...card.files, ...card.pictures.map((picture) => `picture in the ${picture.kind === "plan" ? "Plan" : "Spec"}${picture.alt ? ` (${picture.alt})` : ""}`), ...card.problems].join("; ")}</li>
               ))}</ul>
+              <p className="muted" style={{ whiteSpace: "pre-line", margin: "8px 0 0", fontSize: 12 }}>{preview.howToTidy.split("\n").slice(1).join("\n")}</p>
             </div>
           ) : null}
           <p className="muted">You can take it back to this Mac at any time from Board settings.</p>
@@ -311,6 +311,17 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   return (
     <Modal eyebrow={boardTitle} title="Board settings" onClose={onClose}>
       {job && job.status === "stopped" ? <p className="online-board-note"><Check size={13} /> Take Online stopped. The board is on this Mac, unchanged.</p> : null}
+      {job && job.status === "succeeded" && job.noteCommit ? (
+        <div className="online-board-section">
+          <h3>Let your other machines know</h3>
+          <p className="muted" style={{ margin: "0 0 8px", fontSize: 12, lineHeight: "18px" }}>
+            {job.kind === "take-online"
+              ? "Planban left a short note in this project's .planban folder saying the board is online. Commit it, and any machine with the project will treat its old copy as read-only and suggest signing in, even before it goes online."
+              : "The project's note saying the board was online has been removed. Commit the removal so your other machines know."}
+          </p>
+          <input className="online-board-input" readOnly value={job.noteCommit.replace(/^.*?: (?=git )/, "")} onFocus={(event) => event.target.select()} aria-label="Command to commit the note" />
+        </div>
+      ) : null}
       <div className="online-board-section"><h3>Where this board lives</h3>{where}</div>
       <div className="online-board-section"><h3>People</h3>{people}</div>
       {errorLine ? <div className="online-board-section">{errorLine}</div> : null}

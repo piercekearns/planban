@@ -38,6 +38,8 @@ export interface MoveJob {
   progress: MoveProgress | null;
   error: string | null;
   outcome: MoveOutcome | null;
+  /** After a move: how to commit (or commit the removal of) the project's online note, if the project is in git. */
+  noteCommit: string | null;
   startedAt: string;
   finishedAt: string | null;
 }
@@ -194,10 +196,11 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
 
   function startJob(repoId: string, kind: MoveJob["kind"], run: (job: MoveJob & { controller?: AbortController }) => Promise<unknown>) {
     const job: MoveJob & { controller?: AbortController } = {
-      id: randomUUID(), repoId, kind, status: "running", progress: null, error: null, outcome: null, startedAt: new Date().toISOString(), finishedAt: null,
+      id: randomUUID(), repoId, kind, status: "running", progress: null, error: null, outcome: null, noteCommit: null, startedAt: new Date().toISOString(), finishedAt: null,
     };
     jobs.set(job.id, job);
-    (job as { done?: Promise<void> }).done = run(job).then(() => {
+    (job as { done?: Promise<void> }).done = run(job).then((result) => {
+      job.noteCommit = (result as { onlineNote?: { commit?: string | null } } | undefined)?.onlineNote?.commit ?? null;
       job.status = "succeeded";
     }, async (error: unknown) => {
       const cwd = await deps.resolveBoardCwd(repoId).catch(() => null);
@@ -232,7 +235,7 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     return false;
   }
 
-  /** What would become references if this board went online (read from this machine only). */
+  /** Whether this board is clean enough to go online, and what is in the way (read from this machine only). */
   app.get("/api/boards/:repoId/online/conversion", relay(async (req) => previewTakeOnline(await deps.resolveBoardCwd(String(req.params.repoId)))));
 
   app.post("/api/boards/:repoId/online/take-online", async (req, res, next) => {
@@ -251,7 +254,7 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
         }
         const job = startJob(repoId, "take-online", (entry) => {
           entry.controller = new AbortController();
-          return takeOnline(url, cwd, { signal: entry.controller.signal, confirmReferences: req.body?.confirmReferences === true, onProgress: (progress) => { entry.progress = progress; } });
+          return takeOnline(url, cwd, { signal: entry.controller.signal, onProgress: (progress) => { entry.progress = progress; } });
         });
         deps.changed(repoId);
         res.status(202).json(publicJob(job));

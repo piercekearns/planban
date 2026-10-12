@@ -138,8 +138,7 @@ keys.command("create <url>").requiredOption("--board <id>", "the one board the k
   });
 online.command("status").action(async () => print(await onlineStatus(), {}));
 online.command("take-online <url>").option("--cwd <path>", "project directory")
-  .option("--confirm-references", "go ahead: card files and local pictures are listed as references, not copied (boards online hold text only)")
-  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd), { confirmReferences: !!options.confirmReferences }), {}));
+  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
 online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")
   .action(async (options) => print(await stopTakeOnline(cwdOption(options.cwd)), {}));
 const onlineBoardOf = async (cwd: string) => {
