@@ -37,7 +37,11 @@ Board URL (the port can differ; verify it through \`planban_launch_board\` befor
 
 ## Planban tools
 
-Planban is exposed as MCP tools whose names end in \`planban_<operation>\`: status, list_boards, launch_board, get_board, query_cards, get_card, read_doc, create_card, create_cards, create_group, move_card, update_card, write_doc. Pass \`cwd\` as this repo's absolute path. Linked git worktrees resolve to the main checkout's board automatically, so pass the worktree path when working in one.
+Planban is exposed as MCP tools whose names end in \`planban_<operation>\`: status, list_boards, launch_board, get_board, query_cards, get_card, read_doc, create_card, create_cards, create_group, move_card, update_card, write_doc, move_files_out. Pass \`cwd\` as this repo's absolute path. Linked git worktrees resolve to the main checkout's board automatically, so pass the worktree path when working in one.
+
+## Planban references
+
+A \`planban:<board>/<item>\` token names a Planban Item or Group and \`planban:<board>\` names a Board. \`<board>\` is the registered repo id and \`<item>\` is the card id, so resolve a reference with \`planban_get_card\` (\`repoId\` and \`cardId\`) or the Board tools (\`repoId\`). A quoted title beside the token is display context only: the id is the identity, and if the two disagree, trust the id and say so. Cite Items the same way in replies: \`\u201C<title>\u201D \u00B7 planban:<board>/<item>\`.
 
 ## If Planban tools are not available in this session
 
@@ -58,6 +62,9 @@ When the user asks to update the roadmap:
 - update the card summary and next action so they match the current phase of work
 - update linked specs, and only create or update separate implementation plans when the work is complex enough to need one
 - before creating or materially editing owner-facing Planban content, follow the installed Planban protocol and Planban house style
+- if a tool result shows stale signals for a card you own or touch, re-read it and fix it in the same mutation batch
+- Planban is an index, not file storage: never save files into a card's folder; refer to them from the Spec or Plan with a GitHub link, a web address, or a local path labelled with its machine, such as "Mac mini: ~/Projects/app/renders/front.png"
+- a card whose folder holds files refuses changes until the owner chooses where they go and they are moved out with \`planban_move_files_out\` (dry run first)
 - do not create or prefer ROADMAP.md
 
 Roadmap status protocol for agent work:

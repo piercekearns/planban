@@ -9,6 +9,7 @@ import {
   ArrowRight,
   ArrowRightLeft,
   Bug,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -75,6 +76,7 @@ import {
   type Status,
 } from "./boardOrdering";
 import { mainBoardProjection, itemsInGroup, groupProgressSegments, groupRollup, workItemRank, type GroupRollup } from "./mainBoardProjection";
+import { buildWorkItemReference } from "./workItemReference";
 import { groupWorkspaceProjection } from "./groupWorkspaceProjection";
 import { flattenedExecutionMoveForDrop, flattenedExecutionProjection } from "./flattenedExecutionProjection";
 import {
@@ -114,6 +116,7 @@ import {
   type PlanbanActivitySnapshot,
 } from "../core/activity";
 import { liveRefreshDecision } from "./liveSync";
+import { stalenessChipLabel, type StalenessSignal } from "../core/staleness";
 import {
   canPlaceItemInside,
   groupPlacementDecision,
@@ -166,6 +169,7 @@ interface RoadmapItem {
 }
 
 interface PlanbanState {
+  staleness?: { cards: Record<string, StalenessSignal[]> };
   cwd: string;
   manifest: { repoId: string };
   manifestPath: string;
@@ -484,18 +488,41 @@ function formatOptionalLine(label: string, value: string | number | null | undef
   return `${label}: ${value === null || value === undefined || value === "" ? "(none)" : value}`;
 }
 
-function buildWorkItemReference(state: PlanbanState, item: RoadmapItem) {
-  const kind = item.isGroup ? "Group" : "Item";
-  return [
-    `Planban ${kind}: “${item.title}”`,
-    `Board: ${state.roadmap.project.title}`,
-    `Local Board ID: ${state.manifest.repoId}`,
-    `${kind} ID: ${item.id}`,
-  ].join("\n");
+async function copyWorkItemReference(state: PlanbanState, item: RoadmapItem) {
+  return await writeClipboardText(buildWorkItemReference(state.manifest.repoId, item));
 }
 
-async function copyWorkItemReference(state: PlanbanState, item: RoadmapItem) {
-  return await writeClipboardText(buildWorkItemReference(state, item));
+function useTransientConfirmation(resetKey: string, durationMs = 1800) {
+  const [confirmed, setConfirmed] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  const clearConfirmation = useCallback(() => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+    setConfirmed(false);
+  }, []);
+
+  const showConfirmation = useCallback(() => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    setConfirmed(true);
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
+      setConfirmed(false);
+    }, durationMs);
+  }, [durationMs]);
+
+  useEffect(() => clearConfirmation, [clearConfirmation, resetKey]);
+
+  return [confirmed, showConfirmation] as const;
+}
+
+function CopyConfirmationIcon({ confirmed }: { confirmed: boolean }) {
+  return (
+    <span className="copy-reference-icon" data-state={confirmed ? "confirmed" : "idle"} aria-hidden="true">
+      <Copy className="copy-reference-icon-default" size={14} />
+      <Check className="copy-reference-icon-success" size={15} strokeWidth={2.6} />
+    </span>
+  );
 }
 
 function getCodexThreadMeta(item: RoadmapItem) {
@@ -1051,6 +1078,17 @@ function GroupIcon({
   );
 }
 
+// Stale signals by card id, from the board state API. Mutation responses omit them, so the board keeps the last set.
+const StalenessContext = React.createContext<Record<string, StalenessSignal[]>>({});
+
+function StalenessChip({ itemId }: { itemId: string }) {
+  // Agent-maintenance signals stay in tool results; the board shows only what needs the owner, and cards holding files.
+  const signal = React.useContext(StalenessContext)[itemId]?.find((entry) => stalenessChipLabel(entry));
+  if (!signal) return null;
+  // A card holding files explains itself on hover: Planban refuses changes until they are moved out.
+  return <p className="staleness-note" title={signal.kind === "holds-files" ? signal.detail : undefined}>{stalenessChipLabel(signal)}</p>;
+}
+
 function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined; ancestry?: RoadmapItem[]; expanded?: boolean }) {
   const description = item.nextAction || item.summary || "";
   const progressSegments = rollup ? groupProgressSegments(rollup) : [];
@@ -1070,6 +1108,7 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
         </span>
       </div>
+      <StalenessChip itemId={item.id} />
       {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
       {description ? <p className="card-copy">{description}</p> : null}
       {rollup ? (
@@ -1387,7 +1426,7 @@ function SortableCard({
     height: isDragging && receiverDragHeight ? containmentSourceFootprint ?? receiverDragHeight : undefined,
     opacity: isDragging ? hierarchyDraggedSourceOpacity(reorderPreview, hideSourceDuringDrag) : 1,
   } as React.CSSProperties;
-  const [referenceCopied, setReferenceCopied] = useState(false);
+  const [referenceCopied, showReferenceCopied] = useTransientConfirmation(item.id);
 
   return (
     <article
@@ -1434,6 +1473,7 @@ function SortableCard({
               </>
             ) : null}
             <TooltipButton
+              className={`copy-reference-button ${referenceCopied ? "is-copied" : ""}`}
               label={referenceCopied ? `${item.isGroup ? "Group" : "Item"} reference copied` : `Copy ${item.isGroup ? "Group" : "Item"} reference`}
               onClick={(event) => {
                 event.stopPropagation();
@@ -1442,12 +1482,11 @@ function SortableCard({
                     window.alert(`Clipboard access was blocked. Open the ${item.isGroup ? "Group" : "Item"} and copy its title and ID from the detail view.`);
                     return;
                   }
-                  setReferenceCopied(true);
-                  window.setTimeout(() => setReferenceCopied(false), 1600);
+                  showReferenceCopied();
                 });
               }}
             >
-              <Copy size={14} />
+              <CopyConfirmationIcon confirmed={referenceCopied} />
             </TooltipButton>
           </div>
           <div className="card-action-group">
@@ -3702,7 +3741,7 @@ function DetailView({
   const [objectiveEditing, setObjectiveEditing] = useState(false);
   const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
   const [busy, setBusy] = useState(false);
-  const [referenceCopied, setReferenceCopied] = useState(false);
+  const [referenceCopied, showReferenceCopied] = useTransientConfirmation(`${boardId}:${item.id}`);
   const [placementOpen, setPlacementOpen] = useState(false);
   const [placementQuery, setPlacementQuery] = useState("");
   const [placementDestination, setPlacementDestination] = useState<{
@@ -3983,10 +4022,6 @@ function DetailView({
     setPlacementPosition({ kind: "last" });
     setGroupOptimisticItems(null);
   }, [boardId, item.id, previewVersion]);
-
-  useEffect(() => {
-    setReferenceCopied(false);
-  }, [boardId, item.id]);
 
   useEffect(() => {
     setObjectiveEditing(false);
@@ -4318,16 +4353,16 @@ function DetailView({
           {!isPreviewing ? (
             <div className="detail-item-actions" aria-label={`${item.isGroup ? "Group" : "Item"} actions`}>
               <TooltipButton
+                className={`copy-reference-button ${referenceCopied ? "is-copied" : ""}`}
                 label={referenceCopied ? `${item.isGroup ? "Group" : "Item"} reference copied` : `Copy ${item.isGroup ? "Group" : "Item"} reference`}
                 onClick={() => void copyWorkItemReference(state, item).then((copied) => {
                   if (!copied) {
                     window.alert(`Clipboard access was blocked. Copy this ${item.isGroup ? "Group" : "Item"} ID manually: ${item.id}`);
                     return;
                   }
-                  setReferenceCopied(true);
-                  window.setTimeout(() => setReferenceCopied(false), 1600);
+                  showReferenceCopied();
                 })}
-              ><Copy size={14} /></TooltipButton>
+              ><CopyConfirmationIcon confirmed={referenceCopied} /></TooltipButton>
               {!item.isGroup ? (
                 <TooltipButton label="Move Item" aria-expanded={placementOpen} onClick={() => setPlacementOpen(true)}>
                   <ArrowRightLeft size={14} />
@@ -4686,6 +4721,10 @@ function BoardView({
   onSelectBoard: (repoId: string | null) => void;
 }) {
   const boardId = state.manifest.repoId;
+  const lastStalenessRef = useRef<{ boardId: string; cards: Record<string, StalenessSignal[]> }>({ boardId, cards: {} });
+  if (state.staleness) lastStalenessRef.current = { boardId, cards: state.staleness.cards };
+  else if (lastStalenessRef.current.boardId !== boardId) lastStalenessRef.current = { boardId, cards: {} };
+  const stalenessCards = lastStalenessRef.current.cards;
   const [items, setItems] = useState<RoadmapItem[]>(state.roadmap.roadmapItems);
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -5537,6 +5576,7 @@ function BoardView({
   }
 
   return (
+    <StalenessContext.Provider value={stalenessCards}>
     <BoardPeopleContext.Provider value={boardPeople.people}>
     <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
@@ -5767,6 +5807,7 @@ function BoardView({
       </DndContext>}
     </main>
     </BoardPeopleContext.Provider>
+    </StalenessContext.Provider>
   );
 }
 

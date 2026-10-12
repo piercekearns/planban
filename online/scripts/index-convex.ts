@@ -52,6 +52,19 @@ const fine = await api(token, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, 
 assert.equal(fine.status, 200, JSON.stringify(fine.json));
 ok("edits through the API refuse embedded files and oversized documents; references are fine");
 
+const table = ["|North|South|East|West|", "|---|---|---|---|", ...Array(160).fill("|north|south|east|west|")].join("\n");
+const beforeTable = await api(token, "GET", `/api/v1/boards/${boardId}/docs/${cardId}/spec`);
+const tableWrite = await api(token, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId, kind: "spec", markdown: table, expectedMtimeMs: beforeTable.json.mtimeMs });
+assert.equal(tableWrite.status, 200, JSON.stringify(tableWrite.json));
+const tableRead = await api(token, "GET", `/api/v1/boards/${boardId}/docs/${cardId}/spec`);
+assert.equal(tableRead.json.markdown, table);
+const encodedCells = ["|Payload|", "|---|", ...randomBytes(4000).toString("base64").match(/.{1,40}/g)!.map((row) => `|${row}|`)].join("\n");
+const encodedTable = await api(token, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId, kind: "spec", markdown: encodedCells, expectedMtimeMs: tableRead.json.mtimeMs });
+assert.equal(encodedTable.status, 400, JSON.stringify(encodedTable.json));
+assert.match(encodedTable.json.error.message, /encoded file/);
+assert.equal((await api(token, "GET", `/api/v1/boards/${boardId}/docs/${cardId}/spec`)).json.markdown, table);
+ok("ordinary compact word tables round-trip exactly; encoded table cells are refused without changing the document");
+
 const mcp = async (method: string, params: unknown) => {
   const response = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
   const text = await response.text();

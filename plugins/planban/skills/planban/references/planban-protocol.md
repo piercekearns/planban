@@ -68,17 +68,40 @@ Planban deliberately separates repo discovery from live local state:
 
 Do not create or prefer `ROADMAP.md`.
 
-## Online Boards: an index, not storage
+## Planban is an index, not storage
 
-An Online Board holds only Planban's own text: cards, Specs, Plans and their history. Everything else is a reference to where it lives, which agents follow with their own access:
+A Board holds only its own text: each card's fields, its Spec and Plan, and their
+history. It never holds files. Everything else is a reference to where it lives.
 
-- a GitHub link, for files in a repository;
-- any web address, for documents, designs and other online material;
-- a local path labelled with its machine, such as `Mac mini: ~/Projects/northfold/renders/front.png`.
+- Never save a file into a card's folder under `~/.planban/repos/<repo-id>/items/`.
+  Only Planban writes there, and only `spec.md` and `plan.md`.
+- Keep evidence, screenshots, exports, logs and long reports where they belong: the
+  project's repository, a shared drive, or a website. A file the owner should keep
+  that has no home yet goes in the repository, for example under `docs/`, with the
+  owner's agreement.
+- Refer to a file from the card's Spec or Plan in one of three forms:
+  - a GitHub link, such as `https://github.com/<owner>/<repo>/blob/main/docs/evidence/run.png`;
+  - any other web address;
+  - a local path labelled with its machine, such as `Mac mini: ~/Projects/app/renders/front.png`.
+    The label matters: another machine, or a hosted board, cannot follow an unlabelled
+    path.
+- Do not paste a file into the text. Planban refuses writes that embed a file
+  (`data:` addresses with a payload, long base64, binary content, or long lists of
+  numbers standing in for bytes), Specs and Plans over 1 MB, and cards over 128 KB.
+  The error says what was found and how to refer to it instead.
 
-Never paste a file, an image or encoded data (a `data:` address, base64) into a card or document on an Online Board; the service refuses it and says how to refer to the file instead. Documents are limited to 1 MB and cards to 128 KB. A board goes online only when it is clean: Planban refuses while a card's folder holds files, or a Spec or Plan holds a picture stored in it or pointing at a file on this machine, and lists what to tidy. Local boards will follow the same rule in a coming release.
+A card whose folder already holds files is flagged: tool results and the
+session-start line name it, and the board shows a quiet "Holds files" note on it.
+Planban refuses every change to that card until the files are moved out; reading it
+still works. To tidy it, ask the owner where the files belong, then run
+`planban_move_files_out` (or `planban move-files-out <card> --to <folder>`) with a
+dry run first. It moves the files to that folder without overwriting or deleting
+anything, and adds a Files section to the card's Spec that refers to each one where
+it now lives.
 
-Taking a board online also leaves `.planban/online-board.json` in the project folder, for the owner to commit. On any machine where that note exists, the local copy of the board is read-only: Planban refuses changes and says where the board lives. Do not retry or work around it; ask the owner to sign in and choose "Use the online board", or to keep the copy as a separate board.
+### Online authority
+
+A board goes online only when it is clean: Planban lists files and pictures to tidy before the transfer. Taking a board online leaves `.planban/online-board.json` in the project folder, for the owner to commit. On any machine where that note exists, the local copy becomes read-only: Planban refuses changes and says where the board lives. Do not retry or work around it; ask the owner to sign in and choose "Use the online board", or to keep the copy as a separate board.
 
 ## Work Item Model
 
@@ -282,6 +305,8 @@ When changing roadmap state:
   phase of work.
 - Update linked docs when the work changes the spec or plan.
 - Create a separate plan doc only when the work is complex enough to need one.
+- If a tool result shows stale signals for a card you own or touch, re-read it and fix
+  it in the same mutation batch.
 
 ### Post-mutation handoff
 
@@ -326,6 +351,18 @@ npm run planban -- move-card <card-id> --board --cwd /path/to/repo -o json
 npm run planban -- read-doc <card-id> spec --cwd /path/to/repo -o json
 npm run planban -- demo -o json
 ```
+
+## Planban references
+
+Copy Reference in the Board puts one line on the clipboard: `\u201C<title>\u201D \u00B7 planban:<board>/<item>`. The `planban:` token is the identity; the quoted title is display context.
+
+Reading a reference:
+
+- `planban:<board>/<item>` names an Item or Group: `<board>` is the registered repo id and `<item>` is the card id. Resolve it with `planban_get_card` using `repoId` and `cardId`, or through the CLI `get-card`.
+- `planban:<board>` names a Board. Resolve it with `planban_status` or `planban_get_board` using `repoId`.
+- Trust the id over the title. If the resolved card's title differs from the quoted title, proceed with the id and mention the mismatch.
+
+Writing a reference: when citing or handing off an Item in a reply, prompt, or document, use the same one-line form. Do not invent longer labelled formats or absolute paths.
 
 ## Agent handoff prompts
 

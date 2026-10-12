@@ -73,6 +73,7 @@ test("status and the session hook report the main checkout board from a linked w
     assert.match(context, /board `main-board`/u);
     assert.match(context, /linked git worktree/u);
     assert.ok(context.includes(main));
+    assert.ok(context.includes(join(main, ".planban/agent-context.md")), "the hook names the exact agent-context file to read");
     const own = planbanSessionContext({ projectDir: main }) ?? "";
     assert.doesNotMatch(own, /linked git worktree/u);
   } finally { await rm(root, { recursive: true, force: true }); }

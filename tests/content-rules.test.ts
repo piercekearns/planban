@@ -58,6 +58,16 @@ test("history keeps its text when the files embedded in it are taken out", async
 
 import { randomBytes } from "node:crypto";
 
+test("compact Markdown word tables remain prose while encoded table cells are refused", () => {
+  const table = ["|North|South|East|West|", "|---|---|---|---|", ...Array(160).fill("|north|south|east|west|")].join("\n");
+  assert.equal(embeddedFileIn(table), null);
+  checkIndexDocument(table, "alpha", "plan");
+  // A prose row must also break a preceding encoded block's continuation.
+  assert.equal(embeddedFileIn(`A1+b2/C3=d4_E5-f6\n${table}`), null);
+  const payload = randomBytes(4000).toString("base64").match(/.{1,40}/g)!;
+  assert.ok(embeddedFileIn(["|Payload|", "|---|", ...payload.map((row) => `|${row}|`)].join("\n")));
+});
+
 test("a file split into short pieces, interleaved with prose or hidden in keys still adds up", async () => {
   const { checkIndexValue } = await import("../src/core/contentRules");
   const file = randomBytes(1825).toString("base64");

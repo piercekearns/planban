@@ -51,6 +51,12 @@ For roadmap, card, spec, plan, docs, status, creation, review, completion, or ot
 Planban state work, read `references/planban-protocol.md` before changing Planban
 state.
 
+Planban is an index, not file storage. Never save files into a card's folder; keep
+them where they belong and refer to them from the Spec or Plan with a GitHub link, a
+web address, or a local path labelled with its machine. The protocol's
+**Planban is an index, not storage** section explains references and how to tidy a
+card that already holds files.
+
 After a successful user-requested Planban creation or material mutation, follow the
 shared protocol's post-mutation handoff. Resolve the verified Board URL once after
 the complete logical mutation sequence: take it from the last mutation result's

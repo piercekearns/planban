@@ -14,6 +14,7 @@ on:
       - "plugins/planban/scripts/**"
       - "scripts/platform-invocation.d.mts"
       - "scripts/rehearse-marketplace-update-performance.mjs"
+      - "scripts/rehearse-claude-code-upgrade.mjs"
       - "scripts/marketplace-rehearsal-config.mjs"
       - "tests/marketplace-rehearsal-config.test.ts"
       - "scripts/update-marketplace-runtime.mjs"
@@ -26,7 +27,7 @@ on:
       from_version:
         description: Public Planban version used as the old marketplace
         required: true
-        default: "1.1.5"
+        default: "1.1.6"
         type: string
       target_ref:
         description: Remote branch or tag containing the exact candidate
@@ -54,7 +55,7 @@ jobs:
           - { os: windows-latest, shard: 5, iterations: 1 }
     runs-on: ${{ matrix.os }}
     env:
-      FROM_VERSION: ${{ inputs.from_version || '1.1.5' }}
+      FROM_VERSION: ${{ inputs.from_version || '1.1.6' }}
       TARGET_REF: ${{ inputs.target_ref || github.event.pull_request.head.ref }}
       RELEASE_SOURCE_URL: https://github.com/${{ github.repository }}.git
       TARGET_SOURCE_URL: ${{ github.event.pull_request.head.repo.clone_url || format('https://github.com/{0}.git', github.repository) }}
@@ -124,6 +125,46 @@ jobs:
             update-performance.json
             upgrade-correctness.json
           if-no-files-found: warn
+
+  claude-code-update:
+    name: Claude Code plugin update (${{ matrix.os }})
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      FROM_VERSION: ${{ inputs.from_version || '1.1.6' }}
+      EXPECTED_COMMIT: ${{ inputs.expected_commit || github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_COMMIT }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pinned Claude Code CLI
+        run: npm install --global @anthropic-ai/claude-code@2.1.296
+
+      - name: Rehearse the previous public version upgrade in Claude Code
+        shell: bash
+        run: npm run release:claude-upgrade-rehearsal -- --from-version "$FROM_VERSION" --expected-version "$(node -p "require('./package.json').version")"
 
   windows-performance-gate:
     name: Windows five-pair update gate

@@ -149,9 +149,10 @@ test("Planban MCP server registers focused tools", () => {
   assert.match(instructions, /never reopen the board after every write/u);
   assert.match(instructions, /call planban_launch_board once/u);
   assert.match(instructions, /explicit profiles/u);
+  assert.match(instructions, /index, not file storage: link to files; planban_move_files_out tidies/u);
   assert.doesNotMatch(instructions, /Codex|Claude/u);
   const wordCount = instructions.split(/\s+/u).length;
-  assert.ok(wordCount >= 120 && wordCount <= 180, `instructions should stay compact (${wordCount} words)`);
+  assert.ok(wordCount >= 120 && wordCount <= 210, `instructions should stay compact (${wordCount} words)`);
   const tools = responses[1].result.tools as Array<{ name: string; description: string; inputSchema: { properties?: Record<string, unknown> } }>;
   assert.deepEqual(
     tools.map((tool) => tool.name),
@@ -168,6 +169,7 @@ test("Planban MCP server registers focused tools", () => {
       "planban_move_card",
       "planban_update_card",
       "planban_write_doc",
+      "planban_move_files_out",
       "planban_launch_board",
     ],
   );
@@ -677,5 +679,43 @@ test("Planban MCP keeps a mutation result compact on a large board", async () =>
     assert.equal(payload.itemCount, 101);
     assert.equal("roadmapItems" in payload, false);
     assert.ok(JSON.stringify(responses[1].result).length < 10_000, "mutation result should not scale with board size");
+  });
+});
+
+test("Planban MCP reports stale signals on card and board reads, and notes oversized metadata", async () => {
+  await withPlanbanProject(async ({ cwd, planbanHome, cardId }) => {
+    await createCard({ cwd, title: "Cart Drawer", status: "in-progress", nextAction: "Owner: review the drawer once PR 267 merges." });
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_100));
+    const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+    for (const args of [["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "Merge pull request #267 from o/cart"], ["update-ref", "refs/remotes/origin/main", "HEAD"]]) {
+      spawnSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, env: gitEnv, encoding: "utf8" });
+    }
+    const responses = runMcpServer([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "planban_get_card", arguments: { cwd, cardId: "cart-drawer" } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "planban_query_cards", arguments: { cwd, search: "drawer" } } },
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "planban_status", arguments: { cwd } } },
+      { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "planban_get_board", arguments: { cwd } } },
+      { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "planban_get_card", arguments: { cwd, cardId } } },
+      { jsonrpc: "2.0", id: 7, method: "tools/call", params: {
+        name: "planban_update_card", arguments: { cwd, cardId, metadata: { ledger: "ledger entry ".repeat(400) } },
+      } },
+    ], { PLANBAN_HOME: planbanHome });
+
+    const card = responses[1].result;
+    assert.deepEqual(card.structuredContent.staleness.map((signal: { kind: string }) => signal.kind), ["merged", "awaiting-owner"]);
+    assert.match(card.structuredContent.staleness[0].detail, /^#267 merged \d{1,2} [A-Z][a-z]{2}$/u);
+    assert.match(card.content[0].text, /^Loaded Planban card cart-drawer\.\nStale signals: merged \(#267 merged .*\)/u);
+    assert.deepEqual(Object.keys(responses[2].result.structuredContent.staleness), ["cart-drawer"]);
+    for (const response of [responses[3], responses[4]]) {
+      const attention = response.result.structuredContent.attention;
+      assert.deepEqual(attention.cards.map((entry: { id: string }) => entry.id), ["cart-drawer"]);
+      assert.equal(attention.awaitingOwner, 1);
+      assert.equal(attention.wip, null);
+      assert.match(response.result.content[0].text, /\n1 active card looks stale \(cart-drawer\); fix any you touch\.\n/u);
+    }
+    assert.deepEqual(responses[5].result.structuredContent.staleness, [], "a card with no signals reports an empty list");
+    assert.match(responses[6].result.structuredContent.notes[0], /^Metadata is 5 KB\./u);
+    assert.match(responses[6].result.content[0].text, /^Updated Planban card alpha-card\.\nMetadata is 5 KB\./u);
   });
 });

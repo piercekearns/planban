@@ -104,6 +104,7 @@ process.stdout.write(JSON.stringify({
   checked: [
     "version consistency",
     "remote-owner Linux runner policy",
+    "Codex and Claude Code upgrade rehearsals required for release readiness",
     "lockfile dependency install-script allowlist",
     "typecheck",
     "tests",

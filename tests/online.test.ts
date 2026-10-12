@@ -1093,7 +1093,10 @@ test("a board goes online only when it is clean: files and local pictures in the
   await writeFile(join(folder, "renders", "front.png"), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
   const current = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
   const spec = "# Alpha\n\n![Front view](renders/front.png)\n\n![Logo](data:image/png;base64,iVBORw0KGgo=)\n\n![Diagram](https://example.com/diagram.png)\n";
-  const written = await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: spec, expectedMtimeMs: current.exists ? current.mtimeMs : null });
+  await assert.rejects(storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: spec, expectedMtimeMs: current.exists ? current.mtimeMs : null }), /Planban boards hold text only/);
+  // Simulate content left by an older install; strict Local Mode cannot create it now.
+  await writeFile(join(folder, "spec.md"), spec);
+  const written = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
 
   const refusal: any = await takeOnline(fake.url, cwd).then(() => null, (error) => error);
   assert.ok(refusal instanceof PlanbanNotReadyForOnline, String(refusal));

@@ -11,9 +11,12 @@ import {
   expandHome,
   manifestPath,
   registryPath,
+  resolveInsideRoot,
   roadmapPath,
   slugify,
 } from "./paths";
+import { boardTextForCopy } from "./cardFiles";
+import { checkIndexText, MAX_DETAILS_BYTES } from "./contentRules";
 import { ensureHistoryBaseline, recordHistoryVersion } from "./history";
 import { atomicWriteFile, appendLineDurably, withBoardWriteLock } from "./persistence";
 import { buildAgentContext } from "./protocol";
@@ -249,6 +252,9 @@ export async function duplicateBoard(input: {
   const { normalizeRoadmap } = await import("./storage");
   const sourceRoadmap = normalizeRoadmap(JSON.parse(await readFile(source.roadmapPath, "utf8")));
   const title = duplicateTitle(sourceRoadmap.project.title, input.title);
+  checkIndexText(title, "the board title", MAX_DETAILS_BYTES);
+  // Planban is an index: a copy carries the board's text only, checked, never the files in its folders.
+  const docs = await boardTextForCopy(source.planningRoot, sourceRoadmap);
   const explicitRepoId = input.repoId?.trim() ? slugify(input.repoId) : null;
   if (explicitRepoId && registry.boards.some((board) => board.repoId === explicitRepoId)) {
     throw new Error(`Planban board already exists: ${explicitRepoId}`);
@@ -258,8 +264,6 @@ export async function duplicateBoard(input: {
   const planningRoot = defaultPlanningRoot(repoId);
   const cwd = detachedBoardCwd(repoId);
   const liveRoadmapPath = roadmapPath(planningRoot);
-  const sourceItemsRoot = join(source.planningRoot, "items");
-  const targetItemsRoot = join(planningRoot, "items");
   const manifest: PlanbanProjectManifest = {
     version: 1,
     repoId,
@@ -274,8 +278,8 @@ export async function duplicateBoard(input: {
     return await withBoardWriteLock(planningRoot, async () => {
       await mkdir(planningRoot, { recursive: true });
       await mkdir(join(cwd, ".planban"), { recursive: true });
-      if (await pathExists(sourceItemsRoot)) {
-        await cp(sourceItemsRoot, targetItemsRoot, { recursive: true, force: false, errorOnExist: true });
+      for (const doc of docs) {
+        await atomicWriteFile(resolveInsideRoot(planningRoot, doc.path), doc.markdown);
       }
 
       const roadmap = duplicateRoadmap(sourceRoadmap, { repoId, title, timestamp });

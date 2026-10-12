@@ -254,6 +254,17 @@ Planban keeps live planning state on your machine:
 - local board state: `~/.planban/repos/<repo-id>/roadmap.json`
 - local card docs: `~/.planban/repos/<repo-id>/items/<card-id>/spec.md` and `plan.md`
 
+Planban is an index, not file storage. A card holds only text: its fields, Spec, Plan and history. Files stay where they belong, such as your repository or a shared drive, and a card refers to them with a GitHub link, a web address, or a local path labelled with its machine (`Mac mini: ~/Projects/app/renders/front.png`). Planban refuses text that embeds a file, Specs and Plans over 1 MB, and cards over 128 KB.
+
+If you upgrade with files already in a card's folder, Planban flags that card and refuses changes to it until the files are moved out. Reading it still works. To tidy it:
+
+```bash
+planban move-files-out <card-id> --to <folder> --dry-run   # preview
+planban move-files-out <card-id> --to <folder>
+```
+
+This moves the files to that folder, never overwriting or deleting anything, and adds a Files section to the card's Spec that refers to each one where it now lives.
+
 Do not commit `~/.planban` state to your project repo. We recommend adding `.planban/` to your project's `.gitignore`: `planban init` does not do this for you, and `.planban/agent-context.md` contains absolute paths from your machine.
 
 ## License
