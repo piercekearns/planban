@@ -9,9 +9,7 @@ import type { Doc } from "./_generated/dataModel";
 import { agentLevel } from "./schema";
 import { boardAccess, memberAgentLevel, roleLevel } from "./model/access";
 import { fail } from "./model/errors";
-
-/** History versions read to find each card's latest change. */
-const ACTIVITY_DEPTH = 400;
+import type { CardChange } from "./model/cardChanges";
 
 /** Fetches a person's name and picture from Clerk. Development sign-ins have none. */
 export const refresh = internalAction({
@@ -45,15 +43,6 @@ export const store = internalMutation({
   },
 });
 
-interface CardChange {
-  userId: string;
-  /** True when the person's agent made the change. */
-  agent: boolean;
-  clientName: string | null;
-  at: string;
-  summary: string;
-}
-
 /**
  * The people on a board, what each one's agents may do, and who last changed
  * each card. Everyone on the board sees all of it (owner decision 15).
@@ -74,26 +63,15 @@ export const forBoard = internalQuery({
         userId: member.userId,
         name: profile?.name ?? member.userId,
         imageUrl: profile?.imageUrl ?? null,
-        // Email is shown to others on the board only; it helps tell people apart.
-        email: profile?.email ?? null,
         role: member.role,
         agentLevel: memberAgentLevel(member),
         you: member.userId === access.connection.userId,
       };
     });
-    // Each card's latest change, newest history first.
+    // Each card's latest change, kept beside the board.
     const cards: Record<string, CardChange> = {};
-    const owner = members.find((member) => member.role === "owner")?.userId ?? access.board.ownerId;
-    const rows = await ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", access.board.generation)).order("desc").take(ACTIVITY_DEPTH);
-    for (const row of rows) {
-      const entry = row.entry as { createdAt: string; actor: string; summary: string; affectedCards?: string[]; affectedDocs?: Array<{ cardId: string }>; attribution?: { userId: string; clientName: string; actor: string } };
-      // Versions brought in from Local Mode carry no account: they were the owner's, or the owner's agents'.
-      const change: CardChange = entry.attribution
-        ? { userId: entry.attribution.userId, agent: entry.attribution.actor === "agent", clientName: entry.attribution.actor === "agent" ? entry.attribution.clientName : null, at: entry.createdAt, summary: entry.summary }
-        : { userId: owner, agent: entry.actor === "agent", clientName: null, at: entry.createdAt, summary: entry.summary };
-      for (const cardId of [...(entry.affectedCards ?? []), ...(entry.affectedDocs ?? []).map((doc) => doc.cardId)]) {
-        cards[cardId] ??= change;
-      }
+    for (const row of await ctx.db.query("cardChanges").withIndex("by_board_generation_card", (q) => q.eq("boardId", boardId).eq("generation", access.board.generation)).collect()) {
+      cards[row.cardId] = { userId: row.userId, agent: row.agent, clientName: row.clientName, at: row.at, summary: row.summary };
     }
     return { shared: members.length > 1, people, cards };
   },

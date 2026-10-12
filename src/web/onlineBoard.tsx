@@ -410,7 +410,6 @@ export interface BoardPerson {
   userId: string;
   name: string;
   imageUrl: string | null;
-  email: string | null;
   role: "owner" | "editor" | "viewer";
   agentLevel: "read" | "plan" | "complete";
   you: boolean;
@@ -497,16 +496,22 @@ export function CardFace({ cardId }: { cardId: string }) {
 }
 
 /** "Maya Okafor" or "Maya Okafor's agent (Claude)" for a history entry on a shared board, else null. */
-export function useChangeAuthor(attribution: { userId: string; clientName: string; actor: string } | undefined) {
+export function useChangeAuthor(attribution: { userId: string; clientName: string; actor: string } | undefined, actor?: string) {
   const board = useContext(BoardPeopleContext);
-  if (!board?.shared || !attribution) return null;
+  if (!board?.shared) return null;
+  if (!attribution) {
+    // Versions made in Local Mode, before the board went online: the owner's, or the owner's agents'.
+    const owner = board.people.find((entry) => entry.role === "owner");
+    if (!owner) return null;
+    return { person: owner, agent: actor === "agent", via: null };
+  }
   const person = board.people.find((entry) => entry.userId === attribution.userId) ?? { userId: attribution.userId, name: attribution.userId, imageUrl: null };
   return { person, agent: attribution.actor === "agent", via: attribution.actor === "agent" ? attribution.clientName : null };
 }
 
 /** On shared boards: the face and name of whoever made a history entry, and the agent they used. */
-export function HistoryAuthor({ attribution }: { attribution?: { userId: string; clientName: string; actor: string } | undefined }) {
-  const author = useChangeAuthor(attribution);
+export function HistoryAuthor({ attribution, actor }: { attribution?: { userId: string; clientName: string; actor: string } | undefined; actor?: string }) {
+  const author = useChangeAuthor(attribution, actor);
   if (!author) return null;
   return (
     <span className="history-author">
@@ -560,7 +565,7 @@ export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId:
         {!board ? <p className="muted">Loading…</p> : board.people.map((person) => (
           <div className="people-row" key={person.userId}>
             <Face person={person} size={28} />
-            <div className="who"><b>{person.name}{person.you ? <span className="muted"> (you)</span> : null}</b><small>{person.email ?? person.userId}</small></div>
+            <div className="who"><b>{person.name}{person.you ? <span className="muted"> (you)</span> : null}</b><small>{person.you ? "You" : ROLE_LABEL[person.role]}</small></div>
             <div className="col">
               {iOwn && person.role !== "owner" ? (
                 <select className="online-board-select" value={person.role} disabled={busy} aria-label={`${person.name}'s role`}

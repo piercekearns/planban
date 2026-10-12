@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -72,6 +72,8 @@ async function fakeService() {
   let failParts = false;
   let failAbort = false;
   let slowPartsMs = 0;
+  let failNextBoardRead = false;
+  let dropFenceReply = false;
   let onMe: (() => Promise<void> | void) | undefined;
   const uploads = new Map<string, Buffer>();
   const sessions = new Map<string, any>();
@@ -215,6 +217,10 @@ async function fakeService() {
       if (!bundle || !path.startsWith("/api/v1/boards/demo")) return json(404, { error: { code: "not_found", message: "Board not found" } });
       const roadmap = () => domain.normalizeRoadmap(bundle!.roadmap);
       const suffix = path.slice("/api/v1/boards/demo".length);
+      if (!suffix && failNextBoardRead) {
+        failNextBoardRead = false;
+        return json(503, { error: { code: "unavailable", message: "The service is busy." } });
+      }
       if (!suffix) return json(200, { roadmap: roadmap(), authority });
       if (suffix === "/changes") return json(200, { revision: roadmap().revision });
       if (suffix === "/export/meta") {
@@ -248,6 +254,12 @@ async function fakeService() {
         localTransfer = body.transferId;
         bundle.roadmap = domain.committedRoadmap(roadmap(), new Date().toISOString());
         members.splice(1);
+        if (dropFenceReply) {
+          // The freeze happened, but its answer is lost on the network.
+          dropFenceReply = false;
+          req.socket.destroy();
+          return;
+        }
         return json(200, { generation: 1 });
       }
       if (suffix === "/take-local/finish") {
@@ -347,7 +359,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, failNextBoardRead() { failNextBoardRead = true; }, dropFenceReply() { dropFenceReply = true; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -885,6 +897,23 @@ test("the board page shows an older copy and switches it to the online board whe
   }
 });
 
+test("keeping a separate board refuses a bad id before copying, and a retry finishes the same board", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  await assert.rejects(keepSeparateBoard(second, { newId: "../unexpected" }), /Choose a new board id/);
+  assert.equal(await storage.pathExists(join(root, "home", "unexpected")), false);
+  // The service is unreachable while switching: the separate board exists, and running it again finishes without another copy.
+  fake.failNextBoardRead();
+  await assert.rejects(keepSeparateBoard(second, { title: "Mine" }), /will not make another copy/);
+  const finished = await keepSeparateBoard(second);
+  assert.equal(finished.separateBoard.title, "Mine");
+  const boards = (await readdir(join(root, "home", "repos"))).filter((name) => name.startsWith("demo-copy"));
+  assert.equal(boards.length, 1, `one separate board, not ${boards.join(", ")}`);
+  assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
+});
+
 test("a machine that never signed in makes no network calls for local boards", async () => {
   await saveCredentials(fake.url, null);
   resetCopyChecks();
@@ -1191,6 +1220,15 @@ test("the board page starts one move at a time, explains a failed move from wher
     assert.equal(uncertain.outcome.retry, "Continue");
     fake.failParts(false);
     fake.failAbort(false);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id)).status, "succeeded");
+
+    // A freeze whose answer was lost is confirmed with the service, not assumed not to have happened.
+    fake.dropFenceReply();
+    const lost = await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id);
+    assert.equal(lost.status, "failed");
+    assert.equal(lost.outcome.unchanged, false);
+    assert.match(lost.outcome.message, /read-only/);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id)).status, "succeeded");
     assert.equal((await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id)).status, "succeeded");
 
     // Take Local failing after the freeze says the board is frozen.

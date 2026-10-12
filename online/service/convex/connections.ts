@@ -51,7 +51,9 @@ export const createDevConnection = internalMutation({
       tokenHash: args.tokenHash,
       boards: args.boards,
       level: args.level,
-      canAdminister: args.boards === "all",
+      // A development sign-in for all boards stands for the person; one with a
+      // lower level or fewer boards stands for one of their agents.
+      canAdminister: args.boards === "all" && args.level === "complete",
       createdAt: now,
       lastUsedAt: now,
     });
@@ -125,8 +127,9 @@ export const createKey = internalMutation({
     if (!name || name.length > 80) fail("validation", "Give the key a name of up to 80 characters.");
     if (!BOARD_ID_PATTERN.test(args.boardId)) fail("not_found", `Online Board not found: ${args.boardId}`);
     const access = await boardAccess(ctx, args.connectionId, args.boardId);
+    // A key can do at most what its person's role allows; what the person lets
+    // their agents do caps it again whenever it acts.
     if (access.role === "viewer" && args.level !== "read") fail("forbidden", "A viewer's key can only read.");
-    if (args.level === "complete" && access.role !== "owner") fail("forbidden", "Only the board owner can create a key that completes cards.");
     if (args.expiresAt && !(Date.parse(args.expiresAt) > Date.now())) fail("validation", "The expiry must be in the future.");
     const now = new Date().toISOString();
     const id = await ctx.db.insert("connections", {

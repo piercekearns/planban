@@ -7,6 +7,7 @@ import type { PlannedHistory } from "../../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanRoadmap, PlanbanRoadmapItem } from "../../../../src/core/types";
 import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
+import { noteCardChanges } from "./cardChanges";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { packJson, packText, unpackJson } from "./codec";
 
@@ -142,6 +143,10 @@ export async function recordHistory(ctx: MutationCtx, input: {
   for (const doc of docs) {
     await ctx.db.insert("historyDocs", { ...at, version, cardId: doc.cardId, kind: doc.kind, markdown: packText(doc.markdown) });
   }
+  // Faces on shared boards: who last changed each card this version touched.
+  await noteCardChanges(ctx, at, [...entry.affectedCards, ...entry.affectedDocs.map((doc) => doc.cardId)], {
+    userId: attribution.userId, agent: attribution.actor === "agent", clientName: attribution.actor === "agent" ? attribution.clientName : null, at: now, summary: history.summary,
+  });
   await ctx.db.patch(board._id, { historyVersion: version });
   await pruneHistory(ctx, at, version - MAX_HISTORY_VERSIONS);
   return version;

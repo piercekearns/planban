@@ -95,10 +95,17 @@ const editor = `${user}-editor`;
 const editorHome = await mkdtemp(join(tmpdir(), "planban-editor-"));
 await cli(editorHome, ["online", "login", origin, "--dev-user", editor]);
 await api(owner, "POST", `/api/v1/boards/${boardId}/members`, { userId: editor });
+// Roles from the approved mockups: an editor may complete, so their key may too
+// (capped again by what they let their agents do); a viewer's key only reads.
+const editorCompletes = await api(await token(editorHome), "POST", "/api/v1/keys", { boardId, level: "complete", name: "Editor finishing" });
+assert.equal(editorCompletes.status, 201, JSON.stringify(editorCompletes.json));
+assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/members/${encodeURIComponent(editor)}/role`, { role: "viewer" })).status, 200);
 assert.equal((await api(await token(editorHome), "POST", "/api/v1/keys", { boardId, level: "complete", name: "Too much" })).status, 403);
+assert.equal((await api(await token(editorHome), "POST", "/api/v1/keys", { boardId, level: "plan", name: "Too much" })).status, 403);
+assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/members/${encodeURIComponent(editor)}/role`, { role: "editor" })).status, 200);
 const editorKey = await api(await token(editorHome), "POST", "/api/v1/keys", { boardId, level: "plan", name: "Editor agent" });
 assert.equal(editorKey.status, 201);
-ok("only the board owner can create a key that completes cards");
+ok("a key can do at most what its person's role allows: editors' keys may complete, viewers' only read");
 
 assert.equal((await api(await token(editorHome), "GET", `/api/v1/boards/${boardId}`)).status, 200);
 assert.equal((await api(editorKey.json.key, "GET", `/api/v1/boards/${boardId}`)).status, 200);

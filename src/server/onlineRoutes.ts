@@ -56,7 +56,7 @@ async function defaultService() {
 }
 
 /** Explains a stopped or failed move from where the board actually stands. */
-function describeOutcome(kind: MoveJob["kind"], state: Awaited<ReturnType<typeof moveState>> | null): MoveOutcome {
+function describeOutcome(kind: MoveJob["kind"], state: Awaited<ReturnType<typeof moveState>> | null, frozenOnline: boolean | null = null): MoveOutcome {
   if (!state) return { unchanged: false, location: kind === "take-online" ? "local" : "online", message: "Planban could not read where this board stands now. Open Board settings again in a moment.", retry: null };
   const { location, unfinished } = state;
   if (kind === "take-online") {
@@ -66,7 +66,11 @@ function describeOutcome(kind: MoveJob["kind"], state: Awaited<ReturnType<typeof
     return { unchanged: false, location, message: "The board is still on this Mac and nothing on it has changed, but the partial online copy could not be removed yet. Try again to continue the move, or stop it to remove the partial copy.", retry: "Continue" };
   }
   if (location === "local") return { unchanged: false, location, message: "The board is on this Mac. The online copy was not told the move finished yet; that happens the next time this Mac reaches it.", retry: null };
-  if (!unfinished || unfinished.phase === "fencing") return { unchanged: true, location, message: "Nothing has changed. The board is still online, and nobody's access has been touched.", retry: "Take local" };
+  if (!unfinished || unfinished.phase === "fencing") {
+    // Only the service knows whether the freeze happened before the error.
+    if (frozenOnline === false) return { unchanged: true, location, message: "Nothing has changed. The board is still online, and nobody's access has been touched.", retry: "Take local" };
+    if (frozenOnline === null) return { unchanged: false, location, message: "The board is still online here, but Planban could not confirm with the online service whether the move started. If it did, the online board is read-only and everyone else's access has been removed. Try again to finish or to find out.", retry: "Try again" };
+  }
   return { unchanged: false, location, message: "The online board is now read-only and everyone else's access has been removed, but the copy to this Mac did not finish. Try again to finish bringing it here.", retry: "Finish taking it local" };
 }
 
@@ -196,9 +200,21 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     (job as { done?: Promise<void> }).done = run(job).then(() => {
       job.status = "succeeded";
     }, async (error: unknown) => {
-      job.status = error instanceof PlanbanTakeOnlineStopped ? "stopped" : "failed";
+      const cwd = await deps.resolveBoardCwd(repoId).catch(() => null);
+      const state = cwd ? await moveState(cwd).catch(() => null) : null;
+      // For Take Local, ask the service whether the board was frozen.
+      let frozenOnline: boolean | null = null;
+      if (kind === "take-local" && cwd && state?.location === "online") {
+        const manifest = await readManifest(cwd).catch(() => null);
+        if (manifest?.storage?.kind === "online") {
+          frozenOnline = await onlineRequest<{ authority: string }>(manifest.storage.url, boardPath(manifest.storage.boardId))
+            .then((board) => board.authority !== "online", () => null);
+        }
+      }
+      // The explanation is ready before the move is reported as ended.
+      job.outcome = describeOutcome(kind, state, frozenOnline);
       job.error = error instanceof Error ? error.message : String(error);
-      job.outcome = await describeOutcome(kind, await deps.resolveBoardCwd(repoId).then(moveState).catch(() => null));
+      job.status = error instanceof PlanbanTakeOnlineStopped ? "stopped" : "failed";
     }).finally(() => {
       job.finishedAt = new Date().toISOString();
       delete job.controller;

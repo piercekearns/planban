@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { listHistory } from "../history";
-import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath, resolveInsideRoot, slugify } from "../paths";
+import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyDocPath, historyIndexPath, historyRoadmapPath, isPathInsideRoot, manifestPath, resolveInsideRoot, slugify } from "../paths";
 import { atomicWriteFile, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
@@ -724,35 +724,58 @@ export async function keepSeparateBoard(cwdInput: string, options: { title?: str
   const planningRoot = resolvePlanningRoot(manifest);
   const marker = await readStaleMarker(planningRoot);
   if (!marker) throw new PlanbanValidationError("This board is not marked as an older copy of an Online Board.");
+  // A record of this conversion in the older copy, so running it again
+  // finishes the same separate board instead of making another.
+  const recordPath = join(planningRoot, "KEEP-SEPARATE.json");
+  const recorded = await readFile(recordPath, "utf8").then((text) => JSON.parse(text) as { newId: string; title: string; phase: "copying" | "converted" }, () => null);
   const state = await loadState(cwd);
-  const title = options.title?.trim() || `${state.roadmap.project.title} (copy from ${marker.onlineSince.slice(0, 10)})`;
-  let newId = options.newId ?? slugify(`${manifest.repoId}-copy-${marker.onlineSince.slice(0, 10)}`);
-  if (!options.newId) {
-    for (let suffix = 2; await pathExists(defaultPlanningRoot(newId)) || await pathExists(detachedBoardCwd(newId)); suffix += 1) {
-      newId = slugify(`${manifest.repoId}-copy-${marker.onlineSince.slice(0, 10)}-${suffix}`);
-    }
+  const day = marker.onlineSince.slice(0, 10);
+  const title = recorded?.title ?? (options.title?.trim() || `${state.roadmap.project.title} (copy from ${day})`);
+  let newId: string;
+  if (recorded) {
+    newId = recorded.newId;
+  } else if (options.newId) {
+    if (!BOARD_ID.test(options.newId) || options.newId === manifest.repoId) throw new PlanbanValidationError("Choose a new board id: up to 64 lowercase letters, digits and dashes.");
+    newId = options.newId;
+    if (await pathExists(defaultPlanningRoot(newId)) || await pathExists(detachedBoardCwd(newId))) throw new PlanbanValidationError(`A board called ${newId} already exists. Choose another id.`);
+  } else {
+    const base = slugify(`${manifest.repoId}-copy-${day}`).slice(0, 56).replace(/-+$/, "");
+    newId = base;
+    for (let suffix = 2; await pathExists(defaultPlanningRoot(newId)) || await pathExists(detachedBoardCwd(newId)); suffix += 1) newId = `${base}-${suffix}`;
   }
   const newRoot = defaultPlanningRoot(newId);
   const newCwd = detachedBoardCwd(newId);
-  if (await pathExists(newRoot) || await pathExists(newCwd)) throw new PlanbanValidationError(`A board called ${newId} already exists. Choose another id.`);
-  // Copy the board as it is now, holding it so nothing changes mid-copy.
-  await withBoardWriteLock(planningRoot, async () => {
-    await cp(planningRoot, newRoot, {
-      recursive: true, errorOnExist: true,
-      filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json"].includes(basename(source)),
+  if (!BOARD_ID.test(newId) || !isPathInsideRoot(join(defaultPlanbanRoot(), "repos"), newRoot)) throw new PlanbanValidationError("Choose a new board id: up to 64 lowercase letters, digits and dashes.");
+  if (recorded?.phase !== "converted") {
+    // A copy cut short last time is this conversion's own; start it again.
+    if (recorded) {
+      await rm(newRoot, { recursive: true, force: true });
+      await rm(newCwd, { recursive: true, force: true });
+    }
+    await atomicWriteFile(recordPath, JSON.stringify({ newId, title, phase: "copying" }, null, 2) + "\n");
+    // Copy the board as it is now, holding it so nothing changes mid-copy.
+    await withBoardWriteLock(planningRoot, async () => {
+      await cp(planningRoot, newRoot, {
+        recursive: true, errorOnExist: true,
+        filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json", "KEEP-SEPARATE.json"].includes(basename(source)),
+      });
     });
-  });
-  await mkdir(dirname(manifestPath(newCwd)), { recursive: true });
-  await writeJson(manifestPath(newCwd), { ...manifest, storage: { kind: "local", root: newRoot } });
-  // The copy carries the older-copy marker, so the usual conversion applies:
-  // a new id and identity, never checked against that online board again.
-  const separate = await keepLocalCopy(newCwd, newId, title);
+    await mkdir(dirname(manifestPath(newCwd)), { recursive: true });
+    await writeJson(manifestPath(newCwd), { ...manifest, storage: { kind: "local", root: newRoot } });
+    // The copy carries the older-copy marker, so the usual conversion applies:
+    // a new id and identity, never checked against that online board again.
+    await keepLocalCopy(newCwd, newId, title);
+    await atomicWriteFile(recordPath, JSON.stringify({ newId, title, phase: "converted" }, null, 2) + "\n");
+  }
   // Then this project switches to the online board.
   const attached = await attachOnline(marker.url, marker.boardId, cwd, { replaceStaleCopy: true }).catch((error: unknown) => {
-    throw new PlanbanValidationError(`The separate board "${title}" was made (${newId}), but this project could not switch to the online board yet: ${error instanceof Error ? error.message : String(error)}. Finish with: planban online attach ${marker.url} ${marker.boardId} --cwd ${cwd} --replace-stale-copy`);
+    throw new PlanbanValidationError(`The separate board "${title}" was made (${newId}), but this project could not switch to the online board yet: ${error instanceof Error ? error.message : String(error)}. Run this again to finish; it will not make another copy.`);
   });
-  return { separateBoard: { repoId: newId, title, cwd: newCwd, planningRoot: separate.planningRoot }, project: attached };
+  await rm(recordPath, { force: true });
+  return { separateBoard: { repoId: newId, title, cwd: newCwd, planningRoot: newRoot }, project: attached };
 }
+
+const BOARD_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** Turns a backup folder (its latest copy, or one day's) into a new local board. */
 export async function restoreBackup(folder: string, cwdInput: string, repoId: string) {

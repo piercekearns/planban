@@ -29,7 +29,7 @@ const INSTRUCTIONS = [
   "Every edit must pass baseRevision, the board revision you last read; document edits pass expectedMtimeMs from planban_read_doc (null for a new document). On a conflict, reread and retry.",
   "Pass a fresh idempotencyKey with each edit and reuse it if you retry the same edit, so it is never applied twice.",
   "Serialize writes: one mutation at a time per board.",
-  "Complete is owner-controlled: move a card to complete only when the owner explicitly asks, and set completionConfirmed true.",
+  "Complete is person-controlled: move a card to complete only when a person on the board explicitly asks, and set completionConfirmed true. What you may do also depends on what that person lets their agents do.",
   "Deleting cards and taking a board back to Local Mode are not available to agents.",
   `Planban is an index, not storage: boards hold text only (cards, Specs, Plans and history). Never put files, images or encoded data in a card or document. ${HOW_TO_REFER} Edits that embed files are refused.`,
 ].join(" ");

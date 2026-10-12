@@ -1916,7 +1916,7 @@ function BoardHistoryModal({
                 else onSelectVersion(entry.version);
                 onClose();
               }}>
-                <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} /><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
+                <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} actor={entry.actor} /><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
               </button>
             );
           })}
@@ -3303,7 +3303,7 @@ function DetailHistoryMenu({
               disabled={active && previewVersion === null}
               onClick={() => select(entry.version)}
             >
-              <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} /><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
+              <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} actor={entry.actor} /><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
             </button>
           );
         })}

@@ -134,6 +134,18 @@ export default defineSchema({
     revokedAt: v.optional(v.string()),
   }).index("by_tokenHash", ["tokenHash"]).index("by_board", ["boardId"]),
 
+  /** Who last changed each card, for faces on shared boards; survives history trimming. */
+  cardChanges: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    cardId: v.string(),
+    userId: v.string(),
+    agent: v.boolean(),
+    clientName: v.union(v.string(), v.null()),
+    at: v.string(),
+    summary: v.string(),
+  }).index("by_board_generation_card", ["boardId", "generation", "cardId"]),
+
   /** How a person appears to others on shared boards (name and picture from the sign-in account). */
   people: defineTable({
     userId: v.string(),

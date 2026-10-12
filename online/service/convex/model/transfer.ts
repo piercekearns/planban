@@ -16,6 +16,7 @@ import { BOARD_ID_PATTERN } from "./access";
 import { packJson, packText } from "./codec";
 import { asServiceError, fail } from "./errors";
 import { checkCards, checkDocuments } from "./indexRules";
+import { seedCardChanges } from "./cardChanges";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
 
@@ -241,6 +242,7 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
     ...(transfer.retention === undefined ? {} : { retention: transfer.retention }),
     ...(transfer.uid ? { uid: transfer.uid } : {}),
   });
+  await seedCardChanges(ctx, { boardId: board!.boardId, generation: transfer.generation }, committed, board!.ownerId, now);
   await recordHistory(ctx, {
     board: { ...board!, generation: transfer.generation, historyVersion: baseVersion },
     previous: null,
