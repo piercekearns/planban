@@ -914,6 +914,38 @@ test("keeping a separate board refuses a bad id before copying, and a retry fini
   assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
 });
 
+test("Take Online leaves a note in the project folder; a machine with the note keeps its old copy read-only without going online", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  await execFileAsync("git", ["init", "-q", cwd]);
+  const result: any = await takeOnline(fake.url, cwd);
+  const notePath = join(cwd, ".planban", "online-board.json");
+  assert.equal(result.onlineNote.path, notePath);
+  assert.match(result.onlineNote.commit, /git -C .* add ".planban\/online-board.json" && git -C .* commit/);
+  const note = JSON.parse(await readFile(notePath, "utf8"));
+  assert.equal(note.boardId, "demo");
+  assert.match(note.note, /lives online at .*planban online login/);
+
+  // The second machine gets the note (as if pulled with the project) and has never signed in.
+  await cp(notePath, join(second, ".planban", "online-board.json"));
+  await saveCredentials(fake.url, null);
+  resetCopyChecks();
+  const start = fake.requests.length;
+  const refusal: any = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "offline", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanStaleCopyError, String(refusal));
+  assert.match(refusal.message, /now lives online.*not signed in to it yet.*planban online login/s);
+  assert.match(refusal.message, /Agents: do not retry/);
+  assert.equal(fake.requests.length, start, "no network call");
+  assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), true);
+});
+
+test("Take Local removes the project's online note", async () => {
+  await execFileAsync("git", ["init", "-q", cwd]);
+  await takeOnline(fake.url, cwd);
+  const result: any = await takeLocal(cwd);
+  assert.equal(await storage.pathExists(join(cwd, ".planban", "online-board.json")), false);
+  assert.match(result.onlineNote.commit, /commit -am/);
+});
+
 test("a machine that never signed in makes no network calls for local boards", async () => {
   await saveCredentials(fake.url, null);
   resetCopyChecks();
@@ -1028,6 +1060,35 @@ test("a copy of a board made before identities existed is still recognised by it
   const refusal = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
   assert.ok(refusal instanceof PlanbanStaleCopyError);
   assert.equal(refusal.stale.unsyncedChanges.length, 60);
+});
+
+test("taking a board online sends text only: card files and local pictures become references, after the person confirms", async () => {
+  const before = await storage.loadState(cwd);
+  const folder = join(before.planningRoot, "items", "alpha");
+  await mkdir(join(folder, "renders", "node_modules", "x"), { recursive: true });
+  await writeFile(join(folder, "renders", "front.png"), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
+  await writeFile(join(folder, "renders", "node_modules", "x", "index.js"), "x");
+  const spec = "# Alpha\n\n![Front view](renders/front.png)\n\n![Logo](data:image/png;base64,iVBORw0KGgo=)\n\n![Diagram](https://example.com/diagram.png)\n";
+  const current = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: spec, expectedMtimeMs: current.exists ? current.mtimeMs : null });
+
+  const refusal: any = await takeOnline(fake.url, cwd).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanConfirmationNeeded, String(refusal));
+  assert.match(refusal.message, /2 file\(s\) and 2 picture\(s\).*not copied.*Nothing on this machine changes/s);
+  assert.deepEqual(refusal.summary.cards[0].files, ["renders/front.png", "renders/node_modules/"]);
+  assert.equal(fake.transfers.size, 0, "nothing moved before confirming");
+
+  await takeOnline(fake.url, cwd, { confirmReferences: true });
+  const sent = fake.requests.filter((req) => req.path.endsWith("/parts")).flatMap((req) => req.body.docs ?? []);
+  const online = sent.find((doc: any) => doc.cardId === "alpha" && doc.kind === "spec").markdown as string;
+  assert.doesNotMatch(online, /data:image|!\[Front view\]\(renders/);
+  assert.match(online, /\[Picture: Front view, on .*: .*items\/alpha\/renders\/front\.png\]/);
+  assert.match(online, /\[Picture: Logo, embedded in the copy of this board on .*; not taken online\]/);
+  assert.match(online, /!\[Diagram\]\(https:\/\/example\.com\/diagram\.png\)/, "pictures on the web stay");
+  assert.match(online, /## Files on .*\n[\s\S]*- .*: .*renders\/front\.png\n- .*: .*renders\/node_modules \(folder\)/);
+  // The copy on this machine keeps everything as it was.
+  assert.equal(await readFile(join(before.planningRoot, "items", "alpha", "spec.md"), "utf8"), spec);
+  assert.equal(await storage.pathExists(join(folder, "renders", "front.png")), true);
 });
 
 test("a take-online that fails removes the partly copied online board and leaves this machine's board unchanged", async () => {

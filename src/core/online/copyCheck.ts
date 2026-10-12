@@ -15,6 +15,12 @@ import { onlineRequest } from "./client";
 import { readCredentials } from "./credentials";
 
 export const STALE_MARKER = "STALE-COPY.json";
+/**
+ * Owner decision 19: the note Take Online leaves in the project's .planban
+ * folder (meant to be committed). Any machine that has it knows the board
+ * lives online without asking the internet.
+ */
+export const ONLINE_NOTE = "online-board.json";
 export const INDEPENDENT_MARKER = "INDEPENDENT-COPY.json";
 const FINGERPRINTS = 50;
 const CHECK_TIMEOUT_MS = 2000;
@@ -35,6 +41,17 @@ export interface StaleCopy {
   detectedAt: string;
   /** Changes in this copy that never reached the online board. */
   unsyncedChanges: UnsyncedChange[];
+  /** Learned from the project's online note: this machine has not signed in to that service yet. */
+  signInNeeded?: boolean;
+}
+
+export interface OnlineNote {
+  /** What a person reading the file sees first. */
+  note: string;
+  url: string;
+  boardId: string;
+  title: string;
+  onlineSince: string;
 }
 
 export class PlanbanStaleCopyError extends PlanbanConflictError {
@@ -43,6 +60,7 @@ export class PlanbanStaleCopyError extends PlanbanConflictError {
     const lines = [
       `Not saved. "${stale.title}" now lives online (${stale.boardId} at ${stale.url}); it was taken online on ${stale.onlineSince.slice(0, 10)}.`,
       "The copy on this machine is older and read-only. Nothing has been lost, and nothing was changed.",
+      ...(stale.signInNeeded ? [`This machine is not signed in to it yet. Sign in first: planban online login ${stale.url}`] : []),
       "Choose one:",
       `  1. Use the online board (recommended): planban online attach ${stale.url} ${stale.boardId} --cwd ${cwd} --replace-stale-copy`,
       `  2. Keep this copy as a separate board (this project then uses the online board): planban online keep-local-copy --cwd ${cwd} --title "${stale.title} (copy from ${stale.onlineSince.slice(0, 10)})"`,
@@ -138,6 +156,57 @@ async function refresh(planningRoot: string): Promise<{ stale: StaleCopy | null;
   return result;
 }
 
+function noteFile(cwd: string) {
+  return join(cwd, ".planban", ONLINE_NOTE);
+}
+
+export async function readOnlineNote(cwd: string): Promise<OnlineNote | null> {
+  const note = await readJsonFile<OnlineNote>(noteFile(cwd));
+  return note && typeof note.url === "string" && typeof note.boardId === "string" ? note : null;
+}
+
+/** Written by Take Online (and by switching a project to an online board), for committing alongside the project. */
+export async function writeOnlineNote(cwd: string, board: Omit<OnlineNote, "note">) {
+  const note: OnlineNote = {
+    note: `This project's Planban board "${board.title}" lives online at ${board.url} (board ${board.boardId}). Sign in with: planban online login ${board.url}`,
+    ...board,
+  };
+  await atomicWriteFile(noteFile(cwd), JSON.stringify(note, null, 2) + "\n");
+  return noteFile(cwd);
+}
+
+export async function removeOnlineNote(cwd: string) {
+  await rm(noteFile(cwd), { force: true });
+}
+
+/**
+ * The project's online note says this board lives online: this local copy is
+ * older. Known from the file alone, with no network call (owner decision 19).
+ */
+async function staleFromNote(planningRoot: string, cwd: string, repoId: string): Promise<StaleCopy | null> {
+  const note = await readOnlineNote(cwd);
+  if (!note || note.boardId !== repoId) return null;
+  const ignored = (await readJsonFile<Array<{ url: string; boardId: string }>>(join(planningRoot, INDEPENDENT_MARKER)) ?? [])
+    .some((entry) => entry.url === note.url && entry.boardId === note.boardId);
+  if (ignored) return null;
+  const history = await localHistory(planningRoot);
+  const stale: StaleCopy = {
+    url: note.url, boardId: note.boardId, title: note.title, onlineSince: note.onlineSince, detectedAt: new Date().toISOString(),
+    // Without asking the service, changes made here after the board went online are the ones it cannot have.
+    unsyncedChanges: history.filter((entry) => entry.createdAt > note.onlineSince).reverse().map(({ version, createdAt, summary }) => ({ version, createdAt, summary })),
+    signInNeeded: !(await signedInServices()).includes(note.url),
+  };
+  await atomicWriteFile(join(planningRoot, STALE_MARKER), JSON.stringify(stale, null, 2) + "\n");
+  return stale;
+}
+
+/** For showing a board: whether this copy is known to be older, from its marker or the project's online note. No network. */
+export async function knownStaleCopy(planningRoot: string, cwd: string, repoId: string): Promise<StaleCopy | null> {
+  const marker = await readStaleMarker(planningRoot);
+  const stale = marker ?? await staleFromNote(planningRoot, cwd, repoId);
+  return stale ? { ...stale, signInNeeded: !(await signedInServices()).includes(stale.url) } : null;
+}
+
 /**
  * Called before every local write. Refuses when this copy is known to be
  * stale (the marker survives going offline). Asks the service at most every
@@ -146,7 +215,12 @@ async function refresh(planningRoot: string): Promise<{ stale: StaleCopy | null;
  */
 export async function assertNotStaleCopy(planningRoot: string, cwd: string, repoId: string): Promise<void> {
   const marker = await readStaleMarker(planningRoot);
-  if (marker) throw new PlanbanStaleCopyError(marker, cwd, repoId);
+  if (marker) {
+    const signInNeeded = !(await signedInServices()).includes(marker.url);
+    throw new PlanbanStaleCopyError({ ...marker, signInNeeded }, cwd, repoId);
+  }
+  const noted = await staleFromNote(planningRoot, cwd, repoId);
+  if (noted) throw new PlanbanStaleCopyError(noted, cwd, repoId);
   const previous = checked.get(planningRoot);
   if (previous && Date.now() - previous.checkedAt < RECHECK_MS) return;
   // One deadline for the whole check, sign-in refresh included. A check that

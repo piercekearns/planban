@@ -43,7 +43,7 @@ import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { loadOnlineState, onlineCacheRoot, onlineOperation, refuseOnline } from "./online/adapter";
 import { boardPath, onlineRequest } from "./online/client";
-import { assertNotStaleCopy, checkInBackground, STALE_MARKER } from "./online/copyCheck";
+import { assertNotStaleCopy, checkInBackground, ONLINE_NOTE, STALE_MARKER } from "./online/copyCheck";
 import { credentialsPath } from "./online/credentials";
 import { ensureBoardIdentity } from "./boardIdentity";
 import type { PlanbanHistoryPayload } from "./types";
@@ -141,10 +141,11 @@ export async function withRoadmapWriteLock<T>(cwdInput: string, callback: () => 
 /**
  * A local copy of a board that was taken online elsewhere refuses writes
  * (owner decision 14). Costs two file checks unless this machine has signed
- * in to an online service or the copy is already marked stale.
+ * in to an online service, the project has an online note, or the copy is
+ * already marked stale.
  */
 async function guardLocalCopy(planningRoot: string, cwd: string, repoId: string) {
-  if (!(await pathExists(join(planningRoot, STALE_MARKER))) && !(await pathExists(credentialsPath()))) return;
+  if (!(await pathExists(join(planningRoot, STALE_MARKER))) && !(await pathExists(credentialsPath())) && !(await pathExists(join(cwd, ".planban", ONLINE_NOTE)))) return;
   await assertNotStaleCopy(planningRoot, cwd, repoId);
 }
 

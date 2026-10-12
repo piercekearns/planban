@@ -1,5 +1,5 @@
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
@@ -12,9 +12,10 @@ import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolv
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
-import { markIndependent, readStaleMarker, type StaleCopy } from "./copyCheck";
+import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, writeOnlineNote, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
 import { serviceUrl } from "./credentials";
+import { convertForOnline, type ConversionReport } from "./conversion";
 import { buildAgentContext } from "../protocol";
 import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
 
@@ -213,6 +214,29 @@ export async function moveState(cwdInput: string): Promise<{
   };
 }
 
+/** What Take Online would turn into references, without moving anything. */
+export async function previewTakeOnline(cwdInput: string) {
+  const cwd = resolveProjectCwd(cwdInput);
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled) throw new PlanbanValidationError(`Planban is not initialized in ${cwd}`);
+  if (manifest.storage?.kind === "online") throw new PlanbanValidationError("This board is already online.");
+  return (await convertForOnline(await buildLocalBundle(cwd), resolvePlanningRoot(manifest))).report;
+}
+
+/** What becomes a reference when the board goes online, for the person to confirm. */
+function confirmReferences(report: ConversionReport) {
+  const lines = [
+    `Online Boards hold text only, so ${report.files} file(s) and ${report.pictures} picture(s) will be listed as references to where they are on ${report.machine}, not copied. Nothing on this machine changes, and nothing has moved yet.`,
+  ];
+  for (const card of report.cards.slice(0, 20)) {
+    const parts = [...card.files.map((file) => `file ${file}`), ...card.pictures.map((picture) => `picture in the ${picture.kind === "plan" ? "Plan" : "Spec"}${picture.alt ? ` (${picture.alt})` : ""}`)];
+    lines.push(`- ${card.title}: ${parts.slice(0, 8).join(", ")}${parts.length > 8 ? `, and ${parts.length - 8} more` : ""}`);
+  }
+  if (report.cards.length > 20) lines.push(`- and ${report.cards.length - 20} more card(s)`);
+  lines.push("Run again with --confirm-references to take the board online.");
+  return new PlanbanConfirmationNeeded(lines.join("\n"), report);
+}
+
 /** Thrown before anything changes when going ahead needs the person's say-so. Carries what they are agreeing to. */
 export class PlanbanConfirmationNeeded extends PlanbanValidationError {
   constructor(message: string, readonly summary: unknown) {
@@ -231,7 +255,10 @@ export class PlanbanConfirmationNeeded extends PlanbanValidationError {
  * half-copied online version is removed and the board stays on this machine
  * unchanged (owner decision 15).
  */
-export async function takeOnline(urlInput: string, cwdInput: string, options: MoveOptions = {}) {
+export async function takeOnline(urlInput: string, cwdInput: string, options: MoveOptions & {
+  /** The person has seen which files and pictures become references (owner decision 18). */
+  confirmReferences?: boolean;
+} = {}) {
   const url = serviceUrl(urlInput);
   await requireCredentials(url);
   const cwd = resolveProjectCwd(cwdInput);
@@ -246,6 +273,14 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: Mo
     let journal = await readJournal(planningRoot);
     if (journal && (journal.direction !== "online" || journal.url !== url || journal.boardId !== boardId)) {
       throw new PlanbanValidationError(`An unfinished transfer of this board to ${journal.url} is recorded at ${transferJournalPath(planningRoot)}. Finish it first.`);
+    }
+    if (!journal) {
+      // Only text goes online: say what becomes a reference before anything moves.
+      const { report } = await convertForOnline(await buildLocalBundle(cwd), planningRoot);
+      if (report.problems.length) {
+        throw new PlanbanValidationError(`This board cannot go online yet; nothing has moved. Planban is an index, not storage:\n${report.problems.map((problem) => `- ${problem}`).join("\n")}`);
+      }
+      if ((report.files || report.pictures) && !options.confirmReferences) throw confirmReferences(report);
     }
     if (journal?.phase !== "committed") {
       try {
@@ -348,7 +383,8 @@ export async function stopTakeOnline(cwdInput: string) {
 /** Uploads the board under a transfer journal, ending committed. Resumable. */
 async function uploadBoard(url: string, cwd: string, planningRoot: string, boardId: string, journal: TransferJournal | null, options: MoveOptions): Promise<TransferJournal> {
   options.onProgress?.({ step: "prepare", message: "Preparing the board" });
-  const bundle = await buildLocalBundle(cwd);
+  // The online copy holds text only; files and local pictures become references.
+  const { bundle } = await convertForOnline(await buildLocalBundle(cwd), planningRoot);
   bundle.roadmap.project.id = boardId;
   if (journal?.phase === "uploading" && journal.localRevision !== bundle.roadmap.revision) {
     // The board changed locally since the interrupted upload: cancel it and
@@ -419,8 +455,33 @@ async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, p
   await publishManifest(cwd, onlineManifest, onlineState(cwd, onlineManifest, roadmap));
   crashPoint("take-online:after-publish");
   await rm(transferJournalPath(planningRoot), { force: true });
+  const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: roadmap.project.title, onlineSince: new Date().toISOString() });
   await refreshBackup(url, boardId, { force: true });
-  return { boardId, url, localSnapshot: snapshot, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
+  return { boardId, url, localSnapshot: snapshot, onlineNote, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
+}
+
+/** The project folder's git repository, if it has one. */
+async function gitRoot(cwd: string): Promise<string | null> {
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    if (await pathExists(join(dir, ".git"))) return dir;
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+/**
+ * Owner decision 19: a note in the project's .planban folder that the board
+ * lives online. Planban never commits it; it says how, so the person can.
+ */
+async function leaveOnlineNote(cwd: string, board: { url: string; boardId: string; title: string; onlineSince: string }) {
+  const path = await writeOnlineNote(cwd, board);
+  const repo = await gitRoot(cwd);
+  const file = repo ? relative(repo, path).split(sep).join("/") : path;
+  return {
+    path,
+    commit: repo
+      ? `Commit ${file} so your other machines know this board is online, even before they sign in: git -C "${repo}" add "${file}" && git -C "${repo}" commit -m "Planban board is now online"`
+      : null,
+  };
 }
 
 async function requireOnline(cwdInput: string) {
@@ -625,8 +686,15 @@ export async function takeLocal(cwdInput: string, options: {
     crashPoint("take-local:after-publish");
     // Only now that this project is local is the online freeze lifted.
     await finishLocalTransfer(root).catch(() => undefined);
+    // The board no longer lives online: the project's note goes too.
+    const hadNote = !!(await readOnlineNote(cwd));
+    await removeOnlineNote(cwd);
+    const repo = hadNote ? await gitRoot(cwd) : null;
     options.onProgress?.({ step: "done", message: "The board is on this machine" });
-    return { boardId: storage.boardId, planningRoot: root };
+    return {
+      boardId: storage.boardId, planningRoot: root,
+      ...(repo ? { onlineNote: { removed: true, commit: `Commit the removal of .planban/online-board.json so your other machines know: git -C "${repo}" commit -am "Planban board is back in Local Mode"` } } : {}),
+    };
   });
 }
 
@@ -650,8 +718,9 @@ export async function attachOnline(urlInput: string, boardId: string, cwdInput: 
   const state = await loadOnlineState(cwd, manifest);
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, state);
+  const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: state.roadmap.project.title, onlineSince: new Date().toISOString() });
   await refreshBackup(url, boardId, { force: true });
-  return { boardId, url, cwd, ...(staleCopy ? { staleCopy } : {}) };
+  return { boardId, url, cwd, onlineNote, ...(staleCopy ? { staleCopy } : {}) };
 }
 
 /**

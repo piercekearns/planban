@@ -31,7 +31,7 @@ export interface OnlineStatus {
   url?: string;
   boardId?: string;
   people?: Array<{ userId: string; role: string; you: boolean }> | null;
-  stale?: { title: string; onlineSince: string; url: string; boardId: string } | null;
+  stale?: { title: string; onlineSince: string; url: string; boardId: string; signInNeeded?: boolean } | null;
 }
 
 class RequestError extends Error {
@@ -129,6 +129,12 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   const [signInLink, setSignInLink] = useState<string | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
   const others = (status.people ?? []).filter((person) => !person.you);
+  const [conversion, setConversion] = useState<{ machine: string; files: number; pictures: number; problems: string[]; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string }> }> } | null>(null);
+  useEffect(() => {
+    if (view !== "confirm-online") return;
+    setConversion(null);
+    void request<typeof conversion>(`${base}/conversion`).then(setConversion, (failure) => setError(failure instanceof Error ? failure.message : String(failure)));
+  }, [view, base]);
 
   // People may have joined or left since the page last looked.
   useEffect(() => {
@@ -163,7 +169,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   }
 
   const takeOnline = () => act(async () => {
-    await request(`${base}/take-online`, {});
+    await request(`${base}/take-online`, { confirmReferences: true });
     setView("progress");
   });
   const takeLocal = () => act(async () => {
@@ -209,9 +215,10 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   }
 
   if (view === "confirm-online") {
+    const preview = conversion;
     return (
       <Modal eyebrow="Board settings" title={`Take ${boardTitle} online?`} onClose={onClose}
-        footer={<><button onClick={() => setView("settings")}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void takeOnline()}><Cloud size={14} /> Take online</button></>}>
+        footer={<><button onClick={() => setView("settings")}>Cancel</button><button className="primary update-now-action" disabled={busy || !conversion || conversion.problems.length > 0} onClick={() => void takeOnline()}><Cloud size={14} /> Take online</button></>}>
         <div className="online-board-body">
           <ul>
             <li>The whole board, including specs, plans and history, is copied to your Planban account.</li>
@@ -219,6 +226,16 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
             <li>Agents on this Mac keep working. Each one will ask you to sign in once.</li>
             <li>Nobody else can see the board until you invite them.</li>
           </ul>
+          {!preview ? <p className="muted">Checking the board's files…</p> : preview.problems.length ? (
+            <div className="online-board-calm"><b>This board cannot go online yet.</b> Planban online holds text only:<ul>{preview.problems.map((problem) => <li key={problem}>{problem}</li>)}</ul></div>
+          ) : preview.files || preview.pictures ? (
+            <div className="online-board-calm">
+              <b>Files stay on this Mac.</b> Online boards hold text only, so {preview.files ? `${preview.files} file${preview.files === 1 ? "" : "s"}` : ""}{preview.files && preview.pictures ? " and " : ""}{preview.pictures ? `${preview.pictures} picture${preview.pictures === 1 ? "" : "s"}` : ""} will be listed as references to where they are on {preview.machine}, not copied:
+              <ul className="conversion-list">{preview.cards.map((card) => (
+                <li key={card.cardId}><b>{card.title}</b>: {[...card.files, ...card.pictures.map((picture) => `picture in the ${picture.kind === "plan" ? "Plan" : "Spec"}${picture.alt ? ` (${picture.alt})` : ""}`)].join(", ")}</li>
+              ))}</ul>
+            </div>
+          ) : null}
           <p className="muted">You can take it back to this Mac at any time from Board settings.</p>
           {errorLine}
         </div>
@@ -328,7 +345,7 @@ export function OlderCopyBanner({ repoId, boardTitle, status, reload }: {
         <Info size={16} />
         <div className="grow">
           <b>This board is now online, so this copy is read-only</b>
-          <p>{stale.title} was taken online on {since}. This copy on this Mac is from before then. Nothing has been lost: the online board has everything up to that day plus all changes since. This copy stays exactly as it was until you choose.</p>
+          <p>{stale.title} was taken online on {since}. This copy on this Mac is from before then. Nothing has been lost: the online board has everything up to that day plus all changes since. This copy stays exactly as it was until you choose.{stale.signInNeeded ? " This Mac is not signed in to Planban yet; using the online board starts with signing in." : ""}</p>
         </div>
         <div className="acts">
           <button className="online-board-button" onClick={() => setChoice("keep-separate")}>Keep as a separate board…</button>
@@ -349,6 +366,7 @@ function OlderCopyChoice({ repoId, boardTitle, since, choice, reload, onClose }:
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(`${boardTitle} (copy from ${since})`);
+  const [signInLink, setSignInLink] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -357,7 +375,26 @@ function OlderCopyChoice({ repoId, boardTitle, since, choice, reload, onClose }:
     setError(null);
     try {
       if (choice === "use-online") {
-        await request(`/api/boards/${encodeURIComponent(repoId)}/online/use-online`, {});
+        const use = () => request(`/api/boards/${encodeURIComponent(repoId)}/online/use-online`, {});
+        await use().catch(async (failure) => {
+          // Not signed in yet (the project's note told this Mac the board is online): sign in, then switch.
+          if (!(failure instanceof RequestError) || typeof failure.body.signInNeeded !== "string") throw failure;
+          const tab = window.open("", "_blank");
+          if (tab) tab.opener = null;
+          const started = await request<{ id: string; link: string }>("/api/online/sign-in", { url: failure.body.signInNeeded }).catch((error) => {
+            tab?.close();
+            throw error;
+          });
+          if (tab) tab.location.href = started.link;
+          else setSignInLink(started.link);
+          for (;;) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            const state = await request<{ done: boolean; error: string | null }>(`/api/online/sign-in/${started.id}`);
+            if (state.error) throw new Error(state.error);
+            if (state.done) break;
+          }
+          await use();
+        });
         onClose();
       } else {
         const result = await request<{ separateBoard: { title: string } }>(`/api/boards/${encodeURIComponent(repoId)}/online/keep-separate`, { title });
@@ -387,6 +424,7 @@ function OlderCopyChoice({ repoId, boardTitle, since, choice, reload, onClose }:
             <li>This older copy is kept as a backup, so nothing on this Mac is thrown away.</li>
             <li>Agents in this project folder switch to the online board the next time they use Planban.</li>
           </ul>
+          {signInLink ? <p>Your browser blocked the sign-in tab. <a href={signInLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
           {error ? <p className="online-board-error" role="alert">{error}</p> : null}
         </div>
       </Modal>

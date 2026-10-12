@@ -9,10 +9,10 @@ import { PlanbanValidationError } from "../core/boardOperations";
 import { readManifest, resolvePlanningRoot } from "../core/storage";
 import { boardPath, onlineRequest } from "../core/online/client";
 import { readCredentials, serviceUrl } from "../core/online/credentials";
-import { readStaleMarker } from "../core/online/copyCheck";
+import { knownStaleCopy } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
 import {
-  attachOnline, keepSeparateBoard, moveState, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
+  attachOnline, keepSeparateBoard, moveState, previewTakeOnline, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
 } from "../core/online/transfers";
 
 /** The working default address for Planban Online (owner decision 13). */
@@ -100,7 +100,7 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       const job = [...jobs.values()].filter((entry) => entry.repoId === repoId).at(-1);
       const base = { signedIn, defaultService: await defaultService(), job: job ? publicJob(job) : null };
       if (manifest?.storage?.kind !== "online") {
-        const stale = manifest?.enabled ? await readStaleMarker(resolvePlanningRoot(manifest)) : null;
+        const stale = manifest?.enabled ? await knownStaleCopy(resolvePlanningRoot(manifest), cwd, manifest.repoId) : null;
         res.json({ ...base, location: running(repoId)?.kind === "take-online" ? "moving" : "local", stale });
         return;
       }
@@ -232,6 +232,9 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     return false;
   }
 
+  /** What would become references if this board went online (read from this machine only). */
+  app.get("/api/boards/:repoId/online/conversion", relay(async (req) => previewTakeOnline(await deps.resolveBoardCwd(String(req.params.repoId)))));
+
   app.post("/api/boards/:repoId/online/take-online", async (req, res, next) => {
     try {
       const repoId = req.params.repoId;
@@ -248,7 +251,7 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
         }
         const job = startJob(repoId, "take-online", (entry) => {
           entry.controller = new AbortController();
-          return takeOnline(url, cwd, { signal: entry.controller.signal, onProgress: (progress) => { entry.progress = progress; } });
+          return takeOnline(url, cwd, { signal: entry.controller.signal, confirmReferences: req.body?.confirmReferences === true, onProgress: (progress) => { entry.progress = progress; } });
         });
         deps.changed(repoId);
         res.status(202).json(publicJob(job));
@@ -305,9 +308,13 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     try {
       const cwd = await deps.resolveBoardCwd(req.params.repoId);
       const manifest = await readManifest(cwd);
-      const stale = manifest?.enabled && manifest.storage?.kind !== "online" ? await readStaleMarker(resolvePlanningRoot(manifest)) : null;
+      const stale = manifest?.enabled && manifest.storage?.kind !== "online" ? await knownStaleCopy(resolvePlanningRoot(manifest), cwd, manifest.repoId) : null;
       if (!stale) {
         res.status(409).json({ error: "This board is not an older copy of an online board." });
+        return;
+      }
+      if (stale.signInNeeded) {
+        res.status(401).json({ error: `Sign in to ${stale.url} first.`, signInNeeded: stale.url });
         return;
       }
       const result = await attachOnline(stale.url, stale.boardId, cwd, { replaceStaleCopy: true });
