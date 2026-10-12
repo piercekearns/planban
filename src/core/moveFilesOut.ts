@@ -123,36 +123,36 @@ async function unmovable(folder: string, files: string[]) {
 }
 
 /**
- * What each link in the card folder should say once moved. A link to something that moves with it
- * (directly, inside a moving folder, or through another moving link) stays relative, since the files
- * keep their layout. Anything else, such as the Spec or Plan, which stay, or a file elsewhere, is
- * pinned to its real location as it is now.
+ * What each link in the card folder should say once moved, worked out before anything moves. Each
+ * link's final target is resolved through every link on the way. If that target is something that
+ * moves, the link points at its new place (relatively, as the files keep their layout); otherwise,
+ * such as the Spec or Plan, which stay, or a file elsewhere, it points at the target where it really is.
  */
-async function movedLinkTargets(folder: string, files: string[]) {
-  const entries = new Set(files.map((file) => join(folder, file.replace(/\/$/u, ""))));
-  const folders = new Set<string>();
-  for (const entry of entries) {
-    for (let path = dirname(entry); path !== folder && inside(folder, path); path = dirname(path)) folders.add(path);
+async function movedLinkTargets(folder: string, destination: string, files: string[]) {
+  const realFolder = await realpath(folder);
+  // Real paths inside the card folder that move: plain entries, and the folders holding them.
+  const moving = new Set<string>();
+  for (const file of files) {
+    const path = file.replace(/\/$/u, "");
+    const info = await lstat(join(folder, path)).catch(() => null);
+    if (info && !info.isSymbolicLink()) moving.add(path);
+    for (let parent = dirname(path); parent !== "."; parent = dirname(parent)) moving.add(parent);
   }
-  const movesWith = (path: string) => {
-    if (!inside(folder, path) || path === folder) return false;
-    if (entries.has(path) || folders.has(path)) return true;
-    // Inside something that moves as one entry, such as a linked folder.
-    for (let parent = dirname(path); parent !== folder && inside(folder, parent); parent = dirname(parent)) {
-      if (entries.has(parent)) return true;
-    }
-    return false;
-  };
   const targets = new Map<string, string>();
   for (const file of files) {
     const source = join(folder, file);
     const info = await lstat(source).catch(() => null);
     if (!info?.isSymbolicLink()) continue;
-    const pointsAt = await readlink(source);
-    const resolved = resolve(dirname(source), pointsAt);
-    if (movesWith(resolved)) targets.set(file, isAbsolute(pointsAt) ? relative(dirname(source), resolved) : pointsAt);
-    else if (isAbsolute(pointsAt) && !inside(folder, resolved)) targets.set(file, pointsAt);
-    else targets.set(file, await realpath(resolved).catch(() => resolved));
+    const real = await realpath(source).catch(() => null);
+    // A link that was already broken keeps what it says.
+    if (!real) continue;
+    const inCard = relative(realFolder, real);
+    const key = inCard.split(sep).join("/");
+    if (inside(realFolder, real) && moving.has(key)) {
+      targets.set(file, relative(dirname(join(destination, file)), join(destination, key)));
+    } else {
+      targets.set(file, real);
+    }
   }
   return targets;
 }
@@ -261,7 +261,7 @@ export async function moveFilesOut(input: {
     checkIndexDocument(withSection(files), item.id, "spec");
 
     // Where each link should point once moved, worked out before anything moves.
-    const linkTargets = await movedLinkTargets(folder, files);
+    const linkTargets = await movedLinkTargets(folder, destination, files);
     const moved: string[] = [];
     let failure: unknown = null;
     for (const file of files) {

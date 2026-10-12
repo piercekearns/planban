@@ -368,7 +368,7 @@ test("an empty folder flags a card, and move-files-out keeps relative links work
     await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
     assert.equal(readlinkSync(join(kept, "latest")), "shot.png");
     assert.equal(readFileSync(join(kept, "latest"), "utf8"), "png");
-    assert.equal(readlinkSync(join(kept, "outside")), realpathSync(join(root, "outside.txt")));
+    assert.equal(readlinkSync(join(kept, "outside")), realpathSync.native(join(root, "outside.txt")));
     assert.equal(readFileSync(join(kept, "outside"), "utf8"), "outside");
   });
 });
@@ -420,8 +420,8 @@ test("move-files-out points moved links at the Spec and Plan that stay, and hand
     symlinkSync("plan.md", join(folder("alpha"), "plan-link"));
     const kept = join(root, "kept-links");
     await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
-    assert.equal(readlinkSync(join(kept, "spec-link")), realpathSync(join(folder("alpha"), "spec.md")));
-    assert.equal(readlinkSync(join(kept, "plan-link")), realpathSync(join(folder("alpha"), "plan.md")));
+    assert.equal(readlinkSync(join(kept, "spec-link")), realpathSync.native(join(folder("alpha"), "spec.md")));
+    assert.equal(readlinkSync(join(kept, "plan-link")), realpathSync.native(join(folder("alpha"), "plan.md")));
     assert.equal(readFileSync(join(kept, "plan-link"), "utf8"), "# Plan\n");
 
     // A Spec kept in a folder Planban cannot write to: every file moves, and the error carries the references.
@@ -457,9 +457,19 @@ test("links reached through a moving linked folder keep working", { skip: proces
     const kept = join(root, "kept");
     await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
     assert.equal(readFileSync(join(kept, "latest"), "utf8"), "png");
-    assert.equal(readlinkSync(join(kept, "latest")), join("assets", "image.png"));
     assert.equal(readFileSync(join(kept, "latest-absolute"), "utf8"), "png");
     assert.equal(readFileSync(join(kept, "assets", "image.png"), "utf8"), "png");
+
+    // A linked folder pointing back at the card folder: the link through it follows the file that moved.
+    await createCard({ cwd, title: "Beta", status: "up-next" });
+    writeFileSync(join(folder("beta"), "shot.png"), "beta png");
+    symlinkSync(".", join(folder("beta"), "assets"));
+    symlinkSync(join("assets", "shot.png"), join(folder("beta"), "latest"));
+    const keptBeta = join(root, "kept-beta");
+    await moveFilesOut({ cwd, cardId: "beta", to: keptBeta, machine: "Test Mac" });
+    assert.equal(readlinkSync(join(keptBeta, "latest")), "shot.png");
+    assert.equal(readFileSync(join(keptBeta, "latest"), "utf8"), "beta png");
+    assert.equal(readlinkSync(join(keptBeta, "assets")), realpathSync.native(folder("beta")));
   });
 });
 
