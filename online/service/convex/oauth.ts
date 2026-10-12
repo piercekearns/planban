@@ -26,6 +26,20 @@ async function requestRow(ctx: MutationCtx, requestHash: string) {
   return ctx.db.query("oauthRequests").withIndex("by_requestHash", (q) => q.eq("requestHash", requestHash)).unique();
 }
 
+async function cleanupState(ctx: MutationCtx) {
+  return ctx.db.query("oauthCleanup").withIndex("by_name", (q) => q.eq("name", "requests")).unique();
+}
+
+async function scheduleCleanup(ctx: MutationCtx, delay: number) {
+  const state = await cleanupState(ctx);
+  if (state?.dueAt !== undefined) return;
+  const ticket = (state?.ticket ?? 0) + 1;
+  const fields = { name: "requests", ticket, dueAt: Date.now() + delay };
+  if (state) await ctx.db.patch(state._id, fields);
+  else await ctx.db.insert("oauthCleanup", fields);
+  await ctx.scheduler.runAfter(delay, internal.oauth.cleanupRequests, { ticket });
+}
+
 export const createRequest = internalMutation({
   args: { requestHash: hash, browserHash: hash, csrfHash: hash, clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(), scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(), purpose: v.union(v.literal("oauth"), v.literal("machine")) },
   handler: async (ctx, args) => {
@@ -38,11 +52,9 @@ export const createRequest = internalMutation({
     const usage = await ctx.db.query("oauthUsage").withIndex("by_client_bucket", (q) => q.eq("clientId", args.clientId).eq("bucket", bucket)).unique();
     if ((usage?.requests ?? 0) >= 100) fail("rate_limited", "Too many authorization requests. Try again later.");
     if (usage) await ctx.db.patch(usage._id, { requests: usage.requests + 1 });
-    else {
-      await ctx.db.insert("oauthUsage", { clientId: args.clientId, bucket, requests: 1 });
-      await ctx.scheduler.runAfter(REQUEST_MS + CODE_MS, internal.oauth.cleanupRequests, {});
-    }
+    else await ctx.db.insert("oauthUsage", { clientId: args.clientId, bucket, requests: 1 });
     await ctx.db.insert("oauthRequests", { ...args, status: "pending", expiresAt: Date.now() + REQUEST_MS });
+    await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);
     return { created: true };
   },
 });
@@ -164,8 +176,11 @@ export const revokeToken = internalMutation({
 
 /** Expired request/counter cleanup is bounded; permanent grant rows are retained. */
 export const cleanupRequests = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  args: { ticket: v.number() },
+  handler: async (ctx, { ticket }) => {
+    const state = await cleanupState(ctx);
+    if (!state || state.dueAt === undefined || state.ticket !== ticket) return;
+    await ctx.db.patch(state._id, { dueAt: undefined });
     const requests = await ctx.db.query("oauthRequests").withIndex("by_expiry", (q) => q.lte("expiresAt", Date.now())).take(100);
     const usage = await ctx.db.query("oauthUsage").withIndex("by_bucket", (q) => q.lt("bucket", Math.floor(Date.now() / REQUEST_MS))).take(100);
     for (const row of requests) {
@@ -175,12 +190,12 @@ export const cleanupRequests = internalMutation({
     }
     for (const row of usage) await ctx.db.delete(row._id);
     if (requests.length === 100 || usage.length === 100) {
-      await ctx.scheduler.runAfter(0, internal.oauth.cleanupRequests, {});
+      await scheduleCleanup(ctx, 0);
     } else {
       // Later requests or late approval can outlive the bucket's first job.
       // Keep a bounded job alive until the last outstanding deadline passes.
       const next = await ctx.db.query("oauthRequests").withIndex("by_expiry").order("asc").first();
-      if (next) await ctx.scheduler.runAfter(Math.max(0, next.expiresAt - Date.now()) + 1, internal.oauth.cleanupRequests, {});
+      if (next) await scheduleCleanup(ctx, Math.max(0, next.expiresAt - Date.now()) + 1);
     }
   },
 });

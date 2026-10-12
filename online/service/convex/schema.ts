@@ -225,6 +225,10 @@ export default defineSchema({
   oauthUsage: defineTable({ clientId: v.string(), bucket: v.number(), requests: v.number() })
     .index("by_client_bucket", ["clientId", "bucket"]).index("by_bucket", ["bucket"]),
 
+  /** One transaction-owned cleanup driver; old job tickets cannot restart it. */
+  oauthCleanup: defineTable({ name: v.string(), ticket: v.number(), dueAt: v.optional(v.number()) })
+    .index("by_name", ["name"]),
+
   /** Clerk's signing key set (JSON), and when it was last fetched and last attempted. */
   signingKeys: defineTable({
     name: v.string(),

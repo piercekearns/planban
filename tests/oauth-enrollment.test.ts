@@ -60,7 +60,8 @@ function fixture() {
     }
     throw new Error("Cleanup did not settle in bounded batches");
   }
-  return { ctx, rows, db, jobs, runDueCleanup, addMachine, request, approve, redeem, accessId };
+  const cleanupNow = () => handler(oauth.cleanupRequests, ctx, { ticket: rows.find((row) => row.table === "oauthCleanup")?.ticket });
+  return { ctx, rows, db, jobs, runDueCleanup, cleanupNow, addMachine, request, approve, redeem, accessId };
 }
 
 test("explicit approval creates an independently revocable pending grant and one code redemption activates it", async () => {
@@ -199,7 +200,7 @@ test("cleanup respects a late-approved code's deadline beyond the original reque
   t.mock.timers.tick(oauth.REQUEST_MS - 1);
   const grant = await f.approve(args, machine);
   t.mock.timers.tick(2);
-  await handler(oauth.cleanupRequests, f.ctx, {});
+  await f.cleanupNow();
   assert.equal((await f.db.get(grant)).revokedAt, undefined);
   assert.equal(f.rows.find((row) => row.table === "oauthRequests").codeExpiresAt - Date.now(), oauth.CODE_MS - 2);
   assert.equal((await f.redeem(args)).error, undefined);
@@ -224,6 +225,30 @@ test("scheduled cleanup follows later bucket requests and late-approved deadline
   assert.equal(f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests").length, 0, "cleanup stops once its outstanding requests are gone");
 });
 
+test("continuous traffic uses one cleanup driver across client buckets and terminates after traffic stops", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture();
+  const queued = () => f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests");
+  for (let minute = 0; minute < 240; minute++) {
+    await f.request(`continuous-${minute}`);
+    await f.runDueCleanup();
+    assert.equal(queued().length, 1, `one driver after minute ${minute}`);
+    assert.ok(f.rows.filter((row) => row.table === "oauthRequests").length <= 12, "expired requests remain bounded");
+    t.mock.timers.tick(60_000);
+  }
+  t.mock.timers.tick(oauth.REQUEST_MS + oauth.CODE_MS + 1);
+  await f.runDueCleanup();
+  assert.equal(queued().length, 0);
+  assert.equal(f.rows.filter((row) => row.table === "oauthRequests" || row.table === "oauthUsage").length, 0);
+  const state = f.rows.find((row) => row.table === "oauthCleanup");
+  const ticket = state.ticket;
+  await handler(oauth.cleanupRequests, f.ctx, { ticket: ticket - 1 });
+  assert.equal(queued().length, 0, "a stale ticket cannot restart a cleanup chain");
+  await f.request("after-idle");
+  assert.equal(queued().length, 1);
+  assert.ok(state.ticket > ticket, "a new idle-to-active transition owns a fresh ticket");
+});
+
 test("token revocation is idempotent and closes its exact family without revoking another app installation", async () => {
   const f = fixture(), machine = await f.addMachine(), first = await f.request("revoke-a"), second = await f.request("revoke-b");
   await f.approve(first, machine); await f.redeem(first); await f.approve(second, machine); await f.redeem(second);
@@ -241,7 +266,7 @@ test("cleanup removes expired requests and access aliases without reopening tomb
   const abandonedGrant = await f.approve(abandoned, machine);
   const accessId = f.accessId(active.accessHash), refreshId = f.rows.find((row) => row.table === "oauthRefresh")._id;
   t.mock.timers.tick(oauth.REQUEST_MS + oauth.CODE_MS);
-  await handler(oauth.cleanupRequests, f.ctx, {});
+  await f.cleanupNow();
   assert.equal(f.rows.filter((row) => row.table === "oauthRequests").length, 0);
   assert.ok((await f.db.get(abandonedGrant)).revokedAt);
   assert.equal((await f.db.get(activeGrant)).revokedAt, undefined);
