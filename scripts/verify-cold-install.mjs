@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { withColdInstallDiagnostics } from "./cold-install-diagnostics.mjs";
 import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,7 +14,8 @@ const codexHome = join(root, "codex home");
 const runtime = join(codexHome, ".tmp/marketplaces/planban");
 const version = JSON.parse(await readFile(join(source, "package.json"), "utf8")).version;
 const cache = join(codexHome, "plugins/cache/planban/planban", version);
-const env = { ...process.env, CODEX_HOME: codexHome, PLANBAN_HOME: join(root, "board data") };
+const npmLogs = join(root, "npm-debug-logs");
+const env = { ...process.env, npm_config_logs_dir: npmLogs, CODEX_HOME: codexHome, PLANBAN_HOME: join(root, "board data") };
 delete env.PLANBAN_REPO_ROOT;
 delete env.PLANBAN_LAUNCH_LOG_FILE;
 delete env.PLANBAN_RESTART_PID_FILE;
@@ -24,7 +26,10 @@ const pidFile = join(root, "server.pid");
 const spawnPidFile = join(root, "server.spawn.pid");
 
 function run(stage, script, args = [], options = {}) {
-  return runVerifierStage(stage, script, args, { cwd: cache, env, ...options });
+  return withColdInstallDiagnostics(
+    () => runVerifierStage(stage, script, args, { cwd: cache, env, ...options }),
+    npmLogs, process.env.PLANBAN_COLD_INSTALL_DIAGNOSTICS_DIR,
+  );
 }
 
 const result = await withVerifierCleanup(async () => {
