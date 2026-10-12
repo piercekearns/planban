@@ -91,6 +91,10 @@ const smuggling: Array<[string, (bundle: any) => void]> = [
   ["wrapped hex", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: randomBytes(4096).toString("hex").match(/.{1,60}/g)!.join("\n") }]; }],
   ["base64url", (bundle) => { bundle.roadmap.roadmapItems[0].summary = Buffer.alloc(4096, 255).toString("base64url"); }],
   ["numbers in a document", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: `[${[...randomBytes(4096)].join(", ")}]` }]; }],
+  ["hex at 16 per line", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: randomBytes(4096).toString("hex").match(/.{1,16}/g)!.join("\n") }]; }],
+  ["byte rows of 16", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: "[\n" + [...randomBytes(4096)].map(String).join(",").match(/(?:\d+,?){1,16}/g)!.join("\n") + "\n]" }]; }],
+  ["quoted hex bytes", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: JSON.stringify([...randomBytes(4096)].map((b) => `0x${b.toString(16)}`)) }]; }],
+  ["repetitive base64 at 48", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: Buffer.alloc(4096, 255).toString("base64").match(/.{1,48}/g)!.join("\n") }]; }],
   ["an upper-case picture address", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "spec", markdown: "![pixel](DATA:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)" }]; }],
   ["a one-pixel picture", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "spec", markdown: "![pixel](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)" }]; }],
 ];

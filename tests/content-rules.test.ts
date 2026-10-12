@@ -93,10 +93,10 @@ test("short pieces, plain repetitive payloads, nested byte lists and tiny pictur
 
 test("standard encoders are refused: wrapped hex, base64url, numbers in text, and pictures in any case", () => {
   const bytes = randomBytes(4096);
-  assert.match(embeddedFileIn(bytes.toString("hex").match(/.{1,60}/g)!.join("\n"))!, /hex/);
+  assert.match(embeddedFileIn(bytes.toString("hex").match(/.{1,60}/g)!.join("\n"))!, /encoded file/);
   assert.match(embeddedFileIn(Buffer.alloc(4096, 255).toString("base64url"))!, /base64/);
-  assert.match(embeddedFileIn(`const logo = [${[...bytes].join(", ")}];`)!, /list of numbers/);
-  assert.match(embeddedFileIn(`unsigned char logo[] = { ${[...bytes].map((b) => `0x${b.toString(16)}`).join(", ")} };`)!, /list of numbers/);
+  assert.match(embeddedFileIn(`const logo = [${[...bytes].join(", ")}];`)!, /encoded file/);
+  assert.match(embeddedFileIn(`unsigned char logo[] = { ${[...bytes].map((b) => `0x${b.toString(16)}`).join(", ")} };`)!, /encoded file/);
   const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
   assert.match(embeddedFileIn(`![pixel](DATA:image/gif;base64,${gif})`)!, /picture stored/);
   assert.match(embeddedFileIn(`[pixel]: Data:image/gif;base64,${gif}`)!, /picture stored/);
@@ -105,12 +105,39 @@ test("standard encoders are refused: wrapped hex, base64url, numbers in text, an
 test("hash lists, code examples and ordinary numbers stay fine", () => {
   const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
   const text = [
-    Array.from({ length: 100 }, () => randomBytes(32).toString("hex")).join("\n"),
-    Array.from({ length: 100 }, () => randomBytes(20).toString("hex")).join(" "),
+    Array.from({ length: 40 }, () => randomBytes(32).toString("hex")).join("\n"),
+    "These are the release checksums; the commits follow.",
+    "Commits: " + Array.from({ length: 60 }, () => randomBytes(20).toString("hex")).join(" and "),
     `~~~md\n![pixel](data:image/gif;base64,${gif})\n~~~`,
     "````\n```\n![pixel](data:image/gif;base64," + gif + ")\n```\n````",
     "Use ``![pixel](data:image/gif;base64," + gif + ")`` in the test.",
     "Sizes: 1, 2, 3, 5, 8, 13, 21, 34 and 55.",
   ].join("\n\n");
   assert.equal(embeddedFileIn(text), null);
+});
+
+test("a card may hold many single-hash fields, but not a file split into them", async () => {
+  const { checkIndexValue } = await import("../src/core/contentRules");
+  checkIndexValue({ id: "alpha", metadata: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`asset${i}Sha256`, randomBytes(32).toString("hex")])) }, "card alpha", 128 * 1024);
+  const file = randomBytes(4096).toString("hex").match(/.{64}/g)!;
+  assert.throws(() => checkIndexValue({ id: "alpha", metadata: Object.fromEntries(file.map((piece, i) => [`p${i}`, piece])) }, "card alpha", 128 * 1024), /encoded file/);
+});
+
+test("every common way an encoder writes a file is refused, at any wrapping", () => {
+  const f = randomBytes(4096);
+  const ff = Buffer.alloc(4096, 255);
+  const variants: Record<string, string> = {
+    "base64 at 48": f.toString("base64").match(/.{1,48}/g)!.join("\n"),
+    "repetitive base64 with blank lines": ff.toString("base64").match(/.{1,48}/g)!.join("\n\n"),
+    "repetitive base64url at 32": ff.toString("base64url").match(/.{1,32}/g)!.join("\n"),
+    "hex at 16": f.toString("hex").match(/.{1,16}/g)!.join("\n"),
+    "hex at 32": f.toString("hex").match(/.{1,32}/g)!.join("\n"),
+    "hex at 64": f.toString("hex").match(/.{1,64}/g)!.join("\n"),
+    "xxd's default dump": f.toString("hex").match(/.{1,32}/g)!.map((line, i) => `${(i * 16).toString(16).padStart(8, "0")}: ${line.match(/.{1,4}/g)!.join(" ")}  ................`).join("\n"),
+    "byte rows of 16": "[\n" + [...f].map(String).join(",").match(/(?:\d+,?){1,16}/g)!.join("\n") + "\n]",
+    "quoted hex bytes": JSON.stringify([...f].map((b) => `0x${b.toString(16)}`)),
+    "a C array": [...f].map((b) => `0x${b.toString(16).padStart(2, "0")}`).join(", ").match(/(?:0x..,? ?){1,12}/g)!.join("\n"),
+    "base64 between words": f.toString("base64").match(/.{1,50}/g)!.map((piece, i) => `Step ${i}: ${piece} done.`).join("\n"),
+  };
+  for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file/, name);
 });

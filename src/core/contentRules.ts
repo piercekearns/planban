@@ -41,8 +41,6 @@ const WEB_ADDRESS = /\bhttps?:\/\/[^\s<>()"'`]{1,8192}/gi;
  */
 const ENCODED_TOKEN = /[A-Za-z0-9+/=_-]{24,}/g;
 const ENCODED_LIMIT = 2048;
-const HEX_PIECES_LIMIT = 4096;
-const NUMBERS_IN_TEXT_LIMIT = 1024;
 /**
  * Base64 of a real file mixes upper case, lower case and digits throughout
  * (about 40%, 40% and 15%); paths, ids, UUIDs, hashes and CamelCase names are
@@ -58,21 +56,50 @@ function looksEncoded(token: string) {
 }
 /** Any payload, however plain, as one unbroken run of base64 or base64url. */
 const ENCODED_RUN = /[A-Za-z0-9+/]{2048,}={0,2}|[A-Za-z0-9_-]{2048,}/;
-/** Or as encoders wrap it: whole lines of nothing but base64, added up block by block. */
-const ENCODED_LINE_SHAPE = /^[\s>]*(?:[A-Za-z0-9+/]{60,}={0,2}|[A-Za-z0-9_-]{60,})\s*$/;
-/** A column of hex hashes (counted separately) or of plain slugs is never mistaken for wrapped base64. */
-const isEncodedLine = (line: string) => ENCODED_LINE_SHAPE.test(line) && /[g-zG-Z+/_]/.test(line) && !/^[\s>]*[a-z0-9-]+\s*$/.test(line);
 /** A hex dump; lists of hashes are fine. */
 const HEX_RUN = /[0-9a-fA-F]{4096,}/;
 /**
- * Hex in pieces, as `xxd -p` and similar tools write it: runs of 32 or more
- * hex characters, added up, leaving out the lengths of common hashes and ids
- * (32, 40, 64 and 128).
+ * What encoders write: blocks of lines that are almost nothing but payload
+ * (base64 or base64url, hex, xxd dumps, byte lists in any syntax, wrapped at
+ * any width, blank lines between or not). Real planning text mixes such
+ * tokens with words; on the owner's real boards the largest block is under
+ * 2,000 characters, while a 3 KB file makes over 4,000 in every encoding.
  */
-const HEX_TOKEN = /(?<![0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])/g;
-const HASH_LENGTHS = new Set([32, 40, 64, 128]);
-/** Bytes written as numbers in text: long comma-separated lists of small numbers ("137, 80, 78, 71, …" or "0x89, 0x50, …"). */
-const NUMBER_LIST = /(?:\b(?:0x[0-9a-fA-F]{1,2}|\d{1,3})\s*,\s*){32,}(?:0x[0-9a-fA-F]{1,2}|\d{1,3})\b/g;
+const TOKEN_SEPARATORS = /[\s,;:\[\]{}()"'`<>|]+/;
+const isPayloadToken = (token: string) => /^(?:0x)?[0-9a-fA-F]+$/.test(token)
+  || (/^[A-Za-z0-9+/=_-]{8,}$/.test(token)
+    // Not words, Names, or slugs and ids such as "improve-audit-2026-07-25-f60dc6e6".
+    && !/^[a-z-]+$/.test(token) && !/^[A-Z][a-z]+$/.test(token) && !/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(token));
+const PAYLOAD_BLOCK_LIMIT = 4096;
+/** Across a structured value's fields, only fields with at least this much payload count towards the limit. */
+const FIELD_BLOCK_MIN = 64;
+const HASH_FIELDS_LIMIT = 64;
+
+/** Each payload-dominated line, with whether it continues the block before it. */
+function payloadLines(text: string) {
+  const lines: Array<{ index: number; payload: number }> = [];
+  text.split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.replace(/^[\s>*+-]*(?:\d+[.)]\s+)?/, "");
+    if (!line.trim()) return;
+    const tokens = line.split(TOKEN_SEPARATORS).filter(Boolean);
+    const total = tokens.reduce((sum, token) => sum + token.length, 0);
+    const payload = tokens.filter(isPayloadToken).reduce((sum, token) => sum + token.length, 0);
+    lines.push({ index, payload: payload >= 8 && payload / total >= 0.6 ? payload : 0 });
+  });
+  return lines;
+}
+
+/** The largest block of payload lines (blank lines continue a block; any other line ends it). */
+function largestPayloadBlock(text: string) {
+  let block = 0;
+  let largest = 0;
+  for (const line of payloadLines(text)) {
+    block = line.payload ? block + line.payload : 0;
+    largest = Math.max(largest, block);
+  }
+  return largest;
+}
+
 /** Control characters other than tab, newline and carriage return mean binary content. */
 const BINARY = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
@@ -95,33 +122,24 @@ interface Payload {
   image: boolean;
   data: number;
   encoded: number;
-  /** A plain payload: an unbroken run, or a block of wrapped lines. */
+  /** One unbroken run of base64 or hex. */
   run: boolean;
-  hex: boolean;
-  /** Hex in pieces that are not hash-shaped, added up. */
-  hexPieces: number;
-  /** Small numbers in long comma-separated lists, added up. */
-  numbers: number;
+  /** Payload lines: within one text its largest block; across a value's fields, the total of the substantial ones. */
+  block: number;
 }
 
-const nothing = (): Payload => ({ binary: false, image: false, data: 0, encoded: 0, run: false, hex: false, hexPieces: 0, numbers: 0 });
+const nothing = (): Payload => ({ binary: false, image: false, data: 0, encoded: 0, run: false, block: 0 });
 
 /** Adds the file-like content in one piece of text to `into`. */
-function measure(text: string, into: Payload) {
+function measure(text: string, into: Payload, minBlock = 0) {
   if (BINARY.test(text)) into.binary = true;
   if (/data:/i.test(text) && DATA_IMAGE.test(withoutCode(text))) into.image = true;
   for (const match of text.matchAll(DATA_URI)) into.data += match[1]!.length;
   const rest = text.replace(DATA_URI, " ").replace(WEB_ADDRESS, " ");
   for (const match of rest.matchAll(ENCODED_TOKEN)) if (looksEncoded(match[0])) into.encoded += match[0].length;
-  if (HEX_RUN.test(rest)) into.hex = true;
-  for (const match of rest.matchAll(HEX_TOKEN)) if (!HASH_LENGTHS.has(match[0].length)) into.hexPieces += match[0].length;
-  for (const match of rest.matchAll(NUMBER_LIST)) into.numbers += match[0].split(",").length;
-  if (ENCODED_RUN.test(rest)) into.run = true;
-  let block = 0;
-  for (const line of rest.split(/\r?\n/)) {
-    block = isEncodedLine(line) ? block + line.trim().length : 0;
-    if (block > ENCODED_LIMIT) into.run = true;
-  }
+  if (HEX_RUN.test(rest) || ENCODED_RUN.test(rest)) into.run = true;
+  const block = largestPayloadBlock(rest);
+  if (block >= minBlock) into.block += block;
   return into;
 }
 
@@ -129,9 +147,7 @@ function verdict(payload: Payload): string | null {
   if (payload.binary) return "binary content";
   if (payload.image) return "a picture stored in the text (a data: address)";
   if (payload.data > DATA_PAYLOAD_LIMIT) return "an embedded file (data: addresses)";
-  if (payload.hex || payload.hexPieces > HEX_PIECES_LIMIT) return "an encoded file (hex)";
-  if (payload.numbers > NUMBERS_IN_TEXT_LIMIT) return "a file written as a list of numbers";
-  if (payload.encoded > ENCODED_LIMIT || payload.run) return "an encoded file (base64)";
+  if (payload.run || payload.block > PAYLOAD_BLOCK_LIMIT || payload.encoded > ENCODED_LIMIT) return "an encoded file (base64, hex or a list of bytes)";
   return null;
 }
 
@@ -147,18 +163,19 @@ export function withoutEmbeddedFiles(text: string, placeholder: string): string 
     .replace(new RegExp(BINARY.source, "g"), "")
     // History only: every data: address goes, however short.
     .replace(DATA_URI, () => placeholder)
-    .replace(NUMBER_LIST, placeholder)
-    .replace(HEX_TOKEN, (token) => HASH_LENGTHS.has(token.length) ? token : placeholder)
     .replace(new RegExp(HEX_RUN.source, "g"), placeholder)
     .replace(new RegExp(ENCODED_RUN.source, "g"), placeholder)
-    .replace(ENCODED_TOKEN, (token) => looksEncoded(token) ? placeholder : token)
-    .split(/\r?\n/)
-    // Each wrapped line, and the shorter last line of a wrapped block, becomes the placeholder.
-    .map((line, index, lines) => isEncodedLine(line) || (index > 0 && isEncodedLine(lines[index - 1]!) && /^[\s>]*[A-Za-z0-9+/]{4,}={0,2}\s*$/.test(line)) ? placeholder : line)
-    .join("\n");
-  // A wrapped payload leaves a column of placeholders: keep one.
-  const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return cleaned.replace(new RegExp(`(?:${escaped}[ \\t]*\\r?\\n)+(?=${escaped})`, "g"), "");
+    .replace(ENCODED_TOKEN, (token) => looksEncoded(token) ? placeholder : token);
+  // Every payload line becomes the placeholder, one per block.
+  const lines = cleaned.split(/\r?\n/);
+  const payload = new Set(payloadLines(cleaned).filter((line) => line.payload).map((line) => line.index));
+  const out: string[] = [];
+  lines.forEach((line, index) => {
+    if (!payload.has(index)) out.push(line);
+    else if (out.at(-1) !== placeholder) out.push(placeholder);
+  });
+  // Pieces already replaced line by line leave a column of placeholders: keep one.
+  return out.filter((line, index) => !(line.trim() === placeholder && out[index - 1]?.trim() === placeholder)).join("\n");
 }
 
 /**
@@ -202,9 +219,19 @@ function checkSize(bytes: number, where: string, maxBytes: number) {
 export function checkIndexValue(value: unknown, where: string, maxBytes: number) {
   const payload = nothing();
   let numbersInLists = 0;
+  // Fields that are exactly one hash (asset checksums, commits) are normal in
+  // card metadata; only very many of them together look like a split file.
+  let hashFields = 0;
+  let hashChars = 0;
   const visit = (entry: unknown) => {
     if (typeof entry === "string") {
-      measure(entry, payload);
+      if (/^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$|^[0-9a-fA-F]{128}$/.test(entry)) {
+        hashFields += 1;
+        hashChars += entry.length;
+        return;
+      }
+      // Short fields (dates, ids, tags) never add up to a file; pieces of one do.
+      measure(entry, payload, FIELD_BLOCK_MIN);
     } else if (Array.isArray(entry)) {
       // Numbers in lists add up across the whole value, however they are nested.
       numbersInLists += entry.filter((item) => typeof item === "number").length;
@@ -212,12 +239,13 @@ export function checkIndexValue(value: unknown, where: string, maxBytes: number)
       for (const item of entry) visit(item);
     } else if (entry && typeof entry === "object") {
       for (const [key, item] of Object.entries(entry)) {
-        measure(key, payload);
+        measure(key, payload, FIELD_BLOCK_MIN);
         visit(item);
       }
     }
   };
   visit(value);
+  if (hashFields > HASH_FIELDS_LIMIT) payload.block += hashChars;
   const found = verdict(payload);
   if (found) refuse(where, found);
   checkSize(new TextEncoder().encode(JSON.stringify(value) ?? "").length, where, maxBytes);
