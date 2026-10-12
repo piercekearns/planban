@@ -20,6 +20,7 @@ import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
 import { onlineLogout } from "../src/core/online/connections";
+import { moveFilesOut } from "../src/core/moveFilesOut";
 import { startServer } from "../src/server/server";
 import { listHistory } from "../src/core/history";
 import { checkIndexCard, checkIndexDocument, checkIndexValue } from "../src/core/contentRules";
@@ -552,6 +553,30 @@ test("attach and registry discovery use remote authority and export writes a bun
   await execFileAsync(process.execPath, ["--import", "tsx/esm", "src/cli.ts", "online", "export", "--cwd", second, "--out", out], { env: process.env });
   assert.equal(JSON.parse(await readFile(out, "utf8")).format, "planban-board-bundle");
   await assert.rejects(attachOnline(fake.url, "other", second), /already has a different board/);
+});
+
+test("tidying an Online Board refuses normal and dry runs before network or file changes", async () => {
+  await takeOnline(fake.url, cwd);
+  const state = await storage.loadState(cwd);
+  const folder = join(state.planningRoot, "items", "alpha");
+  await mkdir(folder, { recursive: true });
+  const cacheFile = join(folder, "kept.txt");
+  await writeFile(cacheFile, "kept in cache");
+  const destination = join(root, "moved-out");
+  const fetchBefore = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("unexpected network call while tidying"); };
+  try {
+    for (const dryRun of [false, true]) {
+      await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: destination, dryRun }),
+        (error: unknown) => error instanceof storage.PlanbanValidationError && /not yet available for Online Boards/.test(error.message));
+    }
+  } finally {
+    globalThis.fetch = fetchBefore;
+  }
+  assert.equal(calls, 0);
+  assert.equal(await readFile(cacheFile, "utf8"), "kept in cache");
+  assert.equal(await storage.pathExists(destination), false);
 });
 
 test("unsupported online file operations refuse rather than using local snapshots", async () => {

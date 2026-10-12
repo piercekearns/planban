@@ -203,7 +203,7 @@ async function onlineManifest(cwd: string) {
   return manifest?.enabled && manifest.storage?.kind === "online" ? manifest : null;
 }
 
-async function refuseForOnline(cwd: string, operation: string) {
+export async function refuseForOnline(cwd: string, operation: string) {
   if (await onlineManifest(cwd)) refuseOnline(operation);
 }
 
@@ -540,7 +540,10 @@ export async function createCard(input: {
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
-  const change = planCreateCard(state.roadmap, input, { now: nowIso() });
+  const change = planCreateCard(state.roadmap, input, {
+    now: nowIso(),
+    isIdReserved: await reservedItemIds(state.planningRoot),
+  });
   if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, input.title.trim(), "spec");
   if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, input.title.trim(), "plan");
   await mkdir(itemRoot(state.planningRoot, change.cardId), { recursive: true });

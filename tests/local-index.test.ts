@@ -73,6 +73,18 @@ function dropFiles(folder: string) {
   writeFileSync(join(folder, "evidence", "run.log"), "ok\n");
 }
 
+test("single-card creation reserves folders containing leftover documents", async () => {
+  await withBoard(async ({ cwd, folder }) => {
+    mkdirSync(folder("alpha"), { recursive: true });
+    const oldSpec = "# Kept Spec\n\nEvidence left by an older card.\n";
+    writeFileSync(join(folder("alpha"), "spec.md"), oldSpec);
+    const created = (await createCard({ cwd, title: "Alpha", specMarkdown: "# New Spec\n" })).createdCard;
+    assert.notEqual(created.id, "alpha");
+    assert.equal(readFileSync(join(folder("alpha"), "spec.md"), "utf8"), oldSpec);
+    assert.equal((await readDoc({ cwd, cardId: created.id, kind: "spec" })).markdown, "# New Spec\n");
+  });
+});
+
 test("every local write refuses embedded files and oversized text, with advice on writing a reference", async () => {
   await withBoard(async ({ cwd, planningRoot }) => {
     const card = (await createCard({ cwd, title: "Alpha", status: "up-next" })).createdCard;
