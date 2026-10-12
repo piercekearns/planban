@@ -12,6 +12,7 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
+  rate_limited: 429,
   conflict: 409,
   validation: 400,
   not_found: 404,

@@ -53,6 +53,7 @@ PLANBAN_HOME=$(mktemp -d) node --import tsx/esm online/scripts/live-convex.ts   
 node --import tsx/esm online/scripts/access-convex.ts                    # connections, sign-out, personal access keys
 node --import tsx/esm online/scripts/index-convex.ts                     # boards hold text only; no file routes
 node --import tsx/esm online/scripts/invites-convex.ts                   # invites, joining, roles, agent permissions
+node --import tsx/esm online/scripts/limits-convex.ts                    # board size and daily volume caps (needs PLANBAN_TEST_LIMITS; see the script)
 node --import tsx/esm online/scripts/clerk-tokens-convex.ts               # sign-in server tokens (see the script for its settings)
 (cd online/service && node scripts/mcp-sdk-check.mjs)                  # remote MCP with the official MCP SDK client
 online/scripts/demo-convex.sh                                            # two machines, CLI and local MCP
@@ -66,3 +67,11 @@ files and oversized documents (`src/core/contentRules.ts`). The attachment
 storage built earlier is kept but not routed: `convex/attachments.ts`,
 `convex/model/blobs.ts`, `src/core/online/attachments.ts`, and its check in
 `online/retired/attachments-convex.ts`.
+
+The guarantee has three layers, set out at the top of `src/core/contentRules.ts`
+and in the card's spec (decision 21): the text check, the size and volume caps
+(`convex/model/limits.ts`), and never serving stored text as a file
+(`tests/no-file-serving.test.ts`). New ways of writing a file as text found
+later are follow-ups, not blockers; record them here.
+
+Follow-ups: none recorded yet.

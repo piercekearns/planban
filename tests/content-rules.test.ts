@@ -141,3 +141,51 @@ test("every common way an encoder writes a file is refused, at any wrapping", ()
   };
   for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file/, name);
 });
+
+// Small stand-ins for common encoders, so the tests need no outside tools.
+const B85 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+function base85(bytes: Buffer, alphabet = B85) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 4) {
+    let n = 0;
+    for (let j = 0; j < 4; j += 1) n = n * 256 + (bytes[i + j] ?? 0);
+    let chunk = "";
+    for (let j = 0; j < 5; j += 1) { chunk = alphabet[n % 85] + chunk; n = Math.floor(n / 85); }
+    out += chunk;
+  }
+  return out;
+}
+function uuencode(bytes: Buffer) {
+  const lines = ["begin 644 x.bin"];
+  for (let i = 0; i < bytes.length; i += 45) {
+    const part = bytes.subarray(i, i + 45);
+    let line = String.fromCharCode(32 + part.length);
+    for (let j = 0; j < part.length; j += 3) {
+      const [a = 0, b = 0, c = 0] = part.subarray(j, j + 3);
+      for (const v of [a >> 2, ((a & 3) << 4) | (b >> 4), ((b & 15) << 2) | (c >> 6), c & 63]) line += String.fromCharCode(v === 0 ? 96 : 32 + v);
+    }
+    lines.push(line);
+  }
+  return [...lines, "`", "end"].join("\n");
+}
+const pythonRepr = (bytes: Buffer) => "b'" + [...bytes].map((b) => b >= 32 && b < 127 && b !== 39 && b !== 92 ? String.fromCharCode(b) : `\\x${b.toString(16).padStart(2, "0")}`).join("") + "'";
+const odChars = (bytes: Buffer) => (bytes.toString("hex").match(/.{1,32}/g) ?? []).map((row) => "    " + (row.match(/../g) ?? []).map((h) => {
+  const b = parseInt(h, 16);
+  return (b >= 33 && b < 127 ? String.fromCharCode(b) : b.toString(8).padStart(3, "0")).padStart(4);
+}).join("")).join("\n");
+
+test("today's encoders are refused too: uuencode, base85, ASCII85, Python bytes, od, one byte per line, repetitive lowercase", () => {
+  const f = randomBytes(3072);
+  const variants: Record<string, string> = {
+    uuencode: uuencode(f),
+    base85: base85(f),
+    "ASCII85 (Adobe)": "<~" + (base85(f, "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu").match(/.{1,75}/g) ?? []).join("\n") + "~>",
+    "Python bytes": pythonRepr(f),
+    "od -c": odChars(f),
+    "one byte per line": JSON.stringify([...Buffer.alloc(8192, 42)], null, 2),
+    "repetitive lowercase base64": (Buffer.alloc(8192, 0xaa).toString("base64").match(/.{1,64}/g) ?? []).join("\n"),
+    "base64 at 16": (f.toString("base64").match(/.{1,16}/g) ?? []).join("\n"),
+    "zero bytes in a JSON string": JSON.stringify(Buffer.alloc(4096).toString("latin1")),
+  };
+  for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file|binary/, name);
+});

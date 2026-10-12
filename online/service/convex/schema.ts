@@ -146,6 +146,22 @@ export default defineSchema({
     summary: v.string(),
   }).index("by_board_generation_card", ["boardId", "generation", "cardId"]),
 
+  /** Stored text per board generation, history included, in bytes as stored (see model/limits.ts). */
+  boardSizes: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    bytes: v.number(),
+  }).index("by_board_generation", ["boardId", "generation"]),
+
+  /** What each account wrote on a day (UTC), for the daily limits in model/limits.ts. */
+  usage: defineTable({
+    userId: v.string(),
+    day: v.string(),
+    writes: v.number(),
+    bytes: v.number(),
+    importBytes: v.number(),
+  }).index("by_user_day", ["userId", "day"]).index("by_day", ["day"]),
+
   /** How a person appears to others on shared boards (name and picture from the sign-in account). */
   people: defineTable({
     userId: v.string(),

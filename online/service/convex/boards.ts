@@ -23,6 +23,7 @@ import { boardAccess, liveConnection, reaches } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
 import { checkCards, checkDocuments } from "./model/indexRules";
+import { addStored, chargeWrite, sizeOf } from "./model/limits";
 import { historyEntries, historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
 import { DOC_KINDS, currentRoadmap, docPayload, docRow, live, retiredIds, stateRow, type DocKind } from "./model/rows";
 
@@ -57,7 +58,15 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
   checkDocuments(change.docWrites);
   const at = live(board);
   const committed = committedRoadmap(change.roadmap, now);
-  await ctx.db.patch((await stateRow(ctx, at))._id, { roadmap: packJson(committed) });
+  // Daily limits for the account, and the board's own size limit (model/limits.ts).
+  const before = new Map(previous.roadmapItems.map((item) => [item.id, JSON.stringify(item)]));
+  const written = committed.roadmapItems.reduce((sum, item) => sum + (before.get(item.id) === JSON.stringify(item) ? 0 : sizeOf(item)), 0)
+    + change.docWrites.reduce((sum, doc) => sum + sizeOf(doc.markdown), 0);
+  await chargeWrite(ctx, attribution.userId, written);
+  const state = await stateRow(ctx, at);
+  const packedRoadmap = packJson(committed);
+  await ctx.db.patch(state._id, { roadmap: packedRoadmap });
+  await addStored(ctx, at, sizeOf(packedRoadmap) - sizeOf(state.roadmap));
   const remaining = new Set(committed.roadmapItems.map((item) => item.id));
   for (const item of previous.roadmapItems) {
     if (remaining.has(item.id)) continue;
@@ -65,7 +74,10 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
     await ctx.db.insert("retiredIds", { ...at, cardId: item.id });
     for (const kind of ["spec", "plan"] as const) {
       const row = await docRow(ctx, at, item.id, kind);
-      if (row) await ctx.db.delete(row._id);
+      if (row) {
+        await ctx.db.delete(row._id);
+        await addStored(ctx, at, -sizeOf(row.markdown));
+      }
     }
   }
   for (const doc of change.docWrites) {
@@ -74,6 +86,7 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
     const fields = { markdown: packText(doc.markdown), stamp, updatedAt: now, updatedBy: attribution.userId };
     if (row) await ctx.db.patch(row._id, fields);
     else await ctx.db.insert("docs", { ...at, cardId: doc.cardId, kind: doc.kind, ...fields });
+    await addStored(ctx, at, sizeOf(fields.markdown) - (row ? sizeOf(row.markdown) : 0));
   }
   const listed = change.history.affectedDocs ?? [];
   const affectedDocs = [
@@ -365,7 +378,10 @@ export const fence = internalMutation({
     const now = new Date().toISOString();
     const previous = await currentRoadmap(ctx, live(board));
     const committed = committedRoadmap(previous, now);
-    await ctx.db.patch((await stateRow(ctx, live(board)))._id, { roadmap: packJson(committed) });
+    const state = await stateRow(ctx, live(board));
+    const packedRoadmap = packJson(committed);
+    await ctx.db.patch(state._id, { roadmap: packedRoadmap });
+    await addStored(ctx, live(board), sizeOf(packedRoadmap) - sizeOf(state.roadmap));
     // Bumping the revision tells every watching client the board changed.
     await ctx.db.patch(board._id, {
       authority: "returned-local", revision: committed.revision, updatedAt: now,

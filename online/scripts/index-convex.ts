@@ -30,7 +30,12 @@ assert.equal(files.status, 404);
 assert.match(files.json.error.message, /hold text only/);
 const upload = await api(token, "POST", `/api/v1/boards/${boardId}/attachments/begin`, { cardId, path: "a.png", sha256: "0".repeat(64), size: 1, contentType: "image/png" });
 assert.equal(upload.status, 404);
-ok("the service has no file routes; asking for one explains that boards hold text only");
+for (const path of [`/api/v1/boards/${boardId}`, `/api/v1/boards/${boardId}/docs/${cardId}/spec`, `/api/v1/boards/${boardId}/export/meta`, `/api/v1/boards/${boardId}/attachments`]) {
+  const response = await fetch(`${origin}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.match(response.headers.get("content-type") ?? "", /^application\/json/, path);
+  assert.equal(response.headers.get("content-disposition"), null, path);
+}
+ok("the service has no file routes; asking for one explains that boards hold text only; every answer is Planban's own JSON, never a file");
 
 const revision = async () => (await api(token, "GET", `/api/v1/boards/${boardId}`)).json.roadmap.revision as number;
 const card = await api(token, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId, summary: `Logo: ${encoded}`, baseRevision: await revision() });

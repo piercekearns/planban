@@ -16,6 +16,7 @@ import { BOARD_ID_PATTERN } from "./access";
 import { packJson, packText } from "./codec";
 import { asServiceError, fail } from "./errors";
 import { checkCards, checkDocuments, checkImportedExtras } from "./indexRules";
+import { addStored, chargeImport, sizeOf } from "./limits";
 import { seedCardChanges } from "./cardChanges";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
@@ -136,7 +137,11 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
   }
   const generation = await nextGeneration(ctx);
   const at = { boardId, generation };
-  await ctx.db.insert("boardState", { ...at, roadmap: packJson(roadmap) });
+  // Take Online counts towards the account's daily import limit and the board's size limit.
+  await chargeImport(ctx, connection.userId, sizeOf(input.roadmap));
+  const packedRoadmap = packJson(roadmap);
+  await ctx.db.insert("boardState", { ...at, roadmap: packedRoadmap });
+  await addStored(ctx, at, sizeOf(packedRoadmap));
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
   for (const cardId of new Set(input.retiredIds ?? [])) {
     if (typeof cardId === "string" && !live.has(cardId)) await ctx.db.insert("retiredIds", { ...at, cardId });
@@ -161,13 +166,16 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
   let stamp = Date.now();
   checkImportedExtras({ history: input.history ?? [] });
+  await chargeImport(ctx, connection.userId, sizeOf({ docs: input.docs ?? [], history: input.history ?? [], historyDocs: input.historyDocs ?? [] }));
   checkDocuments((input.docs ?? []).filter((doc) => typeof doc?.markdown === "string"));
   checkDocuments((input.historyDocs ?? []).filter((doc) => typeof doc?.markdown === "string"));
   for (const doc of input.docs ?? []) {
     if (!DOC_KINDS.has(doc.kind) || typeof doc.markdown !== "string") fail("validation", `Document ${doc.cardId}/${doc.kind} is invalid.`);
     if (!live.has(doc.cardId)) fail("validation", `Upload contains a document for an unknown card: ${doc.cardId}`);
     if (await docRow(ctx, at, doc.cardId, doc.kind)) fail("validation", `Upload contains a duplicate document: ${doc.cardId}/${doc.kind}`);
-    await ctx.db.insert("docs", { ...at, cardId: doc.cardId, kind: doc.kind, markdown: packText(doc.markdown), stamp: stamp++, updatedAt: transfer.createdAt, updatedBy: connection.userId });
+    const markdown = packText(doc.markdown);
+    await ctx.db.insert("docs", { ...at, cardId: doc.cardId, kind: doc.kind, markdown, stamp: stamp++, updatedAt: transfer.createdAt, updatedBy: connection.userId });
+    await addStored(ctx, at, sizeOf(markdown));
   }
   const retired = await retiredIds(ctx, at);
   let maxVersion = transfer.maxVersion;
@@ -204,7 +212,9 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
     const known = versions.has(doc.version) || await ctx.db.query("history")
       .withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("version", doc.version)).first();
     if (!known) fail("validation", "Upload contains a document for an unknown history version.");
-    await ctx.db.insert("historyDocs", { ...at, version: doc.version, cardId: doc.cardId, kind: doc.kind, markdown: packText(doc.markdown) });
+    const markdown = packText(doc.markdown);
+    await ctx.db.insert("historyDocs", { ...at, version: doc.version, cardId: doc.cardId, kind: doc.kind, markdown });
+    await addStored(ctx, at, sizeOf(markdown));
   }
   await ctx.db.insert("transferParts", { transferId: input.transferId, seq: input.seq });
   await ctx.db.patch(transfer._id, { maxVersion, updatedAt: new Date().toISOString() });
@@ -231,7 +241,10 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   // adds a history version, keeping earlier version numbers intact. A board
   // taken online again never goes back to an older revision.
   const committed = committedRoadmap({ ...roadmap, revision: Math.max(roadmap.revision, transfer.previousRevision) }, now);
-  await ctx.db.patch((await stateRow(ctx, at))._id, { roadmap: packJson(committed) });
+  const state = await stateRow(ctx, at);
+  const packedRoadmap = packJson(committed);
+  await ctx.db.patch(state._id, { roadmap: packedRoadmap });
+  await addStored(ctx, at, sizeOf(packedRoadmap) - sizeOf(state.roadmap));
   const previousGeneration = board!.generation;
   // Version numbers are never reused, even if the local history was trimmed.
   const baseVersion = Math.max(transfer.maxVersion, transfer.previousRevision >= 0 ? board!.historyVersion : 0);
