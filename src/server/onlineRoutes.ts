@@ -77,6 +77,34 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     }
   });
 
+  /** People on an online board and who last changed each card; nothing for a local board. */
+  app.get("/api/boards/:repoId/online/people", async (req, res, next) => {
+    try {
+      const manifest = await readManifest(await deps.resolveBoardCwd(req.params.repoId));
+      if (manifest?.storage?.kind !== "online") {
+        res.json({ shared: false, people: [], cards: {} });
+        return;
+      }
+      res.json(await onlineRequest(manifest.storage.url, boardPath(manifest.storage.boardId, "/people")));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** What your own agents may do on this online board. */
+  app.post("/api/boards/:repoId/online/people/me/agents", async (req, res, next) => {
+    try {
+      const manifest = await readManifest(await deps.resolveBoardCwd(req.params.repoId));
+      if (manifest?.storage?.kind !== "online") {
+        res.status(409).json({ error: "This board is on this Mac; its agents are the ones on this Mac." });
+        return;
+      }
+      res.json(await onlineRequest(manifest.storage.url, boardPath(manifest.storage.boardId, "/people/me/agents"), { level: req.body?.level }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   function startJob(repoId: string, kind: MoveJob["kind"], run: (job: MoveJob & { controller?: AbortController }) => Promise<unknown>) {
     const job: MoveJob & { controller?: AbortController } = {
       id: randomUUID(), repoId, kind, status: "running", progress: null, error: null, startedAt: new Date().toISOString(), finishedAt: null,

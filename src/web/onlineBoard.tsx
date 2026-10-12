@@ -2,9 +2,9 @@
 // approved mockups): a quiet "On this Mac" / "Online" pill beside the board
 // name, and Board settings with Take online and Take local. Local boards only
 // ever ask the local Planban server, which answers from files on this machine.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Cloud, Info, Laptop, Loader2, Users, X } from "lucide-react";
+import { Bot, Check, Cloud, Info, Laptop, Loader2, Users, X } from "lucide-react";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -391,5 +391,116 @@ function OlderCopyChoice({ repoId, boardTitle, since, choice, reload, onClose }:
         {error ? <p className="online-board-error" role="alert">{error}</p> : null}
       </div>
     </Modal>
+  );
+}
+
+export interface BoardPerson {
+  userId: string;
+  name: string;
+  imageUrl: string | null;
+  email: string | null;
+  role: "owner" | "editor" | "viewer";
+  agentLevel: "read" | "plan" | "complete";
+  you: boolean;
+}
+
+export interface CardChange {
+  userId: string;
+  agent: boolean;
+  clientName: string | null;
+  at: string;
+  summary: string;
+}
+
+export interface BoardPeople {
+  shared: boolean;
+  people: BoardPerson[];
+  cards: Record<string, CardChange>;
+}
+
+/** People and card changes for an online board; refreshed when the board changes. */
+export function useBoardPeople(repoId: string | null, online: boolean, refreshKey: unknown) {
+  const [people, setPeople] = useState<BoardPeople | null>(null);
+  const load = useCallback(async () => {
+    if (!repoId || !online) {
+      setPeople(null);
+      return;
+    }
+    setPeople(await request<BoardPeople>(`/api/boards/${encodeURIComponent(repoId)}/online/people`).catch(() => null));
+  }, [repoId, online]);
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+  return { people, reload: load };
+}
+
+/** Faces appear only on shared boards (owner decision 15); boards with one person look as they always have. */
+export const BoardPeopleContext = createContext<BoardPeople | null>(null);
+
+const FACE_COLOURS = [["#efe6d8", "#6b5232"], ["#dde9f5", "#2c5c88"], ["#e3efe2", "#3c6a39"], ["#f3e1e6", "#87394f"], ["#e7e3f3", "#4b3f86"], ["#f4ead2", "#7a5a12"]] as const;
+
+function colourFor(userId: string) {
+  let hash = 0;
+  for (const char of userId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return FACE_COLOURS[hash % FACE_COLOURS.length]!;
+}
+
+function initials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  return ((words[0]?.[0] ?? "?") + (words.length > 1 ? words.at(-1)![0] : "")).toUpperCase();
+}
+
+export function Face({ person, agent = false, size = 18 }: { person: Pick<BoardPerson, "userId" | "name" | "imageUrl">; agent?: boolean; size?: number }) {
+  const [background, foreground] = colourFor(person.userId);
+  return (
+    <span className={`person-face ${agent ? "has-agent" : ""}`} style={{ width: size, height: size, background, color: foreground, fontSize: Math.round(size * 0.42) }}>
+      {person.imageUrl ? <img src={person.imageUrl} alt="" referrerPolicy="no-referrer" /> : initials(person.name)}
+      {agent ? <span className="person-face-agent"><Bot size={11} /></span> : null}
+    </span>
+  );
+}
+
+function timeAgo(at: string) {
+  const minutes = Math.round((Date.now() - Date.parse(at)) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  return new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+/** The face of whoever last changed a card, on shared boards only. */
+export function CardFace({ cardId }: { cardId: string }) {
+  const board = useContext(BoardPeopleContext);
+  if (!board?.shared) return null;
+  const change = board.cards[cardId];
+  if (!change) return null;
+  const person = board.people.find((entry) => entry.userId === change.userId) ?? { userId: change.userId, name: change.userId, imageUrl: null };
+  const who = change.agent ? `${person.name}'s agent${change.clientName ? ` (${change.clientName})` : ""}` : person.name;
+  return (
+    <span className="card-face" title={`${who}: ${change.summary} · ${timeAgo(change.at)}`}>
+      <Face person={person} agent={change.agent} />
+    </span>
+  );
+}
+
+/** "Maya Okafor" or "Maya Okafor's agent (Claude)" for a history entry on a shared board, else null. */
+export function useChangeAuthor(attribution: { userId: string; clientName: string; actor: string } | undefined) {
+  const board = useContext(BoardPeopleContext);
+  if (!board?.shared || !attribution) return null;
+  const person = board.people.find((entry) => entry.userId === attribution.userId) ?? { userId: attribution.userId, name: attribution.userId, imageUrl: null };
+  return { person, agent: attribution.actor === "agent", via: attribution.actor === "agent" ? attribution.clientName : null };
+}
+
+/** On shared boards: the face and name of whoever made a history entry, and the agent they used. */
+export function HistoryAuthor({ attribution }: { attribution?: { userId: string; clientName: string; actor: string } | undefined }) {
+  const author = useChangeAuthor(attribution);
+  if (!author) return null;
+  return (
+    <span className="history-author">
+      <Face person={author.person} size={16} />
+      <span>{author.person.name}</span>
+      {author.agent ? <span className="history-author-chip"><Bot size={10} /> {author.via ?? "agent"}</span> : null}
+    </span>
   );
 }

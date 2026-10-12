@@ -117,7 +117,18 @@ export default defineSchema({
     boardId: v.string(),
     userId: v.string(),
     role: memberRole,
+    /** What this person lets their agents do on this board; see memberAgentLevel for the default. Everyone on the board can see it. */
+    agentLevel: v.optional(agentLevel),
   }).index("by_board_user", ["boardId", "userId"]).index("by_user", ["userId"]),
+
+  /** How a person appears to others on shared boards (name and picture from the sign-in account). */
+  people: defineTable({
+    userId: v.string(),
+    name: v.string(),
+    imageUrl: v.optional(v.string()),
+    email: v.optional(v.string()),
+    updatedAt: v.string(),
+  }).index("by_userId", ["userId"]),
 
   /**
    * Every credential (a machine sign-in, a remote agent's OAuth grant, a

@@ -26,12 +26,28 @@ export function reaches(connection: Doc<"connections">, boardId: string) {
   return connection.boards === "all" || connection.boards.includes(boardId);
 }
 
+export type AgentLevel = Doc<"connections">["level"];
+const RANK: Record<AgentLevel, number> = { read: 0, plan: 1, complete: 2 };
+const lowest = (...levels: AgentLevel[]) => levels.reduce((low, level) => RANK[level] < RANK[low] ? level : low);
+
+/** What a role may do itself (owner decision 8, roles from the approved mockups): viewers read; editors and owners also complete. */
+export function roleLevel(role: Doc<"members">["role"]): AgentLevel {
+  return role === "viewer" ? "read" : "complete";
+}
+
+/** What a person's agents may do on a board: their own choice, never more than the person. Owners default to everything, others to planning. */
+export function memberAgentLevel(member: Pick<Doc<"members">, "role" | "agentLevel">): AgentLevel {
+  return lowest(member.agentLevel ?? (member.role === "owner" ? "complete" : "plan"), roleLevel(member.role));
+}
+
 export interface BoardAccess {
   connection: Doc<"connections">;
   board: Doc<"boards">;
   role: Doc<"members">["role"];
+  /** What this connection may do on this board. */
+  level: AgentLevel;
   canWrite: boolean;
-  /** The owner's own connection: completing, deleting, moving authority and inviting. */
+  /** The owner's own connection: deleting, moving authority and inviting. */
   canAdminister: boolean;
   canComplete: boolean;
 }
@@ -45,14 +61,18 @@ export async function boardAccess(ctx: QueryCtx, connectionId: Id<"connections">
   if (!board) missing();
   const member = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId).eq("userId", connection.userId)).unique();
   if (!member) missing();
-  const canWrite = member!.role !== "viewer" && connection.level !== "read";
-  const canAdminister = member!.role === "owner" && connection.canAdminister;
+  // A person's own sign-in acts with their role; an agent or key also within
+  // its own level and the person's choice for their agents.
+  const level = connection.canAdminister
+    ? roleLevel(member!.role)
+    : lowest(connection.level, memberAgentLevel(member!));
   return {
     connection,
     board: board!,
     role: member!.role,
-    canWrite,
-    canAdminister,
-    canComplete: canAdminister || (canWrite && member!.role === "owner" && connection.level === "complete"),
+    level,
+    canWrite: level !== "read",
+    canAdminister: member!.role === "owner" && connection.canAdminister,
+    canComplete: level === "complete",
   };
 }

@@ -2,7 +2,7 @@
 // per-person agent levels) is owned by the shared-board-access card.
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { boardAccess } from "./model/access";
+import { boardAccess, memberAgentLevel } from "./model/access";
 import { fail } from "./model/errors";
 
 export const list = internalQuery({
@@ -10,7 +10,7 @@ export const list = internalQuery({
   handler: async (ctx, { connectionId, boardId }) => {
     await boardAccess(ctx, connectionId, boardId);
     const members = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect();
-    return members.map(({ userId, role }) => ({ userId, role }));
+    return members.map((member) => ({ userId: member.userId, role: member.role, agentLevel: memberAgentLevel(member) }));
   },
 });
 

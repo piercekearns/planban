@@ -157,6 +157,13 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     const { revision } = await ctx.runQuery(internal.boards.revision, { connectionId, boardId });
     return json({ revision });
   }
+  if (rest[0] === "people" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.people.forBoard, { connectionId, boardId }));
+  if (rest[0] === "people" && rest[1] === "me" && rest[2] === "agents" && method === "POST") {
+    const input = await body(request);
+    const level = input.level === "read" || input.level === "plan" || input.level === "complete" ? input.level : null;
+    if (!level) return json({ error: { code: "validation", message: "level must be read, plan or complete." } }, 400);
+    return json(await ctx.runMutation(internal.people.setAgentLevel, { connectionId, boardId, level }));
+  }
   if (rest[0] === "members" && method === "GET") return json({ members: await ctx.runQuery(internal.members.list, { connectionId, boardId }) });
   if (rest[0] === "members" && method === "POST") {
     const input = await body(request);

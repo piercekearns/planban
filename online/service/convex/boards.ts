@@ -101,7 +101,7 @@ function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, acc
   const completes = after.roadmapItems.some((item) => item.status === "complete" && previous.get(item.id)?.status !== "complete");
   const deletes = before.roadmapItems.some((item) => !remaining.has(item.id));
   if (deletes && !access.canAdminister) fail("forbidden", "Deleting a card is kept for the board owner's own connection. Ask the owner to do it.");
-  if (completes && !access.canComplete) fail("forbidden", "Completing a card is kept for the board owner. Ask the owner to do it.");
+  if (completes && !access.canComplete) fail("forbidden", "This connection may not mark cards complete on this board. Ask someone who can, or change what your agents may do.");
   if (completes && completionConfirmed === false) {
     fail("validation", "completionConfirmed must be true when this would move a card to complete. Only do this when the owner explicitly asks.");
   }

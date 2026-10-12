@@ -5846,3 +5846,11 @@ button.content-edit-action:hover {
 .online-board-button.primary-accent { background: var(--accent); border-color: transparent; color: #fff; }
 .online-board-input { width: 100%; box-sizing: border-box; min-height: 30px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); padding: 6px 10px; font: 13px/16px var(--font-sans); color: var(--text); }
 .board-screen.older-copy .card { opacity: .82; }
+.person-face { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 999px; font-weight: 600; letter-spacing: .02em; box-shadow: 0 0 0 1.5px var(--card-surface, #fff); }
+.person-face img { width: 100%; height: 100%; border-radius: 999px; object-fit: cover; }
+.person-face-agent { position: absolute; right: calc(100% + 2px); top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); }
+.person-face.has-agent { margin-left: 12px; }
+.card-face { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.card-title-tail { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.history-author { display: inline-flex; align-items: center; gap: 6px; }
+.history-author-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--text-muted); font-size: 10.5px; line-height: 16px; font-weight: 500; }

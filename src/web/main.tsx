@@ -95,7 +95,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
-import { BoardSettingsModal, LocationPill, OlderCopyBanner, useOnlineStatus } from "./onlineBoard";
+import { BoardPeopleContext, BoardSettingsModal, CardFace, HistoryAuthor, LocationPill, OlderCopyBanner, useBoardPeople, useOnlineStatus } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -335,6 +335,8 @@ interface HistoryEntry {
   summary: string;
   affectedCards: string[];
   affectedDocs: Array<{ cardId: string; kind: DocKind; path: string | null }>;
+  /** Online Boards: who made the change and through which app. */
+  attribution?: { userId: string; clientName: string; actor: string };
 }
 
 interface HistoryPayload {
@@ -1062,7 +1064,10 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {item.icon ? <span className="card-title-icon">{item.icon}</span> : null}
           {item.title}
         </p>
-        {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
+        <span className="card-title-tail">
+          <CardFace cardId={item.id} />
+          {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
+        </span>
       </div>
       {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
       {description ? <p className="card-copy">{description}</p> : null}
@@ -1907,7 +1912,7 @@ function BoardHistoryModal({
                 else onSelectVersion(entry.version);
                 onClose();
               }}>
-                <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
+                <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} /><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
               </button>
             );
           })}
@@ -3294,7 +3299,7 @@ function DetailHistoryMenu({
               disabled={active && previewVersion === null}
               onClick={() => select(entry.version)}
             >
-              <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
+              <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} /><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
             </button>
           );
         })}
@@ -4737,6 +4742,7 @@ function BoardView({
   const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
   const isDemoBoard = boardKind === "demo";
   const online = useOnlineStatus(isDemoBoard ? null : boardId, state.roadmap.revision);
+  const boardPeople = useBoardPeople(isDemoBoard ? null : boardId, online.status?.location === "online", `${state.roadmap.revision}:${online.status?.location}`);
   const isActivityLab = activityLabIsEnabled(boardId, boardKind, window.location.search);
   const activityLabCards = useMemo(
     () => items.filter((item) => item.status !== "archived"),
@@ -5494,6 +5500,7 @@ function BoardView({
 
   if (selectedItem) {
     return (
+      <BoardPeopleContext.Provider value={boardPeople.people}>
       <DetailView
         state={activityDetailKind === "group" ? activityDetailState : displayState}
         item={selectedItem}
@@ -5520,10 +5527,12 @@ function BoardView({
           },
         } : {})}
       />
+      </BoardPeopleContext.Provider>
     );
   }
 
   return (
+    <BoardPeopleContext.Provider value={boardPeople.people}>
     <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
@@ -5747,6 +5756,7 @@ function BoardView({
         </DragOverlay>
       </DndContext>}
     </main>
+    </BoardPeopleContext.Provider>
   );
 }
 

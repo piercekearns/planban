@@ -1,6 +1,7 @@
 // Connections: every credential resolves to one row, re-checked on every
 // request. Bearer secrets Planban issues itself are stored only as hashes.
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection } from "./model/access";
@@ -187,6 +188,8 @@ export const createMachine = internalMutation({
       userId, kind: "machine", name: label, clientName: label, tokenHash,
       boards: "all", level: "complete", canAdminister: true, createdAt: now, lastUsedAt: now,
     });
+    // Refresh how this person appears to others (name and picture).
+    await ctx.scheduler.runAfter(0, internal.people.refresh, { userId });
     return { connectionId: id };
   },
 });
