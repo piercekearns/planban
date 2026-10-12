@@ -41,6 +41,9 @@ import type {
 import { PLANBAN_STATUSES } from "./types";
 import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
+import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
+
+export { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 
 const STATUS_LABELS: Record<PlanbanStatus, string> = {
   "in-progress": "In Progress",
@@ -56,27 +59,6 @@ export async function pathExists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-export class PlanbanConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PlanbanConflictError";
-  }
-}
-
-export class PlanbanValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PlanbanValidationError";
-  }
-}
-
-export class PlanbanNotFoundError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PlanbanNotFoundError";
   }
 }
 
