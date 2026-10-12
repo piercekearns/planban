@@ -35,6 +35,7 @@ export const add = internalMutation({
 export const update = internalMutation({
   args: { connectionId: v.id("connections"), boardId: v.string(), userId: v.string(), role: v.optional(v.union(v.literal("editor"), v.literal("viewer"))), remove: v.optional(v.boolean()) },
   handler: async (ctx, { connectionId, boardId, userId, role, remove }) => {
+    if (!remove && !role) fail("validation", "Choose a viewer/editor role or remove the person.");
     const access = await boardAccess(ctx, connectionId, boardId);
     if (!access.canAdminister) fail("forbidden", "Changing who is on the board is kept for the board owner's own sign-in.");
     const member = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId).eq("userId", userId)).unique();

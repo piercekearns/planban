@@ -26,6 +26,7 @@ import { checkCards, checkDocuments } from "./model/indexRules";
 import { addStored, chargeWrite, sizeOf } from "./model/limits";
 import { historyEntries, historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
 import { DOC_KINDS, currentRoadmap, docPayload, docRow, live, retiredIds, stateRow, type DocKind } from "./model/rows";
+import { reserveRetiredId } from "./model/retired";
 
 export const BOARD_OPERATIONS = [
   "createCard", "createCards", "createGroup", "updateCard", "moveCard",
@@ -46,8 +47,8 @@ export interface BoardBundle {
 
 // ---- helpers ------------------------------------------------------------
 
-function attributionFor(connection: Doc<"connections">, actor: unknown): Attribution {
-  return { userId: connection.userId, clientName: connection.clientName, actor: actor === "user" ? "user" : "agent", connectionId: connection._id };
+export function attributionFor(connection: Doc<"connections">, actor: unknown): Attribution {
+  return { userId: connection.userId, clientName: connection.clientName, actor: connection.canAdminister && actor === "user" ? "user" : "agent", connectionId: connection._id };
 }
 
 /** Writes the roadmap, documents and one history version. Runs inside the caller's mutation. */
@@ -71,7 +72,7 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
   for (const item of previous.roadmapItems) {
     if (remaining.has(item.id)) continue;
     // Deleted ids are never reused, so history keeps one meaning per id.
-    await ctx.db.insert("retiredIds", { ...at, cardId: item.id });
+    await reserveRetiredId(ctx, at, item.id);
     for (const kind of ["spec", "plan"] as const) {
       const row = await docRow(ctx, at, item.id, kind);
       if (row) {

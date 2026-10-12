@@ -20,6 +20,7 @@ import { addStored, chargeImport, sizeOf } from "./limits";
 import { seedCardChanges } from "./cardChanges";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
+import { reserveRetiredId } from "./retired";
 
 /** Delay before an old generation's clean-up (and file carry-over) starts after a commit. */
 const CLEANUP_DELAY_MS = 5_000;
@@ -138,13 +139,13 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
   const generation = await nextGeneration(ctx);
   const at = { boardId, generation };
   // Take Online counts towards the account's daily import limit and the board's size limit.
-  await chargeImport(ctx, connection.userId, sizeOf(input.roadmap));
+  await chargeImport(ctx, connection.userId, sizeOf(input.roadmap) + sizeOf(input.retiredIds ?? []) + sizeOf(input.retention ?? null));
   const packedRoadmap = packJson(roadmap);
   await ctx.db.insert("boardState", { ...at, roadmap: packedRoadmap });
   await addStored(ctx, at, sizeOf(packedRoadmap));
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
   for (const cardId of new Set(input.retiredIds ?? [])) {
-    if (typeof cardId === "string" && !live.has(cardId)) await ctx.db.insert("retiredIds", { ...at, cardId });
+    if (!live.has(cardId)) await reserveRetiredId(ctx, at, cardId);
   }
   await ctx.db.insert("transfers", {
     transferId: input.transferId, userId: connection.userId, boardId, generation, state: "open",
@@ -202,7 +203,7 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
     for (const item of historical.roadmapItems) {
       if (!live.has(item.id) && !retired.has(item.id)) {
         retired.add(item.id);
-        await ctx.db.insert("retiredIds", { ...at, cardId: item.id });
+        await reserveRetiredId(ctx, at, item.id);
       }
     }
     maxVersion = Math.max(maxVersion, number);

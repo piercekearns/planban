@@ -709,6 +709,23 @@ test("rejects untrusted request authority before reads, pages or matching-origin
   } finally { await server.close(); }
 });
 
+test("online invite relay rejects malformed supplied roles instead of turning them into viewer", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  try {
+    for (const role of [null, "owner", "EDITOR", 1, [], {}]) {
+      const response = await fetch(`${server.url}/api/boards/${repoId}/online/invites`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }),
+      });
+      assert.equal(response.status, 422);
+      assert.match((await response.json()).error, /role must be viewer or editor/);
+    }
+    const omitted = await fetch(`${server.url}/api/boards/${repoId}/online/invites`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(omitted.status, 422);
+    assert.match((await omitted.json()).error, /Take this board online/, "omission retains the viewer default before the board boundary");
+  } finally { await server.close(); }
+});
+
 test("rejects cross-origin browser-shaped API mutations", async () => {
   await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
   await createCard({ cwd, title: "Alpha", status: "pending" });

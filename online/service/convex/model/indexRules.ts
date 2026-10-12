@@ -54,6 +54,8 @@ export function checkImportedExtras(input: { retiredIds?: unknown; retention?: u
     if (!valid) fail("validation", "History settings must be numbers only.");
   }
   asServiceError(() => {
+    if (input.retiredIds !== undefined) checkIndexValue(input.retiredIds, "retired card ids", MAX_DETAILS_BYTES);
+    if (input.retention !== undefined) checkIndexValue(input.retention, "history settings", MAX_DETAILS_BYTES);
     for (const version of input.history ?? []) checkIndexValue(version?.entry, "a history entry", MAX_DETAILS_BYTES);
   });
 }

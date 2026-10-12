@@ -9,7 +9,7 @@ import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
 import { sizeOf } from "./model/limits";
 
-const TABLES = ["boardState", "docs", "history", "historyPayloads", "historyDocs"] as const;
+const TABLES = ["boardState", "docs", "history", "historyPayloads", "historyDocs", "retiredIds"] as const;
 const BATCH = 100;
 
 export const backfillAll = internalMutation({
@@ -43,13 +43,14 @@ export const backfillBoard = internalMutation({
       else await ctx.db.insert("boardSizes", { boardId, generation, bytes: total, epoch: 1 });
       return;
     }
-    const index = name === "boardState" ? "by_board_generation" : name === "docs" ? "by_board_card_kind" : "by_board_version";
+    const index = name === "boardState" ? "by_board_generation" : name === "docs" ? "by_board_card_kind" : name === "retiredIds" ? "by_board_card" : "by_board_version";
     const page = await (ctx.db.query(name) as any).withIndex(index, (q: any) => q.eq("boardId", boardId).eq("generation", generation)).paginate({ numItems: BATCH, cursor });
     let added = 0;
     for (const row of page.page as Array<Record<string, unknown>>) {
       if (name === "boardState") added += sizeOf(row.roadmap);
       else if (name === "docs" || name === "historyDocs") added += sizeOf(row.markdown);
       else if (name === "history") added += sizeOf(row.entry);
+      else if (name === "retiredIds") added += sizeOf(row.cardId);
       else added += sizeOf(row.snapshot ?? row.delta ?? new Uint8Array());
     }
     await ctx.scheduler.runAfter(0, internal.limits.backfillBoard, page.isDone

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { backfillBoard } from "../online/service/convex/limits";
-import { addStored } from "../online/service/convex/model/limits";
+import { addStored, sizeOf } from "../online/service/convex/model/limits";
 
 test("size backfill restarts after an interleaved write instead of losing its bytes", async () => {
   const at = { boardId: "test-board", generation: 1 };
-  let size = { _id: "size", ...at, bytes: 10, epoch: 1 };
+  const retiredBytes = sizeOf("retired-card");
+  let size = { _id: "size", ...at, bytes: 10 + retiredBytes, epoch: 1 };
   let markdown = "0123456789";
   const scheduled: any[] = [];
   const ctx: any = {
@@ -15,7 +16,7 @@ test("size backfill restarts after an interleaved write instead of losing its by
           withIndex() { return this; },
           async unique() { return { ...size }; },
           async paginate() {
-            return { page: table === "docs" ? [{ markdown }] : [], isDone: true, continueCursor: "" };
+            return { page: table === "docs" ? [{ markdown }] : table === "retiredIds" ? [{ cardId: "retired-card" }] : [], isDone: true, continueCursor: "" };
           },
         };
       },
@@ -30,17 +31,17 @@ test("size backfill restarts after an interleaved write instead of losing its by
   assert.equal(measured.total, 10);
   markdown += "x".repeat(100);
   await addStored(ctx, at, 100);
-  assert.equal(size.bytes, 110);
+  assert.equal(size.bytes, 110 + retiredBytes);
   assert.equal(size.epoch, 2);
   await run(ctx, measured);
-  assert.equal(size.bytes, 110, "the old measurement cannot replace the new total");
+  assert.equal(size.bytes, 110 + retiredBytes, "the old measurement cannot replace the new total");
   assert.equal(scheduled[0].table, 0, "measurement restarts from the first table");
   assert.equal(scheduled[0].epoch, null);
   while (scheduled.length) await run(ctx, scheduled.shift());
-  assert.equal(size.bytes, 110, "the restarted measurement includes the concurrent write");
+  assert.equal(size.bytes, 110 + retiredBytes, "the restarted measurement includes the concurrent write and retired ids");
   assert.equal(size.epoch, 3);
   // Even the final batch must validate its epoch before installing a total.
   await run(ctx, { ...at, table: 5, cursor: null, total: 10, epoch: 1 });
-  assert.equal(size.bytes, 110);
+  assert.equal(size.bytes, 110 + retiredBytes);
   assert.equal(scheduled[0].table, 0);
 });

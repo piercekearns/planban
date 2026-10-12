@@ -32,6 +32,7 @@ import type * as model_indexRules from "../model/indexRules.js";
 import type * as model_limits from "../model/limits.js";
 import type * as model_liveToken from "../model/liveToken.js";
 import type * as model_mcp from "../model/mcp.js";
+import type * as model_retired from "../model/retired.js";
 import type * as model_rows from "../model/rows.js";
 import type * as model_sha256 from "../model/sha256.js";
 import type * as model_transfer from "../model/transfer.js";
@@ -70,6 +71,7 @@ declare const fullApi: ApiFromModules<{
   "model/limits": typeof model_limits;
   "model/liveToken": typeof model_liveToken;
   "model/mcp": typeof model_mcp;
+  "model/retired": typeof model_retired;
   "model/rows": typeof model_rows;
   "model/sha256": typeof model_sha256;
   "model/transfer": typeof model_transfer;

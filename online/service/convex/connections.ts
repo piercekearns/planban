@@ -214,7 +214,7 @@ export const setAccess = internalMutation({
   },
 });
 
-/** From the person's own sign-in: let a revoked AI app connect again. */
+/** Revocation is permanent for this connection; reconnect enrolls a new one. */
 export const restore = internalMutation({
   args: { connectionId: v.id("connections"), targetId: v.string() },
   handler: async (ctx, { connectionId, targetId }) => {
@@ -223,7 +223,6 @@ export const restore = internalMutation({
     const id = ctx.db.normalizeId("connections", targetId);
     const target = id ? await ctx.db.get(id) : null;
     if (!target || target.userId !== connection.userId || target.kind !== "oauth") fail("not_found", "Connection not found.");
-    await ctx.db.patch(target!._id, { revokedAt: undefined, lastUsedAt: new Date().toISOString() });
-    return describe((await ctx.db.get(target!._id))!, connectionId);
+    fail("validation", "A connection cannot be restored. Reconnect through a new explicit authorization; old credentials stay revoked.");
   },
 });

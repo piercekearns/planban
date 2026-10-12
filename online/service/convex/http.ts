@@ -10,6 +10,7 @@ import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
+import { requestedMemberRole } from "../../../src/core/memberRoles";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -51,7 +52,7 @@ const unauthorized = () => json(
   { "WWW-Authenticate": 'Bearer realm="planban"' },
 );
 
-async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated): Promise<Response> {
+export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated): Promise<Response> {
   const url = new URL(request.url);
   const parts = url.pathname.replace(/^\/api\/v1\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   const method = request.method;
@@ -167,20 +168,22 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
   if (rest[0] === "invites" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.invites.list, { connectionId, boardId }));
   if (rest[0] === "invites" && rest.length === 1 && method === "POST") {
     const input = await body(request);
-    const role = input.role === "editor" ? "editor" as const : "viewer" as const;
+    const role = requestedMemberRole(input.role, "viewer");
+    if (!role) return json({ error: { code: "validation", message: "role must be viewer or editor." } }, 400);
     const token = randomSecret("pbi_");
     const created = await ctx.runMutation(internal.invites.create, {
       connectionId, boardId, tokenHash: await sha256Hex(token), role, ...(typeof input.email === "string" && input.email.trim() ? { email: input.email } : {}),
     });
     const link = `${publicOrigin()}/invite/${token}`;
-    const emailSent = created.email ? await sendInviteEmail(created.email, created.boardTitle, role, link) : false;
+    const emailSent = created.email ? await sendInviteEmail(created.email, role, link) : false;
     // The link is shown once; only its hash is stored.
     return json({ invite: created, link, emailSent }, 201);
   }
   if (rest[0] === "invites" && rest.length === 3 && rest[2] === "revoke" && method === "POST") return json(await ctx.runMutation(internal.invites.revoke, { connectionId, boardId, inviteId: rest[1]! }));
   if (rest[0] === "members" && rest.length === 3 && method === "POST" && (rest[2] === "role" || rest[2] === "remove")) {
     const input = await body(request);
-    const role = input.role === "editor" || input.role === "viewer" ? input.role : undefined;
+    const role = requestedMemberRole(input.role);
+    if (rest[2] === "role" && !role) return json({ error: { code: "validation", message: "role must be viewer or editor." } }, 400);
     return json({ members: await ctx.runMutation(internal.members.update, { connectionId, boardId, userId: decodeURIComponent(rest[1]!), ...(rest[2] === "remove" ? { remove: true } : role ? { role } : {}) }) });
   }
   if (rest[0] === "people" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.people.forBoard, { connectionId, boardId }));
@@ -193,7 +196,8 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
   if (rest[0] === "members" && method === "GET") return json({ members: await ctx.runQuery(internal.members.list, { connectionId, boardId }) });
   if (rest[0] === "members" && method === "POST") {
     const input = await body(request);
-    const role = input.role === "viewer" ? "viewer" : "editor";
+    const role = requestedMemberRole(input.role, "editor");
+    if (!role) return json({ error: { code: "validation", message: "role must be viewer or editor." } }, 400);
     return json({ members: await ctx.runMutation(internal.members.add, { connectionId, boardId, userId: String(input.userId ?? ""), role }) });
   }
   if (rest[0] === "take-local" && rest[1] === "fence" && method === "POST") {
@@ -342,7 +346,7 @@ function inviteToken(input: string) {
  * Sends an email invite through Resend when the service is set up for it
  * (RESEND_API_KEY and PLANBAN_INVITE_FROM); otherwise the owner shares the link.
  */
-async function sendInviteEmail(to: string, boardTitle: string, role: string, link: string) {
+export async function sendInviteEmail(to: string, role: string, link: string) {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.PLANBAN_INVITE_FROM;
   if (!key || !from) return false;
@@ -350,8 +354,8 @@ async function sendInviteEmail(to: string, boardTitle: string, role: string, lin
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      from, to: [to], subject: `You're invited to ${boardTitle} on Planban`,
-      text: `You've been invited to the Planban board "${boardTitle}" as ${role === "editor" ? "an editor" : "a viewer"}.\n\nOpen this link to join (it works for 7 days):\n${link}\n\nYou'll sign in with your own account.`,
+      from, to: [to], subject: "You're invited to a board on Planban",
+      text: `You've been invited to a Planban board as ${role === "editor" ? "an editor" : "a viewer"}.\n\nOpen this link to join (it works for 7 days):\n${link}\n\nYou'll sign in with your own account.`,
     }),
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null);

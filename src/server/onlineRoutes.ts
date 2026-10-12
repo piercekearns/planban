@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import type express from "express";
 import { PlanbanValidationError } from "../core/boardOperations";
+import { requestedMemberRole } from "../core/memberRoles";
 import { readManifest, resolvePlanningRoot } from "../core/storage";
 import { boardPath, onlineRequest } from "../core/online/client";
 import { readCredentials, serviceUrl } from "../core/online/credentials";
@@ -166,9 +167,11 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     return onlineRequest(url, boardPath(boardId, "/invites"));
   }));
   app.post("/api/boards/:repoId/online/invites", relay(async (req) => {
+    const role = requestedMemberRole(req.body?.role, "viewer");
+    if (!role) throw new PlanbanValidationError("role must be viewer or editor.");
     const { url, boardId } = await forOnlineBoard(String(req.params.repoId));
     return onlineRequest(url, boardPath(boardId, "/invites"), {
-      role: req.body?.role === "editor" ? "editor" : "viewer",
+      role,
       ...(typeof req.body?.email === "string" && req.body.email.trim() ? { email: req.body.email } : {}),
     });
   }));
