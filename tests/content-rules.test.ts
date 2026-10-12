@@ -5,8 +5,13 @@ import { checkIndexCard, checkIndexDocument, embeddedFileIn, MAX_DOCUMENT_BYTES 
 const pngBase64 = Buffer.alloc(3000, 7).toString("base64");
 
 test("Online Boards refuse embedded files in any form, and say how to refer to them instead", () => {
-  assert.match(embeddedFileIn(`![shot](data:image/png;base64,${pngBase64.slice(0, 40)})`)!, /data: address/);
-  assert.match(embeddedFileIn(`<img src="data:image/jpeg;base64,AAAA">`)!, /data: address/);
+  assert.match(embeddedFileIn(`![shot](data:image/png;base64,${pngBase64.slice(0, 400)})`)!, /data: address/);
+  assert.match(embeddedFileIn(`<img src="data:image/jpeg;base64,${pngBase64.slice(0, 400)}">`)!, /data: address/);
+  // Forms that slip past a simple pattern: no type, not base64, or base64 wrapped over lines.
+  assert.match(embeddedFileIn(`data:;base64,${pngBase64.slice(0, 400)}`)!, /data: address/);
+  assert.match(embeddedFileIn(`data:text/plain,${"hello%20file%0A".repeat(40)}`)!, /data: address/);
+  assert.match(embeddedFileIn(pngBase64.match(/.{1,76}/g)!.join("\n"))!, /lines of base64/);
+  assert.match(embeddedFileIn(`> ${pngBase64.match(/.{1,64}/g)!.join("\n> ")}`)!, /lines of base64/);
   assert.match(embeddedFileIn(pngBase64)!, /base64/);
   assert.match(embeddedFileIn("PK\u0003\u0004 zipped")!, /binary/);
   assert.throws(() => checkIndexDocument(`Renders:\n\n![front](data:image/png;base64,${pngBase64})`, "alpha", "spec"),
@@ -20,6 +25,8 @@ test("ordinary planning text is never mistaken for a file", () => {
     "| a | b |\n|---|---|\n| 1 | 2 |\n\tindented code\r\n",
     `Commit ${"a3f9".repeat(10)}; hash sha256-${"Zm9v".repeat(40)}`,
     "```ts\nconst x = `data:${type};base64,` + body; // code that mentions data URIs is fine\n```",
+    "Reject input such as `data:image/png;base64,AAAA` in the upload validator.",
+    "Short examples like data:text/plain,hello%20file are prose, not files.",
   ].join("\n\n");
   assert.equal(embeddedFileIn(prose), null);
   checkIndexDocument(prose, "alpha", "plan");
@@ -31,4 +38,19 @@ test("documents and cards have size limits above any real board's", () => {
   assert.throws(() => checkIndexDocument("word ".repeat(MAX_DOCUMENT_BYTES / 4), "alpha", "plan"), /limit is 1024 KB.*link to it/s);
   checkIndexCard({ id: "alpha", summary: "y ".repeat(30 * 1024) });
   assert.throws(() => checkIndexCard({ id: "alpha", summary: "y ".repeat(70 * 1024) }), /card alpha is .* KB; the limit is 128 KB/);
+});
+
+test("numbers standing in for bytes, and oversized details, are refused wherever they hide", async () => {
+  const { checkIndexValue } = await import("../src/core/contentRules");
+  assert.throws(() => checkIndexCard({ id: "alpha", metadata: { logo: Array.from({ length: 4000 }, (_, i) => i % 256) } }), /long list of numbers/);
+  checkIndexCard({ id: "alpha", metadata: { scores: [1, 2, 3] } });
+  assert.throws(() => checkIndexValue({ summary: `data:image/png;base64,${pngBase64}` }, "a history entry", 64 * 1024), /a history entry contains an embedded file/);
+});
+
+test("history keeps its text when the files embedded in it are taken out", async () => {
+  const { withoutEmbeddedFiles } = await import("../src/core/contentRules");
+  const wrapped = pngBase64.match(/.{1,76}/g)!.join("\n");
+  const cleaned = withoutEmbeddedFiles(`Before\n![x](data:image/png;base64,${pngBase64})\n${wrapped}\nAfter, see \`data:image/png;base64,AAAA\``, "[kept on the Mac]");
+  assert.equal(embeddedFileIn(cleaned), null);
+  assert.match(cleaned, /^Before\n!\[x\]\(\[kept on the Mac\]\)\n\[kept on the Mac\]\nAfter, see `data:image\/png;base64,AAAA`$/);
 });

@@ -15,7 +15,7 @@ import type { MutationCtx } from "../_generated/server";
 import { BOARD_ID_PATTERN } from "./access";
 import { packJson, packText } from "./codec";
 import { asServiceError, fail } from "./errors";
-import { checkCards, checkDocuments } from "./indexRules";
+import { checkCards, checkDocuments, checkImportedExtras } from "./indexRules";
 import { seedCardChanges } from "./cardChanges";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
@@ -104,6 +104,7 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
     assertCommittable(roadmap);
     // Planban is an index, not storage (owner decision 18): the board arrives as text only.
     checkCards(roadmap);
+    checkImportedExtras({ retiredIds: input.retiredIds, retention: input.retention });
   } catch (error) {
     throw asServiceError(error);
   }
@@ -159,6 +160,7 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
   const roadmap = await currentRoadmap(ctx, at);
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
   let stamp = Date.now();
+  checkImportedExtras({ history: input.history ?? [] });
   checkDocuments((input.docs ?? []).filter((doc) => typeof doc?.markdown === "string"));
   checkDocuments((input.historyDocs ?? []).filter((doc) => typeof doc?.markdown === "string"));
   for (const doc of input.docs ?? []) {

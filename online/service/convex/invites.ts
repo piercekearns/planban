@@ -81,18 +81,24 @@ export const preview = internalQuery({
  * anyone until it expires; an email invite only for the account with that
  * email. Someone already on the board keeps their role.
  */
+/** The email an invite is for, if any, so its acceptance can be checked against the account first. */
+export const emailOf = internalQuery({
+  args: { tokenHash: v.string() },
+  handler: async (ctx, { tokenHash }) => (await ctx.db.query("invites").withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash)).unique())?.email ?? null,
+});
+
 export const accept = internalMutation({
-  args: { connectionId: v.id("connections"), tokenHash: v.string() },
-  handler: async (ctx, { connectionId, tokenHash }) => {
+  args: { connectionId: v.id("connections"), tokenHash: v.string(), verifiedEmails: v.optional(v.array(v.string())) },
+  handler: async (ctx, { connectionId, tokenHash, verifiedEmails }) => {
     const connection = await liveConnection(ctx, connectionId);
     if (!connection.canAdminister) fail("forbidden", "Join a board from your own sign-in, not from an agent or key.");
     const invite = await ctx.db.query("invites").withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash)).unique();
     if (!invite || !usable(invite)) fail("not_found", "This invite has expired or was cancelled. Ask the board owner for a new one.");
     const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", invite!.boardId)).unique();
     if (!board || board.authority !== "online" || board.localTransfer) fail("conflict", "This board is not online at the moment. Ask the board owner.");
-    if (invite!.email) {
-      const profile = await ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", connection.userId)).unique();
-      if (profile?.email?.toLowerCase() !== invite!.email) fail("forbidden", `This invite is for ${invite!.email}. Sign in with that email address to join.`);
+    // An email invite needs the account's current, verified addresses, read from Clerk just now.
+    if (invite!.email && !(verifiedEmails ?? []).map((email) => email.toLowerCase()).includes(invite!.email)) {
+      fail("forbidden", `This invite is for ${invite!.email}. Sign in with an account whose verified email is that address to join.`);
     }
     const existing = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", board!.boardId).eq("userId", connection.userId)).unique();
     if (!existing) await ctx.db.insert("members", { boardId: board!.boardId, userId: connection.userId, role: invite!.role });

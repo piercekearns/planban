@@ -122,7 +122,10 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
   }
   if (parts[0] === "invites" && parts[1] === "accept" && parts.length === 2 && method === "POST") {
     const input = await body(request);
-    return json(await ctx.runMutation(internal.invites.accept, { connectionId, tokenHash: await sha256Hex(inviteToken(String(input.token ?? ""))) }));
+    const tokenHash = await sha256Hex(inviteToken(String(input.token ?? "")));
+    const forEmail = await ctx.runQuery(internal.invites.emailOf, { tokenHash });
+    const verifiedEmails = forEmail ? await verifiedEmailsOf((await ctx.runQuery(internal.boards.me, { connectionId })).userId) : undefined;
+    return json(await ctx.runMutation(internal.invites.accept, { connectionId, tokenHash, ...(verifiedEmails ? { verifiedEmails } : {}) }));
   }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
@@ -352,6 +355,16 @@ async function sendInviteEmail(to: string, boardTitle: string, role: string, lin
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null);
   return !!response?.ok;
+}
+
+/** A person's verified email addresses, from Clerk now; none if Clerk cannot say (so an email invite is refused). */
+async function verifiedEmailsOf(userId: string): Promise<string[]> {
+  const secret = process.env.CLERK_SECRET_KEY;
+  if (!secret || !/^user_[A-Za-z0-9]+$/.test(userId)) return [];
+  const response = await fetch(`https://api.clerk.com/v1/users/${userId}`, { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(5000) }).catch(() => null);
+  if (!response?.ok) return [];
+  const user = await response.json() as { email_addresses?: Array<{ email_address: string; verification?: { status?: string } | null }> };
+  return (user.email_addresses ?? []).filter((address) => address.verification?.status === "verified").map((address) => address.email_address);
 }
 
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);

@@ -66,4 +66,36 @@ assert.equal(smuggled.status, 400);
 assert.match(smuggled.json.error.message, /embedded file/);
 assert.equal((await api(token, "GET", `/api/v1/boards/${boardId}-b`)).status, 404, "nothing of the refused board remains");
 ok("taking a board online refuses embedded files too, and leaves nothing behind");
+// Every field a board brings with it is checked, in a single import and in parts.
+const wrapped = Buffer.alloc(3000, 5).toString("base64").match(/.{1,76}/g)!.join("\n");
+const fresh = (suffix: string) => planCreateCard(createEmptyRoadmap({ repoId: `${boardId}-${suffix}`, title: "Import", now }), { title: "Card" }, { now }).roadmap;
+const viaImport = async (suffix: string, change: (bundle: any) => void) => {
+  const bundle: any = { format: "planban-board-bundle", version: 1, roadmap: fresh(suffix), docs: [], history: [] };
+  change(bundle);
+  return api(token, "POST", "/api/v1/boards/import", bundle);
+};
+const smuggling: Array<[string, (bundle: any) => void]> = [
+  ["the board's details", (bundle) => { bundle.roadmap.project.description = picture; }],
+  ["a card's metadata as numbers", (bundle) => { bundle.roadmap.roadmapItems[0].metadata = { logo: Array.from({ length: 4000 }, (_, i) => i % 256) }; }],
+  ["a document wrapped over lines", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "plan", markdown: `# Plan\n\n${wrapped}\n` }]; }],
+  ["a history entry", (bundle) => { bundle.history = [{ entry: { version: 1, roadmapRevision: 1, createdAt: now, actor: "user", operation: "card.create", summary: picture, affectedCards: [], affectedDocs: [] }, roadmap: bundle.roadmap }]; }],
+  ["retired card ids", (bundle) => { bundle.retiredIds = [picture]; }],
+  ["history settings", (bundle) => { bundle.retention = { boardVersions: 100, note: picture }; }],
+];
+for (const [what, change] of smuggling) {
+  const refused = await viaImport(what.replace(/\W+/g, "-").slice(0, 20).toLowerCase(), change);
+  assert.equal(refused.status, 400, `${what}: ${JSON.stringify(refused.json)}`);
+}
+const parted = fresh("parted");
+const transferId = `index-parts-${Date.now()}`;
+assert.equal((await api(token, "POST", "/api/v1/transfers", { transferId, roadmap: parted })).status, 200);
+const part = await api(token, "POST", `/api/v1/transfers/${transferId}/parts`, { seq: 0, history: [{ entry: { version: 1, roadmapRevision: 1, createdAt: now, actor: "user", operation: "card.create", summary: picture, affectedCards: [], affectedDocs: [] }, roadmap: parted }] });
+assert.equal(part.status, 400, JSON.stringify(part.json));
+ok("every field a board brings with it is checked: details, metadata, wrapped documents, history entries, ids and settings, in one import or in parts");
+
+const viaMcpWrapped = await mcp("tools/call", { name: "planban_update_card", arguments: { boardId, cardId, summary: `data:;base64,${Buffer.alloc(600, 3).toString("base64")}`, baseRevision: await revision() } });
+assert.equal(viaMcpWrapped.result.isError, true);
+const example = await api(token, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId, summary: "Reject input such as `data:image/png;base64,AAAA` in the upload validator.", baseRevision: await revision() });
+assert.equal(example.status, 200, "a short example in prose is fine");
+ok("a data: address with no type is refused through MCP; a short example in prose is accepted");
 console.log(`All ${step} checks passed.`);

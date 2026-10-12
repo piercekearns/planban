@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { embeddedFileIn, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "../contentRules";
+import { embeddedFileIn, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES, withoutEmbeddedFiles } from "../contentRules";
 import type { BoardBundle } from "./transfers";
 
 /** One local file the online copy will refer to instead of holding. */
@@ -191,10 +191,7 @@ export async function convertForOnline(bundle: BoardBundle, planningRoot: string
   // History keeps its meaning, with pictures as references too. History
   // cannot be edited, so anything else embedded in an old version is replaced
   // by a note in the online copy; the copy on this machine keeps it all.
-  const scrub = (text: string) => embeddedFileIn(text) ? text
-    .replace(/data:[a-z]+\/[a-z0-9.+-]+(?:;[a-z0-9-]+=[^;,]*)*;base64,[A-Za-z0-9+/=\s]*/gi, `[embedded file, kept in the copy on ${machine}]`)
-    .replace(/[A-Za-z0-9+/]{2048,}={0,2}|[A-Za-z0-9_-]{4096,}/g, `[encoded file, kept in the copy on ${machine}]`)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "") : text;
+  const scrub = (text: string) => withoutEmbeddedFiles(text, `[embedded file, kept in the copy on ${machine}]`);
   const historyDocs = (bundle.historyDocs ?? []).map((doc) => ({ ...doc, markdown: scrub(convertDocument(doc.markdown, folderOf(doc.cardId), policy, () => undefined)) }));
   const scrubCard = <T,>(item: T): T => JSON.parse(JSON.stringify(item), (_key, value) => typeof value === "string" ? scrub(value) : value);
   const history: BoardBundle["history"] = bundle.history.map((version) => ({ ...version, roadmap: scrubCard(version.roadmap) }));
