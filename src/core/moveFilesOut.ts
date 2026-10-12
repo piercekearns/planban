@@ -123,7 +123,7 @@ async function unmovable(folder: string, files: string[]) {
 }
 
 /** Moves one file without ever replacing an existing one. */
-async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string }) {
+async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string; moving: Set<string> }) {
   const source = join(input.folder, input.file);
   const target = join(input.destination, input.file);
   await mkdir(dirname(target), { recursive: true });
@@ -139,9 +139,10 @@ async function moveOne(input: { folder: string; file: string; destination: strin
   const info = await lstat(source);
   if (info.isSymbolicLink()) {
     const pointsAt = await readlink(source);
-    // A relative link keeps working if it points at something moving with it; otherwise it is made absolute.
+    // A relative link keeps working if it points at something moving with it; otherwise (the Spec or Plan,
+    // which stay, or anything outside the card folder) it is made absolute.
     const resolved = resolve(dirname(source), pointsAt);
-    await symlink(isAbsolute(pointsAt) || inside(input.folder, resolved) ? pointsAt : resolved, target);
+    await symlink(isAbsolute(pointsAt) || input.moving.has(resolved) ? pointsAt : resolved, target);
   } else if (info.isFile()) {
     try {
       // A hard link fails if the target exists, so nothing is ever replaced.
@@ -228,11 +229,16 @@ export async function moveFilesOut(input: {
     // Refuse before moving anything if the Spec could not take the new section.
     checkIndexDocument(withSection(files), item.id, "spec");
 
+    // Everything that moves, and the folders holding it, so relative links between them can stay relative.
+    const moving = new Set<string>();
+    for (const file of files) {
+      for (let path = join(folder, file.replace(/\/$/u, "")); path !== folder && inside(folder, path); path = dirname(path)) moving.add(path);
+    }
     const moved: string[] = [];
     let failure: unknown = null;
     for (const file of files) {
       try {
-        await moveOne({ folder, file, destination, realDestination });
+        await moveOne({ folder, file, destination, realDestination, moving });
         moved.push(file);
       } catch (error) {
         failure = error;
@@ -240,7 +246,7 @@ export async function moveFilesOut(input: {
       }
     }
     await removeEmptyFolders(folder);
-    let recorded = true;
+    let recordingError: unknown = null;
     if (moved.length) {
       try {
         await writeDoc({
@@ -259,16 +265,19 @@ export async function moveFilesOut(input: {
         recordingMovedFiles: true,
         });
       } catch (error) {
-        if (!failure) throw error;
-        recorded = false;
+        recordingError = error;
       }
     }
+    const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
+    // If the Spec could not be updated, the references must not be lost: hand back the exact section to add.
+    const unrecorded = recordingError
+      ? ` The Files section could not be added to the card's Spec (${messageOf(recordingError)}), so add it yourself, for example with planban write-doc:\n\n${filesSection({ spec: spec.markdown, files: moved, destination, machine, now })}`
+      : "";
     if (failure) {
-      const reason = failure instanceof Error ? failure.message : String(failure);
-      const where = recorded
-        ? "the Spec lists the files that moved"
-        : `these moved and are not yet listed in the Spec: ${moved.map((file) => friendlyPath(join(destination, file))).join(", ")}`;
-      throw new Error(`Moved ${moved.length} of ${files.length} files, then stopped: ${reason}. Nothing was deleted, and ${where}. Fix the problem and run the command again to move the rest.`);
+      throw new Error(`Moved ${moved.length} of ${files.length} files, then stopped: ${messageOf(failure)}. Nothing was deleted${recordingError ? "." : ", and the Spec lists the files that moved."} Fix the problem and run the command again to move the rest.${unrecorded}`);
+    }
+    if (recordingError) {
+      throw new Error(`Moved ${moved.length === 1 ? "the file" : `all ${moved.length} files`} to ${friendlyPath(destination)}, and nothing was deleted.${unrecorded}`);
     }
     return { ...result, specSection: filesSection({ spec: spec.markdown, files: moved, destination, machine, now }) };
   });

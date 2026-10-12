@@ -412,3 +412,36 @@ test("when a move stops partway, the files that moved are still recorded in the 
     await updateCard({ cwd, cardId: "alpha", summary: "Changed" });
   });
 });
+
+test("move-files-out points moved links at the Spec and Plan that stay, and hands back references it could not record", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  await withBoard(async ({ root, cwd, planningRoot, folder }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next", planMarkdown: "# Plan\n" });
+    symlinkSync("spec.md", join(folder("alpha"), "spec-link"));
+    symlinkSync("plan.md", join(folder("alpha"), "plan-link"));
+    const kept = join(root, "kept-links");
+    await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
+    assert.equal(readlinkSync(join(kept, "spec-link")), join(folder("alpha"), "spec.md"));
+    assert.equal(readlinkSync(join(kept, "plan-link")), join(folder("alpha"), "plan.md"));
+    assert.equal(readFileSync(join(kept, "plan-link"), "utf8"), "# Plan\n");
+
+    // A Spec kept in a folder Planban cannot write to: every file moves, and the error carries the references.
+    await createCard({ cwd, title: "Beta", status: "up-next" });
+    const roadmapFile = join(planningRoot, "roadmap.json");
+    const roadmap = JSON.parse(readFileSync(roadmapFile, "utf8"));
+    roadmap.roadmapItems.find((item: { id: string }) => item.id === "beta").specDoc = "locked/beta-spec.md";
+    writeFileSync(roadmapFile, JSON.stringify(roadmap));
+    mkdirSync(join(planningRoot, "locked"));
+    writeFileSync(join(planningRoot, "locked", "beta-spec.md"), "# Beta Spec\n");
+    writeFileSync(join(folder("beta"), "shot.png"), "png");
+    chmodSync(join(planningRoot, "locked"), 0o500);
+    try {
+      await assert.rejects(
+        moveFilesOut({ cwd, cardId: "beta", to: join(root, "kept-beta"), machine: "Test Mac" }),
+        /^Error: Moved the file to .*kept-beta, and nothing was deleted\. The Files section could not be added to the card's Spec \(.*\), so add it yourself, for example with planban write-doc:\n\n## Files\n\n.*- On Test Mac: .*kept-beta[\\/]shot\.png\n$/su,
+      );
+    } finally {
+      chmodSync(join(planningRoot, "locked"), 0o700);
+    }
+    assert.equal(readFileSync(join(root, "kept-beta", "shot.png"), "utf8"), "png");
+  });
+});
