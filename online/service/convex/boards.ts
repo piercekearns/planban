@@ -329,8 +329,8 @@ function requireLocalTransfer(board: Doc<"boards">, transferId: string | undefin
  * board someone else has since taken online again.
  */
 export const fence = internalMutation({
-  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string(), expectedGeneration: v.optional(v.number()) },
-  handler: async (ctx, { connectionId, boardId, transferId, expectedGeneration }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string(), expectedGeneration: v.optional(v.number()), acknowledgedOthers: v.optional(v.array(v.string())) },
+  handler: async (ctx, { connectionId, boardId, transferId, expectedGeneration, acknowledgedOthers }) => {
     const access = await readableBoard(ctx, connectionId, boardId);
     if (!access.canAdminister) fail("forbidden", "Moving a board between Online and Local Mode is kept for the board owner's own connection.");
     const board = access.board;
@@ -350,6 +350,14 @@ export const fence = internalMutation({
     if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
     if (board.authority !== "online") fail("conflict", "This board is already being taken local, or is local already.");
     if (board.carryFrom !== undefined) fail("conflict", "This board is still moving its files after being taken online. Try Take Local again in a minute.");
+    // Owner decision 15: everyone else loses access, so the person must have
+    // confirmed exactly who that is. Checked here, in the same step.
+    const members = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect();
+    const others = members.filter((member) => member.userId !== access.connection.userId);
+    const acknowledged = new Set(acknowledgedOthers ?? []);
+    if (acknowledged.size !== others.length || others.some((member) => !acknowledged.has(member.userId))) {
+      fail("conflict", "The people on this board changed since you confirmed. Confirm again who loses access.");
+    }
     const now = new Date().toISOString();
     const previous = await currentRoadmap(ctx, live(board));
     const committed = committedRoadmap(previous, now);
@@ -367,8 +375,7 @@ export const fence = internalMutation({
     // Owner decision 15: everyone else, and their agents, lose access now.
     // The online copy stays, read-only, for the person taking it local.
     const removedPeople: string[] = [];
-    for (const member of await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect()) {
-      if (member.userId === access.connection.userId) continue;
+    for (const member of others) {
       removedPeople.push(member.userId);
       await ctx.db.delete(member._id);
     }

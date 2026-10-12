@@ -151,7 +151,7 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
         res.status(409).json({ error: "Taking this board back removes everyone else's access.", confirmationNeeded: { removes: others } });
         return;
       }
-      const job = startJob(repoId, "take-local", (entry) => takeLocal(cwd, { removeOthers, onProgress: (progress) => { entry.progress = progress; } }));
+      const job = startJob(repoId, "take-local", (entry) => takeLocal(cwd, { expectedOthers: others.map((person) => person.userId), onProgress: (progress) => { entry.progress = progress; } }));
       deps.changed(repoId);
       res.status(202).json(publicJob(job));
     } catch (error) {

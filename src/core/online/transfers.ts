@@ -72,6 +72,8 @@ const journalSchema = z.object({
   unsyncedLocalChanges: z.array(z.object({ version: z.number(), createdAt: z.string(), summary: z.string() })).optional(),
   phase: z.enum(["uploading", "committed", "fencing", "fenced", "staged", "published"]),
   startedAt: z.string(),
+  /** Take Online: the account that started the upload. Only it can see, finish or cancel that upload. */
+  userId: z.string().optional(),
 });
 type TransferJournal = z.infer<typeof journalSchema>;
 
@@ -262,18 +264,44 @@ export class PlanbanTakeOnlineStopped extends PlanbanValidationError {
   }
 }
 
+type CancelOutcome = "removed" | "committed" | "other-account" | "uncertain";
+
+/**
+ * Cancels an unfinished upload on the service. "removed" only when the
+ * service confirms the upload is gone (or never began) for the account that
+ * started it; anything less certain keeps the journal for a later attempt.
+ */
+async function cancelUpload(url: string, journal: TransferJournal): Promise<CancelOutcome> {
+  let me: { userId: string };
+  try {
+    me = await onlineRequest<{ userId: string }>(url, "/api/v1/me");
+  } catch {
+    return "uncertain";
+  }
+  if (journal.userId && journal.userId !== me.userId) return "other-account";
+  return onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {}).then(
+    () => "removed" as const,
+    (error) => error instanceof PlanbanConflictError ? "committed" as const
+      // Not found means gone only when the same account asks: another account's upload is invisible to it.
+      : error instanceof PlanbanNotFoundError && journal.userId ? "removed" as const
+      : "uncertain" as const,
+  );
+}
+
+const otherAccountMessage = (journal: TransferJournal) =>
+  `This board's move online was started while signed in to ${journal.url} as another account (${journal.userId}). Sign in as that account to finish or stop it; nothing has been changed.`;
+
 /**
  * After a failed upload: cancel it on the service, which removes the
  * half-copied online version, and forget it here, so the board stays on this
- * machine as it was. If the service cannot be told, the record is kept so the
+ * machine as it was. If that cannot be confirmed, the record is kept so the
  * next attempt (or stop-take-online) can finish the job.
  */
 async function abandonUpload(url: string, planningRoot: string, error: unknown): Promise<Error> {
   const journal = await readJournal(planningRoot);
   const reason = error instanceof Error ? error.message : String(error);
   if (!journal || journal.direction !== "online" || journal.phase !== "uploading") return error instanceof Error ? error : new Error(reason);
-  const outcome = await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {})
-    .then(() => "removed" as const, (abortError) => abortError instanceof PlanbanNotFoundError ? "removed" as const : abortError instanceof PlanbanConflictError ? "committed" as const : "unreachable" as const);
+  const outcome = await cancelUpload(url, journal);
   const stopped = error instanceof DOMException && error.name === "AbortError";
   if (outcome === "removed") {
     await rm(transferJournalPath(planningRoot), { force: true });
@@ -281,6 +309,7 @@ async function abandonUpload(url: string, planningRoot: string, error: unknown):
     return new PlanbanValidationError(`Taking the board online failed: ${reason}. The board is still on this machine, unchanged, and the partly copied online version was removed. Try again when ready.`);
   }
   if (outcome === "committed") return new PlanbanValidationError(`The board reached the online service before this error (${reason}). Run take-online again to finish switching this project to it.`);
+  if (outcome === "other-account") return new PlanbanValidationError(otherAccountMessage(journal));
   return new PlanbanValidationError(`Taking the board online failed: ${reason}. The board is still on this machine, unchanged. The partly copied online version could not be removed yet; run take-online again to resume, or planban online stop-take-online to cancel it.`);
 }
 
@@ -299,12 +328,10 @@ export async function stopTakeOnline(cwdInput: string) {
     const journal = await readJournal(planningRoot);
     if (!journal || journal.direction !== "online") return { stopped: false, message: "No Take Online is in progress for this board." };
     if (journal.phase !== "uploading") throw new PlanbanValidationError("This board already reached the online service. Run take-online again to finish switching to it.");
-    await onlineRequest(journal.url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {})
-      .catch((error) => {
-        if (error instanceof PlanbanNotFoundError) return;
-        if (error instanceof PlanbanConflictError) throw new PlanbanValidationError("This board already reached the online service. Run take-online again to finish switching to it.");
-        throw error;
-      });
+    const outcome = await cancelUpload(journal.url, journal);
+    if (outcome === "committed") throw new PlanbanValidationError("This board already reached the online service. Run take-online again to finish switching to it.");
+    if (outcome === "other-account") throw new PlanbanValidationError(otherAccountMessage(journal));
+    if (outcome === "uncertain") throw new PlanbanValidationError("Planban could not confirm with the online service that the partly copied board was removed. Nothing has changed; try again when online.");
     await rm(transferJournalPath(planningRoot), { force: true });
     return { stopped: true, message: "Take Online stopped. The board is on this machine, unchanged, and the partly copied online version was removed." };
   });
@@ -320,12 +347,15 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
     // upload the current board. If the service says that upload already
     // finished, the board is online: finish switching and report the
     // local changes since then.
-    const finished = await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {})
-      .then(() => false, (error) => error instanceof PlanbanConflictError);
-    if (!finished) journal = null;
+    // The journal is replaced only once the service confirms the old upload is gone.
+    const outcome = await cancelUpload(url, journal);
+    if (outcome === "removed") journal = null;
+    else if (outcome === "other-account") throw new PlanbanValidationError(otherAccountMessage(journal));
+    else if (outcome === "uncertain") throw new PlanbanValidationError("Planban could not reach the online service to replace an earlier unfinished upload of this board. Nothing has changed; try again when online.");
   }
   if (!journal) {
-    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString() };
+    const me = await onlineRequest<{ userId: string }>(url, "/api/v1/me");
+    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId };
     await writeJournal(planningRoot, journal);
   }
   crashPoint("take-online:after-journal");
@@ -478,6 +508,16 @@ export async function finishLocalTransfer(planningRoot: string) {
   await rm(transferJournalPath(planningRoot), { force: true });
 }
 
+const sameSet = (a: string[], b: string[]) => a.length === b.length && new Set(a).size === a.length && b.every((id) => a.includes(id));
+
+function confirmRemoving(others: Array<{ userId: string; role: string }>) {
+  return new PlanbanConfirmationNeeded(
+    `Taking this board back to this machine removes access for ${others.length} other person(s), and their agents: ${others.map((member) => `${member.userId} (${member.role})`).join(", ")}. `
+    + "The online copy is kept, read-only. Nothing has changed yet. Run again with --remove-others to go ahead.",
+    { removes: others },
+  );
+}
+
 /** Everyone on an Online Board except the caller: who would lose access if it were taken local. */
 export async function othersOnBoard(url: string, boardId: string) {
   const [{ members }, me] = await Promise.all([
@@ -495,7 +535,12 @@ export async function othersOnBoard(url: string, boardId: string) {
  * copy. Killed at any point, running it again resumes from the journal; the
  * online board stays intact and read-only meanwhile.
  */
-export async function takeLocal(cwdInput: string, options: { removeOthers?: boolean } & Pick<MoveOptions, "onProgress"> = {}) {
+export async function takeLocal(cwdInput: string, options: {
+  /** Confirms removing everyone else on the board now (command line). */
+  removeOthers?: boolean;
+  /** Confirms removing exactly these people (the board page); anyone else on the board asks again. */
+  expectedOthers?: string[];
+} & Pick<MoveOptions, "onProgress"> = {}) {
   const { cwd, manifest, storage } = await requireOnline(cwdInput);
   const lockRoot = resolvePlanningRoot(manifest);
   await mkdir(lockRoot, { recursive: true });
@@ -509,29 +554,35 @@ export async function takeLocal(cwdInput: string, options: { removeOthers?: bool
       throw new PlanbanValidationError(`An unfinished transfer is recorded at ${transferJournalPath(lockRoot)}. Finish it first.`);
     }
     if (!journal) {
-      // Owner decision 15: taking a shared board back to this machine removes
-      // everyone else's access, and their agents'. Say who first.
-      const others = await othersOnBoard(storage.url, storage.boardId);
-      if (others.length && !options.removeOthers) {
-        throw new PlanbanConfirmationNeeded(
-          `Taking this board back to this machine removes access for ${others.length} other person(s), and their agents: ${others.map((member) => `${member.userId} (${member.role})`).join(", ")}. `
-          + "The online copy is kept, read-only. Nothing has changed yet. Run again with --remove-others to go ahead.",
-          { removes: others },
-        );
-      }
       journal = { version: 1, direction: "local", transferId: randomUUID(), url: storage.url, boardId: storage.boardId,
         root: join(defaultPlanbanRoot(), "repos", `online-return-${randomUUID()}`), phase: "fencing", startedAt: new Date().toISOString() };
-      await writeJournal(lockRoot, journal);
     }
     const root = journal.root!;
     const step = async (next: TransferJournal) => {
       journal = next;
       await writeJournal(lockRoot, next);
     };
+    let acknowledgedOthers: string[] = [];
+    if (journal.phase === "fencing") {
+      // Owner decision 15: taking a shared board back to this machine removes
+      // everyone else's access, and their agents'. Say who first; the freeze
+      // itself refuses if the people on the board are not exactly those.
+      const others = await othersOnBoard(storage.url, storage.boardId);
+      acknowledgedOthers = options.expectedOthers ?? (options.removeOthers ? others.map((member) => member.userId) : []);
+      if (!sameSet(acknowledgedOthers, others.map((member) => member.userId))) throw confirmRemoving(others);
+      await writeJournal(lockRoot, journal);
+    }
     crashPoint("take-local:before-fence");
     if (journal.phase === "fencing" || journal.phase === "fenced") {
       const fenced = await onlineRequest<{ generation: number }>(storage.url, boardPath(storage.boardId, "/take-local/fence"), {
-        transferId: journal.transferId, ...(journal.generation === undefined ? {} : { expectedGeneration: journal.generation }),
+        transferId: journal.transferId, acknowledgedOthers, ...(journal.generation === undefined ? {} : { expectedGeneration: journal.generation }),
+      }).catch(async (error) => {
+        // Someone joined or left between asking and freezing: nothing was frozen; ask again.
+        if (error instanceof PlanbanConflictError && /people on this board changed/i.test(error.message)) {
+          await rm(transferJournalPath(lockRoot), { force: true });
+          throw confirmRemoving(await othersOnBoard(storage.url, storage.boardId));
+        }
+        throw error;
       });
       if (journal.phase === "fencing") await step({ ...journal, phase: "fenced", generation: fenced.generation });
       crashPoint("take-local:after-fence");

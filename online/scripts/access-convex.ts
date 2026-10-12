@@ -102,7 +102,10 @@ ok("only the board owner can create a key that completes cards");
 
 assert.equal((await api(await token(editorHome), "GET", `/api/v1/boards/${boardId}`)).status, 200);
 assert.equal((await api(editorKey.json.key, "GET", `/api/v1/boards/${boardId}`)).status, 200);
-const fenced = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: `take-local-${Date.now()}` });
+const unconfirmed = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: `take-local-${Date.now()}-a`, acknowledgedOthers: [] });
+assert.equal(unconfirmed.status, 409, "freezing must name exactly who loses access");
+assert.equal((await api(await token(editorHome), "GET", `/api/v1/boards/${boardId}`)).status, 200, "nothing changed");
+const fenced = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: `take-local-${Date.now()}`, acknowledgedOthers: [editor] });
 assert.equal(fenced.status, 200, JSON.stringify(fenced.json));
 assert.deepEqual(fenced.json.removedPeople, [editor]);
 assert.equal((await api(await token(editorHome), "GET", `/api/v1/boards/${boardId}`)).status, 404, "the other person loses access");
@@ -110,5 +113,6 @@ assert.equal((await api(editorKey.json.key, "GET", `/api/v1/boards/${boardId}`))
 const kept = await api(owner, "GET", `/api/v1/boards/${boardId}`);
 assert.equal(kept.status, 200, "the online copy is kept for the person taking it local");
 assert.equal(kept.json.authority, "returned-local");
+assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/members`, { userId: editor })).status, 409, "nobody can be added back to the retained copy");
 ok("taking a shared board local removes everyone else's access, and their agents'; the online copy is kept, read-only");
 console.log(`All ${step} checks passed.`);

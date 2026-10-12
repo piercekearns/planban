@@ -209,7 +209,10 @@ for (let index = 0; index < 30; index += 1) {
 }
 
 const localTransfer = `smoke-local-${Date.now()}`;
-const returned = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: localTransfer });
+// Taking a shared board local names exactly who loses access (owner decision 15).
+const others = (await api(owner, "GET", `/api/v1/boards/${boardId}/members`)).json.members
+  .filter((member: { role: string }) => member.role !== "owner").map((member: { userId: string }) => member.userId);
+const returned = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: localTransfer, acknowledgedOthers: others });
 assert.equal(returned.status, 200, JSON.stringify(returned.json));
 const exported = await api(owner, "GET", `/api/v1/boards/${boardId}/export`);
 assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/finish`, { transferId: localTransfer })).status, 200);

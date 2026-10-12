@@ -168,6 +168,7 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     return json(await ctx.runMutation(internal.boards.fence, {
       connectionId, boardId, transferId: String(input.transferId ?? ""),
       ...(typeof input.expectedGeneration === "number" ? { expectedGeneration: input.expectedGeneration } : {}),
+      ...(Array.isArray(input.acknowledgedOthers) ? { acknowledgedOthers: input.acknowledgedOthers.map(String) } : {}),
     }));
   }
   if (rest[0] === "take-local" && rest[1] === "finish" && method === "POST") {
