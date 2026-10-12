@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { checkIndexCard, checkIndexDocument, embeddedFileIn, MAX_DOCUMENT_BYTES } from "../src/core/contentRules";
 
@@ -140,4 +141,82 @@ test("every common way an encoder writes a file is refused, at any wrapping", ()
     "base64 between words": f.toString("base64").match(/.{1,50}/g)!.map((piece, i) => `Step ${i}: ${piece} done.`).join("\n"),
   };
   for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file/, name);
+});
+
+// Small stand-ins for common encoders, so the tests need no outside tools.
+const B85 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+function base85(bytes: Buffer, alphabet = B85) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 4) {
+    let n = 0;
+    for (let j = 0; j < 4; j += 1) n = n * 256 + (bytes[i + j] ?? 0);
+    let chunk = "";
+    for (let j = 0; j < 5; j += 1) { chunk = alphabet[n % 85] + chunk; n = Math.floor(n / 85); }
+    out += chunk;
+  }
+  return out;
+}
+function uuencode(bytes: Buffer) {
+  const lines = ["begin 644 x.bin"];
+  for (let i = 0; i < bytes.length; i += 45) {
+    const part = bytes.subarray(i, i + 45);
+    let line = String.fromCharCode(32 + part.length);
+    for (let j = 0; j < part.length; j += 3) {
+      const [a = 0, b = 0, c = 0] = part.subarray(j, j + 3);
+      for (const v of [a >> 2, ((a & 3) << 4) | (b >> 4), ((b & 15) << 2) | (c >> 6), c & 63]) line += String.fromCharCode(v === 0 ? 96 : 32 + v);
+    }
+    lines.push(line);
+  }
+  return [...lines, "`", "end"].join("\n");
+}
+const pythonRepr = (bytes: Buffer) => "b'" + [...bytes].map((b) => b >= 32 && b < 127 && b !== 39 && b !== 92 ? String.fromCharCode(b) : `\\x${b.toString(16).padStart(2, "0")}`).join("") + "'";
+const odChars = (bytes: Buffer) => (bytes.toString("hex").match(/.{1,32}/g) ?? []).map((row) => "    " + (row.match(/../g) ?? []).map((h) => {
+  const b = parseInt(h, 16);
+  return (b >= 33 && b < 127 ? String.fromCharCode(b) : b.toString(8).padStart(3, "0")).padStart(4);
+}).join("")).join("\n");
+
+test("today's encoders are refused too: uuencode, base85, ASCII85, Python bytes, od, one byte per line, repetitive lowercase", () => {
+  const f = randomBytes(3072);
+  const variants: Record<string, string> = {
+    uuencode: uuencode(f),
+    base85: base85(f),
+    "ASCII85 (Adobe)": "<~" + (base85(f, "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu").match(/.{1,75}/g) ?? []).join("\n") + "~>",
+    "Python bytes": pythonRepr(f),
+    "od -c": odChars(f),
+    "one byte per line": JSON.stringify([...Buffer.alloc(8192, 42)], null, 2),
+    "repetitive lowercase base64": (Buffer.alloc(8192, 0xaa).toString("base64").match(/.{1,64}/g) ?? []).join("\n"),
+    "base64 at 16": (f.toString("base64").match(/.{1,16}/g) ?? []).join("\n"),
+    "zero bytes in a JSON string": JSON.stringify(Buffer.alloc(4096).toString("latin1")),
+  };
+  for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file|binary/, name);
+});
+
+test("round 10's shapes are refused, and a real card's long hash list is not", async () => {
+  const { checkIndexValue } = await import("../src/core/contentRules");
+  const zeros = Buffer.alloc(4500);
+  const uuSpaces = ["begin 644 z.bin", ...Array.from({ length: Math.ceil(zeros.length / 45) }, (_, i) => "M" + " ".repeat(60)), " ", "end"].join("\n");
+  const f = randomBytes(8192);
+  const b85w32 = (base85(f).match(/.{1,32}/g) ?? []).join("\n");
+  const variants: Record<string, string> = {
+    "uuencode of zero bytes, with spaces": uuSpaces,
+    "base85 at 32": b85w32,
+    "one hex byte per line": [...f.subarray(0, 4096)].map((b) => b.toString(16).padStart(2, "0")).join("\n"),
+  };
+  for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file/, name);
+  // A real Revival card (an old version) listed 91 commit hashes in its metadata.
+  checkIndexValue({ id: "revival-target-state-architecture", metadata: Object.fromEntries(Array.from({ length: 91 }, (_, i) => [`commit${i}`, randomBytes(20).toString("hex")])) }, "card", 128 * 1024);
+  checkIndexValue({ id: "x", summary: Array.from({ length: 91 }, (_, i) => `- release ${i}: ${randomBytes(20).toString("hex")}`).join("\n") }, "card", 128 * 1024);
+});
+
+test("base85 and ASCII85 keep accumulating across ordinary narrow and wide wraps", () => {
+  const ascii85Alphabet = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
+  // Fixed seeds cover rows with little punctuation and keep failures reproducible.
+  for (const seed of [...Array.from({ length: 20 }, (_, i) => i), 30]) {
+    const f = Buffer.concat(Array.from({ length: 141 }, (_, i) => createHash("sha256").update(`${seed}:${i}`).digest())).subarray(0, 4500);
+    for (const width of [16, 32, 40, 64, 75, 80]) {
+      const wrap = (text: string) => text.match(new RegExp(`.{1,${width}}`, "g"))!.join("\n");
+      assert.match(embeddedFileIn(wrap(base85(f))) ?? "missed", /encoded file/, `base85 at ${width}, seed ${seed}`);
+      assert.match(embeddedFileIn("<~" + wrap(base85(f, ascii85Alphabet)) + "~>") ?? "missed", /encoded file/, `ASCII85 at ${width}, seed ${seed}`);
+    }
+  }
 });

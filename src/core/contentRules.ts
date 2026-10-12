@@ -1,15 +1,23 @@
 // Planban is an index, not storage (owner decisions 18 and 20). A board holds
 // only its own text: cards, Specs, Plans and their history. Files stay where
-// they live, and a card refers to them. These rules are shared by every write
-// path into a board: local MCP, the CLI and the web board's API in Local Mode,
-// and the hosted API, remote MCP and Take Online for Online Boards. No route
-// can turn a board into file storage.
+// they live, and a card refers to them.
 //
-// What this can and cannot do: it refuses files embedded the ordinary ways
-// and with the standard encoders (data: addresses, base64 and base64url,
-// hex, byte lists), whole, wrapped or split into pieces. No check on text can
-// rule out data deliberately disguised as ordinary text (a file written out
-// as words, say); the size limits below are the hard ceiling on that.
+// The guarantee has three layers (orchestrator ruling, 12 October 2026):
+// 1. These rules, on every write path into an Online Board (the hosted API,
+//    remote and local MCP, Take Online), and shared with strict Local Mode:
+//    a guard against files put in by accident or with everyday tools
+//    (data: addresses and pictures, base64 and base64url, hex and xxd dumps,
+//    uuencode, base85 and ASCII85, escaped and listed bytes, binary), whole,
+//    wrapped or split. No check on text can be complete: a file deliberately
+//    disguised as ordinary text can pass, and new encodings are follow-ups,
+//    not blockers.
+// 2. Size and volume caps, which hold however content is written: 1 MB per
+//    Spec or Plan, 128 KB per card, and online, 256 MB of stored text per
+//    board including history, and per account per day 5,000 changes, 64 MB of
+//    written text and 1 GB taken online (online/service/convex/model/limits.ts).
+// 3. Planban never serves what it stores as a file: no raw, download or
+//    attachment endpoints, and no content types but its own JSON and the
+//    invite page (tests/no-file-serving.test.ts).
 import { PlanbanValidationError } from "./boardOperations";
 
 /** Larger than any real Spec or Plan seen so far (the largest is about 0.5 MB). */
@@ -66,35 +74,113 @@ const HEX_RUN = /[0-9a-fA-F]{4096,}/;
  * 2,000 characters, while a 3 KB file makes over 4,000 in every encoding.
  */
 const TOKEN_SEPARATORS = /[\s,;:\[\]{}()"'`<>|]+/;
+/** A lowercase run that repeats a short pattern ("qqqqqqqq…", base64 of repetitive bytes) is not a word. */
+const repetitive = (token: string) => /^(.{1,4})\1{5,}/.test(token);
 const isPayloadToken = (token: string) => /^(?:0x)?[0-9a-fA-F]+$/.test(token)
   || (/^[A-Za-z0-9+/=_-]{8,}$/.test(token)
-    // Not words, Names, or slugs and ids such as "improve-audit-2026-07-25-f60dc6e6".
-    && !/^[a-z-]+$/.test(token) && !/^[A-Z][a-z]+$/.test(token) && !/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(token));
-const PAYLOAD_BLOCK_LIMIT = 4096;
+    && (repetitive(token)
+      // Not words, Names, or slugs and ids such as "improve-audit-2026-07-25-f60dc6e6".
+      || (!/^[a-z-]+$/.test(token) && !/^[A-Z][a-z]+$/.test(token) && !/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(token))));
+/** Escaped bytes, as printed by Python, JSON, C and od: \x89, \u0000, \377, \n. */
+const ESCAPE = /\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[abfnrtv'"\\])/g;
+/**
+ * A dense line: no spaces to speak of, 12 or more characters, and full of
+ * punctuation, as uuencode, base85 and ASCII85 write. Not a web address and
+ * not a Markdown rule or table border.
+ */
+const isDenseLine = (line: string) => line.length >= 12
+  && (line.match(/\s/g)?.length ?? 0) <= line.length * 0.05
+  && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line)
+  && ((line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1 || looksEncoded(line.replace(/[^A-Za-z0-9]/g, "")));
+/** Encoder rows sometimes have too little punctuation to start a block.
+ * They can continue one, without treating ordinary words or references as payload. */
+const isCompactPayloadLine = (line: string) => line.length >= 12
+  && !/\s|:\/\//.test(line) && !/^[|:=*#~_-]+$/.test(line)
+  // Relative and absolute paths are references, even when a run of encoded
+  // lines happens to precede them. Base85's alphabet does not contain '/'.
+  && !/^(?:[A-Za-z0-9._~-]*\/){2,}[A-Za-z0-9._~-]*$/.test(line)
+  && !/^[a-z-]+$|^[A-Z][a-z]+$|^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(line);
+const PAYLOAD_BLOCK_LIMIT = 3072;
 /** Across a structured value's fields, only fields with at least this much payload count towards the limit. */
 const FIELD_BLOCK_MIN = 64;
-const HASH_FIELDS_LIMIT = 64;
+const HASH_FIELDS_LIMIT = 100;
 
-/** Each payload-dominated line, with whether it continues the block before it. */
+/**
+ * A uuencoded line: its first character gives the byte count, and the rest is
+ * exactly that many bytes in uuencode's alphabet (which includes the space).
+ */
+function isUuencodeLine(line: string) {
+  const count = line.charCodeAt(0) - 32;
+  if (count < 1 || count > 63) return false;
+  const body = line.slice(1);
+  return body.length >= 4 && Math.abs(body.length - Math.ceil(count / 3) * 4) <= 1 && /^[ -`]+$/.test(body);
+}
+
+/**
+ * A line that is a single hash-length hex token (a commit or checksum):
+ * planning text lists these (one real Revival card lists 91), so a block
+ * counts them only past HASH_LINES_ALLOWED, about 3 KB of hex at that width.
+ */
+const HASH_LINE = /^(?:[\w .:#/@-]{0,40}[\s:=])?([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{32}|[0-9a-fA-F]{128})[\s,.;)]*$/;
+const HASH_LINES_ALLOWED = 100;
+
+/** Each line's payload characters (0 for a line of prose), for lines that are not blank. */
 function payloadLines(text: string) {
-  const lines: Array<{ index: number; payload: number }> = [];
+  const lines: Array<{ index: number; payload: number; weak: number; hash?: number }> = [];
   text.split(/\r?\n/).forEach((raw, index) => {
     const line = raw.replace(/^[\s>*+-]*(?:\d+[.)]\s+)?/, "");
     if (!line.trim()) return;
-    const tokens = line.split(TOKEN_SEPARATORS).filter(Boolean);
-    const total = tokens.reduce((sum, token) => sum + token.length, 0);
-    const payload = tokens.filter(isPayloadToken).reduce((sum, token) => sum + token.length, 0);
-    lines.push({ index, payload: payload >= 8 && payload / total >= 0.6 ? payload : 0 });
+    if (isUuencodeLine(raw)) {
+      lines.push({ index, payload: raw.length, weak: 0 });
+      return;
+    }
+    if (isDenseLine(line.trim())) {
+      lines.push({ index, payload: line.trim().length, weak: 0 });
+      return;
+    }
+    const hash = HASH_LINE.exec(line.trim());
+    if (hash) {
+      lines.push({ index, payload: 0, weak: 0, hash: hash[1]!.length });
+      return;
+    }
+    const escapes = (line.match(ESCAPE) ?? []).join("").length;
+    const plain = line.replace(ESCAPE, " ");
+    const tokens = plain.split(TOKEN_SEPARATORS).filter(Boolean);
+    const total = tokens.reduce((sum, token) => sum + token.length, 0) + escapes;
+    const payload = tokens.filter(isPayloadToken).reduce((sum, token) => sum + token.length, 0) + escapes;
+    // A line that is only a number or a byte ("42,", "0x2a") counts however short: one byte per line still adds up.
+    const lone = tokens.length === 1 && /^(?:0x[0-9a-fA-F]{1,2}|\d{1,3}|[0-9a-fA-F]{2})$/.test(tokens[0]!);
+    const share = total > 0 ? payload / total : 0;
+    // Mostly payload: starts or continues a block. Partly payload (a dump line
+    // with some printable bytes shown as letters): continues one, never starts one.
+    const strong = (payload >= 8 || lone || escapes >= 4) && share >= 0.6;
+    const compact = isCompactPayloadLine(line.trim());
+    const weak = !strong && payload >= 4 && share >= 0.3;
+    lines.push({ index, payload: strong ? payload : 0, weak: compact ? line.trim().length : weak ? payload : 0 });
   });
   return lines;
 }
 
 /** The largest block of payload lines (blank lines continue a block; any other line ends it). */
-function largestPayloadBlock(text: string) {
+export function largestPayloadBlock(text: string) {
   let block = 0;
   let largest = 0;
+  let hashLines = 0;
+  let hashChars = 0;
   for (const line of payloadLines(text)) {
-    block = line.payload ? block + line.payload : 0;
+    if (line.hash) {
+      // Hash lists continue a block; past the allowance they count as payload.
+      hashLines += 1;
+      hashChars += line.hash;
+      if (hashLines === HASH_LINES_ALLOWED + 1) block += hashChars;
+      else if (hashLines > HASH_LINES_ALLOWED) block += line.hash;
+    } else if (line.payload) block += line.payload;
+    else if (line.weak && block > 0) block += line.weak;
+    else {
+      block = 0;
+      hashLines = 0;
+      hashChars = 0;
+    }
     largest = Math.max(largest, block);
   }
   return largest;
