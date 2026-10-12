@@ -70,8 +70,15 @@ Claude connector identity and acceptance remain unverified.
 MCP discovery reflects the credential's current board permissions. Read grants
 receive read tools; planning grants receive permitted writes without completion;
 completion is scoped to eligible boards and requires explicit confirmation.
-Discovery is private and uncached. Calls always recheck authorization inside the
-operation, regardless of previously discovered schemas.
+Each discovery request is private and uncached on the server. This stateless
+endpoint advertises `listChanged: false` and sends no change notifications;
+`ttlMs: 0` does not make SDK or native clients refresh their cached tool lists.
+After changing board access, request `tools/list` again. In a client that caches
+discovery, reconnect or reload the MCP connection to obtain its current tools
+and board choices. That rediscovery can reuse a still-valid credential; access
+beyond its original OAuth scopes requires new explicit authorization. Calls
+always recheck authorization inside the operation, regardless of previously
+discovered schemas.
 
 Deterministic tests and SDK simulations do not establish real sign-in or client
 acceptance. Provider-backed consent, native OAuth, refresh/revoke/reconnect and

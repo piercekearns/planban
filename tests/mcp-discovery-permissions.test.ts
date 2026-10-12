@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getFunctionName } from "convex/server";
+import { fail } from "../online/service/convex/model/errors";
+import { mcp } from "../online/service/convex/http";
 import { mcpPermissions } from "../online/service/convex/boards";
 import { discoverTools, handleMcp, McpService, TOOLS } from "../online/service/convex/model/mcp";
 
@@ -81,4 +83,39 @@ test("tools/list queries current permissions on each request and never declares 
   assert.equal(response.result.ttlMs, 0);
   assert.equal(response.result.cacheScope, "private");
   assert.equal(count, 2);
+});
+
+test("revocation between HTTP authentication and discovery retains the same OAuth challenge", async () => {
+  const previous = process.env.PLANBAN_PUBLIC_URL;
+  process.env.PLANBAN_PUBLIC_URL = "https://planban.example";
+  const request = () => new Request("https://planban.example/mcp", {
+    method: "POST", headers: { Authorization: "Bearer pba_" + "a".repeat(43) },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  const invoke = (ctx: any) => (mcp as any)._handler(ctx, request());
+  try {
+    const initial = await invoke({ runQuery: async () => null });
+    let queries = 0;
+    const raced = await invoke({ runQuery: async (fn: any) => {
+      queries++;
+      if (getFunctionName(fn) === "connections:resolveToken") return { connectionId: "token", lastUsedAt: new Date().toISOString() };
+      assert.equal(getFunctionName(fn), "boards:mcpPermissions");
+      fail("unauthorized", "Connection revoked.");
+    } });
+    assert.equal(queries, 2);
+    assert.equal(initial.status, 401);
+    assert.equal(raced.status, 401);
+    assert.equal(raced.headers.get("Cache-Control"), "no-store");
+    assert.equal(raced.headers.get("WWW-Authenticate"), initial.headers.get("WWW-Authenticate"));
+    assert.match(raced.headers.get("WWW-Authenticate")!, /resource_metadata="https:\/\/planban.example\/\.well-known\/oauth-protected-resource\/mcp"/);
+    assert.deepEqual(await raced.json(), await initial.json());
+    const forbidden = await invoke({ runQuery: async (fn: any) => {
+      if (getFunctionName(fn) === "connections:resolveToken") return { connectionId: "token", lastUsedAt: new Date().toISOString() };
+      fail("forbidden", "Not permitted.");
+    } });
+    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.headers.get("WWW-Authenticate"), null);
+  } finally {
+    if (previous === undefined) delete process.env.PLANBAN_PUBLIC_URL; else process.env.PLANBAN_PUBLIC_URL = previous;
+  }
 });

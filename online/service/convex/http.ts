@@ -274,17 +274,21 @@ const devToken = httpAction(async (ctx, request) => {
  * standard challenge pointing at the protected resource metadata, which
  * names the sign-in server MCP clients use for OAuth.
  */
-const mcp = httpAction(async (ctx, request) => {
+function mcpUnauthorized() {
+  return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
+    // Resource scopes describe Planban permissions, not provider identity.
+    "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp", scope="${PLANBAN_SCOPES.join(" ")}"`,
+  });
+}
+
+export const mcp = httpAction(async (ctx, request) => {
   try {
     const auth = await authenticate(ctx, request);
-    if (!auth) {
-      return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
-        // Resource scopes describe Planban permissions, not provider identity.
-        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp", scope="${PLANBAN_SCOPES.join(" ")}"`,
-      });
-    }
+    if (!auth) return mcpUnauthorized();
     return await handleMcp(request, new McpService(ctx, auth.connectionId), publicOrigin());
   } catch (error) {
+    // A credential can be revoked between authentication and the protected query.
+    if (error instanceof ConvexError && (error.data as ServiceErrorData).code === "unauthorized") return mcpUnauthorized();
     return errorResponse(error);
   }
 });

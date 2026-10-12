@@ -26,6 +26,7 @@ const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 const INSTRUCTIONS = [
   "These tools read and edit Planban Online Boards shared across devices and people.",
   "Call planban_list_boards first to find the boardId.",
+  "After board access changes, request tools/list again. This stateless endpoint sends no tool-list change notifications; if your client caches discovery, reconnect or reload its MCP connection. Expanded OAuth scopes require new explicit authorization.",
   "Every edit must pass baseRevision, the board revision you last read; document edits pass expectedMtimeMs from planban_read_doc (null for a new document). On a conflict, reread and retry.",
   "Pass a fresh idempotencyKey with each edit and reuse it if you retry the same edit, so it is never applied twice.",
   "Serialize writes: one mutation at a time per board.",
