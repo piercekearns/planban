@@ -87,6 +87,8 @@ test("does not let a disabled Claude Code rehearsal satisfy release readiness", 
   assert.deepEqual(disabled(`      - continue-on-error: true\n  ${claudeRun.replace("- ", "")}`), [claudeRunMissing]);
   assert.deepEqual(disabled(`      - run: |\n          # npm run release:claude-upgrade-rehearsal -- --from-version 1.1.6\n          echo skipped`), [claudeRunMissing]);
   assert.deepEqual(disabled(`${claudeRun.slice(0, -1)} || true"`), [claudeRunMissing]);
+  assert.deepEqual(disabled(`      - run: |\n          set +e\n          ${claudeRun.replace("      - run: ", "")}\n          echo done`), [claudeRunMissing]);
+  assert.deepEqual(disabled(`      - shell: bash {0}\n  ${claudeRun.replace("- ", "")}`), [claudeRunMissing]);
   assert.deepEqual(audit(readiness.replace("    runs-on: ubuntu-24.04", "    runs-on: ubuntu-24.04\n    continue-on-error: true")), [
     ".github/workflows/release-readiness.yml must install a pinned Codex CLI version in a required step",
     ".github/workflows/release-readiness.yml must run the Codex upgrade rehearsal (npm run release:upgrade-rehearsal) in a required step after the pinned CLI install",

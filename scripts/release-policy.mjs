@@ -11,20 +11,22 @@ const REQUIRED_RELEASE_REHEARSALS = [
   { host: "Claude Code", install: /^npm install --global @anthropic-ai\/claude-code@\d+\.\d+\.\d+$/u, script: "release:claude-upgrade-rehearsal" },
 ];
 
-// Shell command lines from workflow steps that always run and whose failure fails the job.
-// Steps or jobs with any `if:` or a non-false `continue-on-error:` are skipped, and
-// commented-out lines are ignored, so a disabled gate cannot satisfy the policy.
+// Commands from workflow steps that always run and whose failure fails the job.
+// Only steps whose run block is a single command in the default shell count, so a
+// skipped, error-tolerant, or `set +e` step cannot satisfy the policy.
 function requiredRunLines(source) {
   const workflow = parseYaml(source);
   const lines = [];
   for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
     if (!job || job.if !== undefined || (job["continue-on-error"] ?? false) !== false) continue;
+    if (job.defaults?.run?.shell !== undefined || workflow.defaults?.run?.shell !== undefined) continue;
     (job.steps ?? []).forEach((step, stepIndex) => {
       if (!step || step.if !== undefined || (step["continue-on-error"] ?? false) !== false) return;
-      if (typeof step.run !== "string") return;
-      for (const line of step.run.split(/\r?\n/u).map((entry) => entry.trim())) {
-        if (line && !line.startsWith("#")) lines.push({ jobId, stepIndex, line });
-      }
+      if (typeof step.run !== "string" || step.shell !== undefined) return;
+      const commands = step.run.split(/\r?\n/u)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry && !entry.startsWith("#"));
+      if (commands.length === 1) lines.push({ jobId, stepIndex, line: commands[0] });
     });
   }
   return lines;
