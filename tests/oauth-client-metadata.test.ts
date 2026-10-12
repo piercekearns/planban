@@ -54,8 +54,24 @@ test("only the reviewed Claude Code publisher may omit its native application ty
   const client = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...doc, client_name: "Claude Code" })!;
   assert.ok(client?.native);
   assert.equal(clientRedirectAllowed(client, "http://127.0.0.1:54321/callback"), true);
-  for (const uri of ["http://localhost:54321/callback", "http://127.0.0.1:54321/callback?", "http://127.0.0.1:54321/callback/other", "http://attacker.example/callback"]) assert.equal(clientRedirectAllowed(client, uri), false);
+  assert.equal(clientRedirectAllowed(client, "http://localhost:54321/callback"), true);
+  for (const uri of ["http://127.0.0.1:54321/callback?", "http://127.0.0.1:54321/callback/other", "http://attacker.example/callback"]) assert.equal(clientRedirectAllowed(client, uri), false);
   assert.equal(parseClientMetadata(codexId, { ...doc, client_id: codexId }), null);
   assert.equal(parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...doc, application_type: "web" }), null);
   assert.equal(parseClientMetadata("https://claude.ai/api/oauth/mcp-oauth-client-metadata", { ...doc, client_id: "https://claude.ai/api/oauth/mcp-oauth-client-metadata" }), null);
+});
+
+test("only native Claude Code may vary a canonical valid port on its registered raw localhost callback", () => {
+  for (const application_type of [undefined, "native"]) {
+    const client = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...metadata(CLAUDE_CODE_CLIENT_ID), application_type })!;
+    for (const port of ["", ":1", ":80", ":54114", ":65535"]) assert.equal(clientRedirectAllowed(client, `http://localhost${port}/callback`), true);
+    for (const uri of ["http://localhost:0/callback", "http://localhost:65536/callback", "http://localhost:054114/callback", "http://localhost:+54114/callback", "http://localhost:/callback", "http://LOCALHOST:54114/callback", "HTTP://localhost:54114/callback", "http://localhost.:54114/callback", "http://localhost.evil.example:54114/callback", "http://%6cocalhost:54114/callback", "http://attacker@localhost:54114/callback", "http://localhost:54114/callback?", "http://localhost:54114/callback#", "http://localhost:54114/%63allback", "http://localhost:54114/a/../callback", "http://localhost:54114/callback/other", "http://localhost:54114\\callback", " http://localhost:54114/callback", "http://localhost:54114/call\tback"]) assert.equal(clientRedirectAllowed(client, uri), false, uri);
+    const literalOnly = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...metadata(CLAUDE_CODE_CLIENT_ID), application_type, redirect_uris: ["http://127.0.0.1/callback"] })!;
+    assert.equal(clientRedirectAllowed(literalOnly, "http://localhost:54114/callback"), false);
+  }
+  for (const id of [codexId, chatId]) assert.equal(clientRedirectAllowed(parseClientMetadata(id, metadata(id))!, "http://localhost:54114/callback"), false);
+  const registeredPort = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...metadata(CLAUDE_CODE_CLIENT_ID), redirect_uris: ["http://localhost:54114/callback"] })!;
+  assert.equal(clientRedirectAllowed(registeredPort, "http://localhost:80/callback"), true);
+  const web = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...metadata(CLAUDE_CODE_CLIENT_ID), application_type: "web", redirect_uris: ["https://claude.ai/callback"] })!;
+  assert.equal(clientRedirectAllowed(web, "http://localhost:54114/callback"), false);
 });

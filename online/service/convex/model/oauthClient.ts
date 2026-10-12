@@ -17,13 +17,20 @@ export interface OAuthClient {
   readonly native: boolean;
 }
 
-function validRedirect(value: string, native: boolean): boolean {
+function validRedirect(value: string, native: boolean, codeLocalhost = false): boolean {
   try {
     const url = new URL(value);
     const literalLoopback = native && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname);
+    const nativeCodeLocalhost = codeLocalhost && native && url.protocol === "http:" && url.hostname === "localhost";
+    if (nativeCodeLocalhost) {
+      // This publisher's installed CLI binds a varying localhost port. Keep
+      // the raw authority canonical and exclude zero or normalized port forms.
+      const authority = /^http:\/\/localhost(?::([1-9]\d*))?\//.exec(value);
+      if (!authority || (authority[1] !== undefined && Number(authority[1]) > 65535)) return false;
+    }
     // URL serialization removes the explicit default port. Allow that one
     // spelling for native loopback, but no other normalization of raw URIs.
-    const canonical = literalLoopback ? value.replace(/^(http:\/\/(?:127\.0\.0\.1|\[::1\])):80(?=\/)/, "$1") : value;
+    const canonical = nativeCodeLocalhost ? value.replace(/^http:\/\/localhost:80(?=\/)/, "http://localhost") : literalLoopback ? value.replace(/^(http:\/\/(?:127\.0\.0\.1|\[::1\])):80(?=\/)/, "$1") : value;
     if (url.href !== canonical || url.username || url.password || value.includes("#")) return false;
     if (url.protocol === "https:") return true;
     return native && url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) && !value.includes("?");
@@ -39,7 +46,7 @@ export function parseClientMetadata(clientId: string, input: unknown): OAuthClie
   // Do not infer native behavior for any other document or override a type.
   const native = doc.application_type === "native" || (clientId === CLAUDE_CODE_CLIENT_ID && doc.application_type === undefined);
   const redirects = doc.redirect_uris;
-  if (!Array.isArray(redirects) || !redirects.length || redirects.length > 20 || redirects.some((value) => typeof value !== "string" || value.length > 2048 || !validRedirect(value, native))) return null;
+  if (!Array.isArray(redirects) || !redirects.length || redirects.length > 20 || redirects.some((value) => typeof value !== "string" || value.length > 2048 || !validRedirect(value, native, clientId === CLAUDE_CODE_CLIENT_ID))) return null;
   // Some publishers list a legacy preferred method and multiple supported
   // methods. We accept only the intersection with our public-client method.
   const methods = doc.token_endpoint_auth_methods_supported ?? [doc.token_endpoint_auth_method];
@@ -49,11 +56,17 @@ export function parseClientMetadata(clientId: string, input: unknown): OAuthClie
 }
 
 export function clientRedirectAllowed(client: OAuthClient, redirectUri: string): boolean {
-  if (redirectUri.length > 2048 || !validRedirect(redirectUri, client.native)) return false;
+  const codeLocalhost = client.clientId === CLAUDE_CODE_CLIENT_ID;
+  if (redirectUri.length > 2048 || !validRedirect(redirectUri, client.native, codeLocalhost)) return false;
   if (client.redirectUris.includes(redirectUri)) return true;
   const requested = new URL(redirectUri);
+  if (codeLocalhost && client.native && requested.protocol === "http:" && requested.hostname === "localhost") {
+    const withoutPort = (value: string) => value.replace(/^http:\/\/localhost:[1-9]\d*(?=\/)/, "http://localhost");
+    return client.redirectUris.some((value) => validRedirect(value, true, true) && withoutPort(value) === withoutPort(redirectUri));
+  }
   // RFC 8252 allows a native client's ephemeral port to vary on a literal
-  // loopback IP. Do not extend that exception to DNS names or different paths.
+  // loopback IP. The reviewed Code localhost exception above is separate;
+  // no other DNS names or different paths are accepted.
   if (!client.native || requested.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(requested.hostname)) return false;
   const withoutPort = (value: string) => value.replace(/^(http:\/\/(?:127\.0\.0\.1|\[::1\])):\d+(?=\/)/, "$1");
   return client.redirectUris.some((value) => withoutPort(value) === withoutPort(redirectUri));

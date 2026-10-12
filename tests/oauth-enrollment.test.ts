@@ -39,9 +39,10 @@ function fixture() {
   };
   const ctx: any = { db, scheduler: { runAfter: async (delay: number, fn: unknown, args: unknown) => { jobs.push({ at: Date.now() + delay, fn, args }); } } };
   const addMachine = (userId = "person", canAdminister = true) => db.insert("connections", { userId, kind: "machine", canAdminister, name: "Machine", clientName: "Machine", boards: "all", level: "complete", lastUsedAt: new Date().toISOString(), createdAt: new Date().toISOString() });
-  async function request(label: string, purpose = "oauth") {
+  async function request(label: string, purpose = "oauth", callback: { clientId?: string; redirectUri?: string } = {}) {
     const args = { requestHash: digest(`request-${label}`), browserHash: digest(`browser-${label}`), csrfHash: digest(`csrf-${label}`), clientId: "https://client.example/client.json", clientName: "Fixture app", redirectUri: "http://127.0.0.1:4444/callback", resource: "https://planban.example/mcp", scopes: ["planban:plan", "offline_access"], level: "plan", challenge: "a".repeat(43), state: `state-${label}`, purpose };
     if (purpose === "machine") { args.clientId = oauth.MACHINE_CLIENT_ID; args.scopes = ["planban:machine"]; args.level = "complete"; }
+    Object.assign(args, callback);
     await handler(oauth.createRequest, ctx, args);
     return { ...args, codeHash: digest(`code-${label}`), accessHash: digest(`access-${label}`), refreshHash: digest(`refresh-${label}`) };
   }
@@ -82,6 +83,17 @@ test("code redemption is bound to PKCE, client, redirect and resource without co
   for (const field of ["challenge", "clientId", "redirectUri", "resource"]) assert.equal((await f.redeem({ ...args, [field]: "wrong" })).error, "invalid_grant");
   assert.equal((await f.db.get(grant)).oauthPending, true);
   assert.equal((await f.redeem(args)).error, undefined);
+});
+
+test("Claude native port flexibility ends at authorization; code redemption requires the exact frozen localhost URI", async () => {
+  const f = fixture(), machine = await f.addMachine();
+  const args = await f.request("code-localhost", "oauth", { clientId: "https://claude.ai/oauth/claude-code-client-metadata", redirectUri: "http://localhost:54114/callback" });
+  const grant = await f.approve(args, machine);
+  for (const redirectUri of ["http://localhost:54115/callback", "http://localhost/callback", "http://127.0.0.1:54114/callback", "http://localhost:54114/other"]) assert.equal((await f.redeem({ ...args, redirectUri })).error, "invalid_grant");
+  for (const mismatch of [{ challenge: "b".repeat(43) }, { resource: "https://attacker.example/mcp" }]) assert.equal((await f.redeem({ ...args, ...mismatch })).error, "invalid_grant");
+  assert.equal((await f.db.get(grant)).oauthPending, true);
+  assert.equal((await f.redeem(args)).error, undefined);
+  assert.equal((await f.redeem(args)).error, "invalid_grant");
 });
 
 test("revoked grants remain denied after fresh approval, including refresh-derived access and legacy lookups", async () => {

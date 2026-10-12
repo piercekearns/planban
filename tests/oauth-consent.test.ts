@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { getFunctionName } from "convex/server";
 import { authorizationResponse, approvalResponse, consentResponse } from "../online/service/convex/model/oauthConsent";
 import { serviceDiscovery, authorizationServerDiscovery } from "../online/service/convex/http";
+import { CLAUDE_CODE_CLIENT_ID, parseClientMetadata } from "../online/service/convex/model/oauthClient";
 
 const origin = "https://planban.example", clientId = "https://chatgpt.com/oauth/codex/client.json";
 const client = { clientId, name: "Codex", native: true, redirectUris: ["http://127.0.0.1/callback"] };
@@ -83,6 +84,41 @@ test("exhausted metadata budget refuses valid requests before fetch, without per
   const unknown = await authorizationResponse(ctx, authorize({ ...fields, client_id: "https://attacker.example/client.json" }), async () => { fetches++; return client; });
   assert.equal(unknown.status, 400);
   assert.equal(reservations, 3, "unknown URLs neither allocate budget rows nor fetch");
+}));
+
+test("Claude localhost port flexibility freezes the original callback and preserves independent request validation", async () => configured(async () => {
+  const code = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { client_id: CLAUDE_CODE_CLIENT_ID, client_name: "Claude Code", redirect_uris: ["http://localhost/callback"], token_endpoint_auth_method: "none", grant_types: ["authorization_code"], response_types: ["code"] })!;
+  const stored: any[] = [];
+  const ctx: any = { runMutation: async (fn: any, args: any) => {
+    if (getFunctionName(fn) === "oauth:reserveMetadataFetch") return true;
+    stored.push(args);
+  } };
+  const values = { ...fields, client_id: CLAUDE_CODE_CLIENT_ID, redirect_uri: "http://localhost:54114/callback", scope: "planban:read planban:plan planban:complete offline_access" };
+  assert.equal((await authorizationResponse(ctx, authorize(values), async () => code)).status, 303);
+  assert.equal(stored[0].redirectUri, values.redirect_uri);
+  assert.equal(stored[0].state, values.state);
+  for (const override of [{ redirect_uri: "http://localhost:0/callback" }, { redirect_uri: "http://localhost:54114/a/../callback" }, { code_challenge_method: "plain" }, { code_challenge: "" }, { code_challenge: "short" }, { resource: "http://attacker.example/mcp" }]) {
+    const response = await authorizationResponse(ctx, authorize({ ...values, ...override }), async () => code);
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("Location"), null);
+  }
+  const duplicate = new URL(authorize(values).url); duplicate.searchParams.append("redirect_uri", values.redirect_uri);
+  assert.equal((await authorizationResponse(ctx, new Request(duplicate), async () => code)).status, 400);
+  assert.equal(stored.length, 1, "refused callbacks and malformed requests create no authorization row");
+  const browser = "pbb_" + "b".repeat(43), csrf = "pbs_" + "c".repeat(43), ticket = "pbe_" + "d".repeat(43);
+  const approvalCtx: any = { runMutation: async () => ({ redirectUri: values.redirect_uri, state: values.state }) };
+  for (const decision of ["allow", "deny"]) {
+    const response = await approvalResponse(approvalCtx, new Request(origin + "/oauth/approve", {
+      method: "POST", headers: { Origin: origin, Cookie: `__Host-planban_browser=${browser}; __Host-planban_csrf=${csrf}` },
+      body: JSON.stringify({ request: ticket, csrf, decision }),
+    }), async () => ({ userId: "fixture", sessionId: "session" }));
+    const returned = new URL((await response.json()).redirect);
+    assert.equal(returned.origin + returned.pathname, values.redirect_uri);
+    assert.equal(returned.searchParams.get("state"), values.state);
+    assert.equal(returned.searchParams.get("iss"), origin);
+    if (decision === "deny") assert.equal(returned.searchParams.get("error"), "access_denied");
+    else assert.match(returned.searchParams.get("code")!, /^pbc_[A-Za-z0-9_-]{43}$/);
+  }
 }));
 
 test("consent escapes frozen metadata and approval requires origin, independent CSRF and verified identity", async () => configured(async () => {
