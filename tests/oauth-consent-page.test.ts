@@ -54,6 +54,14 @@ test("account choice uses pinned Clerk components and the same frozen return URL
   assert.equal(b.element("email").textContent, "person@example.com");
 });
 
+test("the browser can cancel before signing in, without acquiring a human token", async () => {
+  const b = browser(); await b.load();
+  assert.equal(b.element("cancel-auth").disabled, false);
+  await b.element("cancel-auth").callbacks.get("click")();
+  assert.ok(b.requests.includes("/oauth/approve"));
+  assert.equal(b.Clerk.session, null);
+});
+
 test("failed approval makes Allow unavailable while preserving the human session across Clerk events", async () => {
   const b = browser();
   b.Clerk.session = { status: "active", getToken: async () => "fixture" };
@@ -93,4 +101,18 @@ test("hidden and restored pages fail closed on network error, while an authorita
   assert.equal(b.element("ended").hidden, false);
   b.validity(true); b.event("pageshow"); b.change();
   assert.equal(b.element("allow").disabled, true);
+});
+
+test("authoritative ended state during deferred token acquisition sends no approval, even before the time deadline", async () => {
+  const b = browser(); let release!: (token: string) => void;
+  b.Clerk.session = { status: "active", getToken: () => new Promise<string>(resolve => { release = resolve; }) };
+  await b.load();
+  const decision = b.element("allow").callbacks.get("click")();
+  while(!release) await new Promise(resolve => setImmediate(resolve));
+  b.validity({ valid: false }); b.event("focus");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(b.element("ended").hidden, false);
+  release("fixture"); await decision;
+  assert.equal(b.requests.includes("/oauth/approve"), false);
+  assert.equal(b.Clerk.session.status, "active");
 });

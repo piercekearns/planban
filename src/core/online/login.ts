@@ -71,12 +71,18 @@ async function devLogin(url: string, options: LoginOptions) {
   return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
 }
 
-async function openBrowser(url: string) {
+async function openBrowser(url: string, signal: AbortSignal) {
   const { command, args } = urlOpener(url);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: "ignore" });
-    child.on("error", reject);
-    child.on("exit", (code) => code === 0 ? resolve() : reject(new Error("Could not open the Planban sign-in page.")));
+    const abort = () => {
+      // Release only the owned opening command, never the user's browser.
+      child.kill("SIGKILL"); child.unref(); reject(signal.reason);
+    };
+    child.on("error", (error) => { signal.removeEventListener("abort", abort); reject(error); });
+    child.on("exit", (code) => { signal.removeEventListener("abort", abort); code === 0 ? resolve() : reject(new Error("Could not open the Planban sign-in page.")); });
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
   });
 }
 
@@ -214,7 +220,7 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
     // is an upper bound on service expiry, independent of the local wall clock.
     deadline = performance.now() + remaining;
     timeout = setTimeout(() => stop(new Error("Planban sign-in timed out. Run login again.")), remaining);
-    await within(Promise.race([(options.openBrowser ?? openBrowser)(lease.launchUrl!), callback.code.then(() => undefined)]));
+    await within(Promise.race([options.openBrowser ? options.openBrowser(lease.launchUrl!) : openBrowser(lease.launchUrl!, controller.signal), callback.code.then(() => undefined)]));
     const code = await within(callback.code);
     checkDeadline();
     const exchanged = await within(fetch(server.token, {
@@ -230,6 +236,7 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
     return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
   } finally {
     clearTimeout(timeout);
+    controller.abort(new Error("The sign-in attempt ended."));
     process.off("SIGINT", interrupted); process.off("SIGTERM", interrupted);
     await callback.close();
     if (!saved && launch) {

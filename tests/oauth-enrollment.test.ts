@@ -126,6 +126,20 @@ test("PKCE-owned cancellation wins before claim or redemption and leaves consume
   assert.equal((await f.db.get(row.connectionId)).revokedAt, tombstone, "cancellation cannot revive or replace tombstones");
 });
 
+test("known redeemed machine token revocation closes only its exact machine and preserves prior tombstones", async () => {
+  const f = fixture(), tokenHash = digest("machine-token");
+  const machine = await f.db.insert("connections", { kind: "machine", tokenHash, authorizationVersion: 2, oauthClientId: "planban-cli", oauthPending: false });
+  const other = await f.addMachine();
+  await handler(oauth.revokeToken, f.ctx, { clientId: "other-client", tokenHash });
+  assert.equal((await f.db.get(machine)).revokedAt, undefined);
+  await handler(oauth.revokeToken, f.ctx, { clientId: "planban-cli", tokenHash });
+  const tombstone = (await f.db.get(machine)).revokedAt;
+  assert.ok(tombstone);
+  assert.equal((await f.db.get(other)).revokedAt, undefined);
+  await handler(oauth.revokeToken, f.ctx, { clientId: "planban-cli", tokenHash });
+  assert.equal((await f.db.get(machine)).revokedAt, tombstone);
+});
+
 test("explicit approval creates an independently revocable pending grant and one code redemption activates it", async () => {
   const f = fixture(), machine = await f.addMachine(), args = await f.request("first");
   const grant = await f.approve(args, machine);

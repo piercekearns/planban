@@ -14,6 +14,7 @@ import { manifestSchema } from "../src/core/schema";
 import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/registry";
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
+import { revokeToken as revokeServiceToken } from "../online/service/convex/oauth";
 import { onlineLogin } from "../src/core/online/login";
 import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanNotReadyForOnline, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
@@ -59,6 +60,7 @@ async function fakeService() {
   let metadataOrigin: string | undefined;
   let loginTokenOverride: Record<string, unknown> | undefined;
   let leaseMs = 300000;
+  const issuedMachines: any[] = [{ _id: "unrelated", kind: "machine", tokenHash: "unrelated" }];
   let beforeFence: (() => void) | undefined;
   const docs = new Map<string, PlanbanDocPayload>();
   const transfers = new Map<string, { begin: any; parts: Map<number, any>; state: "open" | "committed" | "aborted" }>();
@@ -133,6 +135,7 @@ async function fakeService() {
           assert.equal(body.resource, url);
           assert.equal(createHash("sha256").update(body.code_verifier).digest("base64url"), auth!.searchParams.get("code_challenge"));
           accessToken = "pbm_" + "m".repeat(43);
+          issuedMachines.push({ _id: "issued", kind: "machine", tokenHash: createHash("sha256").update(accessToken).digest("hex"), authorizationVersion: 2, oauthClientId: "planban-cli", oauthPending: false });
           return json(200, loginTokenOverride ?? { access_token: accessToken, token_type: "Bearer", scope: "planban:machine", user_id: "dev-owner", expires_in: 90 * 86400 });
         }
         accessToken = `access-${requests.length}`;
@@ -141,6 +144,10 @@ async function fakeService() {
       }
       if (path === "/oauth/revoke") {
         revoked.push(body.token);
+        const db: any = { patch: async (id: string, fields: any) => Object.assign(issuedMachines.find(r => r._id === id), fields), get: async (id: string) => issuedMachines.find(r => r._id === id), query: (table: string) => {
+          let tokenHash: string; const query: any = { withIndex: (_name: string, build: any) => { build({ eq: (_key: string, value: string) => { tokenHash = value; } }); return query; }, unique: async () => table === "connections" ? issuedMachines.find(r => r.tokenHash === tokenHash) ?? null : null }; return query;
+        } };
+        await (revokeServiceToken as any)._handler({ db }, { tokenHash: createHash("sha256").update(body.token).digest("hex"), clientId: body.client_id });
         return json(200, {});
       }
       if (path === "/api/v1/auth/machine") {
@@ -374,7 +381,7 @@ async function fakeService() {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   url = `http://127.0.0.1:${(server.address() as any).port}`;
   return {
-    url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
+    url, requests, errors, issuedMachines, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     setMachineLease(ms: number) { leaseMs = ms; },
     setLoginTokenResponse(value: Record<string, unknown>) { loginTokenOverride = value; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
@@ -448,6 +455,31 @@ test("machine wait closes a hanging opener and sends PKCE-owned cancellation wit
   assert.equal(createHash("sha256").update(cancel.body.code_verifier).digest("base64url"), start.body.code_challenge);
   assert.equal((await readCredentials()).services[fake.url], undefined);
   assert.equal(fake.requests.some(r => r.path === "/oauth/revoke"), false);
+});
+
+test("failed credential save invokes real machine revocation and preserves existing file and independent machine", async () => {
+  const file = join(credentialsRoot(), "credentials.json"), original = "malformed existing private fixture file";
+  await writeFile(file, original);
+  await assert.rejects(onlineLogin(fake.url, { openBrowser: async (url) => { await fetch((await fetch(url, { redirect: "manual" })).headers.get("location")!); } }));
+  assert.equal(await readFile(file, "utf8"), original);
+  assert.ok(fake.issuedMachines.find(r => r._id === "issued").revokedAt);
+  assert.equal(fake.issuedMachines.find(r => r._id === "unrelated").revokedAt, undefined);
+});
+
+test("actual hung browser-opening child does not keep the CLI process alive after its lease ends", async () => {
+  fake.setMachineLease(150);
+  const pidFile = join(root, "owned-opener.pid");
+  const script = `import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module'; import {writeFileSync} from 'node:fs';
+    const actualSpawn=cp.spawn; cp.spawn=()=>{ const child=actualSpawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); writeFileSync(process.env.OPENER_PID_FILE,String(child.pid)); return child; }; syncBuiltinESMExports();
+    const {onlineLogin}=await import('./src/core/online/login.ts'); try { await onlineLogin(process.env.FIXTURE_URL); process.exitCode=3; } catch(error) { if(!String(error).includes('timed out')) throw error; }`;
+  try {
+    await execFileAsync(process.execPath, ["--import", "tsx/esm", "--input-type=module", "-e", script], { env: { ...process.env, FIXTURE_URL: fake.url, OPENER_PID_FILE: pidFile }, timeout: 4000 });
+    const pid = Number(await readFile(pidFile, "utf8"));
+    assert.throws(() => process.kill(pid, 0), "owned opening child must be terminated");
+  } finally {
+    const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+    if(pid) try { process.kill(pid, "SIGKILL"); } catch {}
+  }
 });
 
 test("malformed machine lease fails before browser opening and leaves existing credentials untouched", async () => {

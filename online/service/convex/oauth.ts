@@ -236,6 +236,12 @@ export const revokeToken = internalMutation({
   args: { tokenHash: hash, clientId: v.string() },
   handler: async (ctx, args) => {
     const access = await ctx.db.query("connections").withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash)).unique();
+    // A direct machine credential has no OAuth alias/family relationship.
+    // Its exact token and frozen public machine client identify only this machine.
+    if (access?.kind === "machine" && access.authorizationVersion === 2 && access.oauthClientId === MACHINE_CLIENT_ID && args.clientId === MACHINE_CLIENT_ID && !access.oauthPending && !access.revokedAt) {
+      await ctx.db.patch(access._id, { revokedAt: new Date().toISOString() });
+      return { revoked: true };
+    }
     const refresh = await ctx.db.query("oauthRefresh").withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash)).unique();
     const id = access?.oauthConnectionId ?? refresh?.connectionId;
     const connection = id ? await ctx.db.get(id) : null;
