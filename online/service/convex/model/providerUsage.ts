@@ -36,8 +36,13 @@ export function usageEnabled(env: Settings): boolean {
     && env.CONVEX_CLOUD_URL === USAGE_CLOUD && env.CONVEX_SITE_URL === USAGE_SITE;
 }
 export function collectionConfigured(env: Settings, now: number): boolean {
+  return usageEnabled(env) && collectionFailure(env, now) === null;
+}
+export function collectionFailure(env: Settings, now: number): string | null {
+  if (!env.PLANBAN_USAGE_READ_KEY) return "credential_missing";
   const expiry = Number(env.PLANBAN_USAGE_KEY_EXPIRES_AT);
-  return usageEnabled(env) && !!env.PLANBAN_USAGE_READ_KEY && Number.isFinite(expiry) && expiry > now;
+  if (!Number.isSafeInteger(expiry) || expiry <= 0) return "credential_invalid_expiry";
+  return expiry > now ? null : "credential_expired";
 }
 export function mailEnabled(env: Settings): boolean {
   return usageEnabled(env) && env.PLANBAN_USAGE_EMAIL_ENABLED === "1" && !!env.PLANBAN_USAGE_EMAIL_KEY;
@@ -83,9 +88,12 @@ export function observeUsage(state: MonitorState, reading: Reading | null, statu
   if (!reading || reading.month !== utcMonth(now) || reading.at > now || now - reading.at > 60000) return null;
   state.lastSuccess = reading;
   // Keep sent suppression throughout its month; never discard ambiguous work.
-  const cutoff = new Date(now); cutoff.setUTCMonth(cutoff.getUTCMonth() - 13);
-  const oldest = utcMonth(cutoff.getTime());
-  state.batches = state.batches.filter(b => b.status !== "sent" || b.month >= oldest);
+  const date = new Date(now);
+  const oldest = utcMonth(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 12, 1));
+  const payloadOldest = utcMonth(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1));
+  // Compact sent suppression lasts 13 calendar months; successful payloads
+  // last two. Healthy months cannot fill the ambiguity retention bound.
+  state.batches = state.batches.filter(b => b.status !== "sent" || b.month >= payloadOldest);
   for (const k of Object.keys(state.covered)) if (k.slice(0, 7) < oldest) delete state.covered[k];
   for (const b of state.batches) {
     if (b.status === "sent" || b.status === "held") continue;

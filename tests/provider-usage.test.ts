@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { USAGE_POLICY, USAGE_CLOUD, USAGE_SITE, HOUR, LEASE, RETRY_WINDOW, collectionConfigured, usageEnabled, mailEnabled, parseUsage, utcMonth, emptyMonitor, observeUsage, finishUsage, canSend, monitorStale, type Reading } from "../online/service/convex/model/providerUsage";
-import { boundedJson, runUsagePoll } from "../online/service/convex/providerUsage";
+import { boundedJson, runUsagePoll, status as usageStatus } from "../online/service/convex/providerUsage";
 
 const now = Date.UTC(2026, 9, 12, 12);
 const env = () => ({ PLANBAN_USAGE_ENABLED: "1", PLANBAN_USAGE_POLICY: USAGE_POLICY, CONVEX_CLOUD_URL: USAGE_CLOUD, CONVEX_SITE_URL: USAGE_SITE, PLANBAN_USAGE_READ_KEY: "synthetic-usage-only", PLANBAN_USAGE_KEY_EXPIRES_AT: String(now + 30 * 24 * HOUR), PLANBAN_USAGE_EMAIL_ENABLED: "1", PLANBAN_USAGE_EMAIL_KEY: "synthetic-alert-only" });
@@ -116,7 +116,7 @@ test("actual action adapter emits no external call while disabled or copied, and
     const ctx: any = { runMutation: async (_ref: unknown, args: any) => { observed = args; return null; } };
     process.env.PLANBAN_USAGE_ENABLED = "0"; assert.equal(await runUsagePoll(ctx), "disabled"); assert.equal(gets + sends, 0);
     process.env.PLANBAN_USAGE_ENABLED = "1"; process.env.CONVEX_SITE_URL = "https://foreign.convex.site"; assert.equal(await runUsagePoll(ctx), "disabled"); assert.equal(gets + sends, 0);
-    process.env.CONVEX_SITE_URL = USAGE_SITE; assert.equal(await runUsagePoll(ctx), "unavailable"); assert.equal(gets, 1); assert.equal(sends, 0); assert.equal(observed.reading, null);
+    process.env.CONVEX_SITE_URL = USAGE_SITE; assert.equal(await runUsagePoll(ctx), "incomplete_reading"); assert.equal(gets, 1); assert.equal(sends, 0); assert.equal(observed.reading, null);
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved.env)) delete process.env[k]; Object.assign(process.env, saved.env); globalThis.fetch = saved.fetch; Date.now = saved.now;
   }
@@ -180,4 +180,75 @@ test("retention holds ambiguous batches and refuses growth at the bound instead 
   s.batches = Array.from({ length: 104 }, (_, i) => ({ ...structuredClone(b), id: `${b.id}/${i}`, month: "2020-01", status: "held" as const }));
   assert.equal(observeUsage(s, reading(900000), "complete", now, true), null);
   assert.equal(s.batches.length, 104); assert.equal(s.status, "retention_review_required");
+});
+
+test("twenty healthy month-end windows keep all eight warnings available while successful payload retention stays bounded", () => {
+  const s = emptyMonitor(); const included = { calls: 1000000, actions: 20, io: 1, egress: 1 };
+  for (let m = 0; m < 20; m++) {
+    let at = Date.UTC(2025, m + 1, 0, 12); const r = reading(0, at); r.values = { calls: 0, actions: 0, io: 0, egress: 0 };
+    for (const metric of ["calls", "actions", "io", "egress"] as const) for (const level of [70, 90] as const) {
+      r.at = at++; r.values[metric] = included[metric] * level / 100;
+      const b = observeUsage(s, structuredClone(r), "complete", r.at, true);
+      assert.ok(b, `month ${m + 1}, ${metric} ${level} must not be suppressed`);
+      assert.deepEqual(b.events, [{ metric, level }]); finishUsage(s, b.id, b.fence, "sent", r.at);
+    }
+    assert.ok(s.batches.length <= 16, "only two months of successful payloads remain");
+    assert.ok(Object.keys(s.covered).length <= 104, "compact suppression spans thirteen months");
+  }
+});
+
+test("mocked mail adapter holds permanent failures and retries transient or ambiguous receipts with original batch state", async () => {
+  const saved = { env: { ...process.env }, fetch: globalThis.fetch, now: Date.now };
+  try {
+    Object.assign(process.env, env()); Date.now = () => now;
+    for (const [httpStatus, reply, expected] of [[400, "invalid", "held"], [401, "unauthorized", "held"], [429, "limited", "retry"], [503, "unavailable", "retry"], [200, "{}", "retry"], [200, "not-json", "retry"]] as const) {
+      const state = emptyMonitor();
+      globalThis.fetch = async url => String(url).includes("resend") ? new Response(reply, { status: httpStatus }) : new Response(JSON.stringify(body()));
+      const ctx: any = { runMutation: async (_ref: unknown, args: any) => {
+        if ("reading" in args) return observeUsage(state, args.reading, args.status, args.now, true);
+        finishUsage(state, args.id, args.fence, args.outcome, args.now); return null;
+      } };
+      assert.equal(await runUsagePoll(ctx), expected); assert.equal(state.batches[0]?.status, expected);
+      assert.equal(state.batches[0]?.attempts, 1);
+    }
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved.env)) delete process.env[k]; Object.assign(process.env, saved.env); globalThis.fetch = saved.fetch; Date.now = saved.now;
+  }
+});
+
+test("enabled collection records redacted expiry/auth/parser/stream/timeout and UTC failures without sending or relabeling prior success", async () => {
+  const saved = { env: { ...process.env }, fetch: globalThis.fetch, now: Date.now, timer: globalThis.setTimeout };
+  let clock = now, network = 0; const state = emptyMonitor(); state.lastSuccess = reading(1, now - 4 * HOUR);
+  const ctx: any = { runMutation: async (_ref: unknown, args: any) => observeUsage(state, args.reading, args.status, args.now, true) };
+  try {
+    Object.assign(process.env, env()); Date.now = () => clock;
+    globalThis.fetch = async () => { network++; throw new Error("must not fetch missing credential"); };
+    delete process.env.PLANBAN_USAGE_READ_KEY; assert.equal(await runUsagePoll(ctx), "credential_missing");
+    process.env.PLANBAN_USAGE_READ_KEY = "synthetic"; process.env.PLANBAN_USAGE_KEY_EXPIRES_AT = String(now); assert.equal(await runUsagePoll(ctx), "credential_expired");
+    process.env.PLANBAN_USAGE_KEY_EXPIRES_AT = "broken"; assert.equal(await runUsagePoll(ctx), "credential_invalid_expiry"); assert.equal(network, 0);
+    process.env.PLANBAN_USAGE_KEY_EXPIRES_AT = env().PLANBAN_USAGE_KEY_EXPIRES_AT;
+    const cases: Array<[() => Response, string]> = [
+      [() => new Response("PRIVATE PROVIDER DIAGNOSTIC", { status: 403 }), "usage_unauthorized"],
+      [() => new Response("not-json"), "invalid_json"],
+      [() => new Response(JSON.stringify({ ...body(), seedStatus: "failed" })), "incomplete_reading"],
+      [() => { const b: any = body(); b.metrics.unknown = {}; return new Response(JSON.stringify(b)); }, "unknown_metric"],
+      [() => new Response(new ReadableStream({ start(c) { c.error(new Error("PRIVATE BODY ERROR")); } })), "body_failure"],
+    ];
+    for (const [response, expected] of cases) {
+      globalThis.fetch = async () => response(); assert.equal(await runUsagePoll(ctx), expected); assert.equal(state.status, expected);
+      assert.equal(state.lastSuccess.at, now - 4 * HOUR); assert.equal(state.batches.length, 0);
+    }
+    globalThis.setTimeout = ((fn: () => void) => { fn(); return 0; }) as any;
+    globalThis.fetch = async (_url, init) => { assert.ok(init?.signal?.aborted); throw new DOMException("PRIVATE TIMEOUT", "AbortError"); };
+    assert.equal(await runUsagePoll(ctx), "timeout"); globalThis.setTimeout = saved.timer;
+    clock = Date.UTC(2026, 9, 31, 23, 59, 59);
+    globalThis.fetch = async () => { clock = Date.UTC(2026, 10, 1); return new Response(JSON.stringify(body())); };
+    assert.equal(await runUsagePoll(ctx), "month_changed"); assert.equal(state.lastSuccess.month, "2026-10");
+    assert.ok(!JSON.stringify(state).includes("PRIVATE"));
+    const queryCtx: any = { db: { query: () => ({ withIndex: () => ({ unique: async () => ({ state }) }) }) } };
+    const result = await (usageStatus as any)._handler(queryCtx, {});
+    assert.equal(result.reason, "month_changed"); assert.equal(result.stale, true); assert.equal(result.observedAt, now - 4 * HOUR);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved.env)) delete process.env[k]; Object.assign(process.env, saved.env); globalThis.fetch = saved.fetch; Date.now = saved.now; globalThis.setTimeout = saved.timer;
+  }
 });
