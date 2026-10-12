@@ -510,45 +510,30 @@ test("a reorder may move other cards around a card holding files, but never repo
   });
 });
 
-test("a board holding files, or text that embeds one, is not duplicated", async () => {
+test("a copy of a board carries its text only, checked, and never the files in its folders", async () => {
   await withBoard(async ({ home, cwd, folder }) => {
     const { duplicateBoard } = await import("../src/core/registry");
-    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    await createCard({ cwd, title: "Alpha", status: "up-next", planMarkdown: "# Alpha Plan\n" });
+    const items = join(folder("alpha"), "..");
     writeFileSync(join(folder("alpha"), "evidence.bin"), Buffer.from([0, 1, 2]));
-    await assert.rejects(
-      duplicateBoard({ sourceRepoId: repoId, repoId: "copy-a" }),
-      /^PlanbanConflictError: Not copied: a card folder holds files: alpha \(evidence\.bin\)\. Planban is an index.*planban move-files-out <card> --to <folder>/su,
-    );
-    assert.ok(!existsSync(join(home, "repos", "copy-a")), "a refused copy leaves no board behind");
-    rmSync(join(folder("alpha"), "evidence.bin"));
+    mkdirSync(join(items, "supporting files"));
+    writeFileSync(join(items, "supporting files", "evidence.bin"), "x");
+    mkdirSync(join(items, "deleted-card"));
+    writeFileSync(join(items, "deleted-card", "spec.md"), dataUriSpec);
+    writeFileSync(join(items, "notes.txt"), "stray");
+    if (process.platform !== "win32") symlinkSync(join(items, "supporting files"), join(items, "linked card"));
 
-    // A Spec written before strict Local Mode, with a picture stored inside it.
+    const copied = await duplicateBoard({ sourceRepoId: repoId, repoId: "copy-a" });
+    const copyItems = join(home, "repos", copied.board.repoId, "items");
+    assert.equal(readFileSync(join(copyItems, "alpha", "spec.md"), "utf8"), readFileSync(join(folder("alpha"), "spec.md"), "utf8"));
+    assert.equal(readFileSync(join(copyItems, "alpha", "plan.md"), "utf8"), "# Alpha Plan\n");
+    for (const left of ["alpha/evidence.bin", "supporting files", "deleted-card", "notes.txt", "linked card"]) {
+      assert.ok(!existsSync(join(copyItems, left)), `${left} is not copied`);
+    }
+
+    // A Spec written before strict Local Mode, with a picture stored inside it, is refused, and no copy is made.
     writeFileSync(join(folder("alpha"), "spec.md"), dataUriSpec);
     await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-b" }), /Not saved: the Spec of card alpha contains (?:an embedded file|a picture stored in the text)/u);
     assert.ok(!existsSync(join(home, "repos", "copy-b")));
-    writeFileSync(join(folder("alpha"), "spec.md"), "# Alpha Spec\n");
-
-    // A card folder that is a link, for a current card or a deleted one, or a file beside the folders.
-    if (process.platform !== "win32") {
-      mkdirSync(join(home, "elsewhere"));
-      writeFileSync(join(home, "elsewhere", "evidence.bin"), "x");
-      await createCard({ cwd, title: "Linked", status: "up-next" });
-      rmSync(folder("linked"), { recursive: true });
-      symlinkSync(join(home, "elsewhere"), folder("linked"));
-      await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-d" }), /Not copied: a card folder holds files: linked \(\(this card's folder is a link to another folder\)\)/u);
-      assert.ok(!existsSync(join(home, "repos", "copy-d")));
-      rmSync(folder("linked"));
-      symlinkSync(join(home, "elsewhere"), folder("deleted-card"));
-      await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-e" }), /Not copied: .*deleted-card/u);
-      rmSync(folder("deleted-card"));
-      mkdirSync(folder("linked"));
-      writeFileSync(join(folder("linked"), "spec.md"), "# Linked Spec\n");
-    }
-    writeFileSync(join(folder("alpha"), "..", "notes.txt"), "stray");
-    await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-f" }), /Not copied: a card folder holds files: \(beside the card folders\) \(notes\.txt\)/u);
-    rmSync(join(folder("alpha"), "..", "notes.txt"));
-    writeFileSync(join(folder("alpha"), "..", ".DS_Store"), "");
-    const copied = await duplicateBoard({ sourceRepoId: repoId, repoId: "copy-c" });
-    assert.equal(copied.board.repoId, "copy-c");
   });
 });
