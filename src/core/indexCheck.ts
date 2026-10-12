@@ -3,7 +3,7 @@
 // This check finds what is in the way on a board on this machine: files in
 // card folders, and pictures in Specs and Plans that are stored inside the
 // document or point at files on this machine. Take Online refuses a board
-// that is not clean; strict Local Mode will use the same check.
+// that is not clean; strict Local Mode refuses changes to a card holding files.
 import { execFileSync } from "node:child_process";
 import { lstat, readdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
@@ -36,13 +36,19 @@ export function howToTidy(machine = machineName()) {
     "- Move each file in its folder to where it belongs (the project's repository, a shared drive or a website), and link to it from the card's Spec or Plan: a GitHub link, a web address, or a path labelled with its machine, such as "
       + `"${machine}: ~/Projects/app/renders/front.png".`,
     "- Replace each picture that is stored in a Spec or Plan, or points at a file on this machine, with such a link or labelled path.",
+    "- Or run `planban move-files-out <card> --to <folder>` (add --dry-run to preview): it moves the folder's files to that folder without overwriting anything, and adds a Files section to the card's Spec that refers to them.",
   ].join("\n");
 }
 
+/** Planban's own short-lived files while it saves a Spec or Plan (see atomicWriteFile). */
+const PLANBAN_SAVE_FILE = /^\.(spec|plan)\.md\.\d+\.\d+\.[0-9a-f-]{36}\.tmp$/;
+/** Folder settings the operating system adds when a person opens the folder; never a person's file. */
+const SYSTEM_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
+
 /**
  * Every file in a card's folder other than its Spec and Plan, with paths
- * inside the folder (links are listed, not followed), and any folder inside
- * it that could not be read.
+ * inside the folder (links are listed, not followed; an empty folder is
+ * listed as `name/`), and any folder inside it that could not be read.
  */
 export async function filesInCard(planningRoot: string, cardId: string): Promise<{ files: string[]; unreadable: string[] }> {
   const files: string[] = [];
@@ -66,10 +72,13 @@ export async function filesInCard(planningRoot: string, cardId: string): Promise
       const absolute = join(dir, entry.name);
       const path = relative(folder, absolute).split(sep).join("/");
       if (entry.isDirectory()) {
-        await walk(absolute);
+        // An empty folder is still something besides the card's text.
+        if ((await readdir(absolute).catch(() => null))?.length === 0) files.push(`${path}/`);
+        else await walk(absolute);
         continue;
       }
-      if (dir === folder && entry.isFile() && (entry.name === "spec.md" || entry.name === "plan.md")) continue;
+      if (dir === folder && entry.isFile() && (entry.name === "spec.md" || entry.name === "plan.md" || PLANBAN_SAVE_FILE.test(entry.name))) continue;
+      if (entry.isFile() && SYSTEM_FILES.has(entry.name)) continue;
       // Anything else (files, links, devices) is not Planban's own text.
       files.push(path);
     }
@@ -171,7 +180,7 @@ export async function checkBoardIsIndex(input: {
     try {
       checkIndexCard(card);
     } catch (error) {
-      entry(card.id, card.title).problems.push((error as Error).message.replace(/^Not saved: card \S+ /, "Its fields ").replace(/\. Online Boards hold.*$/s, "."));
+      entry(card.id, card.title).problems.push((error as Error).message.replace(/^Not saved: card \S+ /, "Its fields ").replace(/\. (?:Online Boards|Planban boards) hold.*$/s, "."));
     }
   }
   for (const doc of input.docs) {
@@ -193,7 +202,7 @@ export async function checkBoardIsIndex(input: {
     try {
       checkIndexValue(input.details, "the board's details", MAX_DETAILS_BYTES);
     } catch (error) {
-      boardProblems.push((error as Error).message.replace(/^Not saved: /, "").replace(/\. Online Boards hold.*$/s, "."));
+      boardProblems.push((error as Error).message.replace(/^Not saved: /, "").replace(/\. (?:Online Boards|Planban boards) hold.*$/s, "."));
     }
   }
   const cards = [...byCard.values()];

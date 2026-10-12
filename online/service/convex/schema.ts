@@ -151,6 +151,8 @@ export default defineSchema({
     boardId: v.string(),
     generation: v.number(),
     bytes: v.number(),
+    /** Increases with every change to the total, so a measurement taken across several steps can tell it was overtaken. */
+    epoch: v.optional(v.number()),
   }).index("by_board_generation", ["boardId", "generation"]),
 
   /** What each account wrote on a day (UTC), for the daily limits in model/limits.ts. */

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkBoardIsIndex, filesInCard, picturesInTheWay } from "../src/core/indexCheck";
+import { embeddedFileIn, INDEX_NOT_STORAGE } from "../src/core/contentRules";
 
 test("every way of putting a picture in a document is found; pictures on the web are fine", () => {
   const markdown = [
@@ -72,4 +73,16 @@ test("a card folder that is a link, nested metadata and board details are all ch
 test("pictures shown as examples in code are not in the way", () => {
   const markdown = "Use `![photo](images/photo.png)` like this:\n\n```md\n![photo](images/photo.png)\n```\n\n~~~\n![x](x.png)\n~~~\n";
   assert.deepEqual(picturesInTheWay(markdown, "/board/items/alpha"), []);
+});
+
+test("system files and Planban's own save files never freeze a card; an empty folder does; the advice names move-files-out", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-index-"));
+  const folder = join(root, "items", "alpha");
+  await mkdir(join(folder, "renders"), { recursive: true });
+  await writeFile(join(folder, ".DS_Store"), "x");
+  await writeFile(join(folder, ".spec.md.123.4.0f5a1c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b.tmp"), "saving");
+  assert.deepEqual((await filesInCard(root, "alpha")).files, ["renders/"]);
+  const report = await checkBoardIsIndex({ planningRoot: root, cards: [{ id: "alpha", title: "Alpha" }], docs: [] });
+  assert.match(report.howToTidy, /planban move-files-out <card> --to <folder>/);
+  assert.match(embeddedFileIn("x") === null ? INDEX_NOT_STORAGE : "", /^Planban boards hold text only/);
 });

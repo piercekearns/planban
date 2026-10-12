@@ -41,8 +41,8 @@ export async function addStored(ctx: MutationCtx, at: BoardRows, delta: number, 
   if (delta > 0 && !options.allowOverLimit && bytes > limit(0, BOARD_STORED_LIMIT)) {
     fail("validation", `Not saved: this board would hold more than ${MB(limit(0, BOARD_STORED_LIMIT))} of text, history included. Planban is an index, not storage: keep long material where it lives and link to it, or move finished work to another board.`);
   }
-  if (row) await ctx.db.patch(row._id, { bytes });
-  else await ctx.db.insert("boardSizes", { ...at, bytes });
+  if (row) await ctx.db.patch(row._id, { bytes, epoch: (row.epoch ?? 0) + 1 });
+  else await ctx.db.insert("boardSizes", { ...at, bytes, epoch: 1 });
 }
 
 async function usageRow(ctx: MutationCtx, userId: string) {

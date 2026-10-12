@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { checkIndexCard, checkIndexDocument, embeddedFileIn, MAX_DOCUMENT_BYTES } from "../src/core/contentRules";
 
@@ -205,4 +206,14 @@ test("round 10's shapes are refused, and a real card's long hash list is not", a
   // A real Revival card (an old version) listed 91 commit hashes in its metadata.
   checkIndexValue({ id: "revival-target-state-architecture", metadata: Object.fromEntries(Array.from({ length: 91 }, (_, i) => [`commit${i}`, randomBytes(20).toString("hex")])) }, "card", 128 * 1024);
   checkIndexValue({ id: "x", summary: Array.from({ length: 91 }, (_, i) => `- release ${i}: ${randomBytes(20).toString("hex")}`).join("\n") }, "card", 128 * 1024);
+});
+
+test("base85 and ASCII85 wrapped at 16 columns are refused too", () => {
+  const ascii85Alphabet = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
+  // Fixed seeds cover rows with little punctuation and keep failures reproducible.
+  for (let seed = 0; seed < 20; seed += 1) {
+    const f = Buffer.concat(Array.from({ length: 141 }, (_, i) => createHash("sha256").update(`${seed}:${i}`).digest())).subarray(0, 4500);
+    assert.match(embeddedFileIn((base85(f).match(/.{1,16}/g) ?? []).join("\n")) ?? "missed", /encoded file/, `base85 at 16, seed ${seed}`);
+    assert.match(embeddedFileIn("<~" + (base85(f, ascii85Alphabet).match(/.{1,16}/g) ?? []).join("\n") + "~>") ?? "missed", /encoded file/, `ASCII85 at 16, seed ${seed}`);
+  }
 });

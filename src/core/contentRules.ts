@@ -30,7 +30,7 @@ export const MAX_DETAILS_BYTES = 64 * 1024;
 /** How to point at a file instead of embedding it; shown in errors, tool descriptions and the protocol. */
 export const HOW_TO_REFER = "Refer to files where they live instead: a GitHub link, any web address, or a local path labelled with its machine, for example \"Mac mini: ~/Projects/northfold/renders/front.png\".";
 
-export const INDEX_NOT_STORAGE = `Online Boards hold text only: cards, Specs, Plans and their history. Planban does not store files. ${HOW_TO_REFER}`;
+export const INDEX_NOT_STORAGE = `Planban boards hold text only: cards, Specs, Plans and their history. Planban does not store files. ${HOW_TO_REFER}`;
 
 /** A data: address and its payload. */
 const DATA_URI = /data:[^\s,`]{0,100},([^\s)"'`<>\]]*)/gi;
@@ -84,14 +84,19 @@ const isPayloadToken = (token: string) => /^(?:0x)?[0-9a-fA-F]+$/.test(token)
 /** Escaped bytes, as printed by Python, JSON, C and od: \x89, \u0000, \377, \n. */
 const ESCAPE = /\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[abfnrtv'"\\])/g;
 /**
- * A dense line: no spaces to speak of, 24 or more characters, and full of
+ * A dense line: no spaces to speak of, 12 or more characters, and full of
  * punctuation, as uuencode, base85 and ASCII85 write. Not a web address and
  * not a Markdown rule or table border.
  */
-const isDenseLine = (line: string) => line.length >= 24
+const isDenseLine = (line: string) => line.length >= 12
   && (line.match(/\s/g)?.length ?? 0) <= line.length * 0.05
   && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line)
   && ((line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1 || looksEncoded(line.replace(/[^A-Za-z0-9]/g, "")));
+/** Short encoder rows sometimes have too little punctuation to start a block.
+ * They can continue one, without treating ordinary words or references as payload. */
+const isCompactPayloadLine = (line: string) => line.length >= 12 && line.length < 24
+  && !/\s|:\/\//.test(line) && !/^[|:=*#~_-]+$/.test(line)
+  && !/^[a-z-]+$|^[A-Z][a-z]+$|^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(line);
 const PAYLOAD_BLOCK_LIMIT = 3072;
 /** Across a structured value's fields, only fields with at least this much payload count towards the limit. */
 const FIELD_BLOCK_MIN = 64;
@@ -146,8 +151,9 @@ function payloadLines(text: string) {
     // Mostly payload: starts or continues a block. Partly payload (a dump line
     // with some printable bytes shown as letters): continues one, never starts one.
     const strong = (payload >= 8 || lone || escapes >= 4) && share >= 0.6;
+    const compact = isCompactPayloadLine(line.trim());
     const weak = !strong && payload >= 4 && share >= 0.3;
-    lines.push({ index, payload: strong ? payload : 0, weak: weak ? payload : 0 });
+    lines.push({ index, payload: strong ? payload : 0, weak: compact ? line.trim().length : weak ? payload : 0 });
   });
   return lines;
 }
