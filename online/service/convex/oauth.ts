@@ -195,7 +195,9 @@ export const cleanupRequests = internalMutation({
       // Later requests or late approval can outlive the bucket's first job.
       // Keep a bounded job alive until the last outstanding deadline passes.
       const next = await ctx.db.query("oauthRequests").withIndex("by_expiry").order("asc").first();
-      if (next) await scheduleCleanup(ctx, Math.max(0, next.expiresAt - Date.now()) + 1);
+      const nextUsage = await ctx.db.query("oauthUsage").withIndex("by_bucket").order("asc").first();
+      const deadline = Math.min(next?.expiresAt ?? Infinity, nextUsage ? (nextUsage.bucket + 1) * REQUEST_MS : Infinity);
+      if (Number.isFinite(deadline)) await scheduleCleanup(ctx, Math.max(0, deadline - Date.now()) + 1);
     }
   },
 });

@@ -26,7 +26,8 @@ function fixture() {
       let sort: "asc" | "desc" | null = null;
       const matches = () => {
         const found = rows.filter((row) => row.table === table && filters.every((filter) => filter(row)));
-        return sort ? found.sort((a, b) => (a.expiresAt - b.expiresAt) * (sort === "asc" ? 1 : -1)) : found;
+        const key = table === "oauthUsage" ? "bucket" : "expiresAt";
+        return sort ? found.sort((a, b) => (a[key] - b[key]) * (sort === "asc" ? 1 : -1)) : found;
       };
       const query: any = { withIndex(_index: string, build: any) { const index: any = {
         eq(key: string, value: unknown) { filters.push((row) => row[key] === value); return index; },
@@ -247,6 +248,26 @@ test("continuous traffic uses one cleanup driver across client buckets and termi
   await f.request("after-idle");
   assert.equal(queued().length, 1);
   assert.ok(state.ticket > ticket, "a new idle-to-active transition owns a fresh ticket");
+});
+
+test("cleanup preserves a current rate counter until bucket rollover and removes it without more traffic", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture(), machine = await f.addMachine();
+  await f.request("previous-bucket-pending");
+  t.mock.timers.tick(oauth.REQUEST_MS);
+  const consumed = await f.request("current-bucket-consumed");
+  const grant = await f.approve(consumed, machine); await f.redeem(consumed);
+  t.mock.timers.tick(oauth.CODE_MS);
+  await f.runDueCleanup();
+  assert.equal(f.rows.filter((row) => row.table === "oauthRequests").length, 0);
+  assert.equal(f.rows.filter((row) => row.table === "oauthUsage").length, 1, "the current quota cannot reset early");
+  assert.equal((await f.db.get(grant)).revokedAt, undefined);
+  assert.equal(f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests").length, 1);
+  t.mock.timers.tick(oauth.REQUEST_MS);
+  await f.runDueCleanup();
+  assert.equal(f.rows.filter((row) => row.table === "oauthUsage").length, 0);
+  assert.equal(f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests").length, 0);
+  assert.equal((await f.db.get(grant)).revokedAt, undefined);
 });
 
 test("token revocation is idempotent and closes its exact family without revoking another app installation", async () => {
