@@ -178,13 +178,16 @@ export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: numb
   const first = await ctx.db.query("history")
     .withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).gt("version", old.at(-1)!.version))
     .first();
+  // Pruning shrinks a board overall: the snapshot it may add is counted after
+  // the removals, so it is never refused for being near the board's limit.
+  let growth = 0;
   if (first && !first.snapshot) {
     const roadmap = await roadmapAtVersion(ctx, at, first.version);
     await ctx.db.patch(first._id, { snapshot: true });
     const was = await payload(ctx, at, first.version);
     const packed = packJson(roadmap);
     await ctx.db.patch(was._id, { snapshot: packed, delta: undefined });
-    await addStored(ctx, at, sizeOf(packed) - sizeOf(was.delta ?? was.snapshot ?? new Uint8Array()));
+    growth = sizeOf(packed) - sizeOf(was.delta ?? was.snapshot ?? new Uint8Array());
   }
   for (const row of old) {
     for (const doc of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("version", row.version)).collect()) {
@@ -206,5 +209,6 @@ export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: numb
     await ctx.db.delete(row._id);
     await addStored(ctx, at, -(sizeOf(gone.snapshot ?? gone.delta ?? new Uint8Array()) + sizeOf(row.entry)));
   }
+  await addStored(ctx, at, growth, { allowOverLimit: true });
   if (old.length === PRUNE_BATCH) await ctx.scheduler.runAfter(0, internal.historyMaintenance.prune, { ...at, cutoff });
 }

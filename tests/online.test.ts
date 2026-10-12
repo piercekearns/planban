@@ -76,6 +76,7 @@ async function fakeService() {
   let slowPartsMs = 0;
   let failNextBoardRead = false;
   let dropFenceReply = false;
+  let limitNextOp = false;
   let onMe: (() => Promise<void> | void) | undefined;
   const uploads = new Map<string, Buffer>();
   const sessions = new Map<string, any>();
@@ -339,6 +340,10 @@ async function fakeService() {
         const version = Math.max(...bundle.history.map(({ entry }) => entry.version)) + 1;
         bundle.history.push({ entry: { ...change.history, affectedDocs: change.history.affectedDocs ?? [], version, roadmapRevision: bundle.roadmap.revision, createdAt: context.now }, roadmap: structuredClone(bundle.roadmap) });
         if (key) replies.set(key, { roadmap: bundle.roadmap, result });
+        if (limitNextOp) {
+          limitNextOp = false;
+          return json(429, { error: { code: "rate_limited", message: "This account has reached today's limit of 5,000 changes or 64 MB of written text on Planban Online. It resets at midnight UTC." } });
+        }
         if (dropNextReply) {
           // Simulates a response lost on the network after the edit committed.
           dropNextReply = false;
@@ -361,7 +366,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, failNextBoardRead() { failNextBoardRead = true; }, dropFenceReply() { dropFenceReply = true; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, failNextBoardRead() { failNextBoardRead = true; }, dropFenceReply() { dropFenceReply = true; }, limitNextOp() { limitNextOp = true; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -1254,6 +1259,24 @@ test("an upload started by another account is never cancelled or forgotten by th
   await assert.rejects(stopTakeOnline(cwd), /another account \(someone-else\)/);
   assert.equal(JSON.parse(await readFile(journalPath, "utf8")).transferId, recorded.transferId);
   assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["open"]);
+});
+
+test("a daily limit reaches the board page and agents as a limit, with its message, not as a failure", async () => {
+  await takeOnline(fake.url, cwd);
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  try {
+    const state = await (await fetch(`${server.url}/api/boards/demo/state`)).json();
+    fake.limitNextOp();
+    const response = await fetch(`${server.url}/api/boards/demo/cards/alpha`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: "One more", baseRevision: state.roadmap.revision }) });
+    assert.equal(response.status, 429);
+    assert.match((await response.json()).error, /today's limit .* resets at midnight UTC/);
+  } finally {
+    await server.close();
+  }
 });
 
 test("the board page moves a board online and back, and names who would lose access before cutting them off", async () => {

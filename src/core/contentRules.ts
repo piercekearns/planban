@@ -84,27 +84,55 @@ const isPayloadToken = (token: string) => /^(?:0x)?[0-9a-fA-F]+$/.test(token)
 /** Escaped bytes, as printed by Python, JSON, C and od: \x89, \u0000, \377, \n. */
 const ESCAPE = /\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[abfnrtv'"\\])/g;
 /**
- * A dense line: no spaces to speak of, 40 or more characters, and full of
+ * A dense line: no spaces to speak of, 24 or more characters, and full of
  * punctuation, as uuencode, base85 and ASCII85 write. Not a web address and
  * not a Markdown rule or table border.
  */
-const isDenseLine = (line: string) => line.length >= 40
+const isDenseLine = (line: string) => line.length >= 24
   && (line.match(/\s/g)?.length ?? 0) <= line.length * 0.05
   && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line)
-  && (line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1;
+  && ((line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1 || looksEncoded(line.replace(/[^A-Za-z0-9]/g, "")));
 const PAYLOAD_BLOCK_LIMIT = 3072;
 /** Across a structured value's fields, only fields with at least this much payload count towards the limit. */
 const FIELD_BLOCK_MIN = 64;
-const HASH_FIELDS_LIMIT = 64;
+const HASH_FIELDS_LIMIT = 100;
+
+/**
+ * A uuencoded line: its first character gives the byte count, and the rest is
+ * exactly that many bytes in uuencode's alphabet (which includes the space).
+ */
+function isUuencodeLine(line: string) {
+  const count = line.charCodeAt(0) - 32;
+  if (count < 1 || count > 63) return false;
+  const body = line.slice(1);
+  return body.length >= 4 && Math.abs(body.length - Math.ceil(count / 3) * 4) <= 1 && /^[ -`]+$/.test(body);
+}
+
+/**
+ * A line that is a single hash-length hex token (a commit or checksum):
+ * planning text lists these (one real Revival card lists 91), so a block
+ * counts them only past HASH_LINES_ALLOWED, about 3 KB of hex at that width.
+ */
+const HASH_LINE = /^(?:[\w .:#/@-]{0,40}[\s:=])?([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{32}|[0-9a-fA-F]{128})[\s,.;)]*$/;
+const HASH_LINES_ALLOWED = 100;
 
 /** Each line's payload characters (0 for a line of prose), for lines that are not blank. */
 function payloadLines(text: string) {
-  const lines: Array<{ index: number; payload: number; weak: number }> = [];
+  const lines: Array<{ index: number; payload: number; weak: number; hash?: number }> = [];
   text.split(/\r?\n/).forEach((raw, index) => {
     const line = raw.replace(/^[\s>*+-]*(?:\d+[.)]\s+)?/, "");
     if (!line.trim()) return;
+    if (isUuencodeLine(raw)) {
+      lines.push({ index, payload: raw.length, weak: 0 });
+      return;
+    }
     if (isDenseLine(line.trim())) {
       lines.push({ index, payload: line.trim().length, weak: 0 });
+      return;
+    }
+    const hash = HASH_LINE.exec(line.trim());
+    if (hash) {
+      lines.push({ index, payload: 0, weak: 0, hash: hash[1]!.length });
       return;
     }
     const escapes = (line.match(ESCAPE) ?? []).join("").length;
@@ -113,7 +141,7 @@ function payloadLines(text: string) {
     const total = tokens.reduce((sum, token) => sum + token.length, 0) + escapes;
     const payload = tokens.filter(isPayloadToken).reduce((sum, token) => sum + token.length, 0) + escapes;
     // A line that is only a number or a byte ("42,", "0x2a") counts however short: one byte per line still adds up.
-    const lone = tokens.length === 1 && /^(?:0x[0-9a-fA-F]{1,2}|\d{1,3})$/.test(tokens[0]!);
+    const lone = tokens.length === 1 && /^(?:0x[0-9a-fA-F]{1,2}|\d{1,3}|[0-9a-fA-F]{2})$/.test(tokens[0]!);
     const share = total > 0 ? payload / total : 0;
     // Mostly payload: starts or continues a block. Partly payload (a dump line
     // with some printable bytes shown as letters): continues one, never starts one.
@@ -128,10 +156,22 @@ function payloadLines(text: string) {
 export function largestPayloadBlock(text: string) {
   let block = 0;
   let largest = 0;
+  let hashLines = 0;
+  let hashChars = 0;
   for (const line of payloadLines(text)) {
-    if (line.payload) block += line.payload;
+    if (line.hash) {
+      // Hash lists continue a block; past the allowance they count as payload.
+      hashLines += 1;
+      hashChars += line.hash;
+      if (hashLines === HASH_LINES_ALLOWED + 1) block += hashChars;
+      else if (hashLines > HASH_LINES_ALLOWED) block += line.hash;
+    } else if (line.payload) block += line.payload;
     else if (line.weak && block > 0) block += line.weak;
-    else block = 0;
+    else {
+      block = 0;
+      hashLines = 0;
+      hashChars = 0;
+    }
     largest = Math.max(largest, block);
   }
   return largest;

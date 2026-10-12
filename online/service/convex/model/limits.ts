@@ -34,11 +34,11 @@ export function sizeOf(value: ArrayBuffer | Uint8Array | string | unknown): numb
 }
 
 /** Adds (or, when negative, removes) stored bytes for one board generation; refuses growth past the board limit. */
-export async function addStored(ctx: MutationCtx, at: BoardRows, delta: number) {
+export async function addStored(ctx: MutationCtx, at: BoardRows, delta: number, options: { allowOverLimit?: boolean } = {}) {
   if (delta === 0) return;
   const row = await ctx.db.query("boardSizes").withIndex("by_board_generation", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).unique();
   const bytes = Math.max(0, (row?.bytes ?? 0) + delta);
-  if (delta > 0 && bytes > limit(0, BOARD_STORED_LIMIT)) {
+  if (delta > 0 && !options.allowOverLimit && bytes > limit(0, BOARD_STORED_LIMIT)) {
     fail("validation", `Not saved: this board would hold more than ${MB(limit(0, BOARD_STORED_LIMIT))} of text, history included. Planban is an index, not storage: keep long material where it lives and link to it, or move finished work to another board.`);
   }
   if (row) await ctx.db.patch(row._id, { bytes });

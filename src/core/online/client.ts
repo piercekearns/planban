@@ -94,6 +94,8 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     if (response.status === 404) throw new PlanbanNotFoundError(message);
     if (response.status === 401) throw loginRequired(url);
     if (response.status === 403) throw new OnlineAuthenticationError(`${message} Ask the board owner for access.`, 403);
+    // A daily limit (owner decision 18): kept as 429 so the board page and agents see a limit, not a failure.
+    if (response.status === 429) throw Object.assign(new Error(message), { name: "OnlineLimitError", statusCode: 429 });
     throw new Error(message);
   }
   return response;

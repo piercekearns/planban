@@ -189,3 +189,20 @@ test("today's encoders are refused too: uuencode, base85, ASCII85, Python bytes,
   };
   for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file|binary/, name);
 });
+
+test("round 10's shapes are refused, and a real card's long hash list is not", async () => {
+  const { checkIndexValue } = await import("../src/core/contentRules");
+  const zeros = Buffer.alloc(4500);
+  const uuSpaces = ["begin 644 z.bin", ...Array.from({ length: Math.ceil(zeros.length / 45) }, (_, i) => "M" + " ".repeat(60)), " ", "end"].join("\n");
+  const f = randomBytes(8192);
+  const b85w32 = (base85(f).match(/.{1,32}/g) ?? []).join("\n");
+  const variants: Record<string, string> = {
+    "uuencode of zero bytes, with spaces": uuSpaces,
+    "base85 at 32": b85w32,
+    "one hex byte per line": [...f.subarray(0, 4096)].map((b) => b.toString(16).padStart(2, "0")).join("\n"),
+  };
+  for (const [name, text] of Object.entries(variants)) assert.match(embeddedFileIn(text) ?? "missed", /encoded file/, name);
+  // A real Revival card (an old version) listed 91 commit hashes in its metadata.
+  checkIndexValue({ id: "revival-target-state-architecture", metadata: Object.fromEntries(Array.from({ length: 91 }, (_, i) => [`commit${i}`, randomBytes(20).toString("hex")])) }, "card", 128 * 1024);
+  checkIndexValue({ id: "x", summary: Array.from({ length: 91 }, (_, i) => `- release ${i}: ${randomBytes(20).toString("hex")}`).join("\n") }, "card", 128 * 1024);
+});
