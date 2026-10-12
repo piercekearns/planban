@@ -8,6 +8,7 @@ import type { Doc } from "./_generated/dataModel";
 import { connectionIsUsable, liveConnection } from "./model/access";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
+import { metadataClientAllowed } from "./model/oauthClient";
 
 export const REQUEST_MS = 10 * 60_000;
 export const CODE_MS = 60_000;
@@ -39,6 +40,21 @@ async function scheduleCleanup(ctx: MutationCtx, delay: number) {
   else await ctx.db.insert("oauthCleanup", fields);
   await ctx.scheduler.runAfter(delay, internal.oauth.cleanupRequests, { ticket });
 }
+
+/** Reserve outbound work atomically, even if metadata fails or no row is created. */
+export const reserveMetadataFetch = internalMutation({
+  args: { clientId: v.string() },
+  handler: async (ctx, { clientId }) => {
+    if (!metadataClientAllowed(clientId)) return false;
+    const bucket = Math.floor(Date.now() / REQUEST_MS);
+    const usage = await ctx.db.query("oauthUsage").withIndex("by_client_bucket", (q) => q.eq("clientId", clientId).eq("bucket", bucket)).unique();
+    if ((usage?.requests ?? 0) >= 100 || (usage?.fetches ?? 0) >= 100) return false;
+    if (usage) await ctx.db.patch(usage._id, { fetches: (usage.fetches ?? 0) + 1 });
+    else await ctx.db.insert("oauthUsage", { clientId, bucket, requests: 0, fetches: 1 });
+    await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);
+    return true;
+  },
+});
 
 export const createRequest = internalMutation({
   args: { requestHash: hash, browserHash: hash, csrfHash: hash, clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(), scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(), purpose: v.union(v.literal("oauth"), v.literal("machine")) },

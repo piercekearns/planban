@@ -39,7 +39,10 @@ test("discovery names only the service issuer and explicit machine flow, and fai
 
 test("authorization freezes validated metadata and bindings, with independent host cookies and no unsafe redirect", async () => configured(async () => {
   const stored: any[] = [];
-  const ctx: any = { runMutation: async (fn: any, args: any) => { assert.equal(getFunctionName(fn), "oauth:createRequest"); stored.push(args); } };
+  const ctx: any = { runMutation: async (fn: any, args: any) => {
+    if (getFunctionName(fn) === "oauth:reserveMetadataFetch") return true;
+    assert.equal(getFunctionName(fn), "oauth:createRequest"); stored.push(args);
+  } };
   const response = await authorizationResponse(ctx, authorize(), async () => client);
   assert.equal(response.status, 303);
   const location = new URL(response.headers.get("Location")!);
@@ -66,6 +69,20 @@ test("authorization freezes validated metadata and bindings, with independent ho
   }
   assert.equal(invalidFetches, 0, "independent malformed fields never fetch publisher metadata");
   assert.equal(stored.length, 1, "invalid requests create no pending rows");
+}));
+
+test("exhausted metadata budget refuses valid requests before fetch, without permitting unknown clients", async () => configured(async () => {
+  let fetches = 0, reservations = 0;
+  const ctx: any = { runMutation: async (fn: any) => { assert.equal(getFunctionName(fn), "oauth:reserveMetadataFetch"); reservations++; return false; } };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await authorizationResponse(ctx, authorize(), async () => { fetches++; return client; });
+    assert.equal(response.status, 429);
+  }
+  assert.equal(reservations, 3);
+  assert.equal(fetches, 0);
+  const unknown = await authorizationResponse(ctx, authorize({ ...fields, client_id: "https://attacker.example/client.json" }), async () => { fetches++; return client; });
+  assert.equal(unknown.status, 400);
+  assert.equal(reservations, 3, "unknown URLs neither allocate budget rows nor fetch");
 }));
 
 test("consent escapes frozen metadata and approval requires origin, independent CSRF and verified identity", async () => configured(async () => {

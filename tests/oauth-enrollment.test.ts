@@ -138,6 +138,29 @@ test("grant changes and refresh cannot expand an access credential beyond its ap
   assert.equal((await handler(oauth.refresh, f.ctx, { ...next, tokenHash: next.refreshHash, resource: "https://other.example/mcp" })).error, "invalid_grant");
 });
 
+test("metadata budget is atomic, bounds failed fetch attempts and respects creation quota and rollover", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture(), clientId = "https://chatgpt.com/oauth/codex/client.json";
+  assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId: "https://attacker.example/client.json" }), false);
+  assert.equal(f.rows.length, 0);
+  for (let attempt = 0; attempt < 100; attempt++) assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId }), true);
+  assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId }), false);
+  const usage = f.rows.find((row) => row.table === "oauthUsage");
+  assert.equal(usage.requests, 0, "network failures still consume their separate budget");
+  assert.equal(usage.fetches, 100);
+  assert.equal(f.rows.filter((row) => row.table === "oauthRequests").length, 0);
+  assert.equal(f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests").length, 1);
+  t.mock.timers.tick(oauth.REQUEST_MS);
+  assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId }), true);
+  const current = f.rows.find((row) => row.table === "oauthUsage" && row.bucket !== usage.bucket);
+  await f.db.patch(current._id, { requests: 100 });
+  assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId }), false, "exhausted creation quota also prevents outbound work");
+  t.mock.timers.tick(oauth.REQUEST_MS + oauth.CODE_MS);
+  await f.runDueCleanup();
+  assert.equal(f.rows.filter((row) => row.table === "oauthUsage").length, 0);
+  assert.equal(f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests").length, 0);
+});
+
 test("browser-bound cancellation consumes a pending request without identity or a grant", async () => {
   const f = fixture(), args = await f.request("cancel-without-identity");
   for (const field of ["browserHash", "csrfHash"]) await assert.rejects(handler(oauth.denyRequest, f.ctx, { ...args, [field]: digest("wrong") }), /fresh authorization/);

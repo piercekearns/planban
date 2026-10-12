@@ -222,7 +222,7 @@ export default defineSchema({
   }).index("by_tokenHash", ["tokenHash"]),
 
   /** Bounded authorization request creation per client and time bucket. */
-  oauthUsage: defineTable({ clientId: v.string(), bucket: v.number(), requests: v.number() })
+  oauthUsage: defineTable({ clientId: v.string(), bucket: v.number(), requests: v.number(), fetches: v.optional(v.number()) })
     .index("by_client_bucket", ["clientId", "bucket"]).index("by_bucket", ["bucket"]),
 
   /** One transaction-owned cleanup driver; old job tickets cannot restart it. */

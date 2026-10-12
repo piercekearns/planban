@@ -7,6 +7,7 @@ const METADATA_CLIENTS = new Set([
   "https://chatgpt.com/oauth/client.json",
 ]);
 const MAX_BYTES = 5 * 1024;
+export function metadataClientAllowed(clientId: string): boolean { return METADATA_CLIENTS.has(clientId); }
 export interface OAuthClient {
   readonly clientId: string;
   readonly name: string;

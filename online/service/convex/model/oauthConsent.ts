@@ -2,7 +2,7 @@ import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
 import { MACHINE_CLIENT_ID, REQUEST_MS, scopeLevel } from "../oauth";
 import { publicOrigin, randomSecret, sha256Hex } from "./auth";
-import { loadOAuthClient, clientRedirectAllowed, type OAuthClient } from "./oauthClient";
+import { loadOAuthClient, clientRedirectAllowed, metadataClientAllowed, type OAuthClient } from "./oauthClient";
 import { verifyHumanSession, type HumanIdentity } from "./humanSession";
 import { readOAuthForm } from "./oauthHttp";
 
@@ -76,6 +76,12 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
   if (!scopes.length || scopes.length > 4 || new Set(scopes).size !== scopes.length || (machine ? scopes.length !== 1 || scopes[0] !== "planban:machine" : !scopes.some((scope) => scope.startsWith("planban:")) || scopes.some((scope) => !(PLANBAN_SCOPES as readonly string[]).includes(scope)))) return rejected("invalid_scope");
   const challenge = input.get("code_challenge") ?? "";
   if (input.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return rejected("invalid_request");
+  if (!machine) {
+    if (!metadataClientAllowed(clientId)) return rejected("invalid_client");
+    try {
+      if (!await ctx.runMutation(internal.oauth.reserveMetadataFetch, { clientId })) return rejected("temporarily_unavailable", 429);
+    } catch { return rejected("temporarily_unavailable", 503); }
+  }
   const client = machine ? { clientId, name: "Planban CLI", redirectUris: CLI_REDIRECT_PORTS.map((port) => `http://127.0.0.1:${port}/callback`), native: true } : await loader(clientId);
   if (!client || !(machine ? client.redirectUris.includes(redirectUri) : clientRedirectAllowed(client, redirectUri))) return rejected("invalid_client");
   const cookies = browserCookies(request, config.secure) ?? { browser: randomSecret("pbb_"), csrf: randomSecret("pbs_") };
