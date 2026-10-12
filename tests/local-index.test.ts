@@ -95,6 +95,7 @@ test("every local write refuses embedded files and oversized text, with advice o
     await assert.rejects(createCard({ cwd, title: "Beta", planMarkdown: pngBase64 }), refuses(/the Plan of card Beta contains an encoded file/u));
     await assert.rejects(createGroup({ cwd, title: "Gamma", summary: `Logo ${pngBase64}` }), refuses(/card gamma contains an encoded file/u));
     await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "spec", markdown: dataUriSpec }), refuses(reference));
+    await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "spec", markdown: "<~" + "z".repeat(768) + "~>" }), refuses(/encoded file/u));
     await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "plan", markdown: "word ".repeat(220 * 1024) }), refuses(/limit is 1024 KB/u));
     await assert.rejects(updateCard({ cwd, cardId: card.id, summary: `Screenshot: data:image/png;base64,${pngBase64}` }), refuses(/card alpha contains (?:an embedded file|a picture stored in the text)/u));
     await assert.rejects(updateCard({ cwd, cardId: card.id, metadata: { logo: Array.from({ length: 4000 }, (_, index) => index % 256) } }), refuses(/long lists? of numbers/u));

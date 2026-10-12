@@ -155,6 +155,7 @@ test("every common way an encoder writes a file is refused, at any wrapping", ()
 
 // Small stand-ins for common encoders, so the tests need no outside tools.
 const B85 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+const A85 = Array.from({ length: 85 }, (_, index) => String.fromCharCode(33 + index)).join("");
 function base85(bytes: Buffer, alphabet = B85) {
   let out = "";
   for (let i = 0; i < bytes.length; i += 4) {
@@ -184,6 +185,58 @@ const odChars = (bytes: Buffer) => (bytes.toString("hex").match(/.{1,32}/g) ?? [
   const b = parseInt(h, 16);
   return (b >= 33 && b < 127 ? String.fromCharCode(b) : b.toString(8).padStart(3, "0")).padStart(4);
 }).join("")).join("\n");
+
+test("explicit ASCII85 frames refuse incidental URL punctuation and redact the whole file", async () => {
+  const { withoutEmbeddedFiles, checkIndexValue } = await import("../src/core/contentRules");
+  const { checkDocuments, checkImportedExtras } = await import("../online/service/convex/model/indexRules");
+  const bytes = Buffer.concat(Array.from({ length: 96 }, (_, index) => createHash("sha256").update(`126:${index}`).digest()));
+  const encoded = base85(bytes, A85);
+  assert.ok(encoded.includes("://"), "the fixed trigger must retain the reference-like row");
+  for (const width of [1, 32, 75, encoded.length]) {
+    const frame = "<~" + encoded.match(new RegExp(`.{1,${width}}`, "g"))!.join("\n") + "~>";
+    const text = `Before\n${frame}\nAfter`;
+    assert.match(embeddedFileIn(text)!, /encoded file/);
+    assert.throws(() => checkIndexDocument(text, "alpha", "spec"), /encoded file/);
+    assert.throws(() => checkIndexValue({ summary: text }, "card alpha", 128 * 1024), /encoded file/);
+    assert.throws(() => checkDocuments([{ cardId: "alpha", kind: "spec", markdown: text }]), /encoded file/);
+    assert.throws(() => checkImportedExtras({ history: [{ entry: { summary: text } }] }), /encoded file/);
+    assert.equal(withoutEmbeddedFiles(text, "[external file]"), "Before\n[external file]\nAfter");
+    assert.match(embeddedFileIn("```\n" + frame + "\n```")!, /encoded file/);
+  }
+});
+
+test("ASCII85 whitespace, zero shorthand, partial groups and exact payload budgets are consistent", async () => {
+  const { withoutEmbeddedFiles } = await import("../src/core/contentRules");
+  const atLimit = "<~" + "z".repeat(614) + "!!~>";
+  assert.equal(embeddedFileIn(atLimit), null, "3072 equivalent payload characters are within the budget");
+  assert.equal(withoutEmbeddedFiles(atLimit, "removed"), atLimit);
+  assert.match(embeddedFileIn("<~" + "z".repeat(614) + "!!!~>")!, /encoded file/);
+  const compressed = "<~\n" + "z \t\r\n".repeat(768) + "~>";
+  assert.match(embeddedFileIn(compressed)!, /encoded file/);
+  assert.equal(withoutEmbeddedFiles(`Before ${compressed} after`, "removed"), "Before removed after");
+  for (const count of [1, 2, 3]) {
+    const final = base85(Buffer.alloc(count, 42), A85).slice(0, count + 1);
+    const frame = "<~" + "z".repeat(768) + final + "~>";
+    assert.equal(withoutEmbeddedFiles(`Before ${frame} after`, "removed"), "Before removed after");
+  }
+  const examples = "Short <~87cURD]j7BEbo80~> example, <~z~>, <~!~>, <~uu~>, <~uuuuu~>, <~!z!!!!~> and <~not closed.";
+  assert.equal(embeddedFileIn(examples), null);
+  assert.equal(withoutEmbeddedFiles(examples, "removed"), examples);
+  const malformed = "Before <~" + "z".repeat(768) + "v~> after";
+  assert.equal(withoutEmbeddedFiles(malformed, "removed"), malformed, "malformed frames are not swallowed as valid spans");
+});
+
+test("ASCII85 framed pieces aggregate across fields and history cleanup preserves ordinary examples", async () => {
+  const { checkIndexValue, withoutEmbeddedValue } = await import("../src/core/contentRules");
+  const piece = "<~" + "z".repeat(200) + "~>";
+  const value = { title: "Ordinary", a: piece, nested: [piece, { [piece]: piece }], example: "A short <~z~> example" };
+  assert.throws(() => checkIndexValue(value, "history", 64 * 1024), /encoded file/);
+  const clean = withoutEmbeddedValue(value, "[external file]");
+  assert.deepEqual(clean, { title: "Ordinary", a: "[external file]", nested: ["[external file]", { "[external file] 0": "[external file]" }], example: value.example });
+  checkIndexValue(clean, "history", 64 * 1024);
+  assert.match(embeddedFileIn(Array(4).fill(piece).join(" prose "))!, /encoded file/);
+  assert.equal(embeddedFileIn(Array(100).fill("<~z~>").join("\n")), null, "short independent examples do not count as dense lines twice");
+});
 
 test("today's encoders are refused too: uuencode, base85, ASCII85, Python bytes, od, one byte per line, repetitive lowercase", () => {
   const f = randomBytes(3072);
