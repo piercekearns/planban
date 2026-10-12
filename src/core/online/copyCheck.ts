@@ -185,9 +185,12 @@ export async function readOnlineNote(cwd: string): Promise<OnlineNote | null> {
 
 /** Written by Take Online (and by switching a project to an online board), for committing alongside the project. */
 export async function writeOnlineNote(cwd: string, board: Omit<OnlineNote, "note">) {
+  // A title is only for people to recognise the board; it is kept short so the note always reads back.
+  const title = board.title.length > 200 ? `${board.title.slice(0, 199)}…` : board.title;
   const note: OnlineNote = {
-    note: `This project's Planban board "${board.title}" lives online at ${board.url} (board ${board.boardId}). Sign in with: planban online login ${board.url}`,
+    note: `This project's Planban board "${title}" lives online at ${board.url} (board ${board.boardId}). Sign in with: planban online login ${board.url}`,
     ...board,
+    title,
   };
   await atomicWriteFile(noteFile(cwd), JSON.stringify(note, null, 2) + "\n");
   return noteFile(cwd);

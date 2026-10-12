@@ -130,7 +130,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   const [signInLink, setSignInLink] = useState<string | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
   const others = (status.people ?? []).filter((person) => !person.you);
-  const [conversion, setConversion] = useState<{ clean: boolean; machine: string; files: number; pictures: number; howToTidy: string; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string; where: string }>; problems: string[] }> } | null>(null);
+  const [conversion, setConversion] = useState<{ clean: boolean; machine: string; files: number; pictures: number; howToTidy: string; boardProblems: string[]; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string; where: string }>; problems: string[] }> } | null>(null);
   useEffect(() => {
     if (view !== "confirm-online") return;
     setConversion(null);
@@ -230,7 +230,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
           {!preview ? <p className="muted">Checking the board…</p> : !preview.clean ? (
             <div className="online-board-calm">
               <b>Tidy this board first.</b> Planban holds text only and refers to files where they live, so {preview.files ? `${preview.files} file${preview.files === 1 ? "" : "s"}` : "some content"}{preview.files && preview.pictures ? " and " : ""}{preview.pictures ? `${preview.pictures} picture${preview.pictures === 1 ? "" : "s"}` : ""} must move out of the board before it can go online. Nothing has moved.
-              <ul className="conversion-list">{preview.cards.map((card) => (
+              <ul className="conversion-list">{preview.boardProblems.map((problem) => <li key={problem}><b>The board itself</b>: {problem}</li>)}{preview.cards.map((card) => (
                 <li key={card.cardId}><b>{card.title}</b>: {[...card.files, ...card.pictures.map((picture) => `picture in the ${picture.kind === "plan" ? "Plan" : "Spec"}${picture.alt ? ` (${picture.alt})` : ""}`), ...card.problems].join("; ")}</li>
               ))}</ul>
               <p className="muted" style={{ whiteSpace: "pre-line", margin: "8px 0 0", fontSize: 12 }}>{preview.howToTidy.split("\n").slice(1).join("\n")}</p>

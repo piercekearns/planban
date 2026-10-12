@@ -39,7 +39,7 @@ assert.match(card.json.error.message, /contains an encoded file.*GitHub link/s);
 const spec = await api(token, "GET", `/api/v1/boards/${boardId}/docs/${cardId}/spec`);
 const doc = await api(token, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId, kind: "spec", markdown: `# Renders\n\n${picture}\n`, expectedMtimeMs: spec.json.mtimeMs });
 assert.equal(doc.status, 400);
-assert.match(doc.json.error.message, /Spec of card .* contains an embedded file/);
+assert.match(doc.json.error.message, /Spec of card .* contains (an embedded file|a picture stored in the text)/);
 const big = await api(token, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId, kind: "spec", markdown: "word ".repeat(220 * 1024), expectedMtimeMs: spec.json.mtimeMs });
 assert.equal(big.status, 400);
 assert.match(big.json.error.message, /limit is 1024 KB/);
@@ -58,13 +58,13 @@ assert.ok(!tools.some((tool) => /attachment/.test(tool.name)), "no file tools");
 const read = await mcp("tools/call", { name: "planban_read_doc", arguments: { boardId, cardId, kind: "plan" } });
 const viaMcp = await mcp("tools/call", { name: "planban_write_doc", arguments: { boardId, cardId, kind: "plan", markdown: `# Plan\n\n${picture}`, expectedMtimeMs: JSON.parse(read.result.content[0].text).mtimeMs ?? null } });
 assert.equal(viaMcp.result.isError, true);
-assert.match(viaMcp.result.content[0].text, /embedded file.*local path labelled with its machine/s);
+assert.match(viaMcp.result.content[0].text, /(embedded file|picture stored in the text).*local path labelled with its machine/s);
 ok("remote MCP has no file tools, and refuses embedded files with how to refer to them instead");
 
 const importing = planCreateCard(createEmptyRoadmap({ repoId: `${boardId}-b`, title: "Import", now }), { title: "Card" }, { now });
 const smuggled = await api(token, "POST", "/api/v1/boards/import", { format: "planban-board-bundle", version: 1, roadmap: importing.roadmap, docs: [{ cardId: importing.roadmap.roadmapItems[0]!.id, kind: "spec", markdown: picture }], history: [] });
 assert.equal(smuggled.status, 400);
-assert.match(smuggled.json.error.message, /embedded file/);
+assert.match(smuggled.json.error.message, /embedded file|picture stored in the text/);
 assert.equal((await api(token, "GET", `/api/v1/boards/${boardId}-b`)).status, 404, "nothing of the refused board remains");
 ok("taking a board online refuses embedded files too, and leaves nothing behind");
 // Every field a board brings with it is checked, in a single import and in parts.
@@ -85,6 +85,10 @@ const smuggling: Array<[string, (bundle: any) => void]> = [
   ["a column label", (bundle) => { bundle.roadmap.columns[0].label = encoded; }],
   ["a metadata key", (bundle) => { bundle.roadmap.roadmapItems[0].metadata = { [`data:text/plain;base64,${Buffer.alloc(330, 2).toString("base64")}`]: "x" }; }],
   ["an unknown history setting", (bundle) => { bundle.retention = { boardVersions: 100, somethingElse: 1 }; }],
+  ["a card summary in short pieces", (bundle) => { bundle.roadmap.roadmapItems[0].summary = randomBytes(3000).toString("base64").match(/.{1,32}/g)!.join(" "); }],
+  ["a plain payload in pieces", (bundle) => { bundle.roadmap.roadmapItems[0].summary = Buffer.alloc(24 * 1024, 5).toString("base64").match(/.{1,48}/g)!.join("\n\n"); }],
+  ["nested number lists", (bundle) => { bundle.roadmap.roadmapItems[0].metadata = { a: Array(600).fill(7), b: { c: Array(600).fill(9) } }; }],
+  ["a one-pixel picture", (bundle) => { bundle.docs = [{ cardId: bundle.roadmap.roadmapItems[0].id, kind: "spec", markdown: "![pixel](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)" }]; }],
 ];
 for (const [what, change] of smuggling) {
   const refused = await viaImport(what.replace(/\W+/g, "-").slice(0, 20).toLowerCase(), change);

@@ -18,6 +18,8 @@ test("every way of putting a picture in a document is found; pictures on the web
     "![Odd](renders/100%.png)",
     "![Inline](data:image/png;base64,AAAA)",
     "![Diagram](https://example.com/diagram.png) and ![Doc](//cdn.example.com/doc.png)",
+    "![photo]",
+    "[photo]: /tmp/photo.png",
   ].join("\n");
   const found = picturesInTheWay(markdown, "/board/items/alpha").map((picture) => `${picture.alt}=${picture.where}`);
   assert.deepEqual(found.sort(), [
@@ -29,6 +31,7 @@ test("every way of putting a picture in a document is found; pictures on the web
     "Logo=/board/items/alpha/images/logo.png",
     "Odd=/board/items/alpha/renders/100%.png",
     "Side=/board/items/alpha/images/side view.png",
+    "photo=/tmp/photo.png",
   ].sort());
 });
 
@@ -45,4 +48,23 @@ test("files in a card's folder include links, which are listed and not followed"
   assert.equal(report.clean, false);
   assert.equal(report.files, 2);
   assert.match(report.howToTidy, /labelled with its machine/);
+});
+
+test("a card folder that is a link, nested metadata and board details are all checked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "planban-index-"));
+  const elsewhere = await mkdtemp(join(tmpdir(), "planban-elsewhere-"));
+  await writeFile(join(elsewhere, "spec.md"), "# Elsewhere\n");
+  await mkdir(join(root, "items"), { recursive: true });
+  await symlink(elsewhere, join(root, "items", "linked"));
+  assert.deepEqual((await filesInCard(root, "linked")).files, ["(this card's folder is a link to another folder)"]);
+  const payload = `data:text/plain;base64,${"QUJD".repeat(80)}`;
+  const report = await checkBoardIsIndex({
+    planningRoot: root,
+    cards: [{ id: "beta", title: "Beta", metadata: { deep: { note: payload } } }],
+    docs: [],
+    details: { project: { title: "Board", description: payload } },
+  });
+  assert.equal(report.clean, false);
+  assert.match(report.cards[0]!.problems.join(" "), /embedded file/);
+  assert.match(report.boardProblems.join(" "), /board's details contains an embedded file/);
 });

@@ -21,6 +21,8 @@ import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/cor
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
 import { onlineLogout } from "../src/core/online/connections";
 import { startServer } from "../src/server/server";
+import { listHistory } from "../src/core/history";
+import { checkIndexCard } from "../src/core/contentRules";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
 
 const execFileAsync = promisify(execFile);
@@ -1101,6 +1103,29 @@ test("a board goes online only when it is clean: files and local pictures in the
   await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Alpha\n\nFront view: Mac mini: ~/Projects/demo/renders/front.png\n\n![Diagram](https://example.com/diagram.png)\n", expectedMtimeMs: written.mtimeMs });
   await takeOnline(fake.url, cwd);
   assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("old versions in history that hold embedded files go online with notes in their place; the copy here keeps them", async () => {
+  const before = await storage.loadState(cwd);
+  const history = await listHistory(before);
+  let oldest = history.entries.at(-1)!;
+  let roadmap: any = null;
+  for (const entry of [...history.entries].reverse()) {
+    roadmap = JSON.parse(await readFile(historyRoadmapPath(before.planningRoot, entry.version), "utf8"));
+    oldest = entry;
+    if (roadmap.roadmapItems.length) break;
+  }
+  const path = historyRoadmapPath(before.planningRoot, oldest.version);
+  roadmap.roadmapItems[0] = { ...roadmap.roadmapItems[0], metadata: { logo: Array.from({ length: 3000 }, (_, i) => i % 256), [`data:text/plain;base64,${"QUJD".repeat(100)}`]: 1 }, summary: `![x](data:image/gif;base64,R0lGODlhAQABAAAAACw=)` };
+  await writeFile(path, JSON.stringify(roadmap));
+  await takeOnline(fake.url, cwd);
+  const sent = [...fake.transfers.values()].at(-1)!.parts;
+  const versions = [...sent.values()].flatMap((part: any) => part.history ?? []);
+  const old = versions.find((version: any) => version.entry.version === oldest.version);
+  const card = old.roadmap.roadmapItems[0];
+  assert.doesNotThrow(() => checkIndexCard(card));
+  assert.match(JSON.stringify(card), /file kept in the copy of this board on/);
+  assert.equal(await readFile(path, "utf8"), JSON.stringify(roadmap), "the copy here is unchanged");
 });
 
 test("a resumed take-online is checked again, so files added meanwhile stop it until tidied", async () => {

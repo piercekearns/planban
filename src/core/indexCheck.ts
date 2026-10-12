@@ -5,10 +5,10 @@
 // document or point at files on this machine. Take Online refuses a board
 // that is not clean; strict Local Mode will use the same check.
 import { execFileSync } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { embeddedFileIn, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "./contentRules";
+import { checkIndexCard, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, MAX_DOCUMENT_BYTES } from "./contentRules";
 
 /** This machine's name as people know it, such as "Pierce's Mac mini". */
 export function machineName(): string {
@@ -50,6 +50,9 @@ export async function filesInCard(planningRoot: string, cardId: string): Promise
   // Only plain card ids name folders; anything else could point outside the board.
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cardId) || cardId.includes("..")) return { files, unreadable };
   const folder = join(planningRoot, "items", cardId);
+  // The card's folder itself may be a link to somewhere else: that is not the board's own text either.
+  const own = await lstat(folder).catch(() => null);
+  if (own?.isSymbolicLink()) return { files: ["(this card's folder is a link to another folder)"], unreadable };
   const walk = async (dir: string): Promise<void> => {
     let entries;
     try {
@@ -76,8 +79,8 @@ export async function filesInCard(planningRoot: string, cardId: string): Promise
 }
 
 const MARKDOWN_IMAGE = /!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
-/** `![alt][ref]` and `![alt][]`, with `[ref]: target` defined elsewhere. */
-const MARKDOWN_IMAGE_REF = /!\[([^\]\n]*)\]\[([^\]\n]*)\]/g;
+/** `![alt][ref]`, `![alt][]` and `![alt]`, with `[ref]: target` defined elsewhere. */
+const MARKDOWN_IMAGE_REF = /!\[([^\]\n]*)\](?:\[([^\]\n]*)\]|(?![(\[]))/g;
 const MARKDOWN_DEFINITION = /^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$/gm;
 const HTML_IMAGE = /<(?:img|source)\b[^>]*>/gi;
 const HTML_ATTRIBUTE = (name: string) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
@@ -127,6 +130,8 @@ export interface IndexReport {
   clean: boolean;
   machine: string;
   cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: "spec" | "plan"; alt: string; where: string }>; problems: string[] }>;
+  /** Problems with the board's own details rather than a card. */
+  boardProblems: string[];
   files: number;
   pictures: number;
   howToTidy: string;
@@ -140,6 +145,8 @@ export async function checkBoardIsIndex(input: {
   planningRoot: string;
   cards: Array<{ id: string; title: string } & Record<string, unknown>>;
   docs: Array<{ cardId: string; kind: "spec" | "plan"; markdown: string }>;
+  /** The board's own fields other than its cards (title, description, columns). */
+  details?: unknown;
 }): Promise<IndexReport> {
   const machine = machineName();
   const byCard = new Map<string, IndexReport["cards"][number]>();
@@ -158,9 +165,12 @@ export async function checkBoardIsIndex(input: {
       files += inFolder.files.length;
     }
     for (const folder of inFolder.unreadable) entry(card.id, card.title).problems.push(`Planban could not read the folder ${folder === "." ? "of this card" : folder} to check it.`);
-    const text = Object.values(card).filter((value): value is string => typeof value === "string").join("\n");
-    if (embeddedFileIn(text)) entry(card.id, card.title).problems.push("Its fields contain an embedded file.");
-    if (new TextEncoder().encode(JSON.stringify(card)).length > MAX_CARD_BYTES) entry(card.id, card.title).problems.push("Its fields are larger than 128 KB.");
+    // The same check every write uses: all fields, metadata and keys, added up.
+    try {
+      checkIndexCard(card);
+    } catch (error) {
+      entry(card.id, card.title).problems.push((error as Error).message.replace(/^Not saved: card \S+ /, "Its fields ").replace(/\. Online Boards hold.*$/s, "."));
+    }
   }
   for (const doc of input.docs) {
     const title = titles.get(doc.cardId) ?? doc.cardId;
@@ -176,6 +186,14 @@ export async function checkBoardIsIndex(input: {
     if (embedded) entry(doc.cardId, title).problems.push(`Its ${label} contains ${embedded}.`);
     if (new TextEncoder().encode(doc.markdown).length > MAX_DOCUMENT_BYTES) entry(doc.cardId, title).problems.push(`Its ${label} is larger than 1 MB.`);
   }
+  const boardProblems: string[] = [];
+  if (input.details !== undefined) {
+    try {
+      checkIndexValue(input.details, "the board's details", MAX_DETAILS_BYTES);
+    } catch (error) {
+      boardProblems.push((error as Error).message.replace(/^Not saved: /, "").replace(/\. Online Boards hold.*$/s, "."));
+    }
+  }
   const cards = [...byCard.values()];
-  return { clean: cards.length === 0, machine, cards, files, pictures, howToTidy: howToTidy(machine) };
+  return { clean: cards.length === 0 && boardProblems.length === 0, machine, cards, boardProblems, files, pictures, howToTidy: howToTidy(machine) };
 }

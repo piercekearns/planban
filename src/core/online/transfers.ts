@@ -16,7 +16,7 @@ import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, wri
 import { readBackup, refreshBackup } from "./backup";
 import { serviceUrl } from "./credentials";
 import { checkBoardIsIndex, machineName, type IndexReport } from "../indexCheck";
-import { withoutEmbeddedFiles } from "../contentRules";
+import { checkIndexCard, checkIndexValue, MAX_DETAILS_BYTES, withoutEmbeddedFiles, withoutEmbeddedValue } from "../contentRules";
 import { buildAgentContext } from "../protocol";
 import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
 
@@ -227,13 +227,15 @@ export async function previewTakeOnline(cwdInput: string) {
 }
 
 function indexReport(bundle: BoardBundle, planningRoot: string) {
-  return checkBoardIsIndex({ planningRoot, cards: bundle.roadmap.roadmapItems, docs: bundle.docs });
+  const { roadmapItems, ...details } = bundle.roadmap;
+  return checkBoardIsIndex({ planningRoot, cards: roadmapItems, docs: bundle.docs, details });
 }
 
 /** Take Online refused: the board holds files, or pictures stored on this machine, that must be tidied first. */
 export class PlanbanNotReadyForOnline extends PlanbanValidationError {
   constructor(readonly report: IndexReport) {
     const lines = [`This board cannot go online yet; nothing has moved. ${report.files ? `${report.files} file(s)` : ""}${report.files && report.pictures ? " and " : ""}${report.pictures ? `${report.pictures} picture(s)` : ""}${report.files || report.pictures ? " are in the way" : "Some cards break the text-only rule"}:`];
+    for (const problem of report.boardProblems) lines.push(`- The board itself: ${problem}`);
     for (const card of report.cards.slice(0, 20)) {
       const parts = [
         ...card.files.map((file) => `file ${file}`),
@@ -249,15 +251,51 @@ export class PlanbanNotReadyForOnline extends PlanbanValidationError {
   }
 }
 
-/** History records what was and cannot be tidied: anything embedded in an old version becomes a note in the online copy. */
+/**
+ * History records what was and cannot be tidied: anything embedded in an old
+ * version (documents, cards, board details, the entry itself) becomes a note
+ * in the online copy. What still would not pass is replaced by the note
+ * outright. The copy on this machine keeps everything.
+ */
 function historyForOnline(bundle: BoardBundle): BoardBundle {
   const note = `[file kept in the copy of this board on ${machineName()}]`;
-  const scrub = (text: string) => withoutEmbeddedFiles(text, note);
-  const scrubAll = <T,>(value: T): T => JSON.parse(JSON.stringify(value), (_key, entry) => typeof entry === "string" ? scrub(entry) : entry);
+  const passes = (check: () => void) => {
+    try {
+      check();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // The same card repeats across many versions: check each distinct one once.
+  const seen = new Map<string, unknown>();
+  const card = <T extends { id: string }>(item: T): T => {
+    const key = JSON.stringify(item);
+    if (!seen.has(key)) seen.set(key, cleanCard(item));
+    return seen.get(key) as T;
+  };
+  const cleanCard = <T extends { id: string }>(item: T): T => {
+    const cleaned = withoutEmbeddedValue(item, note);
+    if (passes(() => checkIndexCard(cleaned))) return cleaned;
+    // Keep what the card was; replace what it said.
+    const { metadata: _metadata, ...rest } = cleaned as T & { metadata?: unknown };
+    return Object.fromEntries(Object.entries(rest).map(([key, value]) => [key, typeof value === "string" && !["id", "status", "parentId"].includes(key) ? note : value])) as T;
+  };
+  const roadmap = (value: BoardBundle["roadmap"]) => {
+    const { roadmapItems, ...details } = value;
+    const cleanedDetails = withoutEmbeddedValue(details, note);
+    return { ...(passes(() => checkIndexValue(cleanedDetails, "details", MAX_DETAILS_BYTES)) ? cleanedDetails : details), roadmapItems: roadmapItems.map(card) } as BoardBundle["roadmap"];
+  };
+  const entry = (value: BoardBundle["history"][number]["entry"]) => {
+    const cleaned = withoutEmbeddedValue(value, note);
+    return passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES))
+      ? cleaned
+      : { version: value.version, roadmapRevision: value.roadmapRevision, createdAt: value.createdAt, actor: value.actor, operation: value.operation, summary: note, affectedCards: value.affectedCards, affectedDocs: value.affectedDocs };
+  };
   return {
     ...bundle,
-    historyDocs: (bundle.historyDocs ?? []).map((doc) => ({ ...doc, markdown: scrub(doc.markdown) })),
-    history: bundle.history.map((version) => ({ ...version, roadmap: scrubAll(version.roadmap) })),
+    historyDocs: (bundle.historyDocs ?? []).map((doc) => ({ ...doc, markdown: withoutEmbeddedFiles(doc.markdown, note) })),
+    history: bundle.history.map((version) => ({ entry: entry(version.entry), roadmap: roadmap(version.roadmap) })),
   };
 }
 

@@ -30,21 +30,23 @@ const DATA_PAYLOAD_LIMIT = 256;
 const WEB_ADDRESS = /\bhttps?:\/\/[^\s<>()"'`]{1,8192}/gi;
 /**
  * Runs that could be base64, counted across the whole value when they look
- * random (upper and lower case and digits), unlike slugs, ids, hashes and
- * words. Wrapped, split or interleaved with prose, a file still adds up.
+ * encoded, unlike slugs, ids, hashes and words. Wrapped, split into short
+ * pieces or interleaved with prose, a file still adds up.
  */
-const ENCODED_TOKEN = /[A-Za-z0-9+/=_-]{40,}/g;
+const ENCODED_TOKEN = /[A-Za-z0-9+/=_-]{24,}/g;
 const ENCODED_LIMIT = 2048;
 /**
  * Base64 of a real file mixes upper case, lower case and digits throughout
- * (about 40%, 40% and 15%). Paths, ids, UUIDs, hashes and CamelCase names do
- * not: they are mostly one case, or have no digits.
+ * (about 40%, 40% and 15%); paths, ids, UUIDs, hashes and CamelCase names are
+ * mostly one case or have no digits. Base64 of plain, repetitive bytes
+ * repeats a short pattern instead ("BQUFBQUF…").
  */
 function looksEncoded(token: string) {
   const upper = token.replace(/[^A-Z]/g, "").length / token.length;
   const lower = token.replace(/[^a-z]/g, "").length / token.length;
   const digits = token.replace(/[^0-9]/g, "").length / token.length;
-  return upper >= 0.15 && lower >= 0.15 && digits >= 0.05;
+  if (upper >= 0.12 && lower >= 0.12 && digits >= 0.04) return true;
+  return /^(.{1,8}?)\1{5,}/.test(token) && /[A-Z]/.test(token) && !/^[a-z-]+$/.test(token);
 }
 /** Any payload, however plain, as one unbroken run of base64. */
 const ENCODED_RUN = /[A-Za-z0-9+/]{2048,}={0,2}/;
@@ -57,8 +59,15 @@ const HEX_RUN = /[0-9a-fA-F]{4096,}/;
 /** Control characters other than tab, newline and carriage return mean binary content. */
 const BINARY = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
+/** A picture whose destination is the file itself, however small. */
+const DATA_IMAGE = /!\[[^\]\n]*\]\(\s*<?data:|<(?:img|source)\b[^>]*\b(?:src|srcset)\s*=\s*["']?\s*data:|^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?data:/im;
+/** Code shows examples; it is not a picture. */
+const CODE = /```[\s\S]*?(?:```|$)|`[^`\n]*`/g;
+
 interface Payload {
   binary: boolean;
+  /** A picture stored in the text. */
+  image: boolean;
   data: number;
   encoded: number;
   /** A plain payload: an unbroken run, or a block of wrapped lines. */
@@ -66,11 +75,12 @@ interface Payload {
   hex: boolean;
 }
 
-const nothing = (): Payload => ({ binary: false, data: 0, encoded: 0, run: false, hex: false });
+const nothing = (): Payload => ({ binary: false, image: false, data: 0, encoded: 0, run: false, hex: false });
 
 /** Adds the file-like content in one piece of text to `into`. */
 function measure(text: string, into: Payload) {
   if (BINARY.test(text)) into.binary = true;
+  if (text.includes("data:") && DATA_IMAGE.test(text.replace(CODE, ""))) into.image = true;
   for (const match of text.matchAll(DATA_URI)) into.data += match[1]!.length;
   const rest = text.replace(DATA_URI, " ").replace(WEB_ADDRESS, " ");
   for (const match of rest.matchAll(ENCODED_TOKEN)) if (looksEncoded(match[0])) into.encoded += match[0].length;
@@ -86,6 +96,7 @@ function measure(text: string, into: Payload) {
 
 function verdict(payload: Payload): string | null {
   if (payload.binary) return "binary content";
+  if (payload.image) return "a picture stored in the text (a data: address)";
   if (payload.data > DATA_PAYLOAD_LIMIT) return "an embedded file (data: addresses)";
   if (payload.hex) return "an encoded file (a long run of hex)";
   if (payload.encoded > ENCODED_LIMIT || payload.run) return "an encoded file (base64)";
@@ -115,6 +126,25 @@ export function withoutEmbeddedFiles(text: string, placeholder: string): string 
   return cleaned.replace(new RegExp(`(?:${escaped}[ \\t]*\\r?\\n)+(?=${escaped})`, "g"), "");
 }
 
+/**
+ * A structured value (an old card, a history entry) with embedded files taken
+ * out: strings cleaned, offending keys renamed, long number lists dropped.
+ * For history, which cannot be edited.
+ */
+export function withoutEmbeddedValue<T>(value: T, placeholder: string): T {
+  const clean = (entry: unknown): unknown => {
+    if (typeof entry === "string") return withoutEmbeddedFiles(entry, placeholder);
+    if (Array.isArray(entry)) {
+      return entry.length > 16 && entry.every((item) => typeof item === "number") ? [] : entry.map(clean);
+    }
+    if (entry && typeof entry === "object") {
+      return Object.fromEntries(Object.entries(entry).map(([key, item], index) => [embeddedFileIn(key) ? `${placeholder} ${index}` : key, clean(item)]));
+    }
+    return entry;
+  };
+  return clean(value) as T;
+}
+
 /** Numbers standing in for bytes: a long array of small whole numbers. */
 const BYTES_ARRAY_LIMIT = 1024;
 
@@ -136,13 +166,14 @@ function checkSize(bytes: number, where: string, maxBytes: number) {
  */
 export function checkIndexValue(value: unknown, where: string, maxBytes: number) {
   const payload = nothing();
+  let numbersInLists = 0;
   const visit = (entry: unknown) => {
     if (typeof entry === "string") {
       measure(entry, payload);
     } else if (Array.isArray(entry)) {
-      if (entry.length > BYTES_ARRAY_LIMIT && entry.every((item) => typeof item === "number")) {
-        refuse(where, "a long list of numbers, which is how files are smuggled in");
-      }
+      // Numbers in lists add up across the whole value, however they are nested.
+      numbersInLists += entry.filter((item) => typeof item === "number").length;
+      if (numbersInLists > BYTES_ARRAY_LIMIT) refuse(where, "long lists of numbers, which is how files are smuggled in");
       for (const item of entry) visit(item);
     } else if (entry && typeof entry === "object") {
       for (const [key, item] of Object.entries(entry)) {

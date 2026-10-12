@@ -15,7 +15,7 @@ test("Online Boards refuse embedded files in any form, and say how to refer to t
   assert.match(embeddedFileIn(pngBase64)!, /base64/);
   assert.match(embeddedFileIn("PK\u0003\u0004 zipped")!, /binary/);
   assert.throws(() => checkIndexDocument(`Renders:\n\n![front](data:image/png;base64,${pngBase64})`, "alpha", "spec"),
-    /Not saved: the Spec of card alpha contains an embedded file.*GitHub link.*local path labelled with its machine/s);
+    /Not saved: the Spec of card alpha contains (an embedded file|a picture stored in the text).*GitHub link.*local path labelled with its machine/s);
   assert.throws(() => checkIndexCard({ id: "alpha", summary: `See ${pngBase64}` }), /card alpha contains an encoded file/);
 });
 
@@ -42,7 +42,7 @@ test("documents and cards have size limits above any real board's", () => {
 
 test("numbers standing in for bytes, and oversized details, are refused wherever they hide", async () => {
   const { checkIndexValue } = await import("../src/core/contentRules");
-  assert.throws(() => checkIndexCard({ id: "alpha", metadata: { logo: Array.from({ length: 4000 }, (_, i) => i % 256) } }), /long list of numbers/);
+  assert.throws(() => checkIndexCard({ id: "alpha", metadata: { logo: Array.from({ length: 4000 }, (_, i) => i % 256) } }), /long lists? of numbers/);
   checkIndexCard({ id: "alpha", metadata: { scores: [1, 2, 3] } });
   assert.throws(() => checkIndexValue({ summary: `data:image/png;base64,${pngBase64}` }, "a history entry", 64 * 1024), /a history entry contains an embedded file/);
 });
@@ -74,4 +74,19 @@ test("real planning text with addresses, hashes, ids and paths is not mistaken f
   const longUrl = `https://example.com/report?state=${randomBytes(1600).toString("base64url")}`;
   const text = ["```", hashes, "```", uuids, paths, `See ${longUrl}`, "SHA256115dbd3f4be227900acefefa17e9b98687cfd2fb6416d6db8ed604b8f7e007b4 and MA05ownerUsage/absentRetry/phone/provider"].join("\n\n");
   assert.equal(embeddedFileIn(text), null);
+});
+
+test("short pieces, plain repetitive payloads, nested byte lists and tiny pictures are all refused; examples in code are not", async () => {
+  const { checkIndexValue } = await import("../src/core/contentRules");
+  const random = randomBytes(3000).toString("base64");
+  assert.match(embeddedFileIn(random.match(/.{1,32}/g)!.join(" and "))!, /base64/);
+  const plain = Buffer.alloc(24 * 1024, 5).toString("base64");
+  assert.match(embeddedFileIn(plain.match(/.{1,48}/g)!.join("\n\n"))!, /base64/);
+  assert.throws(() => checkIndexCard({ id: "alpha", metadata: { a: Array(512).fill(7), b: { c: Array(512).fill(9) }, d: [Array(100).fill(1)] } }), /long lists of numbers/);
+  const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+  assert.match(embeddedFileIn(`![pixel](data:image/gif;base64,${gif})`)!, /picture stored in the text/);
+  assert.match(embeddedFileIn(`<img alt="x" src="data:image/gif;base64,${gif}">`)!, /picture stored in the text/);
+  assert.equal(embeddedFileIn(`Use \`![pixel](data:image/gif;base64,${gif})\` as the test image.`), null);
+  assert.equal(embeddedFileIn(`\`\`\`md\n![pixel](data:image/gif;base64,${gif})\n\`\`\``), null);
+  checkIndexValue({ scores: [1, 2, 3], weights: [[0.5, 0.25]] }, "card alpha", 128 * 1024);
 });
