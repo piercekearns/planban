@@ -4,7 +4,7 @@
 // ever ask the local Planban server, which answers from files on this machine.
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bot, Check, Cloud, Info, Laptop, Loader2, Users, X } from "lucide-react";
+import { Bot, Check, Cloud, Copy, Info, KeyRound, Laptop, Link, Loader2, Mail, Users, X } from "lucide-react";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -113,11 +113,12 @@ type View = "settings" | "confirm-online" | "confirm-local" | "progress" | "fail
 
 const peopleSentence = (names: string[]) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
-export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose }: {
+export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManagePeople, onClose }: {
   repoId: string;
   boardTitle: string;
   status: OnlineStatus;
   reload: () => Promise<void>;
+  onManagePeople: () => void;
   onClose: () => void;
 }) {
   const job = status.job;
@@ -288,7 +289,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose
       ? <div className="online-board-row"><div className="grow"><b><Loader2 size={14} className="spin" /> Moving online…</b><small>{job?.progress?.message ?? "Starting…"}</small></div><button className="online-board-button" onClick={() => setView("progress")}>Show progress</button></div>
       : <div className="online-board-row"><div className="grow"><b><Laptop size={14} /> On this Mac</b><small>Stored only on this Mac. You and the agents on this Mac can use it; nobody else can see it.</small></div><button className="online-board-button" disabled={busy || Boolean(status.stale)} onClick={() => setView(status.signedIn.length ? "confirm-online" : "sign-in")}><Cloud size={13} /> Take online…</button></div>;
   const people = status.location === "online"
-    ? <div className="online-board-row"><div className="grow"><b><Users size={14} /> {others.length ? `You and ${others.length} other ${others.length === 1 ? "person" : "people"}` : "Only you"}</b><small>{others.length ? peopleSentence(others.map((person) => `${person.userId} (${person.role})`)) : "Invite people to work on this board with you."}</small></div></div>
+    ? <div className="online-board-row"><div className="grow"><b><Users size={14} /> {others.length ? `You and ${others.length} other ${others.length === 1 ? "person" : "people"}` : "Only you"}</b><small>Invite people, choose their roles and what their agents may do.</small></div><button className="online-board-button" onClick={onManagePeople}>Manage people</button></div>
     : <div className="online-board-row"><div className="grow"><b><Users size={14} /> Only you</b><small>Take the board online to invite people.</small></div></div>;
   return (
     <Modal eyebrow={boardTitle} title="Board settings" onClose={onClose}>
@@ -513,5 +514,222 @@ export function HistoryAuthor({ attribution }: { attribution?: { userId: string;
       <span>{author.person.name}</span>
       {author.agent ? <span className="history-author-chip"><Bot size={10} /> {author.via ?? "agent"}</span> : null}
     </span>
+  );
+}
+
+const LEVEL_LABEL = { read: "Read", plan: "Plan", complete: "Plan and complete" } as const;
+const ROLE_LABEL = { owner: "Owner", editor: "Editor", viewer: "Viewer" } as const;
+
+/**
+ * People on an online board (approved mockup): each person's role, and what
+ * their agents may do. You choose for your own agents; you can see the
+ * others' choices. The owner changes roles and removes people.
+ */
+export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId: string; boardTitle: string; onInvite: () => void; onClose: () => void }) {
+  const [board, setBoard] = useState<BoardPeople | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
+  const load = useCallback(async () => setBoard(await request<BoardPeople>(`${base}/people`).catch((failure) => {
+    setError(failure instanceof Error ? failure.message : String(failure));
+    return null;
+  })), [base]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  async function act(run: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  }
+  const me = board?.people.find((person) => person.you);
+  const iOwn = me?.role === "owner";
+  const myLevels = (["read", "plan", "complete"] as const).filter((level) => me?.role !== "viewer" || level === "read");
+  return (
+    <Modal eyebrow={boardTitle} title="People" onClose={onClose}
+      footer={iOwn ? <button className="primary update-now-action" onClick={onInvite}><Users size={14} /> Invite people</button> : undefined}>
+      <div className="online-board-section">
+        <div className="people-colhead"><span className="face-col" /><span className="who">Person</span><span className="col">Role</span><span className="col wide">Their agents may</span></div>
+        {!board ? <p className="muted">Loading…</p> : board.people.map((person) => (
+          <div className="people-row" key={person.userId}>
+            <Face person={person} size={28} />
+            <div className="who"><b>{person.name}{person.you ? <span className="muted"> (you)</span> : null}</b><small>{person.email ?? person.userId}</small></div>
+            <div className="col">
+              {iOwn && person.role !== "owner" ? (
+                <select className="online-board-select" value={person.role} disabled={busy} aria-label={`${person.name}'s role`}
+                  onChange={(event) => void act(() => request(`${base}/members/${encodeURIComponent(person.userId)}/role`, { role: event.target.value }))}>
+                  <option value="editor">Editor</option><option value="viewer">Viewer</option>
+                </select>
+              ) : <span className="muted">{ROLE_LABEL[person.role]}</span>}
+            </div>
+            <div className="col wide">
+              {person.you ? (
+                <select className="online-board-select" value={person.agentLevel} disabled={busy} aria-label="What your agents may do"
+                  onChange={(event) => void act(() => request(`${base}/people/me/agents`, { level: event.target.value }))}>
+                  {myLevels.map((level) => <option key={level} value={level}>{LEVEL_LABEL[level]}</option>)}
+                </select>
+              ) : <span className="muted">{LEVEL_LABEL[person.agentLevel]}</span>}
+            </div>
+            {iOwn && person.role !== "owner" ? (
+              <button className="online-board-button quiet" disabled={busy} aria-label={`Remove ${person.name}`}
+                onClick={() => {
+                  if (window.confirm(`Remove ${person.name} from ${boardTitle}? They and their agents lose access at once.`)) {
+                    void act(() => request(`${base}/members/${encodeURIComponent(person.userId)}/remove`, {}));
+                  }
+                }}>Remove</button>
+            ) : <span className="remove-col" />}
+          </div>
+        ))}
+      </div>
+      <div className="online-board-section"><p className="muted" style={{ margin: 0, fontSize: 12, lineHeight: "18px" }}>Each person chooses what their own agents may do: read, plan, or plan and complete. An agent can never do more than its person. You choose for your agents; you can see the others' choices.</p></div>
+      {error ? <div className="online-board-section"><p className="online-board-error" role="alert">{error}</p></div> : null}
+    </Modal>
+  );
+}
+
+/** Invite by email or by link (approved mockup); links last 7 days. */
+export function InviteModal({ repoId, boardTitle, onClose }: { repoId: string; boardTitle: string; onClose: () => void }) {
+  const [email, setEmail] = useState("");
+  const [emailRole, setEmailRole] = useState<"editor" | "viewer">("editor");
+  const [linkRole, setLinkRole] = useState<"editor" | "viewer">("viewer");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [made, setMade] = useState<string | null>(null);
+  const base = `/api/boards/${encodeURIComponent(repoId)}/online/invites`;
+  async function invite(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const result = await request<{ link: string; emailSent: boolean }>(base, body);
+      setMade(result.link);
+      const copied = await navigator.clipboard?.writeText(result.link).then(() => true, () => false);
+      setNote(body.email
+        ? result.emailSent ? `Sent. ${String(body.email)} gets an email from Planban with a link to sign in and open this board.` : `Planban cannot send emails yet, so send ${String(body.email)} this link yourself${copied ? " (copied)" : ""}. It only works for their email address.`
+        : copied ? "Link copied. It works for 7 days." : "Copy this link; it works for 7 days.");
+      if (body.email) setEmail("");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal eyebrow={boardTitle} title="Invite people" onClose={onClose}>
+      <div className="online-board-section"><h3>By email</h3>
+        <div className="online-board-row">
+          <input className="online-board-input" type="email" placeholder="name@example.com" value={email} onChange={(event) => setEmail(event.target.value)} aria-label="Email address" />
+          <select className="online-board-select" value={emailRole} onChange={(event) => setEmailRole(event.target.value as "editor" | "viewer")} aria-label="Role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select>
+          <button className="online-board-button primary-accent" disabled={busy || !email.trim()} onClick={() => void invite({ email, role: emailRole })}><Mail size={13} /> Send invite</button>
+        </div>
+      </div>
+      <div className="online-board-section"><h3>By link</h3>
+        <div className="online-board-row">
+          <div className="grow"><b><Link size={14} /> Anyone with the link can join as</b><small>The link works for 7 days. Each person still signs in with their own account.</small></div>
+          <select className="online-board-select" value={linkRole} onChange={(event) => setLinkRole(event.target.value as "editor" | "viewer")} aria-label="Role for the link"><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
+          <button className="online-board-button" disabled={busy} onClick={() => void invite({ role: linkRole })}><Copy size={13} /> Copy link</button>
+        </div>
+        {made ? <input className="online-board-input" style={{ marginTop: 10 }} readOnly value={made} onFocus={(event) => event.target.select()} aria-label="Invite link" /> : null}
+        {note ? <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>{note}</p> : null}
+        {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+      </div>
+      <div className="online-board-section"><h3>What the roles mean</h3>
+        <div className="online-board-body" style={{ padding: 0, fontSize: 12, lineHeight: "18px" }}>
+          <p style={{ margin: "0 0 4px" }}><b>Owner</b> <span className="muted">can do everything, including inviting people and taking the board online or local.</span></p>
+          <p style={{ margin: "0 0 4px" }}><b>Editor</b> <span className="muted">can change cards, specs and plans, and mark work complete.</span></p>
+          <p style={{ margin: 0 }}><b>Viewer</b> <span className="muted">can read the board and its history.</span></p>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+interface Connection {
+  id: string;
+  kind: "dev" | "machine" | "oauth" | "key";
+  name: string;
+  clientName: string;
+  boards: "all" | string[];
+  level: "read" | "plan" | "complete";
+  lastUsedAt: string;
+  active: boolean;
+  current: boolean;
+}
+
+/** Your connections, under your account (approved mockup): each agent and key, what it may do, when it was last used. */
+export function ConnectionsModal({ onClose }: { onClose: () => void }) {
+  const [data, setData] = useState<{ signedIn: boolean; connections: Connection[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => setData(await request<{ signedIn: boolean; connections: Connection[] }>("/api/online/connections").catch((failure) => {
+    setError(failure instanceof Error ? failure.message : String(failure));
+    return null;
+  })), []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  async function act(run: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  }
+  const live = (data?.connections ?? []).filter((connection) => connection.active);
+  const agents = live.filter((connection) => connection.kind === "oauth" || (connection.kind === "dev" && connection.boards !== "all"));
+  const machines = live.filter((connection) => connection.kind === "machine" || (connection.kind === "dev" && connection.boards === "all"));
+  const keys = live.filter((connection) => connection.kind === "key");
+  const where = (connection: Connection) => connection.boards === "all" ? "All your boards" : connection.boards.join(", ");
+  const row = (connection: Connection, icon: React.ReactNode, levelEditable: boolean) => (
+    <div className="people-row" key={connection.id}>
+      <span className="face-col connection-icon">{icon}</span>
+      <div className="who"><b>{connection.kind === "oauth" ? connection.clientName : connection.name}{connection.current ? <span className="muted"> (this Mac)</span> : null}</b><small>{where(connection)} · last used {timeAgo(connection.lastUsedAt)}</small></div>
+      <div className="col wide">
+        {levelEditable ? (
+          <select className="online-board-select" value={connection.level} disabled={busy} aria-label="What it may do"
+            onChange={(event) => void act(() => request(`/api/online/connections/${encodeURIComponent(connection.id)}/access`, { level: event.target.value }))}>
+            {(["read", "plan", "complete"] as const).map((level) => <option key={level} value={level}>{LEVEL_LABEL[level]}</option>)}
+          </select>
+        ) : <span className="muted">{connection.kind === "machine" ? "Everything you can do" : LEVEL_LABEL[connection.level]}</span>}
+      </div>
+      {connection.current ? <span className="remove-col" /> : (
+        <button className="online-board-button" disabled={busy} onClick={() => void act(() => request(`/api/online/connections/${encodeURIComponent(connection.id)}/revoke`, {}))}>Cut off</button>
+      )}
+    </div>
+  );
+  const cutOffEverything = () => {
+    const others = live.filter((connection) => !connection.current);
+    if (!others.length || !window.confirm(`Cut off all ${others.length} other agents, keys and machines? This Mac stays signed in.`)) return;
+    void act(async () => {
+      for (const connection of others) await request(`/api/online/connections/${encodeURIComponent(connection.id)}/revoke`, {});
+    });
+  };
+  return (
+    <Modal eyebrow="Your account" title="Connections" onClose={onClose}
+      footer={data?.signedIn && live.some((connection) => !connection.current) ? <button className="danger" disabled={busy} onClick={cutOffEverything}>Cut off everything</button> : undefined}>
+      {!data ? <div className="online-board-section"><p className="muted">Loading…</p></div> : !data.signedIn ? (
+        <div className="online-board-section"><p className="muted">This Mac is not signed in to Planban Online. Connections appear here once you take a board online.</p></div>
+      ) : (
+        <>
+          <div className="online-board-section"><h3>Agents</h3>{agents.length ? agents.map((connection) => row(connection, <Bot size={16} />, connection.kind === "oauth")) : <p className="muted">No AI apps are connected.</p>}</div>
+          <div className="online-board-section"><h3>Machines</h3>{machines.map((connection) => row(connection, <Laptop size={16} />, false))}</div>
+          <div className="online-board-section"><h3>Personal access keys</h3>{keys.length ? keys.map((connection) => row(connection, <KeyRound size={16} />, false)) : <p className="muted">No keys. Create one from the command line with planban online keys create.</p>}</div>
+        </>
+      )}
+      {error ? <div className="online-board-section"><p className="online-board-error" role="alert">{error}</p></div> : null}
+    </Modal>
   );
 }

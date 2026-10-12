@@ -121,6 +121,19 @@ export default defineSchema({
     agentLevel: v.optional(agentLevel),
   }).index("by_board_user", ["boardId", "userId"]).index("by_user", ["userId"]),
 
+  /** Invites to a board: a link anyone may use for 7 days, or an email invite for one person. Only the hash of the link's secret is kept. */
+  invites: defineTable({
+    boardId: v.string(),
+    tokenHash: v.string(),
+    role: v.union(v.literal("editor"), v.literal("viewer")),
+    email: v.optional(v.string()),
+    createdBy: v.string(),
+    createdAt: v.string(),
+    expiresAt: v.string(),
+    joinedBy: v.array(v.string()),
+    revokedAt: v.optional(v.string()),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_board", ["boardId"]),
+
   /** How a person appears to others on shared boards (name and picture from the sign-in account). */
   people: defineTable({
     userId: v.string(),

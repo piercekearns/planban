@@ -5,6 +5,7 @@
 // move it, or this machine has signed in and the board is an older copy.
 import { randomUUID } from "node:crypto";
 import type express from "express";
+import { PlanbanValidationError } from "../core/boardOperations";
 import { readManifest, resolvePlanningRoot } from "../core/storage";
 import { boardPath, onlineRequest } from "../core/online/client";
 import { readCredentials, serviceUrl } from "../core/online/credentials";
@@ -139,6 +140,53 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       next(error);
     }
   });
+
+  /** Calls the service for an online board on the page's behalf; a local board has no people to manage. */
+  async function forOnlineBoard(repoId: string) {
+    const manifest = await readManifest(await deps.resolveBoardCwd(repoId));
+    if (manifest?.storage?.kind !== "online") throw new PlanbanValidationError("Take this board online to invite people.");
+    return manifest.storage;
+  }
+  const relay = (handler: (req: express.Request) => Promise<unknown>) => async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      res.json(await handler(req));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  app.get("/api/boards/:repoId/online/invites", relay(async (req) => {
+    const { url, boardId } = await forOnlineBoard(String(req.params.repoId));
+    return onlineRequest(url, boardPath(boardId, "/invites"));
+  }));
+  app.post("/api/boards/:repoId/online/invites", relay(async (req) => {
+    const { url, boardId } = await forOnlineBoard(String(req.params.repoId));
+    return onlineRequest(url, boardPath(boardId, "/invites"), {
+      role: req.body?.role === "editor" ? "editor" : "viewer",
+      ...(typeof req.body?.email === "string" && req.body.email.trim() ? { email: req.body.email } : {}),
+    });
+  }));
+  app.post("/api/boards/:repoId/online/invites/:inviteId/revoke", relay(async (req) => {
+    const { url, boardId } = await forOnlineBoard(String(req.params.repoId));
+    return onlineRequest(url, boardPath(boardId, `/invites/${encodeURIComponent(String(req.params.inviteId))}/revoke`), {});
+  }));
+  app.post("/api/boards/:repoId/online/members/:userId/:action", relay(async (req) => {
+    const { url, boardId } = await forOnlineBoard(String(req.params.repoId));
+    const action = req.params.action === "remove" ? "remove" : "role";
+    return onlineRequest(url, boardPath(boardId, `/members/${encodeURIComponent(String(req.params.userId))}/${action}`), action === "role" ? { role: req.body?.role } : {});
+  }));
+
+  /** Your connections (owner decision 15: they live under your account, not a board). */
+  app.get("/api/online/connections", relay(async () => {
+    const url = await defaultService();
+    if (!(await readCredentials()).services[url]) return { signedIn: false, url, connections: [] };
+    return { signedIn: true, url, ...await onlineRequest<object>(url, "/api/v1/connections") };
+  }));
+  app.post("/api/online/connections/:id/:action", relay(async (req) => {
+    const url = await defaultService();
+    const action = req.params.action === "access" ? "access" : req.params.action === "restore" ? "restore" : "revoke";
+    return onlineRequest(url, `/api/v1/connections/${encodeURIComponent(String(req.params.id))}/${action}`, action === "access" ? { level: req.body?.level } : {});
+  }));
 
   function startJob(repoId: string, kind: MoveJob["kind"], run: (job: MoveJob & { controller?: AbortController }) => Promise<unknown>) {
     const job: MoveJob & { controller?: AbortController } = {

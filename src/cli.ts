@@ -32,6 +32,7 @@ import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
 import { downloadAttachment, listAttachments, removeAttachment, uploadAttachment } from "./core/online/attachments";
+import { invitePeople, joinBoard, listPeople, setMyAgents } from "./core/online/people";
 import { attachOnline, exportOnline, keepLocalCopy, keepSeparateBoard, restoreBackup, stopTakeOnline, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
@@ -187,6 +188,23 @@ online.command("attach <url> <boardId>").requiredOption("--cwd <path>", "project
 online.command("restore-backup").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
   .requiredOption("--cwd <path>", "empty project directory").requiredOption("--repo-id <id>", "id for the restored local board")
   .action(async (options) => print(await restoreBackup(options.from, cwdOption(options.cwd), options.repoId), {}));
+online.command("invite").description("invite someone to this project's online board; the link works for 7 days")
+  .option("--cwd <path>", "project directory")
+  .addOption(new Option("--role <role>", "what they may do").choices(["editor", "viewer"]).default("viewer"))
+  .option("--email <address>", "an invite for one person, by email")
+  .action(async (options) => print(await invitePeople(cwdOption(options.cwd), { role: options.role, ...(options.email ? { email: options.email } : {}) }), {}));
+online.command("join <link>").description("join a board from an invite link, signed in as yourself")
+  .option("--cwd <path>", "also use the board in this project folder")
+  .action(async (link, options) => print(await joinBoard(link, options.cwd ? { cwd: cwdOption(options.cwd) } : {}), {}));
+online.command("people").description("who is on this project's online board, their roles, and what their agents may do")
+  .option("--cwd <path>", "project directory")
+  .action(async (options) => print(await listPeople(cwdOption(options.cwd)), {}));
+online.command("my-agents <level>").description("choose what your own agents may do on this board: read, plan or complete")
+  .option("--cwd <path>", "project directory")
+  .action(async (level, options) => {
+    if (!["read", "plan", "complete"].includes(level)) throw new Error("level must be read, plan or complete.");
+    print(await setMyAgents(cwdOption(options.cwd), level), {});
+  });
 online.command("keep-local-copy").description("keep an older copy of an online board as a separate board; this project then uses the online board")
   .requiredOption("--cwd <path>", "project directory")
   .option("--title <title>", "name for the separate board")

@@ -15,6 +15,7 @@ import type * as copies from "../copies.js";
 import type * as crons from "../crons.js";
 import type * as historyMaintenance from "../historyMaintenance.js";
 import type * as http from "../http.js";
+import type * as invites from "../invites.js";
 import type * as live from "../live.js";
 import type * as maintenance from "../maintenance.js";
 import type * as members from "../members.js";
@@ -48,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   historyMaintenance: typeof historyMaintenance;
   http: typeof http;
+  invites: typeof invites;
   live: typeof live;
   maintenance: typeof maintenance;
   members: typeof members;

@@ -121,6 +121,10 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     // The key is shown once; only its hash is stored.
     return json({ ...created, key: token }, 201);
   }
+  if (parts[0] === "invites" && parts[1] === "accept" && parts.length === 2 && method === "POST") {
+    const input = await body(request);
+    return json(await ctx.runMutation(internal.invites.accept, { connectionId, tokenHash: await sha256Hex(inviteToken(String(input.token ?? ""))) }));
+  }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {
@@ -156,6 +160,25 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     // clients that cannot subscribe.
     const { revision } = await ctx.runQuery(internal.boards.revision, { connectionId, boardId });
     return json({ revision });
+  }
+  if (rest[0] === "invites" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.invites.list, { connectionId, boardId }));
+  if (rest[0] === "invites" && rest.length === 1 && method === "POST") {
+    const input = await body(request);
+    const role = input.role === "editor" ? "editor" as const : "viewer" as const;
+    const token = randomSecret("pbi_");
+    const created = await ctx.runMutation(internal.invites.create, {
+      connectionId, boardId, tokenHash: await sha256Hex(token), role, ...(typeof input.email === "string" && input.email.trim() ? { email: input.email } : {}),
+    });
+    const link = `${publicOrigin()}/invite/${token}`;
+    const emailSent = created.email ? await sendInviteEmail(created.email, created.boardTitle, role, link) : false;
+    // The link is shown once; only its hash is stored.
+    return json({ invite: created, link, emailSent }, 201);
+  }
+  if (rest[0] === "invites" && rest.length === 3 && rest[2] === "revoke" && method === "POST") return json(await ctx.runMutation(internal.invites.revoke, { connectionId, boardId, inviteId: rest[1]! }));
+  if (rest[0] === "members" && rest.length === 3 && method === "POST" && (rest[2] === "role" || rest[2] === "remove")) {
+    const input = await body(request);
+    const role = input.role === "editor" || input.role === "viewer" ? input.role : undefined;
+    return json({ members: await ctx.runMutation(internal.members.update, { connectionId, boardId, userId: decodeURIComponent(rest[1]!), ...(rest[2] === "remove" ? { remove: true } : role ? { role } : {}) }) });
   }
   if (rest[0] === "people" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.people.forBoard, { connectionId, boardId }));
   if (rest[0] === "people" && rest[1] === "me" && rest[2] === "agents" && method === "POST") {
@@ -349,6 +372,52 @@ const machineSignIn = httpAction(async (ctx, request) => {
   }
 });
 
+/** An invite link's secret, from the link itself or just the secret. */
+function inviteToken(input: string) {
+  const match = /(pbi_[A-Za-z0-9_-]{20,})/.exec(input);
+  return match ? match[1]! : "";
+}
+
+/**
+ * Sends an email invite through Resend when the service is set up for it
+ * (RESEND_API_KEY and PLANBAN_INVITE_FROM); otherwise the owner shares the link.
+ */
+async function sendInviteEmail(to: string, boardTitle: string, role: string, link: string) {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.PLANBAN_INVITE_FROM;
+  if (!key || !from) return false;
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from, to: [to], subject: `You're invited to ${boardTitle} on Planban`,
+      text: `You've been invited to the Planban board "${boardTitle}" as ${role === "editor" ? "an editor" : "a viewer"}.\n\nOpen this link to join (it works for 7 days):\n${link}\n\nYou'll sign in with your own account.`,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null);
+  return !!response?.ok;
+}
+
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+
+/** The page an invite link opens: what it is for, and how to join. */
+const invitePage = httpAction(async (ctx, request) => {
+  const token = inviteToken(new URL(request.url).pathname);
+  const invite = token ? await ctx.runQuery(internal.invites.preview, { tokenHash: await sha256Hex(token) }) : null;
+  const page = (title: string, body: string) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title>`
+    + `<body style="font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#111"><h1 style="font-size:22px">${escapeHtml(title)}</h1>${body}</body>`,
+    { status: invite ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" } },
+  );
+  if (!invite) return page("This invite has expired", "<p>Invite links work for 7 days. Ask the board owner for a new one.</p>");
+  const link = `${publicOrigin()}/invite/${token}`;
+  return page(`Join ${invite.boardTitle} on Planban`,
+    `<p>You've been invited as ${invite.role === "editor" ? "an editor: you can change cards, specs and plans, and mark work complete" : "a viewer: you can read the board and its history"}.${invite.forEmail ? " This invite is for one email address; sign in with it." : ""}</p>`
+    + `<p>To join, run this in a terminal on your computer. Planban opens your browser to sign in with your own account:</p>`
+    + `<pre style="background:#f4f4f5;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all">planban online join ${escapeHtml(link)}</pre>`
+    + `<p style="color:#666">The link works until ${escapeHtml(new Date(invite.expiresAt).toUTCString())}.</p>`);
+});
+
 /** What a Planban install needs to know to sign in here. */
 const serviceDiscovery = httpAction(async () => json({
   service: "Planban Online",
@@ -372,6 +441,7 @@ http.route({ path: "/dev/token", method: "POST", handler: devToken });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
+http.route({ pathPrefix: "/invite/", method: "GET", handler: invitePage });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
 http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedMcpResource });
 http.route({

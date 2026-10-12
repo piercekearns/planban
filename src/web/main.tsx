@@ -39,6 +39,7 @@ import {
   Trash2,
   X,
   Settings,
+  Link2,
 } from "lucide-react";
 import {
   closestCorners,
@@ -95,7 +96,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
-import { BoardPeopleContext, BoardSettingsModal, CardFace, HistoryAuthor, LocationPill, OlderCopyBanner, useBoardPeople, useOnlineStatus } from "./onlineBoard";
+import { BoardPeopleContext, BoardSettingsModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, useBoardPeople, useOnlineStatus } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -1824,6 +1825,7 @@ function BoardPicker({
 
 function BoardMoreMenu({
   onOpenSettings,
+  onOpenConnections,
   onOpenHistory,
   onOpenTutorial,
   onOpenFeedback,
@@ -1832,6 +1834,7 @@ function BoardMoreMenu({
   onToggleArchived,
 }: {
   onOpenSettings?: () => void;
+  onOpenConnections?: () => void;
   onOpenHistory?: () => void;
   onOpenTutorial: () => void;
   onOpenFeedback: () => void;
@@ -1859,6 +1862,7 @@ function BoardMoreMenu({
       {open ? (
         <div className="board-more-popover" role="menu">
           {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
+          {onOpenConnections ? <button role="menuitem" onClick={() => choose(onOpenConnections)}><Link2 size={14} /><span>Your connections</span></button> : null}
           {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
           <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button>
           <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
@@ -4723,6 +4727,7 @@ function BoardView({
   const [boardHistoryOpen, setBoardHistoryOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onlineScreen, setOnlineScreen] = useState<"people" | "invite" | "connections" | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [postUpdateVersion, setPostUpdateVersion] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("planbanUpdated");
@@ -5579,6 +5584,7 @@ function BoardView({
             </TooltipButton>
             <BoardMoreMenu
               {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
+              {...(!isDemoBoard && online.status?.signedIn.length ? { onOpenConnections: () => setOnlineScreen("connections") } : {})}
               {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
               onOpenTutorial={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
               onOpenFeedback={() => setFeedbackOpen(true)}
@@ -5607,8 +5613,12 @@ function BoardView({
 
       {feedbackOpen ? <FeedbackModal state={state} onClose={() => setFeedbackOpen(false)} /> : null}
       {settingsOpen && online.status ? (
-        <BoardSettingsModal repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} onClose={() => setSettingsOpen(false)} />
+        <BoardSettingsModal repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload}
+          onManagePeople={() => { setSettingsOpen(false); setOnlineScreen("people"); }} onClose={() => setSettingsOpen(false)} />
       ) : null}
+      {onlineScreen === "people" ? <PeopleModal repoId={boardId} boardTitle={state.roadmap.project.title} onInvite={() => setOnlineScreen("invite")} onClose={() => { setOnlineScreen(null); void boardPeople.reload(); }} /> : null}
+      {onlineScreen === "invite" ? <InviteModal repoId={boardId} boardTitle={state.roadmap.project.title} onClose={() => setOnlineScreen("people")} /> : null}
+      {onlineScreen === "connections" ? <ConnectionsModal onClose={() => setOnlineScreen(null)} /> : null}
       {boardHistoryOpen ? (
         <BoardHistoryModal
           history={history}

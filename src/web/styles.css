@@ -5854,3 +5854,21 @@ button.content-edit-action:hover {
 .card-title-tail { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .history-author { display: inline-flex; align-items: center; gap: 6px; }
 .history-author-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--text-muted); font-size: 10.5px; line-height: 16px; font-weight: 500; }
+.people-colhead { display: flex; gap: 10px; padding: 0 0 4px; color: var(--text-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.people-colhead .who, .people-row .who { flex: 1; min-width: 0; }
+.people-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
+.people-row + .people-row { border-top: 1px solid var(--border); }
+.people-row .who b { display: block; font-size: 13px; font-weight: 600; line-height: 18px; }
+.people-row .who small { display: block; color: var(--text-muted); font-size: 12px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.people-row .col, .people-colhead .col { width: 96px; flex: 0 0 auto; }
+.people-row .col.wide, .people-colhead .col.wide { width: 150px; }
+.face-col { width: 28px; flex: 0 0 auto; }
+.remove-col { width: 64px; flex: 0 0 auto; }
+.connection-icon { display: inline-flex; justify-content: center; color: var(--text-muted); }
+.online-board-select { min-height: 28px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); padding: 3px 6px; font: 500 12px/16px var(--font-sans); color: var(--text); max-width: 100%; }
+.online-board-button.quiet { border-color: transparent; background: transparent; color: var(--text-muted); width: 64px; justify-content: center; }
+.online-board-modal .online-board-row .online-board-input { flex: 1; width: auto; }
+.online-board-modal { width: min(680px, calc(100vw - 32px)); }
+.people-row .col .muted { font-size: 12px; line-height: 16px; padding-left: 7px; }
+.people-colhead .col { padding-left: 7px; }
+.people-colhead::after { content: ""; width: 64px; flex: 0 0 auto; }

@@ -30,3 +30,19 @@ export const add = internalMutation({
     return members.map((member) => ({ userId: member.userId, role: member.role }));
   },
 });
+
+/** The owner changes someone's role, or removes them; their agents follow at once. */
+export const update = internalMutation({
+  args: { connectionId: v.id("connections"), boardId: v.string(), userId: v.string(), role: v.optional(v.union(v.literal("editor"), v.literal("viewer"))), remove: v.optional(v.boolean()) },
+  handler: async (ctx, { connectionId, boardId, userId, role, remove }) => {
+    const access = await boardAccess(ctx, connectionId, boardId);
+    if (!access.canAdminister) fail("forbidden", "Changing who is on the board is kept for the board owner's own sign-in.");
+    const member = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId).eq("userId", userId)).unique();
+    if (!member) fail("not_found", "That person is not on this board.");
+    if (member!.role === "owner") fail("validation", "The owner stays on the board as owner.");
+    if (remove) await ctx.db.delete(member!._id);
+    else if (role) await ctx.db.patch(member!._id, { role, ...(role === "viewer" ? { agentLevel: "read" as const } : {}) });
+    const members = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect();
+    return members.map((entry) => ({ userId: entry.userId, role: entry.role, agentLevel: memberAgentLevel(entry) }));
+  },
+});
