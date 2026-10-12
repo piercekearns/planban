@@ -134,7 +134,7 @@ export async function recordHistory(ctx: MutationCtx, input: {
     version,
     roadmapRevision: committed.revision,
     createdAt: now,
-    actor: history.actor,
+    actor: attribution.actor,
     operation: history.operation,
     summary: history.summary,
     affectedCards: [...new Set(history.affectedCards)],

@@ -6,6 +6,8 @@ import { restore, forOAuthClient } from "../online/service/convex/connections";
 import { checkImportedExtras } from "../online/service/convex/model/indexRules";
 import { reserveRetiredId } from "../online/service/convex/model/retired";
 import { sizeOf } from "../online/service/convex/model/limits";
+import { recordHistory } from "../online/service/convex/model/history";
+import { createEmptyRoadmap, planCreateCard, planReorderCards } from "../src/core/boardOperations";
 
 test("invalid supplied member and invite roles fail before mutation or mail", async () => {
   let calls = 0;
@@ -66,6 +68,35 @@ test("authenticated agent authority cannot claim human attribution", () => {
   assert.equal(attributionFor(machine, "user").actor, "user");
   assert.equal(attributionFor(machine, "agent").actor, "agent", "agents using a person's machine stay agents");
   assert.equal(attributionFor(machine, "user").connectionId, "machine");
+});
+
+test("agent reorders persist consistent agent history and card badges even when the planner says user", async () => {
+  const now = "2026-10-12T00:00:00.000Z";
+  const empty = createEmptyRoadmap({ repoId: "board", title: "Disposable", now });
+  const first = planCreateCard(empty, { title: "First", status: "pending" }, { now }).roadmap;
+  const previous = planCreateCard(first, { title: "Second", status: "pending" }, { now }).roadmap;
+  const change = planReorderCards(previous, { items: [...previous.roadmapItems].reverse().map(({ id, status }) => ({ id, status })) }, { now });
+  assert.equal(change.history.actor, "user", "the shared local planner's default is deliberately preserved");
+  const board: any = { _id: "board-row", boardId: "board", generation: 1, historyVersion: 0 };
+  const rows: any[] = [{ ...board, table: "boards" }];
+  const ctx: any = { db: {
+    query(table: string) {
+      const filters: Array<[string, unknown]> = [];
+      const q: any = { withIndex(_index: string, build: any) { const index: any = { eq(key: string, value: unknown) { filters.push([key, value]); return index; } }; build(index); return q; },
+        unique: async () => rows.find((row) => row.table === table && filters.every(([key, value]) => row[key] === value)) ?? null };
+      return q;
+    },
+    insert: async (table: string, value: any) => { const _id = String(rows.length); rows.push({ _id, table, ...value }); return _id; },
+    patch: async (id: string, value: any) => Object.assign(rows.find((row) => row._id === id), value),
+  } };
+  const connection: any = { _id: "agent", userId: "person", clientName: "App", kind: "key", canAdminister: false };
+  await recordHistory(ctx, { board, previous, committed: change.roadmap, history: change.history, docs: [], attribution: attributionFor(connection, "user"), now });
+  const entry = rows.find((row) => row.table === "history").entry;
+  assert.equal(entry.actor, "agent");
+  assert.equal(entry.attribution.actor, "agent");
+  const badges = rows.filter((row) => row.table === "cardChanges");
+  assert.equal(badges.length, 2);
+  assert.ok(badges.every((row) => row.agent && row.clientName === "App" && row.userId === "person"));
 });
 
 test("restore never changes a revoked OAuth tombstone even for the legitimate administrator", async () => {
