@@ -71,6 +71,8 @@ async function fakeService() {
   const members = [{ userId: "dev-owner", role: "owner" }];
   let failParts = false;
   let failAbort = false;
+  let slowPartsMs = 0;
+  let onMe: (() => Promise<void> | void) | undefined;
   const uploads = new Map<string, Buffer>();
   const sessions = new Map<string, any>();
   const requests: { method: string; path: string; body: any }[] = [];
@@ -128,11 +130,19 @@ async function fakeService() {
         accessToken = "pbm_machine-token";
         return json(201, { token: accessToken, userId: "dev-owner" });
       }
+      // A second account, which sees none of the first one's uploads.
+      if (req.headers.authorization === "Bearer pbm_other-account") {
+        if (path === "/api/v1/me") return json(200, { userId: "someone-else" });
+        return json(404, { error: { code: "not_found", message: "Upload not found." } });
+      }
       if (rejectAccess || req.headers.authorization !== `Bearer ${accessToken}`) {
         res.setHeader("WWW-Authenticate", 'Bearer resource_metadata="' + url + '/.well-known/oauth-protected-resource"');
         return json(401, { error: "unauthorized" });
       }
-      if (path === "/api/v1/me") return json(200, { userId: "dev-owner", scope: "all" });
+      if (path === "/api/v1/me") {
+        await onMe?.();
+        return json(200, { userId: "dev-owner", scope: "all" });
+      }
       if (path === "/api/v1/connections/self/revoke") {
         revokedTokens.add(String(req.headers.authorization));
         return json(200, { revoked: true });
@@ -179,6 +189,7 @@ async function fakeService() {
         if (!transfer) return json(404, { error: { code: "not_found", message: "Upload not found." } });
         if (step === "parts") {
           if (failParts) return json(503, { error: { code: "unavailable", message: "The service is busy." } });
+          if (slowPartsMs) await new Promise((resolve) => setTimeout(resolve, slowPartsMs));
           if (transfer.state === "open") transfer.parts.set(body.seq, body);
           return json(200, { duplicate: false });
         }
@@ -336,7 +347,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -1143,6 +1154,87 @@ test("the board page moves a board online and back, and names who would lose acc
     assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "local");
     assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
   } finally {
+    await server.close();
+  }
+});
+
+test("cancelling an upload asks and cancels as one account, even if another signs in between", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const saved = (await readCredentials()).services[serviceUrl(fake.url)]!;
+  // Someone signs in as another account right after the identity check.
+  fake.onMe(async () => {
+    fake.onMe(undefined);
+    await saveCredentials(fake.url, { ...saved, accessToken: "pbm_other-account" });
+  });
+  await stopTakeOnline(cwd);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"], "the upload was cancelled by the account that started it");
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  await saveCredentials(fake.url, saved);
+});
+
+test("the board page starts one move at a time, explains a failed move from where the board stands, and stops a move when it closes", async () => {
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  let server = await startServer({ cwd, port, useVite: false });
+  const post = (path: string, body: unknown) => fetch(`${server.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const finished = async (id: string) => {
+    for (;;) {
+      const job = await (await fetch(`${server.url}/api/boards/demo/online/job/${id}`)).json();
+      if (job.status !== "running") return job;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  try {
+    // Two tabs at once: only one move starts.
+    fake.slowParts(200);
+    const [first, second] = await Promise.all([post("/api/boards/demo/online/take-online", { url: fake.url }), post("/api/boards/demo/online/take-online", { url: fake.url })]);
+    assert.deepEqual([first.status, second.status].sort(), [202, 409]);
+    const started = await (first.status === 202 ? first : second).json();
+    const stopped = await post("/api/boards/demo/online/stop", {});
+    assert.equal((await stopped.json()).id, started.id, "Stop reaches the move that is running");
+    assert.equal((await finished(started.id)).status, "stopped");
+    fake.slowParts(0);
+
+    // A failure whose clean-up cannot be confirmed says so, rather than promising nothing changed.
+    fake.failParts(true);
+    fake.failAbort(true);
+    const uncertain = await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id);
+    assert.equal(uncertain.status, "failed");
+    assert.equal(uncertain.outcome.unchanged, false);
+    assert.equal(uncertain.outcome.location, "local");
+    assert.match(uncertain.outcome.message, /could not be removed yet/);
+    assert.equal(uncertain.outcome.retry, "Continue");
+    fake.failParts(false);
+    fake.failAbort(false);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id)).status, "succeeded");
+
+    // Take Local failing after the freeze says the board is frozen.
+    fake.failExportDocs(true);
+    const frozen = await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id);
+    assert.equal(frozen.status, "failed");
+    assert.equal(frozen.outcome.location, "online");
+    assert.match(frozen.outcome.message, /read-only/);
+    assert.equal(frozen.outcome.retry, "Finish taking it local");
+    fake.failExportDocs(false);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id)).status, "succeeded");
+
+    // Closing the server stops a Take Online still copying, and removes its partial copy.
+    const currentRoot = (await storage.loadState(cwd)).planningRoot;
+    fake.slowParts(300);
+    const copying = await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json();
+    assert.equal(copying.status, "running");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await server.close();
+    fake.slowParts(0);
+    assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+    assert.equal([...fake.transfers.values()].at(-1)!.state, "aborted");
+    assert.equal(await storage.pathExists(join(currentRoot, "online-transfer.json")), false);
+    server = await startServer({ cwd, port, useVite: false });
+  } finally {
+    fake.slowParts(0);
     await server.close();
   }
 });

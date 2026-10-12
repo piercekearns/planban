@@ -27,6 +27,12 @@ export interface OnlineRequestOptions {
   idempotencyKey?: string;
   /** Overall time limit for one attempt; 30 seconds unless set. */
   timeoutMs?: number;
+  /**
+   * Use exactly these credentials rather than whatever is saved now, so that
+   * several requests are sure to act as one account even if someone signs in
+   * as another meanwhile.
+   */
+  credentials?: OnlineCredentials;
 }
 
 export async function onlineRequest<T>(urlInput: string, path: string, body?: unknown, options: OnlineRequestOptions = {}): Promise<T> {
@@ -52,7 +58,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
   const url = serviceUrl(urlInput);
   // Machine sign-ins, keys and development sign-ins do not expire by time or
   // refresh; when the service stops accepting one, the person signs in again.
-  const credentials = await requireCredentials(url);
+  const credentials = options.credentials ?? await requireCredentials(url);
   const raw = body instanceof RawBody;
   const payload = body === undefined ? undefined : raw ? new Blob([body.bytes as Uint8Array<ArrayBuffer>]) : JSON.stringify(body);
   const send = () => fetch(`${url}${path}`, {

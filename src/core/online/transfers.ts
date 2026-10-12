@@ -195,6 +195,25 @@ export interface MoveOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Where a board stands after a move stopped part way, read from this
+ * machine's files: which copy the project uses and what the unfinished move's
+ * record says. The board page explains a failure from this, never assuming.
+ */
+export async function moveState(cwdInput: string): Promise<{
+  location: "local" | "online";
+  unfinished: { direction: "online" | "local"; phase: TransferJournal["phase"] } | null;
+}> {
+  const cwd = resolveProjectCwd(cwdInput);
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled) throw new PlanbanValidationError(`Planban is not initialized in ${cwd}`);
+  const journal = await readJournal(resolvePlanningRoot(manifest)).catch(() => null);
+  return {
+    location: manifest.storage?.kind === "online" ? "online" : "local",
+    unfinished: journal ? { direction: journal.direction, phase: journal.phase } : null,
+  };
+}
+
 /** Thrown before anything changes when going ahead needs the person's say-so. Carries what they are agreeing to. */
 export class PlanbanConfirmationNeeded extends PlanbanValidationError {
   constructor(message: string, readonly summary: unknown) {
@@ -272,14 +291,17 @@ type CancelOutcome = "removed" | "committed" | "other-account" | "uncertain";
  * started it; anything less certain keeps the journal for a later attempt.
  */
 async function cancelUpload(url: string, journal: TransferJournal): Promise<CancelOutcome> {
+  // One account for both questions: a sign-in in between must not change who asks.
+  let credentials: Awaited<ReturnType<typeof requireCredentials>>;
   let me: { userId: string };
   try {
-    me = await onlineRequest<{ userId: string }>(url, "/api/v1/me");
+    credentials = await requireCredentials(url);
+    me = await onlineRequest<{ userId: string }>(url, "/api/v1/me", undefined, { credentials });
   } catch {
     return "uncertain";
   }
   if (journal.userId && journal.userId !== me.userId) return "other-account";
-  return onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {}).then(
+  return onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {}, { credentials }).then(
     () => "removed" as const,
     (error) => error instanceof PlanbanConflictError ? "committed" as const
       // Not found means gone only when the same account asks: another account's upload is invisible to it.

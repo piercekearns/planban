@@ -450,6 +450,7 @@ export async function startServer(options: ServeOptions) {
   let closeOnlineWatches = () => {};
   const onlineRevisions = new Map<string, number>();
   const onlineAbort = new AbortController();
+  let onlineMoves: ReturnType<typeof registerOnlineRoutes> | null = null;
   // An Online Board is only polled while a browser is watching that board (it
   // polls /api/live?repoId=...), so an idle server, or one showing only local
   // boards, makes no hosted requests.
@@ -488,6 +489,7 @@ export async function startServer(options: ServeOptions) {
   }
 
   async function closeServer() {
+    await onlineMoves?.dispose();
     onlineAbort.abort();
     if (onlineRefresh) {
       clearInterval(onlineRefresh);
@@ -939,7 +941,7 @@ export async function startServer(options: ServeOptions) {
     }
   }
 
-  registerOnlineRoutes(app, {
+  onlineMoves = registerOnlineRoutes(app, {
     resolveBoardCwd,
     changed(repoId) {
       sendEvent("boards", { repoId, action: "online" });

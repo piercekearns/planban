@@ -19,6 +19,8 @@ export interface MoveJob {
   status: "running" | "succeeded" | "failed" | "stopped";
   progress: MoveProgress | null;
   error: string | null;
+  /** For a failed move: where the board stands, said plainly, and what trying again would do. */
+  outcome: { unchanged: boolean; location: "local" | "online"; message: string; retry: string | null } | null;
 }
 
 export interface OnlineStatus {
@@ -123,6 +125,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [losing, setLosing] = useState<Array<{ userId: string; role: string }>>([]);
+  const [signInLink, setSignInLink] = useState<string | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
   const others = (status.people ?? []).filter((person) => !person.you);
 
@@ -170,8 +173,15 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose
   });
   const stop = () => act(() => request(`${base}/stop`, {}));
   const signIn = () => act(async () => {
-    const started = await request<{ id: string; link: string }>("/api/online/sign-in", {});
-    window.open(started.link, "_blank", "noopener");
+    // Opened now, while the click still counts, so the browser does not block it; pointed at the sign-in page once known.
+    const tab = window.open("", "_blank");
+    if (tab) tab.opener = null;
+    const started = await request<{ id: string; link: string }>("/api/online/sign-in", {}).catch((error) => {
+      tab?.close();
+      throw error;
+    });
+    if (tab) tab.location.href = started.link;
+    else setSignInLink(started.link);
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const state = await request<{ done: boolean; error: string | null }>(`/api/online/sign-in/${started.id}`);
@@ -189,6 +199,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose
         footer={<><button onClick={() => setView("settings")}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button></>}>
         <div className="online-board-body">
           <p>Taking a board online needs your Planban account. Sign in opens in a new browser tab, with an email code or GitHub.</p>
+          {signInLink ? <p>Your browser blocked the sign-in tab. <a href={signInLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>.</p> : null}
           {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
           {errorLine}
         </div>
@@ -254,17 +265,17 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose
 
   if (view === "failed" && job) {
     const online = job.kind === "take-online";
+    const outcome = job.outcome;
+    const place = outcome?.location === "online" ? "online" : "on this Mac";
+    const title = outcome?.unchanged ? `${boardTitle} is still ${place}` : online ? `Taking ${boardTitle} online did not finish` : `Taking ${boardTitle} back to this Mac did not finish`;
     return (
-      <Modal eyebrow="Board settings" title={online ? `${boardTitle} is still on this Mac` : `${boardTitle} is still online`} onClose={onClose}
-        footer={<><button onClick={onClose}>Close</button><button className="primary update-now-action" disabled={busy} onClick={() => void (online ? takeOnline() : takeLocal())}>Try again</button></>}>
+      <Modal eyebrow="Board settings" title={title} onClose={onClose}
+        footer={<><button onClick={onClose}>Close</button>{outcome?.retry ? <button className="primary update-now-action" disabled={busy} onClick={() => void (online ? takeOnline() : takeLocal())}>{outcome.retry === "Take online" || outcome.retry === "Take local" ? "Try again" : outcome.retry}</button> : null}</>}>
         <div className="online-board-body">
           <div className="online-board-calm">
-            <b>Nothing has changed.</b>{" "}
-            {online
-              ? "The move was stopped before it finished. The board is still on this Mac, you and your agents can keep editing, and the partial online copy has been removed."
-              : "The board could not be copied back to this Mac. It is still online, unchanged, and nobody's access has been touched."}
+            {outcome?.unchanged ? <><b>Nothing has changed.</b>{" "}{outcome.message.replace(/^Nothing has changed\.\s*/, "")}</> : outcome?.message ?? "Planban could not tell where this board stands. Open Board settings again in a moment."}
           </div>
-          <details className="update-job-details" style={{ marginTop: 12 }}><summary>Show technical details</summary><p>{job.error}</p></details>
+          <p className="muted" style={{ marginTop: 12 }}>{job.error}</p>
           {errorLine}
         </div>
       </Modal>

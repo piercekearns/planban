@@ -11,11 +11,23 @@ import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { readStaleMarker } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
 import {
-  attachOnline, keepSeparateBoard, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
+  attachOnline, keepSeparateBoard, moveState, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
 } from "../core/online/transfers";
 
 /** The working default address for Planban Online (owner decision 13). */
 const DEFAULT_SERVICE = "https://app.planban.ai";
+
+/** What a failed move left behind, for the page to explain accurately. */
+export interface MoveOutcome {
+  /** Nothing changed and nothing is left over. */
+  unchanged: boolean;
+  /** Where the board is now. */
+  location: "local" | "online";
+  /** What to tell the person, in plain words. */
+  message: string;
+  /** What "Try again" would do, if it helps. */
+  retry: string | null;
+}
 
 export interface MoveJob {
   id: string;
@@ -24,6 +36,7 @@ export interface MoveJob {
   status: "running" | "succeeded" | "failed" | "stopped";
   progress: MoveProgress | null;
   error: string | null;
+  outcome: MoveOutcome | null;
   startedAt: string;
   finishedAt: string | null;
 }
@@ -41,8 +54,30 @@ async function defaultService() {
   return services.length === 1 ? services[0]! : DEFAULT_SERVICE;
 }
 
+/** Explains a stopped or failed move from where the board actually stands. */
+function describeOutcome(kind: MoveJob["kind"], state: Awaited<ReturnType<typeof moveState>> | null): MoveOutcome {
+  if (!state) return { unchanged: false, location: kind === "take-online" ? "local" : "online", message: "Planban could not read where this board stands now. Open Board settings again in a moment.", retry: null };
+  const { location, unfinished } = state;
+  if (kind === "take-online") {
+    if (location === "online") return { unchanged: false, location, message: "The board is online. The last step, refreshing this Mac's backup copy, did not finish; it happens again automatically.", retry: null };
+    if (!unfinished) return { unchanged: true, location, message: "Nothing has changed. The board is still on this Mac, you and your agents can keep editing, and the partial online copy has been removed.", retry: "Take online" };
+    if (unfinished.phase === "committed") return { unchanged: false, location, message: "The board reached your Planban account, but this Mac has not switched to it yet. Try again to finish; nothing is lost either way.", retry: "Finish taking it online" };
+    return { unchanged: false, location, message: "The board is still on this Mac and nothing on it has changed, but the partial online copy could not be removed yet. Try again to continue the move, or stop it to remove the partial copy.", retry: "Continue" };
+  }
+  if (location === "local") return { unchanged: false, location, message: "The board is on this Mac. The online copy was not told the move finished yet; that happens the next time this Mac reaches it.", retry: null };
+  if (!unfinished || unfinished.phase === "fencing") return { unchanged: true, location, message: "Nothing has changed. The board is still online, and nobody's access has been touched.", retry: "Take local" };
+  return { unchanged: false, location, message: "The online board is now read-only and everyone else's access has been removed, but the copy to this Mac did not finish. Try again to finish bringing it here.", retry: "Finish taking it local" };
+}
+
 export function registerOnlineRoutes(app: express.Express, deps: Deps) {
-  const jobs = new Map<string, MoveJob & { controller?: AbortController }>();
+  const jobs = new Map<string, MoveJob & { controller?: AbortController; done?: Promise<void> }>();
+  /** Boards whose move is being prepared: taken before any waiting, so two tabs cannot start two moves. */
+  const reserved = new Set<string>();
+  const claim = (repoId: string) => {
+    if (reserved.has(repoId) || running(repoId)) return false;
+    reserved.add(repoId);
+    return true;
+  };
   const signIns = new Map<string, { link: string | null; done: boolean; error: string | null }>();
 
   const publicJob = (job: MoveJob & { controller?: AbortController }): MoveJob => {
@@ -107,14 +142,15 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
 
   function startJob(repoId: string, kind: MoveJob["kind"], run: (job: MoveJob & { controller?: AbortController }) => Promise<unknown>) {
     const job: MoveJob & { controller?: AbortController } = {
-      id: randomUUID(), repoId, kind, status: "running", progress: null, error: null, startedAt: new Date().toISOString(), finishedAt: null,
+      id: randomUUID(), repoId, kind, status: "running", progress: null, error: null, outcome: null, startedAt: new Date().toISOString(), finishedAt: null,
     };
     jobs.set(job.id, job);
-    void run(job).then(() => {
+    (job as { done?: Promise<void> }).done = run(job).then(() => {
       job.status = "succeeded";
-    }, (error: unknown) => {
+    }, async (error: unknown) => {
       job.status = error instanceof PlanbanTakeOnlineStopped ? "stopped" : "failed";
       job.error = error instanceof Error ? error.message : String(error);
+      job.outcome = await describeOutcome(kind, await deps.resolveBoardCwd(repoId).then(moveState).catch(() => null));
     }).finally(() => {
       job.finishedAt = new Date().toISOString();
       delete job.controller;
@@ -135,22 +171,26 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
   app.post("/api/boards/:repoId/online/take-online", async (req, res, next) => {
     try {
       const repoId = req.params.repoId;
-      if (running(repoId)) {
+      if (!claim(repoId)) {
         res.status(409).json({ error: "This board is already moving." });
         return;
       }
-      const cwd = await deps.resolveBoardCwd(repoId);
-      const url = serviceUrl(typeof req.body?.url === "string" && req.body.url ? req.body.url : await defaultService());
-      if (!(await readCredentials()).services[url]) {
-        res.status(401).json({ error: "Sign in to Planban Online first.", signInNeeded: url });
-        return;
+      try {
+        const cwd = await deps.resolveBoardCwd(repoId);
+        const url = serviceUrl(typeof req.body?.url === "string" && req.body.url ? req.body.url : await defaultService());
+        if (!(await readCredentials()).services[url]) {
+          res.status(401).json({ error: "Sign in to Planban Online first.", signInNeeded: url });
+          return;
+        }
+        const job = startJob(repoId, "take-online", (entry) => {
+          entry.controller = new AbortController();
+          return takeOnline(url, cwd, { signal: entry.controller.signal, onProgress: (progress) => { entry.progress = progress; } });
+        });
+        deps.changed(repoId);
+        res.status(202).json(publicJob(job));
+      } finally {
+        reserved.delete(repoId);
       }
-      const job = startJob(repoId, "take-online", (entry) => {
-        entry.controller = new AbortController();
-        return takeOnline(url, cwd, { signal: entry.controller.signal, onProgress: (progress) => { entry.progress = progress; } });
-      });
-      deps.changed(repoId);
-      res.status(202).json(publicJob(job));
     } catch (error) {
       next(error);
     }
@@ -159,29 +199,33 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
   app.post("/api/boards/:repoId/online/take-local", async (req, res, next) => {
     try {
       const repoId = req.params.repoId;
-      if (running(repoId)) {
+      if (!claim(repoId)) {
         res.status(409).json({ error: "This board is already moving." });
         return;
       }
-      const cwd = await deps.resolveBoardCwd(repoId);
-      const manifest = await readManifest(cwd);
-      if (manifest?.storage?.kind !== "online") {
-        res.status(409).json({ error: "This board is already on this machine." });
-        return;
+      try {
+        const cwd = await deps.resolveBoardCwd(repoId);
+        const manifest = await readManifest(cwd);
+        if (manifest?.storage?.kind !== "online") {
+          res.status(409).json({ error: "This board is already on this machine." });
+          return;
+        }
+        // Say who loses access before anything happens; takeLocal checks again.
+        const removeOthers = req.body?.removeOthers === true;
+        const others = await othersOnBoard(manifest.storage.url, manifest.storage.boardId);
+        // The confirmation covers exactly the people the page showed.
+        const expected = Array.isArray(req.body?.expectedOthers) ? new Set(req.body.expectedOthers.map(String)) : null;
+        const unchanged = expected !== null && expected.size === others.length && others.every((person) => expected.has(person.userId));
+        if (others.length && (!removeOthers || !unchanged)) {
+          res.status(409).json({ error: "Taking this board back removes everyone else's access.", confirmationNeeded: { removes: others } });
+          return;
+        }
+        const job = startJob(repoId, "take-local", (entry) => takeLocal(cwd, { expectedOthers: others.map((person) => person.userId), onProgress: (progress) => { entry.progress = progress; } }));
+        deps.changed(repoId);
+        res.status(202).json(publicJob(job));
+      } finally {
+        reserved.delete(req.params.repoId);
       }
-      // Say who loses access before anything happens; takeLocal checks again.
-      const removeOthers = req.body?.removeOthers === true;
-      const others = await othersOnBoard(manifest.storage.url, manifest.storage.boardId);
-      // The confirmation covers exactly the people the page showed.
-      const expected = Array.isArray(req.body?.expectedOthers) ? new Set(req.body.expectedOthers.map(String)) : null;
-      const unchanged = expected !== null && expected.size === others.length && others.every((person) => expected.has(person.userId));
-      if (others.length && (!removeOthers || !unchanged)) {
-        res.status(409).json({ error: "Taking this board back removes everyone else's access.", confirmationNeeded: { removes: others } });
-        return;
-      }
-      const job = startJob(repoId, "take-local", (entry) => takeLocal(cwd, { expectedOthers: others.map((person) => person.userId), onProgress: (progress) => { entry.progress = progress; } }));
-      deps.changed(repoId);
-      res.status(202).json(publicJob(job));
     } catch (error) {
       if (refuse(res, error)) return;
       next(error);
@@ -190,6 +234,10 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
 
   /** An older copy (owner decision 15): use the online board in this project instead. */
   app.post("/api/boards/:repoId/online/use-online", async (req, res, next) => {
+    if (!claim(req.params.repoId)) {
+      res.status(409).json({ error: "This board is already moving." });
+      return;
+    }
     try {
       const cwd = await deps.resolveBoardCwd(req.params.repoId);
       const manifest = await readManifest(cwd);
@@ -203,11 +251,17 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       res.json(result);
     } catch (error) {
       next(error);
+    } finally {
+      reserved.delete(req.params.repoId);
     }
   });
 
   /** An older copy: keep it as its own board; this project follows the online board. */
   app.post("/api/boards/:repoId/online/keep-separate", async (req, res, next) => {
+    if (!claim(req.params.repoId)) {
+      res.status(409).json({ error: "This board is already moving." });
+      return;
+    }
     try {
       const cwd = await deps.resolveBoardCwd(req.params.repoId);
       const title = typeof req.body?.title === "string" ? req.body.title : undefined;
@@ -216,6 +270,8 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       res.json(result);
     } catch (error) {
       next(error);
+    } finally {
+      reserved.delete(req.params.repoId);
     }
   });
 
@@ -280,4 +336,21 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     }
     res.json({ done: entry.done, error: entry.error });
   });
+
+  return {
+    /**
+     * Before the server stops: a Take Online still copying is stopped (its
+     * partial online copy is removed), and every move gets a moment to reach
+     * a point its record can resume from. Anything still running then
+     * resumes from that record next time.
+     */
+    async dispose(timeoutMs = 2000) {
+      const active = [...jobs.values()].filter((job) => job.status === "running");
+      for (const job of active) job.controller?.abort();
+      await Promise.race([
+        Promise.allSettled(active.map((job) => job.done)),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs).unref()),
+      ]);
+    },
+  };
 }
