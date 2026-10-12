@@ -35,6 +35,7 @@ test("invalid supplied member and invite roles fail before mutation or mail", as
 
 test("email transport omits private planning title and stays dormant without mail configuration", async () => {
   const previousKey = process.env.RESEND_API_KEY, previousFrom = process.env.PLANBAN_INVITE_FROM;
+  const previousOrigin = process.env.PLANBAN_PUBLIC_URL, previousSite = process.env.CONVEX_SITE_URL;
   const originalFetch = globalThis.fetch;
   const payloads: any[] = [];
   const privateTitle = "PRIVATE BOARD TITLE MUST STAY IN PLANBAN";
@@ -47,15 +48,22 @@ test("email transport omits private planning title and stays dormant without mai
     assert.equal(payloads.length, 0);
     process.env.RESEND_API_KEY = "synthetic-test-value";
     process.env.PLANBAN_INVITE_FROM = "Planban <fixture@example.invalid>";
+    delete process.env.PLANBAN_PUBLIC_URL; delete process.env.CONVEX_SITE_URL;
+    assert.equal((await (await handleApi(ctx, request(), { connectionId: "owner" } as any)).json()).emailSent, false);
+    assert.equal(payloads.length, 0, "mail configuration without a public destination remains fail-closed");
+    process.env.PLANBAN_PUBLIC_URL = "https://planban.example";
     assert.equal((await (await handleApi(ctx, request(), { connectionId: "owner" } as any)).json()).emailSent, true);
     assert.equal(payloads.length, 1);
     assert.ok(!JSON.stringify(payloads).includes(privateTitle));
+    assert.match(payloads[0].html, /Viewer access/);
     assert.match(payloads[0].text, /a viewer/);
     assert.match(payloads[0].text, /7 days/);
   } finally {
     globalThis.fetch = originalFetch;
     if (previousKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = previousKey;
     if (previousFrom === undefined) delete process.env.PLANBAN_INVITE_FROM; else process.env.PLANBAN_INVITE_FROM = previousFrom;
+    if (previousOrigin === undefined) delete process.env.PLANBAN_PUBLIC_URL; else process.env.PLANBAN_PUBLIC_URL = previousOrigin;
+    if (previousSite === undefined) delete process.env.CONVEX_SITE_URL; else process.env.CONVEX_SITE_URL = previousSite;
   }
 });
 
