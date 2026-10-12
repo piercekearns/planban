@@ -122,8 +122,43 @@ async function unmovable(folder: string, files: string[]) {
   return found;
 }
 
+/**
+ * What each link in the card folder should say once moved. A link to something that moves with it
+ * (directly, inside a moving folder, or through another moving link) stays relative, since the files
+ * keep their layout. Anything else, such as the Spec or Plan, which stay, or a file elsewhere, is
+ * pinned to its real location as it is now.
+ */
+async function movedLinkTargets(folder: string, files: string[]) {
+  const entries = new Set(files.map((file) => join(folder, file.replace(/\/$/u, ""))));
+  const folders = new Set<string>();
+  for (const entry of entries) {
+    for (let path = dirname(entry); path !== folder && inside(folder, path); path = dirname(path)) folders.add(path);
+  }
+  const movesWith = (path: string) => {
+    if (!inside(folder, path) || path === folder) return false;
+    if (entries.has(path) || folders.has(path)) return true;
+    // Inside something that moves as one entry, such as a linked folder.
+    for (let parent = dirname(path); parent !== folder && inside(folder, parent); parent = dirname(parent)) {
+      if (entries.has(parent)) return true;
+    }
+    return false;
+  };
+  const targets = new Map<string, string>();
+  for (const file of files) {
+    const source = join(folder, file);
+    const info = await lstat(source).catch(() => null);
+    if (!info?.isSymbolicLink()) continue;
+    const pointsAt = await readlink(source);
+    const resolved = resolve(dirname(source), pointsAt);
+    if (movesWith(resolved)) targets.set(file, isAbsolute(pointsAt) ? relative(dirname(source), resolved) : pointsAt);
+    else if (isAbsolute(pointsAt) && !inside(folder, resolved)) targets.set(file, pointsAt);
+    else targets.set(file, await realpath(resolved).catch(() => resolved));
+  }
+  return targets;
+}
+
 /** Moves one file without ever replacing an existing one. */
-async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string; moving: Set<string> }) {
+async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string; linkTargets: Map<string, string> }) {
   const source = join(input.folder, input.file);
   const target = join(input.destination, input.file);
   await mkdir(dirname(target), { recursive: true });
@@ -138,11 +173,7 @@ async function moveOne(input: { folder: string; file: string; destination: strin
   }
   const info = await lstat(source);
   if (info.isSymbolicLink()) {
-    const pointsAt = await readlink(source);
-    // A relative link keeps working if it points at something moving with it; otherwise (the Spec or Plan,
-    // which stay, or anything outside the card folder) it is made absolute.
-    const resolved = resolve(dirname(source), pointsAt);
-    await symlink(isAbsolute(pointsAt) || input.moving.has(resolved) ? pointsAt : resolved, target);
+    await symlink(input.linkTargets.get(input.file) ?? await readlink(source), target);
   } else if (info.isFile()) {
     try {
       // A hard link fails if the target exists, so nothing is ever replaced.
@@ -229,16 +260,13 @@ export async function moveFilesOut(input: {
     // Refuse before moving anything if the Spec could not take the new section.
     checkIndexDocument(withSection(files), item.id, "spec");
 
-    // Everything that moves, and the folders holding it, so relative links between them can stay relative.
-    const moving = new Set<string>();
-    for (const file of files) {
-      for (let path = join(folder, file.replace(/\/$/u, "")); path !== folder && inside(folder, path); path = dirname(path)) moving.add(path);
-    }
+    // Where each link should point once moved, worked out before anything moves.
+    const linkTargets = await movedLinkTargets(folder, files);
     const moved: string[] = [];
     let failure: unknown = null;
     for (const file of files) {
       try {
-        await moveOne({ folder, file, destination, realDestination, moving });
+        await moveOne({ folder, file, destination, realDestination, linkTargets });
         moved.push(file);
       } catch (error) {
         failure = error;

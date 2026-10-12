@@ -42,7 +42,7 @@ import { PLANBAN_STATUSES } from "./types";
 import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
-import { assertCardsHoldNoFiles, cardFolder } from "./cardFiles";
+import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
 import { checkIndexCard, checkIndexDocument } from "./contentRules";
 
 export { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
@@ -96,12 +96,60 @@ function changedCards(before: PlanbanRoadmap, after: PlanbanRoadmap) {
   };
 }
 
+/**
+ * Cards a write repositions within their column: the fewest cards whose moves explain the new order
+ * (the longest common subsequence of old and new orders stays put). Where several explanations are
+ * equally short, `pinned` cards are the ones left in place, so a card dragged past a pinned card
+ * counts as the one that moved, and renumbering alone never counts.
+ */
+function repositionedCards(before: PlanbanRoadmap, after: PlanbanRoadmap, pinned: Set<string>): string[] {
+  const scopeOf = (item: PlanbanRoadmapItem) => JSON.stringify([item.parentId, item.status]);
+  const oldScope = new Map(before.roadmapItems.map((item) => [item.id, scopeOf(item)]));
+  const scopes = new Map<string, string[]>();
+  for (const item of after.roadmapItems) {
+    // Cards that changed column are changes in their own right, checked separately.
+    if (oldScope.get(item.id) !== scopeOf(item)) continue;
+    scopes.set(scopeOf(item), [...(scopes.get(scopeOf(item)) ?? []), item.id]);
+  }
+  const moved: string[] = [];
+  for (const [scope, newOrder] of scopes) {
+    if (!newOrder.some((id) => pinned.has(id))) continue;
+    const oldIndex = new Map(before.roadmapItems.filter((item) => scopeOf(item) === scope).map((item, index) => [item.id, index]));
+    const positions = newOrder.map((id) => oldIndex.get(id)!);
+    // Each card staying put counts n + 1, and a pinned one 1 more, so pinning only breaks ties.
+    const weight = (id: string) => newOrder.length + 1 + (pinned.has(id) ? 1 : 0);
+    // Heaviest increasing subsequence of old positions, in new order.
+    const best = newOrder.map((id) => weight(id));
+    const previous = newOrder.map(() => -1);
+    for (let i = 0; i < newOrder.length; i += 1) {
+      for (let j = 0; j < i; j += 1) {
+        if (positions[j]! < positions[i]! && best[j]! + weight(newOrder[i]!) > best[i]!) {
+          best[i] = best[j]! + weight(newOrder[i]!);
+          previous[i] = j;
+        }
+      }
+    }
+    const kept = new Set<string>();
+    for (let i = best.indexOf(Math.max(...best)); i >= 0; i = previous[i]!) kept.add(newOrder[i]!);
+    moved.push(...newOrder.filter((id) => !kept.has(id)));
+  }
+  return moved;
+}
+
 // Planban is an index, not storage (owner decisions 18 and 20): every card a
 // write touches must hold only text and must not hold files in its folder.
 async function assertIndexWrite(state: PlanbanResolvedState, roadmap: PlanbanRoadmap) {
   const { written, removed } = changedCards(state.roadmap, roadmap);
   for (const card of written) checkIndexCard(card);
   await assertCardsHoldNoFiles(state.planningRoot, [...written, ...removed]);
+  // Nor may a reorder reposition a card holding files, though other cards may move around it.
+  const holding = await cardsHoldingFiles(state.planningRoot, state.roadmap.roadmapItems.map((item) => item.id));
+  if (!Object.keys(holding).length) return;
+  const moved = repositionedCards(state.roadmap, roadmap, new Set(Object.keys(holding))).find((id) => holding[id]);
+  if (moved) {
+    const card = state.roadmap.roadmapItems.find((item) => item.id === moved)!;
+    throw new PlanbanCardHoldsFilesError({ cardId: card.id, title: card.title, folder: cardFolder(state.planningRoot, card.id), files: holding[moved]! });
+  }
 }
 
 async function readJson(path: string): Promise<unknown> {

@@ -3,7 +3,7 @@
 // moved out, and `move-files-out` tidies it. Every board here lives in a temporary PLANBAN_HOME.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, realpathSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -368,7 +368,7 @@ test("an empty folder flags a card, and move-files-out keeps relative links work
     await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
     assert.equal(readlinkSync(join(kept, "latest")), "shot.png");
     assert.equal(readFileSync(join(kept, "latest"), "utf8"), "png");
-    assert.equal(readlinkSync(join(kept, "outside")), join(root, "outside.txt"));
+    assert.equal(readlinkSync(join(kept, "outside")), realpathSync(join(root, "outside.txt")));
     assert.equal(readFileSync(join(kept, "outside"), "utf8"), "outside");
   });
 });
@@ -420,8 +420,8 @@ test("move-files-out points moved links at the Spec and Plan that stay, and hand
     symlinkSync("plan.md", join(folder("alpha"), "plan-link"));
     const kept = join(root, "kept-links");
     await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
-    assert.equal(readlinkSync(join(kept, "spec-link")), join(folder("alpha"), "spec.md"));
-    assert.equal(readlinkSync(join(kept, "plan-link")), join(folder("alpha"), "plan.md"));
+    assert.equal(readlinkSync(join(kept, "spec-link")), realpathSync(join(folder("alpha"), "spec.md")));
+    assert.equal(readlinkSync(join(kept, "plan-link")), realpathSync(join(folder("alpha"), "plan.md")));
     assert.equal(readFileSync(join(kept, "plan-link"), "utf8"), "# Plan\n");
 
     // A Spec kept in a folder Planban cannot write to: every file moves, and the error carries the references.
@@ -443,5 +443,43 @@ test("move-files-out points moved links at the Spec and Plan that stay, and hand
       chmodSync(join(planningRoot, "locked"), 0o700);
     }
     assert.equal(readFileSync(join(root, "kept-beta", "shot.png"), "utf8"), "png");
+  });
+});
+
+test("links reached through a moving linked folder keep working", { skip: process.platform === "win32" }, async () => {
+  await withBoard(async ({ root, cwd, folder }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    mkdirSync(join(root, "renders"));
+    writeFileSync(join(root, "renders", "image.png"), "png");
+    symlinkSync(join(root, "renders"), join(folder("alpha"), "assets"));
+    symlinkSync(join("assets", "image.png"), join(folder("alpha"), "latest"));
+    symlinkSync(join(folder("alpha"), "assets", "image.png"), join(folder("alpha"), "latest-absolute"));
+    const kept = join(root, "kept");
+    await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
+    assert.equal(readFileSync(join(kept, "latest"), "utf8"), "png");
+    assert.equal(readlinkSync(join(kept, "latest")), join("assets", "image.png"));
+    assert.equal(readFileSync(join(kept, "latest-absolute"), "utf8"), "png");
+    assert.equal(readFileSync(join(kept, "assets", "image.png"), "utf8"), "png");
+  });
+});
+
+test("a reorder may move other cards around a card holding files, but never repositions it", async () => {
+  await withBoard(async ({ cwd, folder }) => {
+    for (const title of ["Alpha", "Beta", "Gamma"]) await createCard({ cwd, title, status: "up-next" });
+    writeFileSync(join(folder("beta"), "evidence.txt"), "kept\n");
+    const order = async () => (await loadState(cwd)).roadmap.roadmapItems.map((item) => item.id);
+    const reorder = (ids: string[]) => reorderCards({ cwd, items: ids.map((id) => ({ id, status: "up-next" as const })) });
+
+    // Gamma moves to the top: Beta's rank changes, but only Gamma was repositioned.
+    await reorder(["gamma", "alpha", "beta"]);
+    assert.deepEqual(await order(), ["gamma", "alpha", "beta"]);
+    await moveCard({ cwd, cardId: "alpha", afterId: "beta" });
+    assert.deepEqual(await order(), ["gamma", "beta", "alpha"]);
+    // Swapping Beta with a neighbour is read as the neighbour moving.
+    await reorder(["beta", "gamma", "alpha"]);
+    assert.deepEqual(await order(), ["beta", "gamma", "alpha"], "Gamma moved down past Beta");
+    // Moving Beta to the end, past two cards that keep their order, repositions Beta itself.
+    await assert.rejects(reorder(["gamma", "alpha", "beta"]), (error: unknown) => error instanceof PlanbanCardHoldsFilesError && error.cardId === "beta");
+    assert.deepEqual(await order(), ["beta", "gamma", "alpha"]);
   });
 });
