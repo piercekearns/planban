@@ -195,7 +195,35 @@ export default defineSchema({
     revokedAt: v.optional(v.string()),
     /** For an AI app's connection: the OAuth client it was authorised for. */
     oauthClientId: v.optional(v.string()),
+    /** Service-owned enrollment. Legacy Clerk grants have no version. */
+    authorizationVersion: v.optional(v.number()),
+    oauthPending: v.optional(v.boolean()),
+    oauthResource: v.optional(v.string()),
+    /** Access credentials are aliases of an independently revocable grant. */
+    oauthConnectionId: v.optional(v.id("connections")),
   }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"]),
+
+  /** Explicit consent, frozen client/redirect/resource/PKCE and one-use code. */
+  oauthRequests: defineTable({
+    requestHash: v.string(), browserHash: v.string(), csrfHash: v.string(),
+    clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(),
+    scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(),
+    purpose: v.union(v.literal("oauth"), v.literal("machine")),
+    status: v.union(v.literal("pending"), v.literal("approved"), v.literal("denied"), v.literal("consumed")),
+    expiresAt: v.number(), userId: v.optional(v.string()), sessionId: v.optional(v.string()),
+    approverConnectionId: v.optional(v.id("connections")),
+    connectionId: v.optional(v.id("connections")), codeHash: v.optional(v.string()), codeExpiresAt: v.optional(v.number()),
+  }).index("by_requestHash", ["requestHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
+
+  /** Rotating refresh family, including spent hashes for replay detection. */
+  oauthRefresh: defineTable({
+    tokenHash: v.string(), connectionId: v.id("connections"), clientId: v.string(), resource: v.string(),
+    scopes: v.array(v.string()), expiresAt: v.number(), usedAt: v.optional(v.number()),
+  }).index("by_tokenHash", ["tokenHash"]),
+
+  /** Bounded authorization request creation per client and time bucket. */
+  oauthUsage: defineTable({ clientId: v.string(), bucket: v.number(), requests: v.number() })
+    .index("by_client_bucket", ["clientId", "bucket"]).index("by_bucket", ["bucket"]),
 
   /** Clerk's signing key set (JSON), and when it was last fetched and last attempted. */
   signingKeys: defineTable({

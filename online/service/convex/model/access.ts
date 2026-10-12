@@ -10,15 +10,25 @@ export const BOARD_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const IDLE_SIGN_OUT_MS = 90 * 24 * 60 * 60 * 1000;
 
 export function connectionIsUsable(connection: Doc<"connections"> | null): connection is Doc<"connections"> {
-  if (!connection || connection.revokedAt) return false;
+  if (!connection || connection.revokedAt || connection.oauthPending) return false;
   if (connection.expiresAt && Date.parse(connection.expiresAt) <= Date.now()) return false;
   if ((connection.kind === "machine" || connection.kind === "dev") && Date.now() - Date.parse(connection.lastUsedAt) > IDLE_SIGN_OUT_MS) return false;
   return true;
 }
 
-export async function liveConnection(ctx: QueryCtx, connectionId: Id<"connections">): Promise<Doc<"connections">> {
+export async function resolvedConnection(ctx: QueryCtx, connectionId: Id<"connections">): Promise<Doc<"connections"> | null> {
   const connection = await ctx.db.get(connectionId);
-  if (!connectionIsUsable(connection)) fail("unauthorized", "This Planban connection was signed out, revoked or unused for 90 days. Sign in again.");
+  if (!connectionIsUsable(connection)) return null;
+  if (!connection.oauthConnectionId) return connection;
+  const grant = await ctx.db.get(connection.oauthConnectionId);
+  if (!connectionIsUsable(grant) || grant.kind !== "oauth" || grant.authorizationVersion !== 2 || grant.oauthConnectionId
+    || grant.userId !== connection.userId || grant.oauthClientId !== connection.oauthClientId || grant.oauthResource !== connection.oauthResource) return null;
+  return { ...grant, level: lowest(grant.level, connection.level), boards: grant.boards === "all" ? connection.boards : connection.boards === "all" ? grant.boards : grant.boards.filter((board) => connection.boards.includes(board)) };
+}
+
+export async function liveConnection(ctx: QueryCtx, connectionId: Id<"connections">): Promise<Doc<"connections">> {
+  const connection = await resolvedConnection(ctx, connectionId);
+  if (!connection) fail("unauthorized", "This Planban connection was signed out, revoked or unused for 90 days. Sign in again.");
   return connection!;
 }
 

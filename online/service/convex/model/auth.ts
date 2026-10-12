@@ -1,11 +1,10 @@
 // The authentication boundary. A verifier turns a request's credential into a
 // Planban connection id, or null. Planban-issued secrets (machine sign-ins,
-// personal access keys, development tokens) resolve by hash. Clerk OAuth
-// access tokens from AI apps resolve to that person's connection for the app.
+// personal access keys, development tokens, OAuth access credentials) resolve
+// by hash. Clerk proves human identity only at explicit enrollment.
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
-import { clientNameOf, verifyClerkAccessToken } from "./clerk";
 
 export interface Authenticated {
   connectionId: Id<"connections">;
@@ -32,6 +31,7 @@ export const planbanTokenVerifier: AuthVerifier = {
     if (!/^pb[a-z]_[A-Za-z0-9_-]{20,}$/.test(bearer)) return null;
     const resolved = await ctx.runQuery(internal.connections.resolveToken, { tokenHash: await sha256Hex(bearer) });
     if (!resolved) return null;
+    if (resolved.oauthResource !== undefined && (!publicOrigin() || !resolved.oauthResource || ![publicOrigin(), `${publicOrigin()}/mcp`].includes(resolved.oauthResource))) return null;
     if (Date.now() - Date.parse(resolved.lastUsedAt) >= 60 * 60 * 1000) {
       await ctx.runMutation(internal.connections.touch, { connectionId: resolved.connectionId });
     }
@@ -44,16 +44,9 @@ export function publicOrigin() {
   return (process.env.PLANBAN_PUBLIC_URL ?? process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
 }
 
-export const clerkVerifier: AuthVerifier = {
-  async authenticate(ctx, bearer) {
-    const token = await verifyClerkAccessToken(ctx, bearer, publicOrigin());
-    // The command line's own client signs in only through the machine exchange.
-    if (!token || token.clientId === process.env.PLANBAN_CLI_CLIENT_ID) return null;
-    return ctx.runMutation(internal.connections.forOAuthClient, { userId: token.sub, clientId: token.clientId, clientName: clientNameOf(token.clientId) });
-  },
-};
-
-const verifiers: AuthVerifier[] = [planbanTokenVerifier, clerkVerifier];
+// Direct Clerk OAuth credentials cannot identify a grant incarnation. They
+// remain denied even after a new service-owned connection is authorized.
+const verifiers: AuthVerifier[] = [planbanTokenVerifier];
 
 export async function authenticate(ctx: ActionCtx, request: Request): Promise<Authenticated | null> {
   const header = request.headers.get("Authorization") ?? "";

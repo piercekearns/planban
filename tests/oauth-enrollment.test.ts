@@ -1,0 +1,227 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { test } from "node:test";
+import * as oauth from "../online/service/convex/oauth";
+import { authenticate } from "../online/service/convex/model/auth";
+import { connectionIsUsable, resolvedConnection } from "../online/service/convex/model/access";
+import { forOAuthClient, revoke, setAccess, list } from "../online/service/convex/connections";
+import { machineSignIn } from "../online/service/convex/http";
+
+const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+const handler = (fn: any, ctx: any, args: any) => fn._handler(ctx, args);
+
+function fixture() {
+  const rows: any[] = [];
+  let sequence = 0;
+  const db: any = {
+    get: async (id: string) => rows.find((row) => row._id === id) ?? null,
+    normalizeId: (_table: string, id: string) => id,
+    insert: async (table: string, value: any) => { const id = `${table}-${++sequence}`; rows.push({ ...value, _id: id, _creationTime: Date.now(), table }); return id; },
+    patch: async (id: string, fields: any) => Object.assign(rows.find((row) => row._id === id), fields),
+    delete: async (id: string) => { const index = rows.findIndex((row) => row._id === id); if (index >= 0) rows.splice(index, 1); },
+    query(table: string) {
+      const filters: Array<(row: any) => boolean> = [];
+      const matches = () => rows.filter((row) => row.table === table && filters.every((filter) => filter(row)));
+      const query: any = { withIndex(_index: string, build: any) { const index: any = {
+        eq(key: string, value: unknown) { filters.push((row) => row[key] === value); return index; },
+        lt(key: string, value: any) { filters.push((row) => row[key] < value); return index; },
+        lte(key: string, value: any) { filters.push((row) => row[key] <= value); return index; },
+      }; build(index); return query; }, unique: async () => matches()[0] ?? null, collect: async () => matches(), take: async (count: number) => matches().slice(0, count) };
+      return query;
+    },
+  };
+  const ctx: any = { db, scheduler: { runAfter: async () => {} } };
+  const addMachine = (userId = "person", canAdminister = true) => db.insert("connections", { userId, kind: "machine", canAdminister, name: "Machine", clientName: "Machine", boards: "all", level: "complete", lastUsedAt: new Date().toISOString(), createdAt: new Date().toISOString() });
+  async function request(label: string, purpose = "oauth") {
+    const args = { requestHash: digest(`request-${label}`), browserHash: digest(`browser-${label}`), csrfHash: digest(`csrf-${label}`), clientId: "https://client.example/client.json", clientName: "Fixture app", redirectUri: "http://127.0.0.1:4444/callback", resource: "https://planban.example/mcp", scopes: ["planban:plan", "offline_access"], level: "plan", challenge: "a".repeat(43), state: `state-${label}`, purpose };
+    if (purpose === "machine") { args.clientId = oauth.MACHINE_CLIENT_ID; args.scopes = ["planban:machine"]; args.level = "complete"; }
+    await handler(oauth.createRequest, ctx, args);
+    return { ...args, codeHash: digest(`code-${label}`), accessHash: digest(`access-${label}`), refreshHash: digest(`refresh-${label}`) };
+  }
+  async function approve(args: any, approverConnectionId: string, userId = "person") {
+    await handler(oauth.bindIdentity, ctx, { ...args, userId });
+    await handler(oauth.approve, ctx, { ...args, userId, approverConnectionId, deny: false });
+    return rows.find((row) => row.table === "oauthRequests" && row.requestHash === args.requestHash).connectionId;
+  }
+  const redeem = (args: any) => handler(oauth.redeem, ctx, args);
+  const accessId = (tokenHash: string) => rows.find((row) => row.table === "connections" && row.tokenHash === tokenHash)._id;
+  return { ctx, rows, db, addMachine, request, approve, redeem, accessId };
+}
+
+test("explicit approval creates an independently revocable pending grant and one code redemption activates it", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("first");
+  const grant = await f.approve(args, machine);
+  assert.equal(connectionIsUsable(await f.db.get(grant)), false);
+  assert.equal(f.rows.filter((row) => row.tokenHash).length, 0);
+  assert.equal((await f.redeem(args)).error, undefined);
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(args.accessHash)))?._id, grant);
+  assert.equal((await f.redeem(args)).error, "invalid_grant");
+  assert.equal(f.rows.filter((row) => row.table === "connections" && row.oauthConnectionId === grant).length, 1);
+});
+
+test("code redemption is bound to PKCE, client, redirect and resource without consuming a valid pending code on mismatch", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("binding");
+  const grant = await f.approve(args, machine);
+  for (const field of ["challenge", "clientId", "redirectUri", "resource"]) assert.equal((await f.redeem({ ...args, [field]: "wrong" })).error, "invalid_grant");
+  assert.equal((await f.db.get(grant)).oauthPending, true);
+  assert.equal((await f.redeem(args)).error, undefined);
+});
+
+test("revoked grants remain denied after fresh approval, including refresh-derived access and legacy lookups", async () => {
+  const f = fixture(), machine = await f.addMachine(), old = await f.request("old");
+  const oldGrant = await f.approve(old, machine); await f.redeem(old);
+  const refreshed = { tokenHash: old.refreshHash, clientId: old.clientId, resource: old.resource, accessHash: digest("old-descendant"), refreshHash: digest("old-refresh-descendant") };
+  assert.equal((await handler(oauth.refresh, f.ctx, refreshed)).error, undefined);
+  await f.db.patch(oldGrant, { revokedAt: new Date().toISOString() });
+  const fresh = await f.request("fresh"), newGrant = await f.approve(fresh, machine); await f.redeem(fresh);
+  for (const tokenHash of [old.accessHash, refreshed.accessHash]) assert.equal(await resolvedConnection(f.ctx, f.accessId(tokenHash)), null);
+  assert.equal((await handler(oauth.refresh, f.ctx, { ...refreshed, tokenHash: refreshed.refreshHash })).error, "invalid_grant");
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(fresh.accessHash)))?._id, newGrant);
+  assert.equal(await handler(forOAuthClient, f.ctx, { userId: "person", clientId: fresh.clientId, clientName: "Fixture app" }), null);
+  assert.ok((await f.db.get(oldGrant)).revokedAt);
+});
+
+test("spent refresh replay closes only its family and preserves independent connections and machines", async () => {
+  const f = fixture(), firstMachine = await f.addMachine(), secondMachine = await f.addMachine();
+  const first = await f.request("family-a"), second = await f.request("family-b");
+  await f.approve(first, firstMachine); await f.redeem(first);
+  const secondGrant = await f.approve(second, secondMachine); await f.redeem(second);
+  const refreshArgs = { tokenHash: first.refreshHash, clientId: first.clientId, resource: first.resource, accessHash: digest("rotated-access"), refreshHash: digest("rotated-refresh") };
+  assert.equal((await handler(oauth.refresh, f.ctx, refreshArgs)).error, undefined);
+  assert.ok(await resolvedConnection(f.ctx, f.accessId(refreshArgs.accessHash)));
+  assert.equal((await handler(oauth.refresh, f.ctx, refreshArgs)).error, "invalid_grant");
+  for (const tokenHash of [first.accessHash, refreshArgs.accessHash]) assert.equal(await resolvedConnection(f.ctx, f.accessId(tokenHash)), null);
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(second.accessHash)))?._id, secondGrant);
+  assert.ok(await resolvedConnection(f.ctx, firstMachine));
+  assert.ok(await resolvedConnection(f.ctx, secondMachine));
+});
+
+test("grant changes and refresh cannot expand an access credential beyond its approved scope", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("scope-ceiling");
+  const grant = await f.approve(args, machine); await f.redeem(args);
+  await f.db.patch(grant, { level: "complete" });
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(args.accessHash)))?.level, "plan");
+  const next = { tokenHash: args.refreshHash, clientId: args.clientId, resource: args.resource, accessHash: digest("scoped-refresh"), refreshHash: digest("scoped-refresh-next") };
+  assert.equal((await handler(oauth.refresh, f.ctx, next)).scope, "planban:plan offline_access");
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(next.accessHash)))?.level, "plan");
+  assert.equal((await handler(oauth.refresh, f.ctx, { ...next, tokenHash: next.refreshHash, resource: "https://other.example/mcp" })).error, "invalid_grant");
+});
+
+test("cross-user approval, agent approval and mismatched browser/CSRF are denied", async () => {
+  const f = fixture(), machine = await f.addMachine(), other = await f.addMachine("other"), agent = await f.addMachine("person", false), args = await f.request("consent");
+  for (const field of ["browserHash", "csrfHash"]) await assert.rejects(handler(oauth.bindIdentity, f.ctx, { ...args, userId: "person", [field]: digest("wrong") }), /fresh authorization/);
+  await handler(oauth.bindIdentity, f.ctx, { ...args, userId: "person" });
+  await assert.rejects(handler(oauth.approve, f.ctx, { ...args, userId: "other", approverConnectionId: other, deny: false }), /fresh authorization/);
+  await assert.rejects(handler(oauth.approve, f.ctx, { ...args, userId: "person", approverConnectionId: agent, deny: false }), /own sign-in/);
+  await handler(oauth.approve, f.ctx, { ...args, userId: "person", approverConnectionId: machine, deny: true });
+  assert.equal((await f.redeem(args)).error, "invalid_grant");
+});
+
+test("revoking approval authority or pending connection wins before code redemption", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("revoked-approver");
+  await f.approve(args, machine); await f.db.patch(machine, { revokedAt: new Date().toISOString() });
+  assert.equal((await f.redeem(args)).error, "invalid_grant");
+  const independent = await f.addMachine(), next = await f.request("revoked-pending");
+  const grant = await f.approve(next, independent); await f.db.patch(grant, { revokedAt: new Date().toISOString() });
+  assert.equal((await f.redeem(next)).error, "invalid_grant");
+  assert.ok(await resolvedConnection(f.ctx, independent));
+});
+
+test("request, code and access expiry refuse exactly at their boundary; refreshed grant respects current level", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture(), machine = await f.addMachine(), request = await f.request("expiry");
+  t.mock.timers.tick(oauth.REQUEST_MS);
+  await assert.rejects(f.approve(request, machine), /fresh authorization/);
+  const code = await f.request("code-expiry"); await f.approve(code, machine);
+  t.mock.timers.tick(oauth.CODE_MS);
+  assert.equal((await f.redeem(code)).error, "invalid_grant");
+  const active = await f.request("access-expiry"), grant = await f.approve(active, machine); await f.redeem(active);
+  await f.db.patch(grant, { level: "read" });
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(active.accessHash)))?.level, "read");
+  t.mock.timers.tick(oauth.ACCESS_MS);
+  assert.equal(await resolvedConnection(f.ctx, f.accessId(active.accessHash)), null);
+  assert.equal((await handler(oauth.refresh, f.ctx, { tokenHash: active.refreshHash, clientId: active.clientId, resource: active.resource, accessHash: digest("after-expiry"), refreshHash: digest("after-expiry-refresh") })).error, undefined);
+  assert.equal((await resolvedConnection(f.ctx, f.accessId(digest("after-expiry"))))?.level, "read");
+});
+
+test("legacy provider tokens cannot become resources or new machines, while explicit machine approval issues a separate connection", async () => {
+  const f = fixture();
+  const forbiddenCtx: any = { runQuery: () => { throw new Error("Legacy credential must never resolve"); }, runMutation: () => { throw new Error("Legacy exchange must never create a machine"); } };
+  assert.equal(await authenticate(forbiddenCtx, new Request("https://planban.example/mcp", { headers: { Authorization: "Bearer eyJhbGciOiJSUzI1NiJ9.legacy.signature" } })), null);
+  const response = await (machineSignIn as any)._handler(forbiddenCtx, new Request("https://planban.example/api/v1/auth/machine", { method: "POST", headers: { Authorization: "Bearer old-or-refresh-derived" } }));
+  assert.equal(response.status, 401);
+  const prior = await f.addMachine(), args = await f.request("machine", "machine");
+  const grant = await f.approve(args, prior), result = await f.redeem(args);
+  assert.equal(result.machine, true); assert.equal(result.refresh, false);
+  assert.equal((await resolvedConnection(f.ctx, grant))?.canAdminister, true);
+  assert.ok(await resolvedConnection(f.ctx, prior));
+});
+
+test("session-approved codes require a fresh server-verified session identity at redemption", async () => {
+  const f = fixture(), args = await f.request("session", "machine"), sessionId = "verified-session";
+  await handler(oauth.bindIdentity, f.ctx, { ...args, userId: "person", sessionId });
+  await handler(oauth.approve, f.ctx, { ...args, userId: "person", sessionId, deny: false });
+  assert.equal((await f.redeem(args)).error, "invalid_grant");
+  assert.equal((await f.redeem({ ...args, sessionId, sessionUserId: "other" })).error, "invalid_grant");
+  assert.equal((await f.redeem({ ...args, sessionId: "other-session", sessionUserId: "person" })).error, "invalid_grant");
+  assert.equal((await f.redeem({ ...args, sessionId, sessionUserId: "person" })).machine, true);
+});
+
+test("token revocation is idempotent and closes its exact family without revoking another app installation", async () => {
+  const f = fixture(), machine = await f.addMachine(), first = await f.request("revoke-a"), second = await f.request("revoke-b");
+  await f.approve(first, machine); await f.redeem(first); await f.approve(second, machine); await f.redeem(second);
+  const args = { tokenHash: first.refreshHash, clientId: first.clientId };
+  for (const tokenHash of ["unknown", args.tokenHash, args.tokenHash]) assert.deepEqual(await handler(oauth.revokeToken, f.ctx, { ...args, tokenHash }), { revoked: true });
+  assert.equal(await resolvedConnection(f.ctx, f.accessId(first.accessHash)), null);
+  assert.ok(await resolvedConnection(f.ctx, f.accessId(second.accessHash)));
+  assert.ok(await resolvedConnection(f.ctx, machine));
+});
+
+test("cleanup removes expired requests and access aliases without reopening tombstones or losing live-family replay hashes", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture(), machine = await f.addMachine(), active = await f.request("cleanup-active"), abandoned = await f.request("cleanup-pending");
+  const activeGrant = await f.approve(active, machine); await f.redeem(active);
+  const abandonedGrant = await f.approve(abandoned, machine);
+  const accessId = f.accessId(active.accessHash), refreshId = f.rows.find((row) => row.table === "oauthRefresh")._id;
+  t.mock.timers.tick(oauth.REQUEST_MS + oauth.CODE_MS);
+  await handler(oauth.cleanupRequests, f.ctx, {});
+  assert.equal(f.rows.filter((row) => row.table === "oauthRequests").length, 0);
+  assert.ok((await f.db.get(abandonedGrant)).revokedAt);
+  assert.equal((await f.db.get(activeGrant)).revokedAt, undefined);
+  await handler(oauth.cleanupCredential, f.ctx, { accessId, refreshId });
+  assert.equal(await f.db.get(accessId), null);
+  assert.ok(await f.db.get(refreshId), "refresh hashes stay while their family is live");
+  assert.ok(await f.db.get(activeGrant), "grant records are never deleted by credential cleanup");
+  await f.db.patch(activeGrant, { revokedAt: new Date().toISOString() });
+  await handler(oauth.cleanupCredential, f.ctx, { refreshId });
+  assert.equal(await f.db.get(refreshId), null);
+  assert.ok((await f.db.get(activeGrant)).revokedAt);
+});
+
+test("account controls operate on grants, cannot edit access aliases, and self-revocation closes the family", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("account-controls");
+  const grant = await f.approve(args, machine); await f.redeem(args);
+  const alias = f.accessId(args.accessHash);
+  const entries = await handler(list, f.ctx, { connectionId: machine });
+  assert.ok(entries.connections.some((entry: any) => entry.id === grant));
+  assert.ok(!entries.connections.some((entry: any) => entry.id === alias));
+  await assert.rejects(handler(setAccess, f.ctx, { connectionId: machine, targetId: alias, level: "complete" }), /not found/);
+  await handler(revoke, f.ctx, { connectionId: alias, targetId: "self" });
+  assert.ok((await f.db.get(grant)).revokedAt);
+  assert.equal(await resolvedConnection(f.ctx, alias), null);
+  assert.ok(await resolvedConnection(f.ctx, machine));
+});
+
+test("resource authentication refuses service credentials bound to another configured resource", async () => {
+  const prior = process.env.PLANBAN_PUBLIC_URL;
+  try {
+    process.env.PLANBAN_PUBLIC_URL = "https://planban.example";
+    const context: any = { runQuery: async () => ({ connectionId: "alias", lastUsedAt: new Date().toISOString(), oauthResource: "https://other.example/mcp" }) };
+    const request = new Request("https://planban.example/mcp", { headers: { Authorization: `Bearer pba_${"a".repeat(32)}` } });
+    assert.equal(await authenticate(context, request), null);
+    context.runQuery = async () => ({ connectionId: "alias", lastUsedAt: new Date().toISOString(), oauthResource: "https://planban.example/mcp" });
+    assert.deepEqual(await authenticate(context, request), { connectionId: "alias" });
+  } finally {
+    if (prior === undefined) delete process.env.PLANBAN_PUBLIC_URL; else process.env.PLANBAN_PUBLIC_URL = prior;
+  }
+});

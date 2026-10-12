@@ -4,8 +4,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection } from "./model/access";
-import { CLOCK_SKEW_SECONDS } from "./model/clerk";
+import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, resolvedConnection } from "./model/access";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 
@@ -16,18 +15,19 @@ export const resolveToken = internalQuery({
   args: { tokenHash: v.string() },
   handler: async (ctx, { tokenHash }) => {
     const connection = await ctx.db.query("connections").withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash)).unique();
-    if (!connectionIsUsable(connection)) return null;
-    return { connectionId: connection._id, lastUsedAt: connection.lastUsedAt };
+    const resolved = connection ? await resolvedConnection(ctx, connection._id) : null;
+    if (!connection || !resolved) return null;
+    return { connectionId: connection._id, lastUsedAt: connection.lastUsedAt, ...(resolved.kind === "oauth" ? { oauthResource: resolved.oauthResource ?? "" } : {}) };
   },
 });
 
 export const touch = internalMutation({
   args: { connectionId: v.id("connections") },
   handler: async (ctx, { connectionId }) => {
-    const connection = await ctx.db.get(connectionId);
-    if (!connection || connection.revokedAt) return;
+    const connection = await resolvedConnection(ctx, connectionId);
+    if (!connection) return;
     if (Date.now() - Date.parse(connection.lastUsedAt) < TOUCH_INTERVAL_MS) return;
-    await ctx.db.patch(connectionId, { lastUsedAt: new Date().toISOString() });
+    await ctx.db.patch(connection._id, { lastUsedAt: new Date().toISOString() });
   },
 });
 
@@ -86,9 +86,9 @@ export const list = internalQuery({
   args: { connectionId: v.id("connections") },
   handler: async (ctx, { connectionId }) => {
     const connection = await liveConnection(ctx, connectionId);
-    if (!connection.canAdminister) return { connections: [describe(connection, connectionId)] };
+    if (!connection.canAdminister) return { connections: [describe(connection, connection._id)] };
     const all = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
-    return { connections: all.map((row) => describe(row, connectionId)) };
+    return { connections: all.filter((row) => !row.oauthConnectionId).map((row) => describe(row, connectionId)) };
   },
 });
 
@@ -97,9 +97,9 @@ export const revoke = internalMutation({
   args: { connectionId: v.id("connections"), targetId: v.string() },
   handler: async (ctx, { connectionId, targetId }) => {
     const connection = await liveConnection(ctx, connectionId);
-    const id = targetId === "self" ? connectionId : ctx.db.normalizeId("connections", targetId);
+    const id = targetId === "self" ? connection._id : ctx.db.normalizeId("connections", targetId);
     const target = id ? await ctx.db.get(id) : null;
-    const allowed = target && (target._id === connectionId || (connection.canAdminister && target.userId === connection.userId));
+    const allowed = target && !target.oauthConnectionId && (target._id === connection._id || (connection.canAdminister && target.userId === connection.userId));
     if (!allowed) fail("not_found", "Connection not found.");
     if (!target!.revokedAt) await ctx.db.patch(target!._id, { revokedAt: new Date().toISOString() });
     return { revoked: true, id: target!._id };
@@ -141,60 +141,10 @@ export const createKey = internalMutation({
   },
 });
 
-/**
- * An AI app (ChatGPT, Claude, an MCP client) signed in through Clerk: one
- * connection per person and app, created on first use with planning access
- * to the person's boards (no completing or deleting). Revoking it sticks:
- * new tokens from that app are refused until the person re-enables it.
- */
+/** Legacy user/client lookup must never reopen a grant after new enrollment. */
 export const forOAuthClient = internalMutation({
   args: { userId: v.string(), clientId: v.string(), clientName: v.string() },
-  handler: async (ctx, { userId, clientId, clientName }) => {
-    const rows = await ctx.db.query("connections").withIndex("by_user_client", (q) => q.eq("userId", userId).eq("oauthClientId", clientId)).collect();
-    const latest = rows.sort((a, b) => b._creationTime - a._creationTime)[0];
-    if (latest?.revokedAt) return null;
-    const now = new Date().toISOString();
-    if (latest) {
-      if (Date.now() - Date.parse(latest.lastUsedAt) >= TOUCH_INTERVAL_MS) await ctx.db.patch(latest._id, { lastUsedAt: now });
-      return { connectionId: latest._id };
-    }
-    const id = await ctx.db.insert("connections", {
-      userId, kind: "oauth", name: clientName, clientName, oauthClientId: clientId,
-      boards: "all", level: "plan", canAdminister: false, createdAt: now, lastUsedAt: now,
-    });
-    return { connectionId: id };
-  },
-});
-
-/** How long after it was issued a command-line sign-in token can be exchanged. */
-const MACHINE_EXCHANGE_SECONDS = 10 * 60;
-
-/**
- * A machine's own sign-in, from the command line's browser sign-in: the
- * person's full access. The sign-in token it was exchanged for is used up in
- * the same step, so it can never make a second one.
- */
-export const createMachine = internalMutation({
-  args: { userId: v.string(), tokenHash: v.string(), name: v.string(), exchangeHash: v.string(), issuedAt: v.number() },
-  handler: async (ctx, { userId, tokenHash, name, exchangeHash, issuedAt }) => {
-    // Checked here, with the record of its use, so the record always outlives the token's usefulness.
-    const age = Date.now() / 1000 - issuedAt;
-    if (age > MACHINE_EXCHANGE_SECONDS || age < -CLOCK_SKEW_SECONDS) fail("unauthorized", "Sign in again: this sign-in is too old.");
-    const used = await ctx.db.query("machineExchanges").withIndex("by_tokenHash", (q) => q.eq("tokenHash", exchangeHash)).first();
-    if (used) fail("unauthorized", "Sign in again: this sign-in has already been used.");
-    // Kept past the moment the age check above would refuse it anyway.
-    const expiresAt = new Date((issuedAt + MACHINE_EXCHANGE_SECONDS + CLOCK_SKEW_SECONDS) * 1000).toISOString();
-    await ctx.db.insert("machineExchanges", { tokenHash: exchangeHash, expiresAt });
-    const now = new Date().toISOString();
-    const label = name.trim().slice(0, 80) || "Planban command line";
-    const id = await ctx.db.insert("connections", {
-      userId, kind: "machine", name: label, clientName: label, tokenHash,
-      boards: "all", level: "complete", canAdminister: true, createdAt: now, lastUsedAt: now,
-    });
-    // Refresh how this person appears to others (name and picture).
-    await ctx.scheduler.runAfter(0, internal.people.refresh, { userId });
-    return { connectionId: id };
-  },
+  handler: async () => null,
 });
 
 /** From the person's own sign-in: change which boards an app or key reaches and what it may do. */
@@ -205,7 +155,7 @@ export const setAccess = internalMutation({
     if (!connection.canAdminister) fail("forbidden", "Change access from your own sign-in.");
     const id = ctx.db.normalizeId("connections", targetId);
     const target = id ? await ctx.db.get(id) : null;
-    if (!target || target.userId !== connection.userId) fail("not_found", "Connection not found.");
+    if (!target || target.oauthConnectionId || target.userId !== connection.userId) fail("not_found", "Connection not found.");
     if (target!.canAdminister) fail("validation", "A machine's own sign-in always has full access; sign it out instead.");
     if (target!.kind === "key" && boards !== undefined) fail("validation", "A key always reaches the one board it was made for.");
     if (boards !== undefined && boards !== "all" && boards.some((board) => !BOARD_ID_PATTERN.test(board))) fail("validation", "Unknown board id.");

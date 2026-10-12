@@ -36,6 +36,7 @@ import type * as model_retired from "../model/retired.js";
 import type * as model_rows from "../model/rows.js";
 import type * as model_sha256 from "../model/sha256.js";
 import type * as model_transfer from "../model/transfer.js";
+import type * as oauth from "../oauth.js";
 import type * as people from "../people.js";
 import type * as signingKeys from "../signingKeys.js";
 import type * as transfers from "../transfers.js";
@@ -75,6 +76,7 @@ declare const fullApi: ApiFromModules<{
   "model/rows": typeof model_rows;
   "model/sha256": typeof model_sha256;
   "model/transfer": typeof model_transfer;
+  oauth: typeof oauth;
   people: typeof people;
   signingKeys: typeof signingKeys;
   transfers: typeof transfers;
