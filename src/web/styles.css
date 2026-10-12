@@ -5837,3 +5837,12 @@ button.content-edit-action:hover {
 .online-board-calm b { font-weight: 600; }
 .online-board-error { color: var(--red-600, #c0392b); font-size: 12.5px; line-height: 18px; margin: 8px 0 0; }
 .online-board-note { display: flex; align-items: center; gap: 6px; margin: 12px 16px 0; color: var(--text-muted); font-size: 12.5px; }
+.older-copy-banner { display: flex; align-items: flex-start; gap: 12px; margin: 12px 16px 0; border: 1px solid color-mix(in oklab, var(--accent) 26%, var(--border)); border-radius: 9px; background: color-mix(in oklab, var(--accent) 5%, var(--surface)); padding: 12px 14px; }
+.older-copy-banner > svg { flex: 0 0 auto; margin-top: 2px; color: var(--accent); }
+.older-copy-banner .grow { flex: 1; min-width: 0; }
+.older-copy-banner b { display: block; font-size: 13px; line-height: 18px; font-weight: 600; }
+.older-copy-banner p { margin: 3px 0 0; color: var(--text-muted); font-size: 12.5px; line-height: 18px; max-width: 780px; }
+.older-copy-banner .acts { display: flex; gap: 8px; flex: 0 0 auto; align-self: center; }
+.online-board-button.primary-accent { background: var(--accent); border-color: transparent; color: #fff; }
+.online-board-input { width: 100%; box-sizing: border-box; min-height: 30px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); padding: 6px 10px; font: 13px/16px var(--font-sans); color: var(--text); }
+.board-screen.older-copy .card { opacity: .82; }

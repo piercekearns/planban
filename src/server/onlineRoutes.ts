@@ -11,7 +11,7 @@ import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { readStaleMarker } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
 import {
-  othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
+  attachOnline, keepSeparateBoard, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
 } from "../core/online/transfers";
 
 /** The working default address for Planban Online (owner decision 13). */
@@ -156,6 +156,37 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       res.status(202).json(publicJob(job));
     } catch (error) {
       if (refuse(res, error)) return;
+      next(error);
+    }
+  });
+
+  /** An older copy (owner decision 15): use the online board in this project instead. */
+  app.post("/api/boards/:repoId/online/use-online", async (req, res, next) => {
+    try {
+      const cwd = await deps.resolveBoardCwd(req.params.repoId);
+      const manifest = await readManifest(cwd);
+      const stale = manifest?.enabled && manifest.storage?.kind !== "online" ? await readStaleMarker(resolvePlanningRoot(manifest)) : null;
+      if (!stale) {
+        res.status(409).json({ error: "This board is not an older copy of an online board." });
+        return;
+      }
+      const result = await attachOnline(stale.url, stale.boardId, cwd, { replaceStaleCopy: true });
+      deps.changed(req.params.repoId);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** An older copy: keep it as its own board; this project follows the online board. */
+  app.post("/api/boards/:repoId/online/keep-separate", async (req, res, next) => {
+    try {
+      const cwd = await deps.resolveBoardCwd(req.params.repoId);
+      const title = typeof req.body?.title === "string" ? req.body.title : undefined;
+      const result = await keepSeparateBoard(cwd, title ? { title } : {});
+      deps.changed(req.params.repoId);
+      res.json(result);
+    } catch (error) {
       next(error);
     }
   });

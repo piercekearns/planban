@@ -32,7 +32,7 @@ import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
 import { downloadAttachment, listAttachments, removeAttachment, uploadAttachment } from "./core/online/attachments";
-import { attachOnline, exportOnline, keepLocalCopy, restoreBackup, stopTakeOnline, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
+import { attachOnline, exportOnline, keepLocalCopy, keepSeparateBoard, restoreBackup, stopTakeOnline, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -187,9 +187,19 @@ online.command("attach <url> <boardId>").requiredOption("--cwd <path>", "project
 online.command("restore-backup").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
   .requiredOption("--cwd <path>", "empty project directory").requiredOption("--repo-id <id>", "id for the restored local board")
   .action(async (options) => print(await restoreBackup(options.from, cwdOption(options.cwd), options.repoId), {}));
-online.command("keep-local-copy").requiredOption("--cwd <path>", "project directory").requiredOption("--new-id <id>", "id for the separate local board")
-  .option("--title <title>", "title for the separate local board")
-  .action(async (options) => print(await keepLocalCopy(cwdOption(options.cwd), options.newId, options.title), {}));
+online.command("keep-local-copy").description("keep an older copy of an online board as a separate board; this project then uses the online board")
+  .requiredOption("--cwd <path>", "project directory")
+  .option("--title <title>", "name for the separate board")
+  .option("--new-id <id>", "id for the separate board")
+  .option("--in-this-project", "instead, keep using the separate board in this project (its agents follow it, not the online board)")
+  .action(async (options) => {
+    if (options.inThisProject) {
+      if (!options.newId) throw new Error("--in-this-project needs --new-id.");
+      print(await keepLocalCopy(cwdOption(options.cwd), options.newId, options.title), {});
+    } else {
+      print(await keepSeparateBoard(cwdOption(options.cwd), { title: options.title, newId: options.newId }), {});
+    }
+  });
 
 program
   .command("init")

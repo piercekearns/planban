@@ -1,11 +1,11 @@
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { listHistory } from "../history";
-import { agentContextPath, defaultPlanbanRoot, historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath, resolveInsideRoot } from "../paths";
-import { atomicWriteFile, withBoardWriteLock } from "../persistence";
+import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath, resolveInsideRoot, slugify } from "../paths";
+import { atomicWriteFile, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
 import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
@@ -701,6 +701,50 @@ export async function keepLocalCopy(cwdInput: string, newId: string, title?: str
     await publishManifest(cwd, localManifest, { ...state, roadmap: saved });
     return { repoId: newId, planningRoot, unsyncedChanges: marker.unsyncedChanges };
   });
+}
+
+/**
+ * "Keep as a separate board" (owner decision 15): the older copy becomes its
+ * own local board, with a new name, id and identity, in its own folder, never
+ * linked to the online board; this project then uses the online board, so its
+ * agents follow it. The original copy is kept as recovery evidence, as with
+ * "Use the online board".
+ */
+export async function keepSeparateBoard(cwdInput: string, options: { title?: string; newId?: string } = {}) {
+  const cwd = resolveProjectCwd(cwdInput);
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled || manifest.storage?.kind === "online") throw new PlanbanValidationError("This project does not hold a local board.");
+  const planningRoot = resolvePlanningRoot(manifest);
+  const marker = await readStaleMarker(planningRoot);
+  if (!marker) throw new PlanbanValidationError("This board is not marked as an older copy of an Online Board.");
+  const state = await loadState(cwd);
+  const title = options.title?.trim() || `${state.roadmap.project.title} (copy from ${marker.onlineSince.slice(0, 10)})`;
+  let newId = options.newId ?? slugify(`${manifest.repoId}-copy-${marker.onlineSince.slice(0, 10)}`);
+  if (!options.newId) {
+    for (let suffix = 2; await pathExists(defaultPlanningRoot(newId)) || await pathExists(detachedBoardCwd(newId)); suffix += 1) {
+      newId = slugify(`${manifest.repoId}-copy-${marker.onlineSince.slice(0, 10)}-${suffix}`);
+    }
+  }
+  const newRoot = defaultPlanningRoot(newId);
+  const newCwd = detachedBoardCwd(newId);
+  if (await pathExists(newRoot) || await pathExists(newCwd)) throw new PlanbanValidationError(`A board called ${newId} already exists. Choose another id.`);
+  // Copy the board as it is now, holding it so nothing changes mid-copy.
+  await withBoardWriteLock(planningRoot, async () => {
+    await cp(planningRoot, newRoot, {
+      recursive: true, errorOnExist: true,
+      filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json"].includes(basename(source)),
+    });
+  });
+  await mkdir(dirname(manifestPath(newCwd)), { recursive: true });
+  await writeJson(manifestPath(newCwd), { ...manifest, storage: { kind: "local", root: newRoot } });
+  // The copy carries the older-copy marker, so the usual conversion applies:
+  // a new id and identity, never checked against that online board again.
+  const separate = await keepLocalCopy(newCwd, newId, title);
+  // Then this project switches to the online board.
+  const attached = await attachOnline(marker.url, marker.boardId, cwd, { replaceStaleCopy: true }).catch((error: unknown) => {
+    throw new PlanbanValidationError(`The separate board "${title}" was made (${newId}), but this project could not switch to the online board yet: ${error instanceof Error ? error.message : String(error)}. Finish with: planban online attach ${marker.url} ${marker.boardId} --cwd ${cwd} --replace-stale-copy`);
+  });
+  return { separateBoard: { repoId: newId, title, cwd: newCwd, planningRoot: separate.planningRoot }, project: attached };
 }
 
 /** Turns a backup folder (its latest copy, or one day's) into a new local board. */

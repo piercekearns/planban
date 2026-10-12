@@ -15,7 +15,7 @@ import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/re
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
-import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
@@ -764,7 +764,7 @@ test("a local copy of a board taken online elsewhere refuses writes and says how
   await takeOnline(fake.url, cwd);
   resetCopyChecks();
   await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "Too late", baseRevision: await revisionOf(second) }),
-    (error: any) => error instanceof PlanbanStaleCopyError && /Not saved.*now lives online/.test(error.message) && /do not choose for the owner/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy/.test(error.message));
+    (error: any) => error instanceof PlanbanStaleCopyError && /Not saved.*now lives online/.test(error.message) && /do not choose for the owner/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy --cwd .* --title/.test(error.message));
   assert.equal((await storage.loadState(second)).roadmap.roadmapItems[0]!.summary, "Before it went online", "reads still work");
   assert.ok(await storage.pathExists(join(copyRoot, STALE_MARKER)));
   // The refusal survives the service being unreachable.
@@ -829,6 +829,49 @@ test("keeping a stale copy as a separate local board renames it and stops the ch
   assert.match(state.roadmap.project.title, /local copy/);
   await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Mine now", baseRevision: state.roadmap.revision });
   assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), false);
+});
+
+test("keeping an older copy as a separate board gives it its own folder and name, and the project follows the online board", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  const kept = await keepSeparateBoard(second, { title: "Demo (mine)" });
+  // The project now uses the online board, so its agents follow it.
+  assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
+  assert.equal(await storage.pathExists(join(copyRoot, "ONLINE-BOARD.txt")), true, "the older copy is kept as recovery evidence");
+  // The separate board is its own board, editable, never flagged again.
+  resetCopyChecks();
+  const separate = await storage.loadState(kept.separateBoard.cwd);
+  assert.notEqual(separate.manifest.repoId, "demo");
+  assert.equal(separate.roadmap.project.title, "Demo (mine)");
+  assert.ok(separate.roadmap.roadmapItems.some((item) => item.id === "alpha"));
+  await storage.updateCard({ cwd: kept.separateBoard.cwd, cardId: "alpha", summary: "Mine now", baseRevision: separate.roadmap.revision });
+  assert.equal(await storage.pathExists(join(separate.planningRoot, STALE_MARKER)), false);
+  assert.equal(await storage.pathExists(join(separate.planningRoot, "INDEPENDENT-COPY.json")), true);
+});
+
+test("the board page shows an older copy and switches it to the online board when asked", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd: second, port, useVite: false });
+  try {
+    const status = await (await fetch(`${server.url}/api/boards/demo/online`)).json();
+    assert.equal(status.location, "local");
+    assert.equal(status.stale.boardId, "demo");
+    const used = await fetch(`${server.url}/api/boards/demo/online/use-online`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(used.status, 200, await used.clone().text());
+    assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
+    assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "online");
+  } finally {
+    await server.close();
+  }
 });
 
 test("a machine that never signed in makes no network calls for local boards", async () => {

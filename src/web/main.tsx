@@ -95,7 +95,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
-import { BoardSettingsModal, LocationPill, useOnlineStatus } from "./onlineBoard";
+import { BoardSettingsModal, LocationPill, OlderCopyBanner, useOnlineStatus } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -5524,7 +5524,7 @@ function BoardView({
   }
 
   return (
-    <main className="board-screen">
+    <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
           <div className="board-home-row">
@@ -5580,6 +5580,7 @@ function BoardView({
           </div>
         </div>
       </header>
+      <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} />
 
       {isActivityLab ? (
         <ActivityLabPanel

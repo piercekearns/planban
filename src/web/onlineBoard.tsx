@@ -4,7 +4,7 @@
 // ever ask the local Planban server, which answers from files on this machine.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Cloud, Laptop, Loader2, Users, X } from "lucide-react";
+import { Check, Cloud, Info, Laptop, Loader2, Users, X } from "lucide-react";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -285,6 +285,111 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onClose
       <div className="online-board-section"><h3>Where this board lives</h3>{where}</div>
       <div className="online-board-section"><h3>People</h3>{people}</div>
       {errorLine ? <div className="online-board-section">{errorLine}</div> : null}
+    </Modal>
+  );
+}
+
+/**
+ * Shown on an older local copy of a board that has since gone online
+ * (owner decision 15). Reading still works; every change is refused until the
+ * person chooses. Nothing is chosen for them.
+ */
+export function OlderCopyBanner({ repoId, boardTitle, status, reload }: {
+  repoId: string;
+  boardTitle: string;
+  status: OnlineStatus | null;
+  reload: () => Promise<void>;
+}) {
+  const [choice, setChoice] = useState<"use-online" | "keep-separate" | null>(null);
+  const current = status?.location === "local" ? status.stale ?? null : null;
+  // Keeps the choice open (and its result showing) after the board switches over.
+  const [shown, setShown] = useState(current);
+  useEffect(() => {
+    if (current) setShown(current);
+  }, [current]);
+  const stale = current ?? (choice ? shown : null);
+  if (!stale) return null;
+  const since = new Date(stale.onlineSince).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+  return (
+    <>
+      {current ? <div className="older-copy-banner" role="status">
+        <Info size={16} />
+        <div className="grow">
+          <b>This board is now online, so this copy is read-only</b>
+          <p>{stale.title} was taken online on {since}. This copy on this Mac is from before then. Nothing has been lost: the online board has everything up to that day plus all changes since. This copy stays exactly as it was until you choose.</p>
+        </div>
+        <div className="acts">
+          <button className="online-board-button" onClick={() => setChoice("keep-separate")}>Keep as a separate board…</button>
+          <button className="online-board-button primary-accent" onClick={() => setChoice("use-online")}><Cloud size={13} /> Use the online board</button>
+        </div>
+      </div> : null}
+      {choice ? <OlderCopyChoice repoId={repoId} boardTitle={boardTitle} since={since} choice={choice} reload={reload} onClose={() => setChoice(null)} /> : null}
+    </>
+  );
+}
+
+function OlderCopyChoice({ repoId, boardTitle, since, choice, reload, onClose }: {
+  repoId: string;
+  boardTitle: string;
+  since: string;
+  choice: "use-online" | "keep-separate";
+  reload: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(`${boardTitle} (copy from ${since})`);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  async function go() {
+    setBusy(true);
+    setError(null);
+    try {
+      if (choice === "use-online") {
+        await request(`/api/boards/${encodeURIComponent(repoId)}/online/use-online`, {});
+        onClose();
+      } else {
+        const result = await request<{ separateBoard: { title: string } }>(`/api/boards/${encodeURIComponent(repoId)}/online/keep-separate`, { title });
+        setDone(`"${result.separateBoard.title}" is now its own board on this Mac, in your list of boards. This project uses the online ${boardTitle}.`);
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+      await reload();
+    }
+  }
+  if (done) {
+    return (
+      <Modal eyebrow={`Older copy of ${boardTitle}`} title="Kept as a separate board" onClose={onClose} footer={<button className="primary update-now-action" onClick={onClose}>Done</button>}>
+        <div className="online-board-body"><p>{done}</p></div>
+      </Modal>
+    );
+  }
+  if (choice === "use-online") {
+    return (
+      <Modal eyebrow={`Older copy of ${boardTitle}`} title="Use the online board on this Mac?" onClose={onClose}
+        footer={<><button onClick={onClose}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void go()}><Cloud size={14} /> Use the online board</button></>}>
+        <div className="online-board-body">
+          <ul>
+            <li>This Mac opens and edits the online {boardTitle} from now on.</li>
+            <li>This older copy is kept as a backup, so nothing on this Mac is thrown away.</li>
+            <li>Agents in this project folder switch to the online board the next time they use Planban.</li>
+          </ul>
+          {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+        </div>
+      </Modal>
+    );
+  }
+  return (
+    <Modal eyebrow={`Older copy of ${boardTitle}`} title="Keep this copy as a separate board?" onClose={onClose}
+      footer={<><button onClick={onClose}>Cancel</button><button className="primary update-now-action" disabled={busy || !title.trim()} onClick={() => void go()}>Keep as separate board</button></>}>
+      <div className="online-board-body">
+        <p>This copy becomes its own board on this Mac, with its own name. It is not linked to the online {boardTitle}, and changes in one never reach the other.</p>
+        <label className="muted" htmlFor="older-copy-name" style={{ display: "block", fontSize: 12, margin: "4px 0 6px" }}>Name</label>
+        <input id="older-copy-name" className="online-board-input" value={title} onChange={(event) => setTitle(event.target.value)} />
+        <p className="muted" style={{ marginTop: 12 }}>Agents in this project folder will use the online {boardTitle}. To point them at this copy instead, ask your agent.</p>
+        {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+      </div>
     </Modal>
   );
 }
