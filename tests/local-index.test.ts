@@ -531,6 +531,17 @@ test("a copy of a board carries its text only, checked, and never the files in i
       assert.ok(!existsSync(join(copyItems, left)), `${left} is not copied`);
     }
 
+    // A document that cannot be read is never silently left out of a copy.
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      chmodSync(join(folder("alpha"), "plan.md"), 0o000);
+      try {
+        await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-c" }), /Not copied: Planban could not read the Plan of card alpha/u);
+      } finally {
+        chmodSync(join(folder("alpha"), "plan.md"), 0o644);
+      }
+      assert.ok(!existsSync(join(home, "repos", "copy-c")));
+    }
+
     // A Spec written before strict Local Mode, with a picture stored inside it, is refused, and no copy is made.
     writeFileSync(join(folder("alpha"), "spec.md"), dataUriSpec);
     await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-b" }), /Not saved: the Spec of card alpha contains (?:an embedded file|a picture stored in the text)/u);

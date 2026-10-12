@@ -83,8 +83,14 @@ export async function boardTextForCopy(planningRoot: string, roadmap: {
     checkIndexCard(card);
     for (const [kind, path] of [["spec", card.specDoc], ["plan", card.planDoc]] as const) {
       if (!path) continue;
-      const markdown = await (async () => readFile(resolveInsideRoot(planningRoot, path), "utf8"))().catch(() => null);
-      if (markdown === null) continue;
+      let markdown: string;
+      try {
+        markdown = await readFile(resolveInsideRoot(planningRoot, path), "utf8");
+      } catch (error) {
+        // A card without that document is fine; one that cannot be read must not be dropped from the copy.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new PlanbanConflictError(`Not copied: Planban could not read the ${kind === "plan" ? "Plan" : "Spec"} of card ${card.id} (${(error as Error).message}). Fix it, then copy the board again.`);
+      }
       checkIndexDocument(markdown, card.id, kind);
       docs.push({ path, markdown });
     }
