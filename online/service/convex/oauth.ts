@@ -73,6 +73,7 @@ export const approve = internalMutation({
   handler: async (ctx, args) => {
     const row = await requestRow(ctx, args.requestHash);
     if (!row || row.status !== "pending" || row.expiresAt <= Date.now() || row.browserHash !== args.browserHash || row.csrfHash !== args.csrfHash || row.userId !== args.userId) fail("unauthorized", "Start a fresh authorization request.");
+    if (row!.sessionId && row!.sessionId !== args.sessionId) fail("unauthorized", "The signed-in session changed. Start again.");
     if (args.approverConnectionId) {
       const approver = await liveConnection(ctx, args.approverConnectionId);
       if (!approver.canAdminister || approver.userId !== args.userId) fail("forbidden", "Approve from your own sign-in.");
@@ -92,7 +93,8 @@ export const approve = internalMutation({
       oauthClientId: row!.clientId, oauthResource: row!.resource, authorizationVersion: 2, oauthPending: true,
       ...(row!.purpose === "oauth" ? { expiresAt: new Date(Date.now() + GRANT_MS).toISOString() } : {}),
     });
-    await ctx.db.patch(row!._id, { status: "approved", connectionId, codeHash: args.codeHash, codeExpiresAt: Date.now() + CODE_MS, ...(args.approverConnectionId ? { approverConnectionId: args.approverConnectionId } : {}) });
+    const codeExpiresAt = Date.now() + CODE_MS;
+    await ctx.db.patch(row!._id, { status: "approved", connectionId, codeHash: args.codeHash, codeExpiresAt, expiresAt: codeExpiresAt, ...(args.approverConnectionId ? { approverConnectionId: args.approverConnectionId } : {}) });
     return { denied: false, redirectUri: row!.redirectUri, state: row!.state };
   },
 });

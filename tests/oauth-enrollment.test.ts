@@ -167,6 +167,29 @@ test("session-approved codes require a fresh server-verified session identity at
   assert.equal((await f.redeem({ ...args, sessionId, sessionUserId: "person" })).machine, true);
 });
 
+test("machine approval cannot bypass an existing session binding", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("bound-session");
+  await handler(oauth.bindIdentity, f.ctx, { ...args, userId: "person", sessionId: "session-a" });
+  for (const sessionId of [undefined, "session-b"]) {
+    await assert.rejects(handler(oauth.approve, f.ctx, { ...args, userId: "person", approverConnectionId: machine, sessionId, deny: false }), /signed-in session changed/);
+  }
+  assert.equal(f.rows.filter((row) => row.oauthPending).length, 0);
+  await handler(oauth.approve, f.ctx, { ...args, userId: "person", approverConnectionId: machine, sessionId: "session-a", deny: false });
+  assert.equal((await f.redeem(args)).error, undefined);
+});
+
+test("cleanup respects a late-approved code's deadline beyond the original request deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("late-approval");
+  t.mock.timers.tick(oauth.REQUEST_MS - 1);
+  const grant = await f.approve(args, machine);
+  t.mock.timers.tick(2);
+  await handler(oauth.cleanupRequests, f.ctx, {});
+  assert.equal((await f.db.get(grant)).revokedAt, undefined);
+  assert.equal(f.rows.find((row) => row.table === "oauthRequests").codeExpiresAt - Date.now(), oauth.CODE_MS - 2);
+  assert.equal((await f.redeem(args)).error, undefined);
+});
+
 test("token revocation is idempotent and closes its exact family without revoking another app installation", async () => {
   const f = fixture(), machine = await f.addMachine(), first = await f.request("revoke-a"), second = await f.request("revoke-b");
   await f.approve(first, machine); await f.redeem(first); await f.approve(second, machine); await f.redeem(second);
