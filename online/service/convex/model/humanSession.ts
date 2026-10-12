@@ -31,11 +31,17 @@ export async function activeSessionIdentity(sessionId: string, userId: string, c
 export async function verifyHumanSession(request: Request, client?: SessionClient | null): Promise<HumanIdentity | null> {
   const issuer = process.env.CLERK_ISSUER;
   const origin = publicOrigin();
-  if (!issuer || !origin || !/^Bearer\s+\S+$/i.test(request.headers.get("Authorization") ?? "")) return null;
+  const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.get("Authorization") ?? "");
+  if (!issuer || !origin || !bearer) return null;
   try {
     const verifier = client === undefined ? await sessionClient() : client;
     if (!verifier) return null;
-    const state = await verifier.authenticateRequest(request, { acceptsToken: "session_token", authorizedParties: [origin] });
+    // Clerk parses a literal "Bearer " prefix. Preserve HTTP scheme case
+    // insensitivity without transferring or consuming the handler's body.
+    const headers = new Headers(request.headers);
+    headers.set("Authorization", `Bearer ${bearer[1]}`);
+    const proof = new Request(request.url, { method: request.method, headers });
+    const state = await verifier.authenticateRequest(proof, { acceptsToken: "session_token", authorizedParties: [origin] });
     if (!state.isAuthenticated) return null;
     const auth = state.toAuth();
     if (auth.tokenType !== "session_token" || !auth.userId || !auth.sessionId || auth.sessionClaims?.iss !== issuer || auth.sessionClaims?.azp !== origin) return null;

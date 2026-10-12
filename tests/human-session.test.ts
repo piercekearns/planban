@@ -6,9 +6,9 @@ test("human identity requires the configured issuer/party, session-only verifica
   const oldIssuer = process.env.CLERK_ISSUER, oldOrigin = process.env.PLANBAN_PUBLIC_URL;
   const expected = { userId: "user_fixture", sessionId: "sess_fixture" };
   const request = new Request("https://planban.example/oauth/identity", { headers: { Authorization: "Bearer synthetic.session.proof", Origin: "https://hostile.example" } });
-  let claims: any, stateAuthenticated = true, session: any, options: any, sessionReads = 0;
+  let claims: any, stateAuthenticated = true, session: any, options: any, sessionReads = 0, authenticatedRequest: Request;
   const client: any = {
-    authenticateRequest: async (_request: Request, settings: any) => { options = settings; return { isAuthenticated: stateAuthenticated, toAuth: () => claims }; },
+    authenticateRequest: async (request: Request, settings: any) => { authenticatedRequest = request; options = settings; return { isAuthenticated: stateAuthenticated, toAuth: () => claims }; },
     sessions: { getSession: async () => { sessionReads++; return session; } },
   };
   const reset = () => {
@@ -23,6 +23,15 @@ test("human identity requires the configured issuer/party, session-only verifica
     assert.deepEqual(await verifyHumanSession(request, client), expected);
     assert.deepEqual(options, { acceptsToken: "session_token", authorizedParties: ["https://planban.example"] }, "caller Origin never selects the verifier's trusted party");
     assert.equal(sessionReads, 1);
+    for (const scheme of ["bearer ", "BEARER\t"]) {
+      reset();
+      const supplied = new Request(request.url, { method: "POST", body: "unchanged handler payload", headers: { Authorization: scheme + "synthetic.session.proof", Origin: "https://hostile.example" } });
+      assert.deepEqual(await verifyHumanSession(supplied, client), expected);
+      assert.equal(authenticatedRequest!.headers.get("Authorization"), "Bearer synthetic.session.proof");
+      assert.equal(authenticatedRequest!.url, supplied.url);
+      assert.equal(authenticatedRequest!.method, "POST");
+      assert.equal(await supplied.text(), "unchanged handler payload");
+    }
     for (const value of ["oauth_token", "api_key", "m2m_token", null]) {
       reset(); claims.tokenType = value;
       assert.equal(await verifyHumanSession(request, client), null);
