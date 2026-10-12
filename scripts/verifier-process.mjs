@@ -37,10 +37,13 @@ export async function runVerifierStage(stage, script, args = [], options = {}) {
   const child = spawn(process.execPath, [script, ...args], {
     ...spawnOptions, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"],
   });
-  let stdout = "", stderr = "", bytes = 0, failure;
+  let stdout = "", stderr = "", bytes = 0, failure, observedExit;
   let finish;
   const closed = new Promise((resolve) => { finish = resolve; });
   child.once("error", (error) => { failure = error; });
+  // exit records the parent's status; close also requires descendant-held
+  // pipes to drain. A later drain deadline must not erase a known failure.
+  child.once("exit", (code, signal) => { observedExit = { code, signal }; });
   child.once("close", (code, signal) => finish({ code, signal }));
   const capture = (stream, target) => {
     stream.setEncoding("utf8");
@@ -60,9 +63,13 @@ export async function runVerifierStage(stage, script, args = [], options = {}) {
   const timedOut = new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), timeoutMs); });
   const result = await Promise.race([closed, timedOut, overflow]);
   clearTimeout(timer);
+  const status = observedExit ?? result;
   const cleanupErrors = [];
   if (result.timeout || result.overflow) {
-    failure ??= new Error(result.timeout ? `Timed out after ${timeoutMs}ms` : "Output limit exceeded");
+    if (result.timeout && observedExit && (observedExit.code !== 0 || observedExit.signal)) {
+      failure ??= new Error(`Parent exited with code ${observedExit.code ?? "unknown"}, signal ${observedExit.signal ?? "none"}`);
+      cleanupErrors.push(new Error(`Output drain timed out after ${timeoutMs}ms`));
+    } else failure ??= new Error(result.timeout ? `Timed out after ${timeoutMs}ms` : "Output limit exceeded");
     try { await stopOwnedTree(child.pid); } catch (error) { cleanupErrors.push(error); }
     let cleanupTimer;
     const settled = await Promise.race([closed.then(() => true), new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(false), 5000); })]);
@@ -73,7 +80,7 @@ export async function runVerifierStage(stage, script, args = [], options = {}) {
     }
   }
   if (failure || result.code !== 0) {
-    const detail = [failure?.message, `exit=${result.code ?? "unknown"} signal=${result.signal ?? "none"}`, ...cleanupErrors.map((error) => `cleanup: ${error.message}`), `stdout:\n${stdout.slice(-8000)}`, `stderr:\n${stderr.slice(-8000)}`].filter(Boolean).join("\n");
+    const detail = [failure?.message, `exit=${status.code ?? "unknown"} signal=${status.signal ?? "none"}`, ...cleanupErrors.map((error) => `cleanup: ${error.message}`), `stdout:\n${stdout.slice(-8000)}`, `stderr:\n${stderr.slice(-8000)}`].filter(Boolean).join("\n");
     throw new Error(`[cold install] ${stage} failed after ${Date.now() - started}ms\n${detail}`, { cause: failure });
   }
   process.stderr.write(`[cold install] ${stage}: passed (${Date.now() - started}ms)\n`);

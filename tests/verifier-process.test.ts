@@ -77,3 +77,19 @@ test("every cleanup runs, primary failure is preserved, and cleanup-only failure
   await assert.rejects(withVerifierCleanup(async () => "success", cleanups), AggregateError);
   assert.equal(await withVerifierCleanup(async () => "success", []), "success");
 });
+
+test("known parent failure survives a later descendant pipe-drain timeout", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "verifier exit status "));
+  const fixture = join(root, "fixture.mjs");
+  try {
+    await writeFile(fixture, `import {spawn} from 'node:child_process';spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});console.error('original diagnostic');setTimeout(()=>process.exit(7),50);`);
+    await assert.rejects(runVerifierStage("failed parent", fixture, [], { timeoutMs: 500 }), (error: any) => {
+      assert.match(error.message, /Parent exited with code 7/);
+      assert.match(error.message, /exit=7 signal=none/);
+      assert.match(error.message, /Output drain timed out after 500ms/);
+      assert.match(error.message, /original diagnostic/);
+      assert.equal(error.cause.message, "Parent exited with code 7, signal none");
+      return true;
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
