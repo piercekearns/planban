@@ -220,7 +220,7 @@ export const cleanupCredential = internalMutation({
 });
 
 export const refresh = internalMutation({
-  args: { tokenHash: hash, clientId: v.string(), resource: v.string(), accessHash: hash, refreshHash: hash },
+  args: { tokenHash: hash, clientId: v.string(), resource: v.string(), accessHash: hash, refreshHash: hash, requestedScopes: v.optional(v.array(v.string())) },
   handler: async (ctx, args) => {
     const row = await ctx.db.query("oauthRefresh").withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash)).unique();
     if (!row || row.clientId !== args.clientId || row.resource !== args.resource) return invalid();
@@ -232,6 +232,10 @@ export const refresh = internalMutation({
       return invalid();
     }
     if (row.expiresAt <= Date.now() || !connectionIsUsable(connection) || connection.authorizationVersion !== 2 || connection.kind !== "oauth" || connection.oauthConnectionId) return invalid();
+    if (args.requestedScopes) {
+      const approved = new Set(row.scopes), requested = new Set(args.requestedScopes);
+      if (requested.size !== args.requestedScopes.length || requested.size !== approved.size || args.requestedScopes.some((scope) => !approved.has(scope))) return { error: "invalid_scope" as const };
+    }
     await ctx.db.patch(row._id, { usedAt: Date.now() });
     await ctx.db.patch(connection._id, { lastUsedAt: new Date().toISOString() });
     return issueOAuth(ctx, connection, args.accessHash, args.refreshHash, row.scopes);

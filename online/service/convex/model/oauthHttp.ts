@@ -27,7 +27,14 @@ async function form(request: Request): Promise<URLSearchParams | null> {
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const params = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const params = new URLSearchParams();
+    const decode = (value: string) => decodeURIComponent(value.replace(/\+/g, " "));
+    for (const pair of text.split("&")) {
+      if (!pair) continue;
+      const equals = pair.indexOf("=");
+      params.append(decode(equals < 0 ? pair : pair.slice(0, equals)), decode(equals < 0 ? "" : pair.slice(equals + 1)));
+    }
     if ([...params].length > 12 || [...params.keys()].some((key) => params.getAll(key).length !== 1)) return null;
     return params;
   } catch { return null; }
@@ -52,9 +59,11 @@ export async function tokenResponse(ctx: ActionCtx, request: Request, checkSessi
   if (!origin || ![origin, `${origin}/mcp`].includes(resource) || (clientId === MACHINE_CLIENT_ID && resource !== origin)) return error("invalid_target");
   const grantType = input.get("grant_type");
   if (grantType !== "authorization_code" && grantType !== "refresh_token") return error("unsupported_grant_type");
-  // This service preserves the approved scope on refresh. It does not accept
-  // caller-requested expansion or silently ignore a supplied scope change.
-  if (input.has("scope")) return error("invalid_scope");
+  // Explicit refresh scope may restate the approved set. The mutation checks
+  // it atomically against the stored credential before issuing replacements.
+  const scope = input.get("scope");
+  const requestedScopes = scope === null ? undefined : scope.split(" ");
+  if (requestedScopes && (grantType !== "refresh_token" || !/^[\x21\x23-\x5B\x5D-\x7E]+(?: [\x21\x23-\x5B\x5D-\x7E]+)*$/.test(scope!) || requestedScopes.length > 4 || new Set(requestedScopes).size !== requestedScopes.length)) return error("invalid_scope");
   const accessToken = randomSecret(clientId === MACHINE_CLIENT_ID ? "pbm_" : "pba_");
   const refreshToken = randomSecret("pbr_");
   const hashes = { accessHash: await sha256Hex(accessToken), refreshHash: await sha256Hex(refreshToken) };
@@ -75,7 +84,7 @@ export async function tokenResponse(ctx: ActionCtx, request: Request, checkSessi
     } else {
       const token = input.get("refresh_token") ?? "";
       if (!/^pbr_[A-Za-z0-9_-]{43}$/.test(token) || clientId === MACHINE_CLIENT_ID) return error("invalid_grant");
-      result = await ctx.runMutation(internal.oauth.refresh, { tokenHash: await sha256Hex(token), clientId, resource, ...hashes });
+      result = await ctx.runMutation(internal.oauth.refresh, { tokenHash: await sha256Hex(token), clientId, resource, ...hashes, ...(requestedScopes ? { requestedScopes } : {}) });
     }
     if ("error" in result) return error(result.error);
     // Raw credentials are returned once; only their independent hashes reach

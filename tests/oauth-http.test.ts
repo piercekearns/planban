@@ -50,6 +50,10 @@ test("token transport rejects malformed, ambiguous, oversized, wrong-resource an
     const duplicate = new URLSearchParams(base); duplicate.append("client_id", "attacker");
     assert.equal((await tokenResponse(ctx, new Request("https://planban.example/oauth/token", { method: "POST", body: duplicate }))).status, 400);
     assert.equal((await tokenResponse(ctx, request({ ...base, padding: "x".repeat(8193) }))).status, 400);
+    for (const encoded of ["%FF", "%C0%AF", "%", "%GG"]) {
+      const body = new URLSearchParams(base).toString() + "&unused=" + encoded;
+      assert.equal((await tokenResponse(ctx, new Request("https://planban.example/oauth/token", { method: "POST", body, headers: { "Content-Type": "application/x-www-form-urlencoded" } }))).status, 400);
+    }
     assert.equal((await tokenResponse(ctx, request({ grant_type: "refresh_token", client_id: base.client_id, resource, refresh_token: "old.clerk.jwt" }))).status, 400);
     assert.equal(calls, 0);
   } finally { if (previous === undefined) delete process.env.PLANBAN_PUBLIC_URL; else process.env.PLANBAN_PUBLIC_URL = previous; }
@@ -67,6 +71,9 @@ test("refresh errors remain errors without exposing replacement secrets, and rev
     assert.deepEqual(await response.json(), { error: "invalid_grant" });
     assert.equal(calls[0].fn, "oauth:refresh");
     assert.equal(calls[0].args.tokenHash, digest(token));
+    const explicit = await tokenResponse(ctx, request({ grant_type: "refresh_token", client_id: base.client_id, resource, refresh_token: token, scope: "offline_access planban:read" }));
+    assert.deepEqual(await explicit.json(), { error: "invalid_grant" });
+    assert.deepEqual(calls.at(-1).args.requestedScopes, ["offline_access", "planban:read"], "the stored mutation decides equality, not transport input");
     for (const token of ["unknown", "old.clerk.jwt", "pba_" + "d".repeat(43), "pbr_" + "e".repeat(43)]) {
       const response = await revocationResponse(ctx, request({ client_id: base.client_id, token }));
       assert.equal(response.status, 200);

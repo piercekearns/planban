@@ -113,6 +113,20 @@ test("spent refresh replay closes only its family and preserves independent conn
   assert.ok(await resolvedConnection(f.ctx, secondMachine));
 });
 
+test("refresh accepts an explicit approved scope set and refuses changes without consuming credentials", async () => {
+  const f = fixture(), machine = await f.addMachine(), args = await f.request("explicit-scope");
+  const grant = await f.approve(args, machine); await f.redeem(args);
+  const next = { tokenHash: args.refreshHash, clientId: args.clientId, resource: args.resource, accessHash: digest("explicit-access"), refreshHash: digest("explicit-next") };
+  for (const requestedScopes of [["planban:complete", "offline_access"], ["planban:plan"], ["offline_access"], [], ["planban:plan", "planban:plan", "offline_access"]]) {
+    assert.equal((await handler(oauth.refresh, f.ctx, { ...next, requestedScopes })).error, "invalid_scope");
+    assert.equal(f.rows.find((row) => row.table === "oauthRefresh" && row.tokenHash === args.refreshHash).usedAt, undefined);
+    assert.equal((await f.db.get(grant)).revokedAt, undefined);
+  }
+  assert.equal((await handler(oauth.refresh, f.ctx, { ...next, requestedScopes: ["offline_access", "planban:plan"] })).scope, "planban:plan offline_access");
+  assert.equal((await handler(oauth.refresh, f.ctx, { ...next, requestedScopes: ["planban:complete"] })).error, "invalid_grant", "spent replay closes its family even with a changed scope");
+  assert.ok((await f.db.get(grant)).revokedAt);
+});
+
 test("grant changes and refresh cannot expand an access credential beyond its approved scope", async () => {
   const f = fixture(), machine = await f.addMachine(), args = await f.request("scope-ceiling");
   const grant = await f.approve(args, machine); await f.redeem(args);
