@@ -179,6 +179,20 @@ async function localChangesAfter(planningRoot: string, revision: number) {
     .map(({ version, createdAt, summary }) => ({ version, createdAt, summary }));
 }
 
+/** Where a move between this machine and the online service has got to, for the board page. */
+export interface MoveProgress {
+  step: "prepare" | "copy" | "switch" | "files" | "done";
+  message: string;
+  done?: number;
+  total?: number;
+}
+
+export interface MoveOptions {
+  onProgress?: (progress: MoveProgress) => void;
+  /** Stops a Take Online before it commits; the board stays on this machine. */
+  signal?: AbortSignal;
+}
+
 /** Thrown before anything changes when going ahead needs the person's say-so. Carries what they are agreeing to. */
 export class PlanbanConfirmationNeeded extends PlanbanValidationError {
   constructor(message: string, readonly summary: unknown) {
@@ -197,7 +211,7 @@ export class PlanbanConfirmationNeeded extends PlanbanValidationError {
  * half-copied online version is removed and the board stays on this machine
  * unchanged (owner decision 15).
  */
-export async function takeOnline(urlInput: string, cwdInput: string, options: { attachments?: boolean } = {}) {
+export async function takeOnline(urlInput: string, cwdInput: string, options: { attachments?: boolean } & MoveOptions = {}) {
   const url = serviceUrl(urlInput);
   await requireCredentials(url);
   const cwd = resolveProjectCwd(cwdInput);
@@ -215,23 +229,37 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: { 
     }
     if (journal?.phase !== "committed") {
       try {
-        journal = await uploadBoard(url, cwd, planningRoot, boardId, journal);
+        journal = await uploadBoard(url, cwd, planningRoot, boardId, journal, options);
       } catch (error) {
         throw await abandonUpload(url, planningRoot, error);
       }
     }
+    options.onProgress?.({ step: "switch", message: "Switching this project to the online board" });
     const result = await finishTakeOnline(cwd, manifest, planningRoot, journal!);
-    if (!options.attachments) return result;
+    if (!options.attachments) {
+      options.onProgress?.({ step: "done", message: "The board is online" });
+      return result;
+    }
+    options.onProgress?.({ step: "files", message: "Sending the files in each card's folder" });
     // Card files go up once the board is online; re-running links files already stored.
     const roadmap = JSON.parse(await readFile(result.localSnapshot, "utf8")) as { roadmapItems: Array<{ id: string }> };
     try {
       const attachments = await uploadLocalAttachments(url, boardId, planningRoot, roadmap.roadmapItems.map((item) => item.id));
+      options.onProgress?.({ step: "done", message: "The board is online" });
       return { ...result, attachments };
     } catch (error) {
       // The board is online either way; the files can be sent again, and those already sent are only linked.
       throw new PlanbanValidationError(`The board is online, but sending its files stopped (${error instanceof Error ? error.message : String(error)}). Finish with: planban online upload-files --cwd ${cwd} --from ${planningRoot}`);
     }
   });
+}
+
+/** A Take Online stopped on request before it committed. */
+export class PlanbanTakeOnlineStopped extends PlanbanValidationError {
+  constructor() {
+    super("Take Online stopped. The board is on this machine, unchanged, and the partly copied online version was removed.");
+    this.name = "PlanbanTakeOnlineStopped";
+  }
 }
 
 /**
@@ -246,8 +274,10 @@ async function abandonUpload(url: string, planningRoot: string, error: unknown):
   if (!journal || journal.direction !== "online" || journal.phase !== "uploading") return error instanceof Error ? error : new Error(reason);
   const outcome = await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/abort`, {})
     .then(() => "removed" as const, (abortError) => abortError instanceof PlanbanNotFoundError ? "removed" as const : abortError instanceof PlanbanConflictError ? "committed" as const : "unreachable" as const);
+  const stopped = error instanceof DOMException && error.name === "AbortError";
   if (outcome === "removed") {
     await rm(transferJournalPath(planningRoot), { force: true });
+    if (stopped) return new PlanbanTakeOnlineStopped();
     return new PlanbanValidationError(`Taking the board online failed: ${reason}. The board is still on this machine, unchanged, and the partly copied online version was removed. Try again when ready.`);
   }
   if (outcome === "committed") return new PlanbanValidationError(`The board reached the online service before this error (${reason}). Run take-online again to finish switching this project to it.`);
@@ -281,7 +311,8 @@ export async function stopTakeOnline(cwdInput: string) {
 }
 
 /** Uploads the board under a transfer journal, ending committed. Resumable. */
-async function uploadBoard(url: string, cwd: string, planningRoot: string, boardId: string, journal: TransferJournal | null): Promise<TransferJournal> {
+async function uploadBoard(url: string, cwd: string, planningRoot: string, boardId: string, journal: TransferJournal | null, options: MoveOptions): Promise<TransferJournal> {
+  options.onProgress?.({ step: "prepare", message: "Preparing the board" });
   const bundle = await buildLocalBundle(cwd);
   bundle.roadmap.project.id = boardId;
   if (journal?.phase === "uploading" && journal.localRevision !== bundle.roadmap.revision) {
@@ -306,11 +337,17 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   if (begun.state !== "committed") {
     const parts = uploadParts(bundle);
     const received = new Set(begun.receivedParts);
+    const copying = (done: number) => options.onProgress?.({ step: "copy", message: `Copying cards, documents and history (${bundle.roadmap.roadmapItems.length} cards, ${bundle.history.length} versions)`, done, total: parts.length });
+    copying(received.size);
     for (const [seq, part] of parts.entries()) {
       if (received.has(seq)) continue;
+      options.signal?.throwIfAborted();
       await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/parts`, { seq, ...part });
       crashPoint("take-online:after-part");
+      received.add(seq);
+      copying(received.size);
     }
+    options.signal?.throwIfAborted();
     await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/commit`, { partCount: parts.length });
   }
   crashPoint("take-online:after-commit");
@@ -441,6 +478,15 @@ export async function finishLocalTransfer(planningRoot: string) {
   await rm(transferJournalPath(planningRoot), { force: true });
 }
 
+/** Everyone on an Online Board except the caller: who would lose access if it were taken local. */
+export async function othersOnBoard(url: string, boardId: string) {
+  const [{ members }, me] = await Promise.all([
+    onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members")),
+    onlineRequest<{ userId: string }>(url, "/api/v1/me"),
+  ]);
+  return members.filter((member) => member.userId !== me.userId);
+}
+
 /**
  * Take Local. The online board is frozen first, for this transfer only, so
  * no edit can land after the download and every page comes from the frozen
@@ -449,7 +495,7 @@ export async function finishLocalTransfer(planningRoot: string) {
  * copy. Killed at any point, running it again resumes from the journal; the
  * online board stays intact and read-only meanwhile.
  */
-export async function takeLocal(cwdInput: string, options: { removeOthers?: boolean } = {}) {
+export async function takeLocal(cwdInput: string, options: { removeOthers?: boolean } & Pick<MoveOptions, "onProgress"> = {}) {
   const { cwd, manifest, storage } = await requireOnline(cwdInput);
   const lockRoot = resolvePlanningRoot(manifest);
   await mkdir(lockRoot, { recursive: true });
@@ -465,11 +511,7 @@ export async function takeLocal(cwdInput: string, options: { removeOthers?: bool
     if (!journal) {
       // Owner decision 15: taking a shared board back to this machine removes
       // everyone else's access, and their agents'. Say who first.
-      const [{ members }, me] = await Promise.all([
-        onlineRequest<{ members: Array<{ userId: string; role: string }> }>(storage.url, boardPath(storage.boardId, "/members")),
-        onlineRequest<{ userId: string }>(storage.url, "/api/v1/me"),
-      ]);
-      const others = members.filter((member) => member.userId !== me.userId);
+      const others = await othersOnBoard(storage.url, storage.boardId);
       if (others.length && !options.removeOthers) {
         throw new PlanbanConfirmationNeeded(
           `Taking this board back to this machine removes access for ${others.length} other person(s), and their agents: ${others.map((member) => `${member.userId} (${member.role})`).join(", ")}. `
@@ -493,6 +535,7 @@ export async function takeLocal(cwdInput: string, options: { removeOthers?: bool
       });
       if (journal.phase === "fencing") await step({ ...journal, phase: "fenced", generation: fenced.generation });
       crashPoint("take-local:after-fence");
+      options.onProgress?.({ step: "copy", message: "Copying the online board, its documents and history to this machine" });
       const bundle = await exportOnline(cwd, undefined, journal.transferId);
       // The folder is this transfer's own; a partial earlier attempt is replaced.
       await rm(root, { recursive: true, force: true });
@@ -511,6 +554,7 @@ export async function takeLocal(cwdInput: string, options: { removeOthers?: bool
         }
         throw error;
       });
+    options.onProgress?.({ step: "switch", message: "Switching this project to the copy on this machine" });
     const roadmap = normalizeRoadmap(JSON.parse(await readFile(join(root, "roadmap.json"), "utf8")));
     const localManifest: PlanbanProjectManifest = { ...manifest, storage: { kind: "local", root } };
     const state: PlanbanResolvedState = { cwd, manifest: localManifest, manifestPath: manifestPath(cwd),
@@ -523,6 +567,7 @@ export async function takeLocal(cwdInput: string, options: { removeOthers?: bool
     crashPoint("take-local:after-publish");
     // Only now that this project is local is the online freeze lifted.
     await finishLocalTransfer(root).catch(() => undefined);
+    options.onProgress?.({ step: "done", message: "The board is on this machine" });
     return { boardId: storage.boardId, planningRoot: root };
   });
 }

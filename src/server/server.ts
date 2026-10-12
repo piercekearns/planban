@@ -62,6 +62,7 @@ import {
 } from "../core/storage";
 import { boardPath, onlineRequest } from "../core/online/client";
 import type { LiveWatch } from "../core/online/live";
+import { registerOnlineRoutes } from "./onlineRoutes";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
 import { PlanbanQueryValidationError, queryWorkItems, workItemQueryFromSearchParams } from "../core/workItemQuery";
 import {
@@ -937,6 +938,14 @@ export async function startServer(options: ServeOptions) {
       throw new PlanbanNotFoundError(`Planban card ${cardId} was not found.`);
     }
   }
+
+  registerOnlineRoutes(app, {
+    resolveBoardCwd,
+    changed(repoId) {
+      sendEvent("boards", { repoId, action: "online" });
+      sendEvent("state", { repoId });
+    },
+  });
 
   app.get("/api/boards/:repoId/activity", async (req, res, next) => {
     try {

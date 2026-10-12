@@ -38,6 +38,7 @@ import {
   SquarePen,
   Trash2,
   X,
+  Settings,
 } from "lucide-react";
 import {
   closestCorners,
@@ -94,6 +95,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
+import { BoardSettingsModal, LocationPill, useOnlineStatus } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -1816,6 +1818,7 @@ function BoardPicker({
 }
 
 function BoardMoreMenu({
+  onOpenSettings,
   onOpenHistory,
   onOpenTutorial,
   onOpenFeedback,
@@ -1823,6 +1826,7 @@ function BoardMoreMenu({
   showArchived,
   onToggleArchived,
 }: {
+  onOpenSettings?: () => void;
   onOpenHistory?: () => void;
   onOpenTutorial: () => void;
   onOpenFeedback: () => void;
@@ -1849,6 +1853,7 @@ function BoardMoreMenu({
       </TooltipButton>
       {open ? (
         <div className="board-more-popover" role="menu">
+          {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
           {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
           <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button>
           <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
@@ -4712,6 +4717,7 @@ function BoardView({
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
   const [boardHistoryOpen, setBoardHistoryOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [postUpdateVersion, setPostUpdateVersion] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("planbanUpdated");
@@ -4730,6 +4736,7 @@ function BoardView({
   const isPreviewing = preview !== null;
   const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
   const isDemoBoard = boardKind === "demo";
+  const online = useOnlineStatus(isDemoBoard ? null : boardId, state.roadmap.revision);
   const isActivityLab = activityLabIsEnabled(boardId, boardKind, window.location.search);
   const activityLabCards = useMemo(
     () => items.filter((item) => item.status !== "archived"),
@@ -5527,6 +5534,7 @@ function BoardView({
           </div>
           <div className="board-title-row">
             <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
+            <LocationPill status={online.status} />
           </div>
         </div>
         <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
@@ -5561,6 +5569,7 @@ function BoardView({
               {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
             </TooltipButton>
             <BoardMoreMenu
+              {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
               {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
               onOpenTutorial={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
               onOpenFeedback={() => setFeedbackOpen(true)}
@@ -5587,6 +5596,9 @@ function BoardView({
       ) : null}
 
       {feedbackOpen ? <FeedbackModal state={state} onClose={() => setFeedbackOpen(false)} /> : null}
+      {settingsOpen && online.status ? (
+        <BoardSettingsModal repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} onClose={() => setSettingsOpen(false)} />
+      ) : null}
       {boardHistoryOpen ? (
         <BoardHistoryModal
           history={history}

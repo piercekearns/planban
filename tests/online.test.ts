@@ -15,7 +15,7 @@ import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/re
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
-import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, PlanbanConfirmationNeeded, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
@@ -983,6 +983,64 @@ test("stop-take-online cancels an interrupted move; one that already reached the
   await assert.rejects(stopTakeOnline(cwd), /already reached the online service/);
   await takeOnline(fake.url, cwd);
   assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("a stopped take-online removes the partly copied online board and leaves this machine's board unchanged", async () => {
+  const before = await storage.loadState(cwd);
+  await assert.rejects(takeOnline(fake.url, cwd, { signal: AbortSignal.abort() }), (error: unknown) => error instanceof PlanbanTakeOnlineStopped);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"]);
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+});
+
+test("the board page moves a board online and back, and names who would lose access before cutting them off", async () => {
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  const post = (path: string, body: unknown) => fetch(`${server.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const finished = async (id: string) => {
+    for (;;) {
+      const job = await (await fetch(`${server.url}/api/boards/demo/online/job/${id}`)).json();
+      if (job.status !== "running") return job;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  try {
+    const requestsBefore = fake.requests.length;
+    const local = await (await fetch(`${server.url}/api/boards/demo/online`)).json();
+    assert.equal(local.location, "local");
+    assert.equal(fake.requests.length, requestsBefore, "a local board's status never contacts the online service");
+
+    fake.failParts(true);
+    const failing = await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json();
+    const failed = await finished(failing.id);
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error, /unchanged, and the partly copied online version was removed/);
+    assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "local");
+    fake.failParts(false);
+
+    const started = await post("/api/boards/demo/online/take-online", { url: fake.url });
+    assert.equal(started.status, 202);
+    assert.equal((await finished((await started.json()).id)).status, "succeeded");
+    const online = await (await fetch(`${server.url}/api/boards/demo/online`)).json();
+    assert.equal(online.location, "online");
+    assert.deepEqual(online.people, [{ userId: "dev-owner", role: "owner", you: true }]);
+
+    fake.members.push({ userId: "maya", role: "editor" });
+    const unconfirmed = await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] });
+    assert.equal(unconfirmed.status, 409, "the confirmation must cover exactly the people on the board now");
+    assert.deepEqual((await unconfirmed.json()).confirmationNeeded.removes, [{ userId: "maya", role: "editor" }]);
+    assert.equal(fake.requests.some((req) => req.path.endsWith("/take-local/fence")), false);
+    const confirmed = await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: ["maya"] });
+    assert.equal(confirmed.status, 202);
+    assert.equal((await finished((await confirmed.json()).id)).status, "succeeded");
+    assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "local");
+    assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
+  } finally {
+    await server.close();
+  }
 });
 
 test("taking a shared board local says who loses access, and only goes ahead when confirmed", async () => {
