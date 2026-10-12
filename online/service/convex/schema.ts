@@ -117,7 +117,61 @@ export default defineSchema({
     boardId: v.string(),
     userId: v.string(),
     role: memberRole,
+    /** What this person lets their agents do on this board; see memberAgentLevel for the default. Everyone on the board can see it. */
+    agentLevel: v.optional(agentLevel),
   }).index("by_board_user", ["boardId", "userId"]).index("by_user", ["userId"]),
+
+  /** Invites to a board: a link anyone may use for 7 days, or an email invite for one person. Only the hash of the link's secret is kept. */
+  invites: defineTable({
+    boardId: v.string(),
+    tokenHash: v.string(),
+    role: v.union(v.literal("editor"), v.literal("viewer")),
+    email: v.optional(v.string()),
+    createdBy: v.string(),
+    createdAt: v.string(),
+    expiresAt: v.string(),
+    joinedBy: v.array(v.string()),
+    revokedAt: v.optional(v.string()),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_board", ["boardId"]),
+
+  /** Who last changed each card, for faces on shared boards; survives history trimming. */
+  cardChanges: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    cardId: v.string(),
+    userId: v.string(),
+    agent: v.boolean(),
+    clientName: v.union(v.string(), v.null()),
+    at: v.string(),
+    summary: v.string(),
+  }).index("by_board_generation_card", ["boardId", "generation", "cardId"]),
+
+  /** Stored text per board generation, history included, in bytes as stored (see model/limits.ts). */
+  boardSizes: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    bytes: v.number(),
+    /** Increases with every change to the total, so a measurement taken across several steps can tell it was overtaken. */
+    epoch: v.optional(v.number()),
+  }).index("by_board_generation", ["boardId", "generation"]),
+
+  /** What each account wrote on a day (UTC), for the daily limits in model/limits.ts. */
+  usage: defineTable({
+    userId: v.string(),
+    day: v.string(),
+    writes: v.number(),
+    bytes: v.number(),
+    importBytes: v.number(),
+  }).index("by_user_day", ["userId", "day"]).index("by_day", ["day"]),
+
+  /** How a person appears to others on shared boards (name and picture from the sign-in account). */
+  people: defineTable({
+    userId: v.string(),
+    name: v.string(),
+    imageUrl: v.optional(v.string()),
+    email: v.optional(v.string()),
+    updatedAt: v.string(),
+  }).index("by_userId", ["userId"]),
 
   /**
    * Every credential (a machine sign-in, a remote agent's OAuth grant, a

@@ -62,6 +62,7 @@ import {
 } from "../core/storage";
 import { boardPath, onlineRequest } from "../core/online/client";
 import type { LiveWatch } from "../core/online/live";
+import { registerOnlineRoutes } from "./onlineRoutes";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
 import { PlanbanQueryValidationError, queryWorkItems, workItemQueryFromSearchParams } from "../core/workItemQuery";
 import {
@@ -449,6 +450,7 @@ export async function startServer(options: ServeOptions) {
   let closeOnlineWatches = () => {};
   const onlineRevisions = new Map<string, number>();
   const onlineAbort = new AbortController();
+  let onlineMoves: ReturnType<typeof registerOnlineRoutes> | null = null;
   // An Online Board is only polled while a browser is watching that board (it
   // polls /api/live?repoId=...), so an idle server, or one showing only local
   // boards, makes no hosted requests.
@@ -487,6 +489,7 @@ export async function startServer(options: ServeOptions) {
   }
 
   async function closeServer() {
+    await onlineMoves?.dispose();
     onlineAbort.abort();
     if (onlineRefresh) {
       clearInterval(onlineRefresh);
@@ -937,6 +940,14 @@ export async function startServer(options: ServeOptions) {
       throw new PlanbanNotFoundError(`Planban card ${cardId} was not found.`);
     }
   }
+
+  onlineMoves = registerOnlineRoutes(app, {
+    resolveBoardCwd,
+    changed(repoId) {
+      sendEvent("boards", { repoId, action: "online" });
+      sendEvent("state", { repoId });
+    },
+  });
 
   app.get("/api/boards/:repoId/activity", async (req, res, next) => {
     try {

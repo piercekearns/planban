@@ -7,6 +7,8 @@ import type { PlannedHistory } from "../../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanRoadmap, PlanbanRoadmapItem } from "../../../../src/core/types";
 import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
+import { noteCardChanges } from "./cardChanges";
+import { addStored, sizeOf } from "./limits";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { packJson, packText, unpackJson } from "./codec";
 
@@ -108,8 +110,10 @@ export async function historyEntries(ctx: QueryCtx, at: BoardRows, after = 0): P
 
 async function insertVersion(ctx: MutationCtx, at: BoardRows, version: number, entry: unknown, stored: { snapshot: PlanbanRoadmap } | { delta: Delta }) {
   const snapshot = "snapshot" in stored;
+  const packed = snapshot ? packJson(stored.snapshot) : packJson(stored.delta);
   await ctx.db.insert("history", { ...at, version, entry, snapshot });
-  await ctx.db.insert("historyPayloads", { ...at, version, ...(snapshot ? { snapshot: packJson(stored.snapshot) } : { delta: packJson(stored.delta) }) });
+  await ctx.db.insert("historyPayloads", { ...at, version, ...(snapshot ? { snapshot: packed } : { delta: packed }) });
+  await addStored(ctx, at, sizeOf(packed) + sizeOf(entry));
 }
 
 export async function recordHistory(ctx: MutationCtx, input: {
@@ -140,8 +144,14 @@ export async function recordHistory(ctx: MutationCtx, input: {
   const snapshot = !previous || version % SNAPSHOT_EVERY === 0;
   await insertVersion(ctx, at, version, entry, snapshot ? { snapshot: committed } : { delta: diff(previous!, committed) });
   for (const doc of docs) {
-    await ctx.db.insert("historyDocs", { ...at, version, cardId: doc.cardId, kind: doc.kind, markdown: packText(doc.markdown) });
+    const markdown = packText(doc.markdown);
+    await ctx.db.insert("historyDocs", { ...at, version, cardId: doc.cardId, kind: doc.kind, markdown });
+    await addStored(ctx, at, sizeOf(markdown));
   }
+  // Faces on shared boards: who last changed each card this version touched.
+  await noteCardChanges(ctx, at, [...entry.affectedCards, ...entry.affectedDocs.map((doc) => doc.cardId)], {
+    userId: attribution.userId, agent: attribution.actor === "agent", clientName: attribution.actor === "agent" ? attribution.clientName : null, at: now, summary: history.summary,
+  });
   await ctx.db.patch(board._id, { historyVersion: version });
   await pruneHistory(ctx, at, version - MAX_HISTORY_VERSIONS);
   return version;
@@ -168,10 +178,16 @@ export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: numb
   const first = await ctx.db.query("history")
     .withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).gt("version", old.at(-1)!.version))
     .first();
+  // Pruning shrinks a board overall: the snapshot it may add is counted after
+  // the removals, so it is never refused for being near the board's limit.
+  let growth = 0;
   if (first && !first.snapshot) {
     const roadmap = await roadmapAtVersion(ctx, at, first.version);
     await ctx.db.patch(first._id, { snapshot: true });
-    await ctx.db.patch((await payload(ctx, at, first.version))._id, { snapshot: packJson(roadmap), delta: undefined });
+    const was = await payload(ctx, at, first.version);
+    const packed = packJson(roadmap);
+    await ctx.db.patch(was._id, { snapshot: packed, delta: undefined });
+    growth = sizeOf(packed) - sizeOf(was.delta ?? was.snapshot ?? new Uint8Array());
   }
   for (const row of old) {
     for (const doc of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("version", row.version)).collect()) {
@@ -183,10 +199,16 @@ export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: numb
         .order("desc")
         .first();
       if (first && applies?._id === doc._id) await ctx.db.patch(doc._id, { version: first.version });
-      else await ctx.db.delete(doc._id);
+      else {
+        await ctx.db.delete(doc._id);
+        await addStored(ctx, at, -sizeOf(doc.markdown));
+      }
     }
-    await ctx.db.delete((await payload(ctx, at, row.version))._id);
+    const gone = await payload(ctx, at, row.version);
+    await ctx.db.delete(gone._id);
     await ctx.db.delete(row._id);
+    await addStored(ctx, at, -(sizeOf(gone.snapshot ?? gone.delta ?? new Uint8Array()) + sizeOf(row.entry)));
   }
+  await addStored(ctx, at, growth, { allowOverLimit: true });
   if (old.length === PRUNE_BATCH) await ctx.scheduler.runAfter(0, internal.historyMaintenance.prune, { ...at, cutoff });
 }

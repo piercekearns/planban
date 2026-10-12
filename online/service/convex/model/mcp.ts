@@ -10,6 +10,7 @@ import { PLANBAN_STATUSES, type PlanbanDocPayload, type PlanbanHistoryPayload, t
 import { cardAncestry } from "../../../../src/core/boardOperations";
 import { queryWorkItems, type WorkItemQuery } from "../../../../src/core/workItemQuery";
 import { internal } from "../_generated/api";
+import { HOW_TO_REFER } from "../../../../src/core/contentRules";
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { sha256Hex } from "./auth";
@@ -28,8 +29,9 @@ const INSTRUCTIONS = [
   "Every edit must pass baseRevision, the board revision you last read; document edits pass expectedMtimeMs from planban_read_doc (null for a new document). On a conflict, reread and retry.",
   "Pass a fresh idempotencyKey with each edit and reuse it if you retry the same edit, so it is never applied twice.",
   "Serialize writes: one mutation at a time per board.",
-  "Complete is owner-controlled: move a card to complete only when the owner explicitly asks, and set completionConfirmed true.",
+  "Complete is person-controlled: move a card to complete only when a person on the board explicitly asks, and set completionConfirmed true. What you may do also depends on what that person lets their agents do.",
   "Deleting cards and taking a board back to Local Mode are not available to agents.",
+  `Planban is an index, not storage: boards hold text only (cards, Specs, Plans and history). Never put files, images or encoded data in a card or document. ${HOW_TO_REFER} Edits that embed files are refused.`,
 ].join(" ");
 
 type JsonSchema = Record<string, unknown>;
@@ -109,7 +111,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_create_card",
     title: "Create Planban Card",
-    description: "Create a Work Item with optional placement, tags, metadata, and initial Spec or Plan markdown. Follow the Planban house style for owner-facing text.",
+    description: "Create a Work Item with optional placement, tags, metadata, and initial Spec or Plan markdown. Follow the Planban house style for owner-facing text. Text only: refer to files by link or labelled local path, never embed them.",
     inputSchema: object({
       boardId,
       title: { type: "string" },
@@ -167,7 +169,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_update_card",
     title: "Update Planban Card",
-    description: "Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata.",
+    description: "Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Text only: refer to files by link or labelled local path, never embed them.",
     inputSchema: object({
       boardId,
       cardId: { type: "string" },
@@ -201,7 +203,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_write_doc",
     title: "Write Planban Document",
-    description: "Write a card's Spec or Plan. Pass expectedMtimeMs from planban_read_doc so someone else's edit is never overwritten.",
+    description: "Write a card's Spec or Plan. Pass expectedMtimeMs from planban_read_doc so someone else's edit is never overwritten. Text only, up to 1 MB: refer to images and other files by GitHub link, web address or a local path labelled with its machine; embedded images and encoded data are refused.",
     inputSchema: object({
       boardId,
       cardId: { type: "string" },
@@ -211,13 +213,6 @@ export const TOOLS: ToolDefinition[] = [
       idempotencyKey,
     }, ["boardId", "cardId", "kind", "markdown", "expectedMtimeMs"]),
     annotations: write,
-  },
-  {
-    name: "planban_list_attachments",
-    title: "List Planban Attachments",
-    description: "List the files attached to a board's cards (path, size, type, hash). Contents are downloaded with the Planban CLI or REST API.",
-    inputSchema: object({ boardId, cardId: { type: "string", description: "Only this card's files." } }, ["boardId"]),
-    annotations: read,
   },
   // ChatGPT's company-knowledge and deep-research surfaces look for these two read-only tools.
   {
@@ -266,9 +261,6 @@ export class McpService {
     return this.call(() => this.ctx.runQuery(internal.boards.readDoc, { connectionId: this.connectionId, boardId, cardId, kind }));
   }
 
-  attachments(boardId: string, cardId?: string) {
-    return this.call(() => this.ctx.runQuery(internal.attachments.list, { connectionId: this.connectionId, boardId, ...(cardId ? { cardId } : {}) }));
-  }
 
   history(boardId: string): Promise<PlanbanHistoryPayload> {
     return this.call(() => this.ctx.runQuery(internal.boards.history, { connectionId: this.connectionId, boardId }));
@@ -328,8 +320,6 @@ async function callTool(service: McpService, origin: string, name: string, args:
     }
     case "planban_read_doc":
       return await service.readDoc(stringArg(args, "boardId"), stringArg(args, "cardId"), args.kind === "plan" ? "plan" : "spec");
-    case "planban_list_attachments":
-      return await service.attachments(stringArg(args, "boardId"), typeof args.cardId === "string" ? args.cardId : undefined);
     case "planban_history": {
       const history = await service.history(stringArg(args, "boardId"));
       const limit = typeof args.limit === "number" && args.limit > 0 ? Math.min(args.limit, 200) : 20;

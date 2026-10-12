@@ -1,26 +1,28 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import * as storage from "../src/core/storage";
 import * as domain from "../src/core/boardOperations";
-import { historyDocPath, historyRoadmapPath, manifestPath } from "../src/core/paths";
+import { historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath } from "../src/core/paths";
 import { manifestSchema } from "../src/core/schema";
 import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/registry";
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
 import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
-import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, restoreBackup, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
+import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanNotReadyForOnline, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
 import { onlineCacheRoot } from "../src/core/online/adapter";
 import { PlanbanStaleCopyError, resetCopyChecks, STALE_MARKER } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
 import { onlineLogout } from "../src/core/online/connections";
 import { startServer } from "../src/server/server";
+import { listHistory } from "../src/core/history";
+import { checkIndexCard, checkIndexDocument, checkIndexValue } from "../src/core/contentRules";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
 
 const execFileAsync = promisify(execFile);
@@ -68,6 +70,14 @@ async function fakeService() {
   let boardUid: string | undefined;
   const attachments = new Map<string, any>();
   const blobs = new Map<string, Buffer>();
+  const members = [{ userId: "dev-owner", role: "owner" }];
+  let failParts = false;
+  let failAbort = false;
+  let slowPartsMs = 0;
+  let failNextBoardRead = false;
+  let dropFenceReply = false;
+  let limitNextOp = false;
+  let onMe: (() => Promise<void> | void) | undefined;
   const uploads = new Map<string, Buffer>();
   const sessions = new Map<string, any>();
   const requests: { method: string; path: string; body: any }[] = [];
@@ -125,11 +135,19 @@ async function fakeService() {
         accessToken = "pbm_machine-token";
         return json(201, { token: accessToken, userId: "dev-owner" });
       }
+      // A second account, which sees none of the first one's uploads.
+      if (req.headers.authorization === "Bearer pbm_other-account") {
+        if (path === "/api/v1/me") return json(200, { userId: "someone-else" });
+        return json(404, { error: { code: "not_found", message: "Upload not found." } });
+      }
       if (rejectAccess || req.headers.authorization !== `Bearer ${accessToken}`) {
         res.setHeader("WWW-Authenticate", 'Bearer resource_metadata="' + url + '/.well-known/oauth-protected-resource"');
         return json(401, { error: "unauthorized" });
       }
-      if (path === "/api/v1/me") return json(200, { userId: "dev-owner", scope: "all" });
+      if (path === "/api/v1/me") {
+        await onMe?.();
+        return json(200, { userId: "dev-owner", scope: "all" });
+      }
       if (path === "/api/v1/connections/self/revoke") {
         revokedTokens.add(String(req.headers.authorization));
         return json(200, { revoked: true });
@@ -175,10 +193,13 @@ async function fakeService() {
         const transfer = transfers.get(decodeURIComponent(transferId!));
         if (!transfer) return json(404, { error: { code: "not_found", message: "Upload not found." } });
         if (step === "parts") {
+          if (failParts) return json(503, { error: { code: "unavailable", message: "The service is busy." } });
+          if (slowPartsMs) await new Promise((resolve) => setTimeout(resolve, slowPartsMs));
           if (transfer.state === "open") transfer.parts.set(body.seq, body);
           return json(200, { duplicate: false });
         }
         if (step === "abort") {
+          if (failAbort) return json(503, { error: { code: "unavailable", message: "The service is busy." } });
           if (transfer.state === "committed") return json(409, { error: { code: "conflict", message: "This upload already finished." } });
           transfer.state = "aborted";
           return json(200, { state: "aborted" });
@@ -199,6 +220,10 @@ async function fakeService() {
       if (!bundle || !path.startsWith("/api/v1/boards/demo")) return json(404, { error: { code: "not_found", message: "Board not found" } });
       const roadmap = () => domain.normalizeRoadmap(bundle!.roadmap);
       const suffix = path.slice("/api/v1/boards/demo".length);
+      if (!suffix && failNextBoardRead) {
+        failNextBoardRead = false;
+        return json(503, { error: { code: "unavailable", message: "The service is busy." } });
+      }
       if (!suffix) return json(200, { roadmap: roadmap(), authority });
       if (suffix === "/changes") return json(200, { revision: roadmap().revision });
       if (suffix === "/export/meta") {
@@ -218,13 +243,26 @@ async function fakeService() {
         const versions = new Set(page.map(({ entry }) => entry.version));
         return json(200, { history: page, historyDocs: (bundle.historyDocs ?? []).filter((doc) => versions.has(doc.version)) });
       }
+      if (suffix === "/members" && req.method === "GET") return json(200, { members });
       if (suffix === "/take-local/fence") {
         if (localTransfer === body.transferId) return json(200, { generation: 1 });
         if (authority !== "online") return json(409, { error: { code: "conflict", message: "Already being taken local." } });
         beforeFence?.();
+        const others = members.filter((member) => member.userId !== "dev-owner").map((member) => member.userId);
+        const acknowledged: string[] = body.acknowledgedOthers ?? [];
+        if (others.length !== acknowledged.length || others.some((id) => !acknowledged.includes(id))) {
+          return json(409, { error: { code: "conflict", message: "The people on this board changed since you confirmed. Confirm again who loses access." } });
+        }
         authority = "returned-local";
         localTransfer = body.transferId;
         bundle.roadmap = domain.committedRoadmap(roadmap(), new Date().toISOString());
+        members.splice(1);
+        if (dropFenceReply) {
+          // The freeze happened, but its answer is lost on the network.
+          dropFenceReply = false;
+          req.socket.destroy();
+          return;
+        }
         return json(200, { generation: 1 });
       }
       if (suffix === "/take-local/finish") {
@@ -302,6 +340,10 @@ async function fakeService() {
         const version = Math.max(...bundle.history.map(({ entry }) => entry.version)) + 1;
         bundle.history.push({ entry: { ...change.history, affectedDocs: change.history.affectedDocs ?? [], version, roadmapRevision: bundle.roadmap.revision, createdAt: context.now }, roadmap: structuredClone(bundle.roadmap) });
         if (key) replies.set(key, { roadmap: bundle.roadmap, result });
+        if (limitNextOp) {
+          limitNextOp = false;
+          return json(429, { error: { code: "rate_limited", message: "This account has reached today's limit of 5,000 changes or 64 MB of written text on Planban Online. It resets at midnight UTC." } });
+        }
         if (dropNextReply) {
           // Simulates a response lost on the network after the edit committed.
           dropNextReply = false;
@@ -324,7 +366,7 @@ async function fakeService() {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
-    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
+    beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, failNextBoardRead() { failNextBoardRead = true; }, dropFenceReply() { dropFenceReply = true; }, limitNextOp() { limitNextOp = true; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }
@@ -752,7 +794,7 @@ test("a local copy of a board taken online elsewhere refuses writes and says how
   await takeOnline(fake.url, cwd);
   resetCopyChecks();
   await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "Too late", baseRevision: await revisionOf(second) }),
-    (error: any) => error instanceof PlanbanStaleCopyError && /taken online/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy/.test(error.message));
+    (error: any) => error instanceof PlanbanStaleCopyError && /Not saved.*now lives online/.test(error.message) && /do not choose for the owner/.test(error.message) && /--replace-stale-copy/.test(error.message) && /keep-local-copy --cwd .* --title/.test(error.message));
   assert.equal((await storage.loadState(second)).roadmap.roadmapItems[0]!.summary, "Before it went online", "reads still work");
   assert.ok(await storage.pathExists(join(copyRoot, STALE_MARKER)));
   // The refusal survives the service being unreachable.
@@ -817,6 +859,115 @@ test("keeping a stale copy as a separate local board renames it and stops the ch
   assert.match(state.roadmap.project.title, /local copy/);
   await storage.updateCard({ cwd: second, cardId: "alpha", summary: "Mine now", baseRevision: state.roadmap.revision });
   assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), false);
+});
+
+test("keeping an older copy as a separate board gives it its own folder and name, and the project follows the online board", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  const kept = await keepSeparateBoard(second, { title: "Demo (mine)" });
+  // The project now uses the online board, so its agents follow it.
+  assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
+  assert.equal(await storage.pathExists(join(copyRoot, "ONLINE-BOARD.txt")), true, "the older copy is kept as recovery evidence");
+  // The separate board is its own board, editable, never flagged again.
+  resetCopyChecks();
+  const separate = await storage.loadState(kept.separateBoard.cwd);
+  assert.notEqual(separate.manifest.repoId, "demo");
+  assert.equal(separate.roadmap.project.title, "Demo (mine)");
+  assert.ok(separate.roadmap.roadmapItems.some((item) => item.id === "alpha"));
+  await storage.updateCard({ cwd: kept.separateBoard.cwd, cardId: "alpha", summary: "Mine now", baseRevision: separate.roadmap.revision });
+  assert.equal(await storage.pathExists(join(separate.planningRoot, STALE_MARKER)), false);
+  assert.equal(await storage.pathExists(join(separate.planningRoot, "INDEPENDENT-COPY.json")), true);
+});
+
+test("the board page shows an older copy and switches it to the online board when asked", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd: second, port, useVite: false });
+  try {
+    const status = await (await fetch(`${server.url}/api/boards/demo/online`)).json();
+    assert.equal(status.location, "local");
+    assert.equal(status.stale.boardId, "demo");
+    const used = await fetch(`${server.url}/api/boards/demo/online/use-online`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(used.status, 200, await used.clone().text());
+    assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
+    assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "online");
+  } finally {
+    await server.close();
+  }
+});
+
+test("keeping a separate board refuses a bad id before copying, and a retry finishes the same board", async () => {
+  const { second } = await secondMachineCopy();
+  await takeOnline(fake.url, cwd);
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), PlanbanStaleCopyError);
+  await assert.rejects(keepSeparateBoard(second, { newId: "../unexpected" }), /Choose a new board id/);
+  assert.equal(await storage.pathExists(join(root, "home", "unexpected")), false);
+  // The service is unreachable while switching: the separate board exists, and running it again finishes without another copy.
+  fake.failNextBoardRead();
+  await assert.rejects(keepSeparateBoard(second, { title: "Mine" }), /will not make another copy/);
+  const finished = await keepSeparateBoard(second);
+  assert.equal(finished.separateBoard.title, "Mine");
+  const boards = (await readdir(join(root, "home", "repos"))).filter((name) => name.startsWith("demo-copy"));
+  assert.equal(boards.length, 1, `one separate board, not ${boards.join(", ")}`);
+  assert.equal((await storage.readManifest(second))?.storage?.kind, "online");
+});
+
+test("Take Online leaves a note in the project folder; a machine with the note keeps its old copy read-only without going online", async () => {
+  const { second, copyRoot } = await secondMachineCopy();
+  await execFileAsync("git", ["init", "-q", cwd]);
+  const result: any = await takeOnline(fake.url, cwd);
+  const notePath = join(cwd, ".planban", "online-board.json");
+  assert.equal(result.onlineNote.path, notePath);
+  assert.match(result.onlineNote.commit, /git -C .* add ".planban\/online-board.json" && git -C .* commit/);
+  const note = JSON.parse(await readFile(notePath, "utf8"));
+  assert.equal(note.boardId, "demo");
+  assert.match(note.note, /lives online at .*planban online login/);
+
+  // The second machine gets the note (as if pulled with the project) and has never signed in.
+  await cp(notePath, join(second, ".planban", "online-board.json"));
+  await saveCredentials(fake.url, null);
+  resetCopyChecks();
+  const start = fake.requests.length;
+  const refusal: any = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "offline", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanStaleCopyError, String(refusal));
+  assert.match(refusal.message, /now lives online.*not signed in to it yet.*planban online login/s);
+  assert.match(refusal.message, /Agents: do not retry/);
+  assert.equal(fake.requests.length, start, "no network call");
+  assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), true);
+});
+
+test("a take-online killed before writing its note writes it when run again; a damaged note says how to fix it", async () => {
+  const { second } = await secondMachineCopy();
+  await killedAt("take-online:after-rename", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const notePath = join(cwd, ".planban", "online-board.json");
+  assert.equal(await storage.pathExists(notePath), false);
+  await killedAt("take-online:after-note", ["online", "take-online", fake.url, "--cwd", cwd]);
+  assert.equal(await storage.pathExists(notePath), true);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local", "killed after the note, before switching");
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  assert.equal(JSON.parse(await readFile(notePath, "utf8")).boardId, "demo");
+
+  await writeFile(join(second, ".planban", "online-board.json"), JSON.stringify({ url: fake.url, boardId: "demo" }));
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), /note .* is damaged or incomplete\. Restore it from version control, or remove it/);
+});
+
+test("Take Local removes the project's online note", async () => {
+  await execFileAsync("git", ["init", "-q", cwd]);
+  await takeOnline(fake.url, cwd);
+  const result: any = await takeLocal(cwd);
+  assert.equal(await storage.pathExists(join(cwd, ".planban", "online-board.json")), false);
+  assert.match(result.onlineNote.commit, /commit -am/);
 });
 
 test("a machine that never signed in makes no network calls for local boards", async () => {
@@ -935,31 +1086,350 @@ test("a copy of a board made before identities existed is still recognised by it
   assert.equal(refusal.stale.unsyncedChanges.length, 60);
 });
 
-test("take-online with attachments uploads card files once, and take-local brings them back", async () => {
+test("a board goes online only when it is clean: files and local pictures in the way are listed with how to tidy them", async () => {
   const before = await storage.loadState(cwd);
   const folder = join(before.planningRoot, "items", "alpha");
-  await mkdir(join(folder, "renders", "__pycache__"), { recursive: true });
+  await mkdir(join(folder, "renders"), { recursive: true });
   await writeFile(join(folder, "renders", "front.png"), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
-  await writeFile(join(folder, "notes.txt"), "Fabric notes");
-  await writeFile(join(folder, "model.blend1"), "autosave");
-  await writeFile(join(folder, "renders", "__pycache__", "x.pyc"), "cache");
-  const result: any = await takeOnline(fake.url, cwd, { attachments: true });
-  assert.equal(result.attachments.files, 2);
-  assert.equal(result.attachments.uploaded, 2);
-  assert.deepEqual(result.attachments.skipped.map((entry: { path: string }) => entry.path).sort(), ["model.blend1", "renders/__pycache__"]);
-  assert.deepEqual([...fake.attachments.values()].map((entry) => entry.path).sort(), ["notes.txt", "renders/front.png"]);
-  const returned = await takeLocal(cwd);
-  assert.deepEqual([...await readFile(join(returned.planningRoot, "items", "alpha", "renders", "front.png"))], [137, 80, 78, 71, 1, 2, 3]);
-  assert.equal(await readFile(join(returned.planningRoot, "items", "alpha", "notes.txt"), "utf8"), "Fabric notes");
+  const current = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+  const spec = "# Alpha\n\n![Front view](renders/front.png)\n\n![Logo](data:image/png;base64,iVBORw0KGgo=)\n\n![Diagram](https://example.com/diagram.png)\n";
+  const written = await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: spec, expectedMtimeMs: current.exists ? current.mtimeMs : null });
+
+  const refusal: any = await takeOnline(fake.url, cwd).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanNotReadyForOnline, String(refusal));
+  assert.match(refusal.message, /cannot go online yet; nothing has moved\. 1 file\(s\) and 2 picture\(s\) are in the way/);
+  assert.match(refusal.message, /file renders\/front\.png; picture in the Spec \(Front view\), .*items\/alpha\/renders\/front\.png; picture in the Spec \(Logo\), stored in the document/);
+  assert.match(refusal.message, /Move each file in its folder to where it belongs.*labelled with its machine/s);
+  assert.equal(fake.transfers.size, 0, "nothing moved");
+  assert.equal(await readFile(join(folder, "spec.md"), "utf8"), spec, "nothing on this machine changed");
+
+  // Tidied: the file lives elsewhere and the Spec refers to it; pictures on the web are fine.
+  await rm(join(folder, "renders"), { recursive: true });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Alpha\n\nFront view: Mac mini: ~/Projects/demo/renders/front.png\n\n![Diagram](https://example.com/diagram.png)\n", expectedMtimeMs: written.mtimeMs });
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
 });
 
-test("take-local never writes an attachment outside the board's folder, whatever the card id", async () => {
+test("old versions in history that hold embedded files go online with notes in their place; the copy here keeps them", async () => {
+  const before = await storage.loadState(cwd);
+  const history = await listHistory(before);
+  let oldest = history.entries.at(-1)!;
+  let roadmap: any = null;
+  for (const entry of [...history.entries].reverse()) {
+    roadmap = JSON.parse(await readFile(historyRoadmapPath(before.planningRoot, entry.version), "utf8"));
+    oldest = entry;
+    if (roadmap.roadmapItems.length) break;
+  }
+  const path = historyRoadmapPath(before.planningRoot, oldest.version);
+  roadmap.roadmapItems[0] = { ...roadmap.roadmapItems[0], metadata: { logo: Array.from({ length: 3000 }, (_, i) => i % 256), [`data:text/plain;base64,${"QUJD".repeat(100)}`]: 1 }, summary: `![x](data:image/gif;base64,R0lGODlhAQABAAAAACw=)` };
+  await writeFile(path, JSON.stringify(roadmap));
   await takeOnline(fake.url, cwd);
-  fake.blobs.set("f".repeat(64), Buffer.from("escape"));
-  fake.attachments.set("evil", { id: "evil", cardId: "../../outside", path: "proof.txt", sha256: "f".repeat(64), size: 6, contentType: "text/plain", uploadedBy: "x", uploadedAt: new Date().toISOString() });
-  await assert.rejects(takeLocal(cwd), /Unsafe card id/);
-  assert.equal(await storage.pathExists(join(root, "home", "outside", "proof.txt")), false);
+  const sent = [...fake.transfers.values()].at(-1)!.parts;
+  const versions = [...sent.values()].flatMap((part: any) => part.history ?? []);
+  const old = versions.find((version: any) => version.entry.version === oldest.version);
+  const card = old.roadmap.roadmapItems[0];
+  assert.doesNotThrow(() => checkIndexCard(card));
+  assert.match(JSON.stringify(card), /file kept in the copy of this board on/);
+  assert.equal(await readFile(path, "utf8"), JSON.stringify(roadmap), "the copy here is unchanged");
+});
+
+test("old history that would still break the rules after cleaning goes online as notes, so a tidy board is never held back", async () => {
+  const before = await storage.loadState(cwd);
+  const history = await listHistory(before);
+  const version = history.entries[0]!;
+  const path = historyRoadmapPath(before.planningRoot, version.version);
+  const roadmap = JSON.parse(await readFile(path, "utf8"));
+  roadmap.project.description = "word ".repeat(15 * 1024);
+  await writeFile(path, JSON.stringify(roadmap));
+  const index = JSON.parse(await readFile(historyIndexPath(before.planningRoot), "utf8"));
+  index.entries[0].summary = "word ".repeat(15 * 1024);
+  await writeFile(historyIndexPath(before.planningRoot), JSON.stringify(index));
+  const doc = version.affectedDocs[0] ?? { cardId: "alpha", kind: "spec" };
+  await mkdir(dirname(historyDocPath(before.planningRoot, version.version, doc.cardId, doc.kind)), { recursive: true });
+  await writeFile(historyDocPath(before.planningRoot, version.version, doc.cardId, doc.kind), `${"word ".repeat(250 * 1024)}\n![s](data:image/svg+xml;base64,PHN2Zy8+)`);
+  await takeOnline(fake.url, cwd);
+  const sent = [...[...fake.transfers.values()].at(-1)!.parts.values()];
+  for (const part of sent as any[]) {
+    for (const old of part.history ?? []) {
+      assert.doesNotThrow(() => checkIndexValue(old.entry, "entry", 64 * 1024));
+      const { roadmapItems, ...details } = old.roadmap;
+      assert.doesNotThrow(() => checkIndexValue(details, "details", 64 * 1024));
+      for (const card of roadmapItems) assert.doesNotThrow(() => checkIndexCard(card));
+    }
+    for (const old of part.historyDocs ?? []) assert.doesNotThrow(() => checkIndexDocument(old.markdown, old.cardId, old.kind));
+  }
+});
+
+test("a resumed take-online is checked again, so files added meanwhile stop it until tidied", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  await mkdir(join(before.planningRoot, "items", "alpha"), { recursive: true });
+  await writeFile(join(before.planningRoot, "items", "alpha", "notes.txt"), "added meanwhile");
+  await assert.rejects(takeOnline(fake.url, cwd), (error: unknown) => error instanceof PlanbanNotReadyForOnline && /notes\.txt/.test((error as Error).message));
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["open"], "the interrupted upload is left to resume");
+  await rm(join(before.planningRoot, "items", "alpha", "notes.txt"));
+  await takeOnline(fake.url, cwd);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["committed"]);
+});
+
+test("a take-online that fails removes the partly copied online board and leaves this machine's board unchanged", async () => {
+  const before = await storage.loadState(cwd);
+  fake.failParts(true);
+  await assert.rejects(takeOnline(fake.url, cwd), /still on this machine, unchanged, and the partly copied online version was removed/);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"]);
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+  assert.equal((await storage.loadState(cwd)).roadmap.revision, before.roadmap.revision);
+  fake.failParts(false);
+  await takeOnline(fake.url, cwd);
   assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("stop-take-online cancels an interrupted move; one that already reached the service is finished instead", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const stopped = await stopTakeOnline(cwd);
+  assert.equal(stopped.stopped, true);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"]);
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  assert.equal((await stopTakeOnline(cwd)).stopped, false);
+  await killedAt("take-online:after-commit", ["online", "take-online", fake.url, "--cwd", cwd]);
+  await assert.rejects(stopTakeOnline(cwd), /already reached the online service/);
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+});
+
+test("a stopped take-online removes the partly copied online board and leaves this machine's board unchanged", async () => {
+  const before = await storage.loadState(cwd);
+  await assert.rejects(takeOnline(fake.url, cwd, { signal: AbortSignal.abort() }), (error: unknown) => error instanceof PlanbanTakeOnlineStopped);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"]);
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+});
+
+test("someone joining between the question and the freeze is asked about, and nothing is frozen", async () => {
+  await takeOnline(fake.url, cwd);
+  fake.beforeFence(() => {
+    if (!fake.members.some((member) => member.userId === "late")) fake.members.push({ userId: "late", role: "viewer" });
+  });
+  const refusal: any = await takeLocal(cwd).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanConfirmationNeeded, String(refusal));
+  assert.match(refusal.message, /late \(viewer\)/);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  assert.equal(await storage.pathExists(join(storage.resolvePlanningRoot((await storage.readManifest(cwd))!), "online-transfer.json")), false);
+  fake.beforeFence(() => undefined);
+  await takeLocal(cwd, { removeOthers: true });
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "local");
+});
+
+test("a take-local resumed before its freeze asks again about people who joined meanwhile", async () => {
+  await takeOnline(fake.url, cwd);
+  await killedAt("take-local:before-fence", ["online", "take-local", "--cwd", cwd]);
+  fake.members.push({ userId: "maya", role: "editor" });
+  await assert.rejects(takeLocal(cwd), (error: unknown) => error instanceof PlanbanConfirmationNeeded && /maya/.test((error as Error).message));
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  await takeLocal(cwd, { removeOthers: true });
+  assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
+});
+
+test("an earlier upload is replaced only once the service confirms it is gone", async () => {
+  const before = await storage.loadState(cwd);
+  const journalPath = join(before.planningRoot, "online-transfer.json");
+  await killedAt("take-online:after-commit", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const recorded = JSON.parse(await readFile(journalPath, "utf8"));
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "edited after the upload", baseRevision: (await storage.loadState(cwd)).roadmap.revision });
+  fake.failAbort(true);
+  await assert.rejects(takeOnline(fake.url, cwd));
+  assert.equal(JSON.parse(await readFile(journalPath, "utf8")).transferId, recorded.transferId, "the record of the committed upload is kept");
+  fake.failAbort(false);
+  const result: any = await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  assert.equal(result.unsyncedLocalChanges.length, 1);
+});
+
+test("an upload started by another account is never cancelled or forgotten by this one", async () => {
+  const before = await storage.loadState(cwd);
+  const journalPath = join(before.planningRoot, "online-transfer.json");
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const recorded = JSON.parse(await readFile(journalPath, "utf8"));
+  assert.equal(recorded.userId, "dev-owner");
+  await writeFile(journalPath, JSON.stringify({ ...recorded, userId: "someone-else" }));
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "edited", baseRevision: (await storage.loadState(cwd)).roadmap.revision });
+  await assert.rejects(takeOnline(fake.url, cwd), /another account \(someone-else\)/);
+  await assert.rejects(stopTakeOnline(cwd), /another account \(someone-else\)/);
+  assert.equal(JSON.parse(await readFile(journalPath, "utf8")).transferId, recorded.transferId);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["open"]);
+});
+
+test("a daily limit reaches the board page and agents as a limit, with its message, not as a failure", async () => {
+  await takeOnline(fake.url, cwd);
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  try {
+    const state = await (await fetch(`${server.url}/api/boards/demo/state`)).json();
+    fake.limitNextOp();
+    const response = await fetch(`${server.url}/api/boards/demo/cards/alpha`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: "One more", baseRevision: state.roadmap.revision }) });
+    assert.equal(response.status, 429);
+    assert.match((await response.json()).error, /today's limit .* resets at midnight UTC/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the board page moves a board online and back, and names who would lose access before cutting them off", async () => {
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  const post = (path: string, body: unknown) => fetch(`${server.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const finished = async (id: string) => {
+    for (;;) {
+      const job = await (await fetch(`${server.url}/api/boards/demo/online/job/${id}`)).json();
+      if (job.status !== "running") return job;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  try {
+    const requestsBefore = fake.requests.length;
+    const local = await (await fetch(`${server.url}/api/boards/demo/online`)).json();
+    assert.equal(local.location, "local");
+    assert.equal(fake.requests.length, requestsBefore, "a local board's status never contacts the online service");
+
+    fake.failParts(true);
+    const failing = await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json();
+    const failed = await finished(failing.id);
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error, /unchanged, and the partly copied online version was removed/);
+    assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "local");
+    fake.failParts(false);
+
+    const started = await post("/api/boards/demo/online/take-online", { url: fake.url });
+    assert.equal(started.status, 202);
+    assert.equal((await finished((await started.json()).id)).status, "succeeded");
+    const online = await (await fetch(`${server.url}/api/boards/demo/online`)).json();
+    assert.equal(online.location, "online");
+    assert.deepEqual(online.people, [{ userId: "dev-owner", role: "owner", you: true }]);
+
+    fake.members.push({ userId: "maya", role: "editor" });
+    const unconfirmed = await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] });
+    assert.equal(unconfirmed.status, 409, "the confirmation must cover exactly the people on the board now");
+    assert.deepEqual((await unconfirmed.json()).confirmationNeeded.removes, [{ userId: "maya", role: "editor" }]);
+    assert.equal(fake.requests.some((req) => req.path.endsWith("/take-local/fence")), false);
+    const confirmed = await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: ["maya"] });
+    assert.equal(confirmed.status, 202);
+    assert.equal((await finished((await confirmed.json()).id)).status, "succeeded");
+    assert.equal((await (await fetch(`${server.url}/api/boards/demo/online`)).json()).location, "local");
+    assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("cancelling an upload asks and cancels as one account, even if another signs in between", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const saved = (await readCredentials()).services[serviceUrl(fake.url)]!;
+  // Someone signs in as another account right after the identity check.
+  fake.onMe(async () => {
+    fake.onMe(undefined);
+    await saveCredentials(fake.url, { ...saved, accessToken: "pbm_other-account" });
+  });
+  await stopTakeOnline(cwd);
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted"], "the upload was cancelled by the account that started it");
+  assert.equal(await storage.pathExists(join(before.planningRoot, "online-transfer.json")), false);
+  await saveCredentials(fake.url, saved);
+});
+
+test("the board page starts one move at a time, explains a failed move from where the board stands, and stops a move when it closes", async () => {
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  let server = await startServer({ cwd, port, useVite: false });
+  const post = (path: string, body: unknown) => fetch(`${server.url}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const finished = async (id: string) => {
+    for (;;) {
+      const job = await (await fetch(`${server.url}/api/boards/demo/online/job/${id}`)).json();
+      if (job.status !== "running") return job;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  try {
+    // Two tabs at once: only one move starts.
+    fake.slowParts(200);
+    const [first, second] = await Promise.all([post("/api/boards/demo/online/take-online", { url: fake.url }), post("/api/boards/demo/online/take-online", { url: fake.url })]);
+    assert.deepEqual([first.status, second.status].sort(), [202, 409]);
+    const started = await (first.status === 202 ? first : second).json();
+    const stopped = await post("/api/boards/demo/online/stop", {});
+    assert.equal((await stopped.json()).id, started.id, "Stop reaches the move that is running");
+    assert.equal((await finished(started.id)).status, "stopped");
+    fake.slowParts(0);
+
+    // A failure whose clean-up cannot be confirmed says so, rather than promising nothing changed.
+    fake.failParts(true);
+    fake.failAbort(true);
+    const uncertain = await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id);
+    assert.equal(uncertain.status, "failed");
+    assert.equal(uncertain.outcome.unchanged, false);
+    assert.equal(uncertain.outcome.location, "local");
+    assert.match(uncertain.outcome.message, /could not be removed yet/);
+    assert.equal(uncertain.outcome.retry, "Continue");
+    fake.failParts(false);
+    fake.failAbort(false);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id)).status, "succeeded");
+
+    // A freeze whose answer was lost is confirmed with the service, not assumed not to have happened.
+    fake.dropFenceReply();
+    const lost = await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id);
+    assert.equal(lost.status, "failed");
+    assert.equal(lost.outcome.unchanged, false);
+    assert.match(lost.outcome.message, /read-only/);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id)).status, "succeeded");
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json()).id)).status, "succeeded");
+
+    // Take Local failing after the freeze says the board is frozen.
+    fake.failExportDocs(true);
+    const frozen = await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id);
+    assert.equal(frozen.status, "failed");
+    assert.equal(frozen.outcome.location, "online");
+    assert.match(frozen.outcome.message, /read-only/);
+    assert.equal(frozen.outcome.retry, "Finish taking it local");
+    fake.failExportDocs(false);
+    assert.equal((await finished((await (await post("/api/boards/demo/online/take-local", { removeOthers: true, expectedOthers: [] })).json()).id)).status, "succeeded");
+
+    // Closing the server stops a Take Online still copying, and removes its partial copy.
+    const currentRoot = (await storage.loadState(cwd)).planningRoot;
+    fake.slowParts(300);
+    const copying = await (await post("/api/boards/demo/online/take-online", { url: fake.url })).json();
+    assert.equal(copying.status, "running");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await server.close();
+    fake.slowParts(0);
+    assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local");
+    assert.equal([...fake.transfers.values()].at(-1)!.state, "aborted");
+    assert.equal(await storage.pathExists(join(currentRoot, "online-transfer.json")), false);
+    server = await startServer({ cwd, port, useVite: false });
+  } finally {
+    fake.slowParts(0);
+    await server.close();
+  }
+});
+
+test("taking a shared board local says who loses access, and only goes ahead when confirmed", async () => {
+  await takeOnline(fake.url, cwd);
+  fake.members.push({ userId: "maya", role: "editor" });
+  const refusal: any = await takeLocal(cwd).then(() => null, (error) => error);
+  assert.ok(refusal instanceof PlanbanConfirmationNeeded, String(refusal));
+  assert.match(refusal.message, /removes access for 1 other person\(s\), and their agents: maya \(editor\).*kept, read-only/s);
+  assert.equal(fake.requests.some((req) => req.path.endsWith("/take-local/fence")), false, "nothing is frozen before confirming");
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  await takeLocal(cwd, { removeOthers: true });
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "local");
+  assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
 });
 
 test("a sign-in the service no longer accepts asks the person to sign in again", async () => {

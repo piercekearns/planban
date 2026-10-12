@@ -3,7 +3,7 @@
 import { ConvexError } from "convex/values";
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../../../../src/core/boardOperations";
 
-export type ErrorCode = "conflict" | "validation" | "not_found" | "forbidden" | "unauthorized";
+export type ErrorCode = "conflict" | "validation" | "not_found" | "forbidden" | "unauthorized" | "rate_limited";
 export type ServiceErrorData = {
   code: ErrorCode;
   message: string;

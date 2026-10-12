@@ -659,7 +659,7 @@ const tools = [
   {
     name: "planban_write_doc",
     title: "Write Planban Document",
-    description: "Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location.",
+    description: "Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location. On an Online Board, documents are text only (up to 1 MB): refer to images and other files by GitHub link, web address or a local path labelled with its machine; embedded images and encoded data are refused.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },

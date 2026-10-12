@@ -27,6 +27,12 @@ export interface OnlineRequestOptions {
   idempotencyKey?: string;
   /** Overall time limit for one attempt; 30 seconds unless set. */
   timeoutMs?: number;
+  /**
+   * Use exactly these credentials rather than whatever is saved now, so that
+   * several requests are sure to act as one account even if someone signs in
+   * as another meanwhile.
+   */
+  credentials?: OnlineCredentials;
 }
 
 export async function onlineRequest<T>(urlInput: string, path: string, body?: unknown, options: OnlineRequestOptions = {}): Promise<T> {
@@ -52,7 +58,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
   const url = serviceUrl(urlInput);
   // Machine sign-ins, keys and development sign-ins do not expire by time or
   // refresh; when the service stops accepting one, the person signs in again.
-  const credentials = await requireCredentials(url);
+  const credentials = options.credentials ?? await requireCredentials(url);
   const raw = body instanceof RawBody;
   const payload = body === undefined ? undefined : raw ? new Blob([body.bytes as Uint8Array<ArrayBuffer>]) : JSON.stringify(body);
   const send = () => fetch(`${url}${path}`, {
@@ -88,6 +94,8 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     if (response.status === 404) throw new PlanbanNotFoundError(message);
     if (response.status === 401) throw loginRequired(url);
     if (response.status === 403) throw new OnlineAuthenticationError(`${message} Ask the board owner for access.`, 403);
+    // A daily limit (owner decision 18): kept as 429 so the board page and agents see a limit, not a failure.
+    if (response.status === 429) throw Object.assign(new Error(message), { name: "OnlineLimitError", statusCode: 429 });
     throw new Error(message);
   }
   return response;

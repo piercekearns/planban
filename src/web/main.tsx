@@ -38,6 +38,8 @@ import {
   SquarePen,
   Trash2,
   X,
+  Settings,
+  Link2,
 } from "lucide-react";
 import {
   closestCorners,
@@ -94,6 +96,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
+import { BoardPeopleContext, BoardSettingsModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, useBoardPeople, useOnlineStatus } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -333,6 +336,8 @@ interface HistoryEntry {
   summary: string;
   affectedCards: string[];
   affectedDocs: Array<{ cardId: string; kind: DocKind; path: string | null }>;
+  /** Online Boards: who made the change and through which app. */
+  attribution?: { userId: string; clientName: string; actor: string };
 }
 
 interface HistoryPayload {
@@ -1060,7 +1065,10 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {item.icon ? <span className="card-title-icon">{item.icon}</span> : null}
           {item.title}
         </p>
-        {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
+        <span className="card-title-tail">
+          <CardFace cardId={item.id} />
+          {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
+        </span>
       </div>
       {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
       {description ? <p className="card-copy">{description}</p> : null}
@@ -1816,6 +1824,8 @@ function BoardPicker({
 }
 
 function BoardMoreMenu({
+  onOpenSettings,
+  onOpenConnections,
   onOpenHistory,
   onOpenTutorial,
   onOpenFeedback,
@@ -1823,6 +1833,8 @@ function BoardMoreMenu({
   showArchived,
   onToggleArchived,
 }: {
+  onOpenSettings?: () => void;
+  onOpenConnections?: () => void;
   onOpenHistory?: () => void;
   onOpenTutorial: () => void;
   onOpenFeedback: () => void;
@@ -1849,6 +1861,8 @@ function BoardMoreMenu({
       </TooltipButton>
       {open ? (
         <div className="board-more-popover" role="menu">
+          {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
+          {onOpenConnections ? <button role="menuitem" onClick={() => choose(onOpenConnections)}><Link2 size={14} /><span>Your connections</span></button> : null}
           {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
           <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button>
           <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
@@ -1902,7 +1916,7 @@ function BoardHistoryModal({
                 else onSelectVersion(entry.version);
                 onClose();
               }}>
-                <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
+                <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} actor={entry.actor} /><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
               </button>
             );
           })}
@@ -3289,7 +3303,7 @@ function DetailHistoryMenu({
               disabled={active && previewVersion === null}
               onClick={() => select(entry.version)}
             >
-              <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
+              <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} actor={entry.actor} /><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
             </button>
           );
         })}
@@ -4712,6 +4726,8 @@ function BoardView({
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
   const [boardHistoryOpen, setBoardHistoryOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onlineScreen, setOnlineScreen] = useState<"people" | "invite" | "connections" | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [postUpdateVersion, setPostUpdateVersion] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("planbanUpdated");
@@ -4730,6 +4746,8 @@ function BoardView({
   const isPreviewing = preview !== null;
   const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
   const isDemoBoard = boardKind === "demo";
+  const online = useOnlineStatus(isDemoBoard ? null : boardId, state.roadmap.revision);
+  const boardPeople = useBoardPeople(isDemoBoard ? null : boardId, online.status?.location === "online", `${state.roadmap.revision}:${online.status?.location}`);
   const isActivityLab = activityLabIsEnabled(boardId, boardKind, window.location.search);
   const activityLabCards = useMemo(
     () => items.filter((item) => item.status !== "archived"),
@@ -5487,6 +5505,7 @@ function BoardView({
 
   if (selectedItem) {
     return (
+      <BoardPeopleContext.Provider value={boardPeople.people}>
       <DetailView
         state={activityDetailKind === "group" ? activityDetailState : displayState}
         item={selectedItem}
@@ -5513,11 +5532,13 @@ function BoardView({
           },
         } : {})}
       />
+      </BoardPeopleContext.Provider>
     );
   }
 
   return (
-    <main className="board-screen">
+    <BoardPeopleContext.Provider value={boardPeople.people}>
+    <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
           <div className="board-home-row">
@@ -5527,6 +5548,7 @@ function BoardView({
           </div>
           <div className="board-title-row">
             <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
+            <LocationPill status={online.status} />
           </div>
         </div>
         <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
@@ -5561,6 +5583,8 @@ function BoardView({
               {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
             </TooltipButton>
             <BoardMoreMenu
+              {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
+              {...(!isDemoBoard && online.status?.signedIn.length ? { onOpenConnections: () => setOnlineScreen("connections") } : {})}
               {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
               onOpenTutorial={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
               onOpenFeedback={() => setFeedbackOpen(true)}
@@ -5571,6 +5595,7 @@ function BoardView({
           </div>
         </div>
       </header>
+      <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} />
 
       {isActivityLab ? (
         <ActivityLabPanel
@@ -5587,6 +5612,13 @@ function BoardView({
       ) : null}
 
       {feedbackOpen ? <FeedbackModal state={state} onClose={() => setFeedbackOpen(false)} /> : null}
+      {settingsOpen && online.status ? (
+        <BoardSettingsModal repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload}
+          onManagePeople={() => { setSettingsOpen(false); setOnlineScreen("people"); }} onClose={() => setSettingsOpen(false)} />
+      ) : null}
+      {onlineScreen === "people" ? <PeopleModal repoId={boardId} boardTitle={state.roadmap.project.title} onInvite={() => setOnlineScreen("invite")} onClose={() => { setOnlineScreen(null); void boardPeople.reload(); }} /> : null}
+      {onlineScreen === "invite" ? <InviteModal repoId={boardId} boardTitle={state.roadmap.project.title} onClose={() => setOnlineScreen("people")} /> : null}
+      {onlineScreen === "connections" ? <ConnectionsModal onClose={() => setOnlineScreen(null)} /> : null}
       {boardHistoryOpen ? (
         <BoardHistoryModal
           history={history}
@@ -5734,6 +5766,7 @@ function BoardView({
         </DragOverlay>
       </DndContext>}
     </main>
+    </BoardPeopleContext.Provider>
   );
 }
 

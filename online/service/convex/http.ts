@@ -9,10 +9,10 @@ import { clerkConfigured, verifyClerkAccessToken } from "./model/clerk";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
-import { streamParts } from "./model/blobs";
-import { Sha256 } from "./model/sha256";
+import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
+  rate_limited: 429,
   conflict: 409,
   validation: 400,
   not_found: 404,
@@ -121,6 +121,13 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     // The key is shown once; only its hash is stored.
     return json({ ...created, key: token }, 201);
   }
+  if (parts[0] === "invites" && parts[1] === "accept" && parts.length === 2 && method === "POST") {
+    const input = await body(request);
+    const tokenHash = await sha256Hex(inviteToken(String(input.token ?? "")));
+    const forEmail = await ctx.runQuery(internal.invites.emailOf, { tokenHash });
+    const verifiedEmails = forEmail ? await verifiedEmailsOf((await ctx.runQuery(internal.boards.me, { connectionId })).userId) : undefined;
+    return json(await ctx.runMutation(internal.invites.accept, { connectionId, tokenHash, ...(verifiedEmails ? { verifiedEmails } : {}) }));
+  }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {
@@ -157,6 +164,32 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     const { revision } = await ctx.runQuery(internal.boards.revision, { connectionId, boardId });
     return json({ revision });
   }
+  if (rest[0] === "invites" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.invites.list, { connectionId, boardId }));
+  if (rest[0] === "invites" && rest.length === 1 && method === "POST") {
+    const input = await body(request);
+    const role = input.role === "editor" ? "editor" as const : "viewer" as const;
+    const token = randomSecret("pbi_");
+    const created = await ctx.runMutation(internal.invites.create, {
+      connectionId, boardId, tokenHash: await sha256Hex(token), role, ...(typeof input.email === "string" && input.email.trim() ? { email: input.email } : {}),
+    });
+    const link = `${publicOrigin()}/invite/${token}`;
+    const emailSent = created.email ? await sendInviteEmail(created.email, created.boardTitle, role, link) : false;
+    // The link is shown once; only its hash is stored.
+    return json({ invite: created, link, emailSent }, 201);
+  }
+  if (rest[0] === "invites" && rest.length === 3 && rest[2] === "revoke" && method === "POST") return json(await ctx.runMutation(internal.invites.revoke, { connectionId, boardId, inviteId: rest[1]! }));
+  if (rest[0] === "members" && rest.length === 3 && method === "POST" && (rest[2] === "role" || rest[2] === "remove")) {
+    const input = await body(request);
+    const role = input.role === "editor" || input.role === "viewer" ? input.role : undefined;
+    return json({ members: await ctx.runMutation(internal.members.update, { connectionId, boardId, userId: decodeURIComponent(rest[1]!), ...(rest[2] === "remove" ? { remove: true } : role ? { role } : {}) }) });
+  }
+  if (rest[0] === "people" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.people.forBoard, { connectionId, boardId }));
+  if (rest[0] === "people" && rest[1] === "me" && rest[2] === "agents" && method === "POST") {
+    const input = await body(request);
+    const level = input.level === "read" || input.level === "plan" || input.level === "complete" ? input.level : null;
+    if (!level) return json({ error: { code: "validation", message: "level must be read, plan or complete." } }, 400);
+    return json(await ctx.runMutation(internal.people.setAgentLevel, { connectionId, boardId, level }));
+  }
   if (rest[0] === "members" && method === "GET") return json({ members: await ctx.runQuery(internal.members.list, { connectionId, boardId }) });
   if (rest[0] === "members" && method === "POST") {
     const input = await body(request);
@@ -168,6 +201,7 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
     return json(await ctx.runMutation(internal.boards.fence, {
       connectionId, boardId, transferId: String(input.transferId ?? ""),
       ...(typeof input.expectedGeneration === "number" ? { expectedGeneration: input.expectedGeneration } : {}),
+      ...(Array.isArray(input.acknowledgedOthers) ? { acknowledgedOthers: input.acknowledgedOthers.map(String) } : {}),
     }));
   }
   if (rest[0] === "take-local" && rest[1] === "finish" && method === "POST") {
@@ -189,58 +223,9 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
       ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
     }));
   }
-  if (rest[0] === "attachments") {
-    if (rest.length === 1 && method === "GET") {
-      const cardId = url.searchParams.get("cardId");
-      return json(await ctx.runQuery(internal.attachments.list, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));
-    }
-    if (rest[1] === "begin" && rest.length === 2 && method === "POST") {
-      const input = await body(request);
-      const file = { cardId: String(input.cardId ?? ""), path: String(input.path ?? ""), sha256: String(input.sha256 ?? ""), size: Number(input.size), contentType: String(input.contentType ?? "application/octet-stream") };
-      return json(await ctx.runMutation(internal.attachments.begin, { connectionId, boardId, ...file }));
-    }
-    // One part of an upload, stored by Planban for that upload session only.
-    if (rest[1] === "uploads" && rest[3] === "parts" && rest.length === 5 && method === "PUT") {
-      const uploadId = rest[2]!;
-      const index = Number(rest[4]);
-      const { expected } = await ctx.runQuery(internal.attachments.partAllowed, { connectionId, boardId, uploadId, index });
-      const bytes = new Uint8Array(await request.arrayBuffer());
-      if (bytes.byteLength !== expected) return json({ error: { code: "validation", message: `This part must be ${expected} bytes.` } }, 400);
-      const storageId = await ctx.storage.store(new Blob([bytes]));
-      const recorded = await ctx.runMutation(internal.attachments.recordPart, { connectionId, boardId, uploadId, index, storageId, size: bytes.byteLength });
-      if (!recorded.stored) return json({ error: { code: "conflict", message: "This upload is no longer open." } }, 409);
-      return json({ stored: true, index });
-    }
-    if (rest[1] === "finish" && rest.length === 2 && method === "POST") {
-      const input = await body(request);
-      const uploadId = String(input.uploadId ?? "");
-      const { state, parts } = await ctx.runQuery(internal.attachments.partsToVerify, { connectionId, boardId, uploadId });
-      // Hash what actually arrived, part by part.
-      const hash = new Sha256();
-      let size = 0;
-      if (state === "open") {
-        for (const part of parts) {
-          const blob = await ctx.storage.get(part.storageId);
-          if (!blob) return json({ error: { code: "conflict", message: "A part of this upload is missing. Send it again." } }, 409);
-          const bytes = new Uint8Array(await blob.arrayBuffer());
-          hash.update(bytes);
-          size += bytes.byteLength;
-        }
-      }
-      const finished = await ctx.runMutation(internal.attachments.complete, {
-        connectionId, boardId, uploadId, sha256: state === "open" ? hash.hex() : "", size,
-        // Exactly the parts that were hashed; if any changed meanwhile, completing is refused.
-        partIds: parts.map((part) => part.id),
-      });
-      if ("rejected" in finished) return json({ error: { code: "validation", message: finished.rejected } }, 400);
-      return json(finished);
-    }
-    if (rest.length === 3 && rest[2] === "delete" && method === "POST") return json(await ctx.runMutation(internal.attachments.remove, { connectionId, boardId, attachmentId: rest[1]! }));
-    if (rest.length === 2 && method === "GET") {
-      const located = await ctx.runQuery(internal.attachments.locate, { connectionId, boardId, attachmentId: rest[1]! });
-      return streamParts(ctx, located.parts, located.contentType);
-    }
-  }
+  // Owner decision 18: Planban is an index, not storage. Online boards hold
+  // text only; files stay where they live and cards refer to them.
+  if (rest[0] === "attachments") return json({ error: { code: "not_found", message: INDEX_NOT_STORAGE } }, 404);
   if (rest[0] === "docs" && rest.length === 3 && method === "GET") {
     const kind = rest[2] === "plan" ? "plan" : rest[2] === "spec" ? "spec" : null;
     if (!kind) return json({ error: { code: "validation", message: "kind must be spec or plan." } }, 400);
@@ -288,7 +273,10 @@ const mcp = httpAction(async (ctx, request) => {
     const auth = await authenticate(ctx, request);
     if (!auth) {
       return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
-        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp"`,
+        // Naming the scopes keeps AI apps from asking for everything the sign-in
+        // server offers (Clerk also lists public and private metadata, which
+        // Planban never uses), so the consent screen shows only what it needs.
+        "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp", scope="${PLANBAN_SCOPES.join(" ")}"`,
       });
     }
     return await handleMcp(request, new McpService(ctx, auth.connectionId), publicOrigin());
@@ -297,13 +285,16 @@ const mcp = httpAction(async (ctx, request) => {
   }
 });
 
+/** The scopes Planban uses: who you are, your name and picture, your email, and staying signed in. */
+const PLANBAN_SCOPES = ["openid", "profile", "email", "offline_access"];
+
 /** RFC 9728 metadata: Clerk is the sign-in server (CLERK_ISSUER). */
 function protectedResourceFor(path: string) {
   return httpAction(async () => json({
     resource: `${publicOrigin()}${path}`,
     authorization_servers: process.env.CLERK_ISSUER ? [process.env.CLERK_ISSUER] : [],
     bearer_methods_supported: ["header"],
-    scopes_supported: ["openid", "profile", "email", "offline_access"],
+    scopes_supported: PLANBAN_SCOPES,
     resource_name: "Planban Online",
   }, 200, { "Cache-Control": "public, max-age=300" }));
 }
@@ -341,6 +332,62 @@ const machineSignIn = httpAction(async (ctx, request) => {
   }
 });
 
+/** An invite link's secret, from the link itself or just the secret. */
+function inviteToken(input: string) {
+  const match = /(pbi_[A-Za-z0-9_-]{20,})/.exec(input);
+  return match ? match[1]! : "";
+}
+
+/**
+ * Sends an email invite through Resend when the service is set up for it
+ * (RESEND_API_KEY and PLANBAN_INVITE_FROM); otherwise the owner shares the link.
+ */
+async function sendInviteEmail(to: string, boardTitle: string, role: string, link: string) {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.PLANBAN_INVITE_FROM;
+  if (!key || !from) return false;
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from, to: [to], subject: `You're invited to ${boardTitle} on Planban`,
+      text: `You've been invited to the Planban board "${boardTitle}" as ${role === "editor" ? "an editor" : "a viewer"}.\n\nOpen this link to join (it works for 7 days):\n${link}\n\nYou'll sign in with your own account.`,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null);
+  return !!response?.ok;
+}
+
+/** A person's verified email addresses, from Clerk now; none if Clerk cannot say (so an email invite is refused). */
+async function verifiedEmailsOf(userId: string): Promise<string[]> {
+  const secret = process.env.CLERK_SECRET_KEY;
+  if (!secret || !/^user_[A-Za-z0-9]+$/.test(userId)) return [];
+  const response = await fetch(`https://api.clerk.com/v1/users/${userId}`, { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(5000) }).catch(() => null);
+  if (!response?.ok) return [];
+  const user = await response.json() as { email_addresses?: Array<{ email_address: string; verification?: { status?: string } | null }> };
+  return (user.email_addresses ?? []).filter((address) => address.verification?.status === "verified").map((address) => address.email_address);
+}
+
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+
+/** The page an invite link opens: what it is for, and how to join. */
+const invitePage = httpAction(async (ctx, request) => {
+  const token = inviteToken(new URL(request.url).pathname);
+  const invite = token ? await ctx.runQuery(internal.invites.preview, { tokenHash: await sha256Hex(token) }) : null;
+  const page = (title: string, body: string) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title>`
+    + `<body style="font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#111"><h1 style="font-size:22px">${escapeHtml(title)}</h1>${body}</body>`,
+    { status: invite ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" } },
+  );
+  if (!invite) return page("This invite has expired", "<p>Invite links work for 7 days. Ask the board owner for a new one.</p>");
+  const link = `${publicOrigin()}/invite/${token}`;
+  return page(`Join ${invite.boardTitle} on Planban`,
+    `<p>You've been invited as ${invite.role === "editor" ? "an editor: you can change cards, specs and plans, and mark work complete" : "a viewer: you can read the board and its history"}.${invite.forEmail ? " This invite is for one email address; sign in with it." : ""}</p>`
+    + `<p>To join, run this in a terminal on your computer. Planban opens your browser to sign in with your own account:</p>`
+    + `<pre style="background:#f4f4f5;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all">planban online join ${escapeHtml(link)}</pre>`
+    + `<p style="color:#666">The link works until ${escapeHtml(new Date(invite.expiresAt).toUTCString())}.</p>`);
+});
+
 /** What a Planban install needs to know to sign in here. */
 const serviceDiscovery = httpAction(async () => json({
   service: "Planban Online",
@@ -364,6 +411,7 @@ http.route({ path: "/dev/token", method: "POST", handler: devToken });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
+http.route({ pathPrefix: "/invite/", method: "GET", handler: invitePage });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
 http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedMcpResource });
 http.route({

@@ -38,3 +38,14 @@ export const expireMachineExchanges = internalMutation({
     if (old.length === BATCH) await ctx.scheduler.runAfter(0, internal.maintenance.expireMachineExchanges, {});
   },
 });
+
+/** Daily usage records are needed only for the current day; a week is kept. */
+export const expireUsage = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const old = await ctx.db.query("usage").withIndex("by_day", (q) => q.lt("day", cutoff)).take(BATCH);
+    for (const row of old) await ctx.db.delete(row._id);
+    if (old.length === BATCH) await ctx.scheduler.runAfter(0, internal.maintenance.expireUsage, {});
+  },
+});

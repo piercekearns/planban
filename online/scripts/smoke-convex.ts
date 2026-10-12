@@ -148,9 +148,22 @@ assert.equal((await api(reader, "GET", `/api/v1/boards/${boardId}`)).status, 200
 assert.equal((await op(reader, boardId, "updateCard", { cardId: secondId, summary: "nope" })).status, 403);
 ok("a read-only connection can read but not edit");
 
-assert.equal((await op(cofounder, boardId, "moveCard", { cardId: secondId, status: "complete" })).status, 403);
-assert.equal((await op(cofounder, boardId, "createCard", { title: "Sneaky", status: "complete" })).status, 403);
-ok("an editor's own connection cannot complete cards");
+// Roles from the approved mockups: an editor may mark work complete; their
+// agents may plan unless the editor lets them do more (owner decision 15).
+const cofounderAgent = await devLogin("cofounder", { boards: [boardId], level: "complete", clientName: "Co-founder's agent" });
+assert.equal((await op(cofounderAgent, boardId, "createCard", { title: "Agent finished this", status: "complete" })).status, 403);
+const editorDone = await op(cofounder, boardId, "createCard", { title: "Co-founder finished this", status: "complete", actor: "user" });
+assert.equal(editorDone.status, 200, JSON.stringify(editorDone.json));
+ok("an editor can complete cards; their agents plan unless the editor allows more");
+assert.equal((await api(cofounderAgent, "POST", `/api/v1/boards/${boardId}/people/me/agents`, { level: "complete" })).status, 403, "an agent cannot raise its own limit");
+assert.equal((await api(cofounder, "POST", `/api/v1/boards/${boardId}/people/me/agents`, { level: "complete" })).status, 200);
+assert.equal((await op(cofounderAgent, boardId, "createCard", { title: "Agent finished this", status: "complete" })).status, 200);
+const people = (await api(owner, "GET", `/api/v1/boards/${boardId}/people`)).json;
+assert.equal(people.shared, true);
+assert.equal(people.people.find((person: { userId: string }) => person.userId === "cofounder").agentLevel, "complete", "everyone on the board sees what each person's agents may do");
+assert.equal(people.cards[editorDone.json.result.createdCard.id].userId, "cofounder");
+assert.equal(people.cards[editorDone.json.result.createdCard.id].agent, false);
+ok("the people list shows each person's agent permission, and each card shows who last changed it");
 const parentAlias = await op(agent, boardId, "setCardParent", { cardId: secondId, parentId: null, status: "complete" });
 assert.equal(parentAlias.status, 200, JSON.stringify(parentAlias.json));
 assert.notEqual(parentAlias.json.roadmap.roadmapItems.find((item: { id: string }) => item.id === secondId).status, "complete");
@@ -209,7 +222,10 @@ for (let index = 0; index < 30; index += 1) {
 }
 
 const localTransfer = `smoke-local-${Date.now()}`;
-const returned = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: localTransfer });
+// Taking a shared board local names exactly who loses access (owner decision 15).
+const others = (await api(owner, "GET", `/api/v1/boards/${boardId}/members`)).json.members
+  .filter((member: { role: string }) => member.role !== "owner").map((member: { userId: string }) => member.userId);
+const returned = await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/fence`, { transferId: localTransfer, acknowledgedOthers: others });
 assert.equal(returned.status, 200, JSON.stringify(returned.json));
 const exported = await api(owner, "GET", `/api/v1/boards/${boardId}/export`);
 assert.equal((await api(owner, "POST", `/api/v1/boards/${boardId}/take-local/finish`, { transferId: localTransfer })).status, 200);

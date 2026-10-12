@@ -22,6 +22,8 @@ import { internalMutation, internalQuery, type MutationCtx } from "./_generated/
 import { boardAccess, liveConnection, reaches } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
+import { checkCards, checkDocuments } from "./model/indexRules";
+import { addStored, chargeWrite, sizeOf } from "./model/limits";
 import { historyEntries, historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
 import { DOC_KINDS, currentRoadmap, docPayload, docRow, live, retiredIds, stateRow, type DocKind } from "./model/rows";
 
@@ -51,9 +53,20 @@ function attributionFor(connection: Doc<"connections">, actor: unknown): Attribu
 /** Writes the roadmap, documents and one history version. Runs inside the caller's mutation. */
 async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanRoadmap, change: PlannedChange, attribution: Attribution, now: string) {
   assertCommittable(change.roadmap);
+  // Planban is an index, not storage (owner decision 18).
+  checkCards(change.roadmap, previous);
+  checkDocuments(change.docWrites);
   const at = live(board);
   const committed = committedRoadmap(change.roadmap, now);
-  await ctx.db.patch((await stateRow(ctx, at))._id, { roadmap: packJson(committed) });
+  // Daily limits for the account, and the board's own size limit (model/limits.ts).
+  const before = new Map(previous.roadmapItems.map((item) => [item.id, JSON.stringify(item)]));
+  const written = committed.roadmapItems.reduce((sum, item) => sum + (before.get(item.id) === JSON.stringify(item) ? 0 : sizeOf(item)), 0)
+    + change.docWrites.reduce((sum, doc) => sum + sizeOf(doc.markdown), 0);
+  await chargeWrite(ctx, attribution.userId, written);
+  const state = await stateRow(ctx, at);
+  const packedRoadmap = packJson(committed);
+  await ctx.db.patch(state._id, { roadmap: packedRoadmap });
+  await addStored(ctx, at, sizeOf(packedRoadmap) - sizeOf(state.roadmap));
   const remaining = new Set(committed.roadmapItems.map((item) => item.id));
   for (const item of previous.roadmapItems) {
     if (remaining.has(item.id)) continue;
@@ -61,7 +74,10 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
     await ctx.db.insert("retiredIds", { ...at, cardId: item.id });
     for (const kind of ["spec", "plan"] as const) {
       const row = await docRow(ctx, at, item.id, kind);
-      if (row) await ctx.db.delete(row._id);
+      if (row) {
+        await ctx.db.delete(row._id);
+        await addStored(ctx, at, -sizeOf(row.markdown));
+      }
     }
   }
   for (const doc of change.docWrites) {
@@ -70,6 +86,7 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
     const fields = { markdown: packText(doc.markdown), stamp, updatedAt: now, updatedBy: attribution.userId };
     if (row) await ctx.db.patch(row._id, fields);
     else await ctx.db.insert("docs", { ...at, cardId: doc.cardId, kind: doc.kind, ...fields });
+    await addStored(ctx, at, sizeOf(fields.markdown) - (row ? sizeOf(row.markdown) : 0));
   }
   const listed = change.history.affectedDocs ?? [];
   const affectedDocs = [
@@ -101,7 +118,7 @@ function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, acc
   const completes = after.roadmapItems.some((item) => item.status === "complete" && previous.get(item.id)?.status !== "complete");
   const deletes = before.roadmapItems.some((item) => !remaining.has(item.id));
   if (deletes && !access.canAdminister) fail("forbidden", "Deleting a card is kept for the board owner's own connection. Ask the owner to do it.");
-  if (completes && !access.canComplete) fail("forbidden", "Completing a card is kept for the board owner. Ask the owner to do it.");
+  if (completes && !access.canComplete) fail("forbidden", "This connection may not mark cards complete on this board. Ask someone who can, or change what your agents may do.");
   if (completes && completionConfirmed === false) {
     fail("validation", "completionConfirmed must be true when this would move a card to complete. Only do this when the owner explicitly asks.");
   }
@@ -329,8 +346,8 @@ function requireLocalTransfer(board: Doc<"boards">, transferId: string | undefin
  * board someone else has since taken online again.
  */
 export const fence = internalMutation({
-  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string(), expectedGeneration: v.optional(v.number()) },
-  handler: async (ctx, { connectionId, boardId, transferId, expectedGeneration }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.string(), expectedGeneration: v.optional(v.number()), acknowledgedOthers: v.optional(v.array(v.string())) },
+  handler: async (ctx, { connectionId, boardId, transferId, expectedGeneration, acknowledgedOthers }) => {
     const access = await readableBoard(ctx, connectionId, boardId);
     if (!access.canAdminister) fail("forbidden", "Moving a board between Online and Local Mode is kept for the board owner's own connection.");
     const board = access.board;
@@ -344,16 +361,27 @@ export const fence = internalMutation({
       }
       if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
       await ctx.db.patch(board._id, { localTransfer: { ...board.localTransfer, at: new Date().toISOString() } });
-      return { generation: board.localTransfer.generation, revision: board.revision };
+      return { generation: board.localTransfer.generation, revision: board.revision, removedPeople: [] as string[] };
     }
     if (!/^[A-Za-z0-9-]{8,80}$/.test(transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
     if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
     if (board.authority !== "online") fail("conflict", "This board is already being taken local, or is local already.");
     if (board.carryFrom !== undefined) fail("conflict", "This board is still moving its files after being taken online. Try Take Local again in a minute.");
+    // Owner decision 15: everyone else loses access, so the person must have
+    // confirmed exactly who that is. Checked here, in the same step.
+    const members = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect();
+    const others = members.filter((member) => member.userId !== access.connection.userId);
+    const acknowledged = new Set(acknowledgedOthers ?? []);
+    if (acknowledged.size !== others.length || others.some((member) => !acknowledged.has(member.userId))) {
+      fail("conflict", "The people on this board changed since you confirmed. Confirm again who loses access.");
+    }
     const now = new Date().toISOString();
     const previous = await currentRoadmap(ctx, live(board));
     const committed = committedRoadmap(previous, now);
-    await ctx.db.patch((await stateRow(ctx, live(board)))._id, { roadmap: packJson(committed) });
+    const state = await stateRow(ctx, live(board));
+    const packedRoadmap = packJson(committed);
+    await ctx.db.patch(state._id, { roadmap: packedRoadmap });
+    await addStored(ctx, live(board), sizeOf(packedRoadmap) - sizeOf(state.roadmap));
     // Bumping the revision tells every watching client the board changed.
     await ctx.db.patch(board._id, {
       authority: "returned-local", revision: committed.revision, updatedAt: now,
@@ -364,7 +392,14 @@ export const fence = internalMutation({
       history: { actor: "user", operation: "board.take-local", summary: "Took the board back to Local Mode", affectedCards: [] },
       docs: [], attribution: attributionFor(access.connection, "user"), now,
     });
-    return { generation: board.generation, revision: committed.revision };
+    // Owner decision 15: everyone else, and their agents, lose access now.
+    // The online copy stays, read-only, for the person taking it local.
+    const removedPeople: string[] = [];
+    for (const member of others) {
+      removedPeople.push(member.userId);
+      await ctx.db.delete(member._id);
+    }
+    return { generation: board.generation, revision: committed.revision, removedPeople };
   },
 });
 
