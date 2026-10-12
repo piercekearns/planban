@@ -2,24 +2,28 @@
 // therefore comes only from these reviewed publisher URLs, trusting their
 // DNS/TLS rather than accepting arbitrary caller-selected network targets.
 // Dynamic registration is disabled. Other clients need a reviewed policy.
-export const METADATA_CLIENTS = new Set([
+const METADATA_CLIENTS = new Set([
   "https://chatgpt.com/oauth/codex/client.json",
   "https://chatgpt.com/oauth/client.json",
 ]);
 const MAX_BYTES = 5 * 1024;
 export interface OAuthClient {
-  clientId: string;
-  name: string;
-  redirectUris: string[];
-  native: boolean;
+  readonly clientId: string;
+  readonly name: string;
+  readonly redirectUris: readonly string[];
+  readonly native: boolean;
 }
 
 function validRedirect(value: string, native: boolean): boolean {
   try {
     const url = new URL(value);
-    if (url.href !== value || url.username || url.password || url.hash) return false;
+    const literalLoopback = native && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname);
+    // URL serialization removes the explicit default port. Allow that one
+    // spelling for native loopback, but no other normalization of raw URIs.
+    const canonical = literalLoopback ? value.replace(/^(http:\/\/(?:127\.0\.0\.1|\[::1\])):80(?=\/)/, "$1") : value;
+    if (url.href !== canonical || url.username || url.password || value.includes("#")) return false;
     if (url.protocol === "https:") return true;
-    return native && url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) && !url.search;
+    return native && url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) && !value.includes("?");
   } catch { return false; }
 }
 
@@ -35,7 +39,7 @@ export function parseClientMetadata(clientId: string, input: unknown): OAuthClie
   const methods = doc.token_endpoint_auth_methods_supported ?? [doc.token_endpoint_auth_method];
   if (!Array.isArray(methods) || !methods.includes("none")) return null;
   if (!Array.isArray(doc.grant_types) || !doc.grant_types.includes("authorization_code") || !Array.isArray(doc.response_types) || !doc.response_types.includes("code")) return null;
-  return { clientId, name: doc.client_name.trim(), redirectUris: [...new Set(redirects as string[])], native };
+  return Object.freeze({ clientId, name: doc.client_name.trim(), redirectUris: Object.freeze([...new Set(redirects as string[])]), native });
 }
 
 export function clientRedirectAllowed(client: OAuthClient, redirectUri: string): boolean {
@@ -44,11 +48,9 @@ export function clientRedirectAllowed(client: OAuthClient, redirectUri: string):
   const requested = new URL(redirectUri);
   // RFC 8252 allows a native client's ephemeral port to vary on a literal
   // loopback IP. Do not extend that exception to DNS names or different paths.
-  if (!client.native || requested.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(requested.hostname) || !requested.port) return false;
-  return client.redirectUris.some((value) => {
-    const registered = new URL(value);
-    return registered.protocol === requested.protocol && registered.hostname === requested.hostname && registered.pathname === requested.pathname && !registered.search && !registered.hash;
-  });
+  if (!client.native || requested.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(requested.hostname)) return false;
+  const withoutPort = (value: string) => value.replace(/^(http:\/\/(?:127\.0\.0\.1|\[::1\])):\d+(?=\/)/, "$1");
+  return client.redirectUris.some((value) => withoutPort(value) === withoutPort(redirectUri));
 }
 
 /** Fetch no logos, keys or secondary URLs, and follow no redirects. */

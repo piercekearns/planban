@@ -10,8 +10,14 @@ test("client metadata binds publisher identity and public method, with an exact 
   const client = parseClientMetadata(codexId, metadata())!;
   assert.ok(client);
   assert.equal(clientRedirectAllowed(client, "http://127.0.0.1:53419/callback"), true);
+  assert.equal(clientRedirectAllowed(client, "http://127.0.0.1:80/callback"), true);
+  const portRegistered = parseClientMetadata(codexId, { ...metadata(), redirect_uris: ["http://127.0.0.1:53419/callback"] })!;
+  assert.equal(clientRedirectAllowed(portRegistered, "http://127.0.0.1/callback"), true);
+  assert.equal(clientRedirectAllowed(portRegistered, "http://127.0.0.1:80/callback"), true);
+  assert.equal(Object.isFrozen(client), true);
+  assert.equal(Object.isFrozen(client.redirectUris), true);
   assert.equal(clientRedirectAllowed(client, "http://localhost/callback"), true);
-  for (const uri of ["http://localhost:53419/callback", "http://127.0.0.2:53419/callback", "http://[::1]:53419/callback", "http://127.0.0.1:53419/callback/other", "http://127.0.0.1:53419/callback?extra=1", "http://127.0.0.1:53419/callback#token", "http://attacker@127.0.0.1:53419/callback", " http://127.0.0.1:53419/callback", "https://attacker.example/callback"]) assert.equal(clientRedirectAllowed(client, uri), false, uri);
+  for (const uri of ["http://localhost:53419/callback", "http://127.0.0.2:53419/callback", "http://[::1]:53419/callback", "http://127.0.0.1:53419/callback/other", "http://127.0.0.1:53419/callback?", "http://127.0.0.1:53419/callback#", "http://127.0.0.1:53419/callback?extra=1", "http://127.0.0.1:53419/callback#token", "http://attacker@127.0.0.1:53419/callback", " http://127.0.0.1:53419/callback", "https://attacker.example/callback"]) assert.equal(clientRedirectAllowed(client, uri), false, uri);
   const hosted = { ...metadata(chatId), client_name: "ChatGPT", application_type: "web", redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"], token_endpoint_auth_method: "private_key_jwt", token_endpoint_auth_methods_supported: ["none", "private_key_jwt"] };
   const chat = parseClientMetadata(chatId, hosted)!;
   assert.ok(chat, "public method must be a supported intersection even when publisher prefers a different method");
