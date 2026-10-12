@@ -92,10 +92,13 @@ const isDenseLine = (line: string) => line.length >= 12
   && (line.match(/\s/g)?.length ?? 0) <= line.length * 0.05
   && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line)
   && ((line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1 || looksEncoded(line.replace(/[^A-Za-z0-9]/g, "")));
-/** Short encoder rows sometimes have too little punctuation to start a block.
+/** Encoder rows sometimes have too little punctuation to start a block.
  * They can continue one, without treating ordinary words or references as payload. */
-const isCompactPayloadLine = (line: string) => line.length >= 12 && line.length < 24
+const isCompactPayloadLine = (line: string) => line.length >= 12
   && !/\s|:\/\//.test(line) && !/^[|:=*#~_-]+$/.test(line)
+  // Relative and absolute paths are references, even when a run of encoded
+  // lines happens to precede them. Base85's alphabet does not contain '/'.
+  && !/^(?:[A-Za-z0-9._~-]*\/){2,}[A-Za-z0-9._~-]*$/.test(line)
   && !/^[a-z-]+$|^[A-Z][a-z]+$|^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(line);
 const PAYLOAD_BLOCK_LIMIT = 3072;
 /** Across a structured value's fields, only fields with at least this much payload count towards the limit. */

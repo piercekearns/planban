@@ -208,12 +208,15 @@ test("round 10's shapes are refused, and a real card's long hash list is not", a
   checkIndexValue({ id: "x", summary: Array.from({ length: 91 }, (_, i) => `- release ${i}: ${randomBytes(20).toString("hex")}`).join("\n") }, "card", 128 * 1024);
 });
 
-test("base85 and ASCII85 wrapped at 16 columns are refused too", () => {
+test("base85 and ASCII85 keep accumulating across ordinary narrow and wide wraps", () => {
   const ascii85Alphabet = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
   // Fixed seeds cover rows with little punctuation and keep failures reproducible.
-  for (let seed = 0; seed < 20; seed += 1) {
+  for (const seed of [...Array.from({ length: 20 }, (_, i) => i), 30]) {
     const f = Buffer.concat(Array.from({ length: 141 }, (_, i) => createHash("sha256").update(`${seed}:${i}`).digest())).subarray(0, 4500);
-    assert.match(embeddedFileIn((base85(f).match(/.{1,16}/g) ?? []).join("\n")) ?? "missed", /encoded file/, `base85 at 16, seed ${seed}`);
-    assert.match(embeddedFileIn("<~" + (base85(f, ascii85Alphabet).match(/.{1,16}/g) ?? []).join("\n") + "~>") ?? "missed", /encoded file/, `ASCII85 at 16, seed ${seed}`);
+    for (const width of [16, 32, 40, 64, 75, 80]) {
+      const wrap = (text: string) => text.match(new RegExp(`.{1,${width}}`, "g"))!.join("\n");
+      assert.match(embeddedFileIn(wrap(base85(f))) ?? "missed", /encoded file/, `base85 at ${width}, seed ${seed}`);
+      assert.match(embeddedFileIn("<~" + wrap(base85(f, ascii85Alphabet)) + "~>") ?? "missed", /encoded file/, `ASCII85 at ${width}, seed ${seed}`);
+    }
   }
 });
