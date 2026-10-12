@@ -1,3 +1,4 @@
+import { renderInviteEmail } from "./model/inviteEmail";
 // HTTP entry points: the REST API that local Planban installs use for an
 // Online Board, and development sign-in on local backends.
 import { httpRouter } from "convex/server";
@@ -329,12 +330,15 @@ export async function sendInviteEmail(to: string, role: string, link: string) {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.PLANBAN_INVITE_FROM;
   if (!key || !from) return false;
+  let message;
+  if (role !== "viewer" && role !== "editor") return false;
+  try { message = renderInviteEmail(role, link, publicOrigin()); }
+  catch { return false; }
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      from, to: [to], subject: "You're invited to a board on Planban",
-      text: `You've been invited to a Planban board as ${role === "editor" ? "an editor" : "a viewer"}.\n\nOpen this link to join (it works for 7 days):\n${link}\n\nYou'll sign in with your own account.`,
+      from, to: [to], ...message,
     }),
     signal: AbortSignal.timeout(10_000),
   }).catch(() => null);
