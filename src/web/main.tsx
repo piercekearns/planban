@@ -1077,10 +1077,11 @@ function GroupIcon({
 const StalenessContext = React.createContext<Record<string, StalenessSignal[]>>({});
 
 function StalenessChip({ itemId }: { itemId: string }) {
-  // Agent-maintenance signals stay in tool results; the board shows only what needs the owner.
+  // Agent-maintenance signals stay in tool results; the board shows only what needs the owner, and cards holding files.
   const signal = React.useContext(StalenessContext)[itemId]?.find((entry) => stalenessChipLabel(entry));
   if (!signal) return null;
-  return <p className="staleness-note">{stalenessChipLabel(signal)}</p>;
+  // A card holding files explains itself on hover: Planban refuses changes until they are moved out.
+  return <p className="staleness-note" title={signal.kind === "holds-files" ? signal.detail : undefined}>{stalenessChipLabel(signal)}</p>;
 }
 
 function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: RoadmapItem; rollup: GroupRollup<RoadmapItem> | undefined; ancestry?: RoadmapItem[]; expanded?: boolean }) {

@@ -20,6 +20,8 @@ const demoModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src
 const versionModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/version.ts")).href);
 const stalenessModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/staleness.ts")).href);
 const stalenessSourcesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/stalenessSources.ts")).href);
+const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/contentRules.ts")).href);
+const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
 
 const { cardAncestry, createCard, createCards, createGroup, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
@@ -29,6 +31,11 @@ const { ensureDemoBoard } = demoModule;
 const { PLANBAN_MCP_VERSION } = versionModule;
 const { stalenessAttention, stalenessLine } = stalenessModule;
 const { collectStaleness, projectStaleness } = stalenessSourcesModule;
+const { HOW_TO_REFER } = contentRulesModule;
+const { moveFilesOut } = moveFilesOutModule;
+
+// Planban is an index, not storage (owner decisions 18 and 20). Agents learn it from these words.
+const INDEX_RULE = `Planban is an index, not file storage: a card holds only text (its fields, Spec, Plan and history), never files, and nothing is ever saved into a card's folder. ${HOW_TO_REFER}`;
 
 const SERVER_NAME = "Planban MCP";
 const PLANBAN_MCP_INSTRUCTIONS = [
@@ -36,6 +43,7 @@ const PLANBAN_MCP_INSTRUCTIONS = [
   "Pass cwd as the absolute repository path, or repoId for a registered board.",
   "Before creating or materially editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style when installed.",
   "Serialize writes: one mutation at a time per board.",
+  "Planban is an index, not file storage: link to files; planban_move_files_out tidies cards holding them.",
   "Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review.",
   "move_card is the canonical placement operation.",
   "After a successful open, or after the complete logical mutation batch, include the exact clickable Board URL from the result's userReply.markdown in the final reply.",
@@ -259,8 +267,12 @@ function withLine(text, line) {
 }
 
 function signalsLine(signals) {
-  if (!signals?.length) return null;
-  return `Stale signals: ${signals.map((signal) => `${signal.kind} (${signal.detail})`).join("; ")}. Re-read and fix the card in the same mutation batch if you own or touch it.`;
+  const holding = signals?.find((signal) => signal.kind === "holds-files");
+  const rest = (signals ?? []).filter((signal) => signal.kind !== "holds-files");
+  const lines = [];
+  if (holding) lines.push(`This card ${holding.detail.charAt(0).toLowerCase()}${holding.detail.slice(1)} or planban_move_files_out. Planban is an index, not file storage.`);
+  if (rest.length) lines.push(`Stale signals: ${rest.map((signal) => `${signal.kind} (${signal.detail})`).join("; ")}. Re-read and fix the card in the same mutation batch if you own or touch it.`);
+  return lines.length ? lines.join("\n") : null;
 }
 
 const METADATA_NOTE_BYTES = 4096;
@@ -268,7 +280,7 @@ const METADATA_NOTE_BYTES = 4096;
 function metadataNotes(card) {
   const bytes = card?.metadata ? Buffer.byteLength(JSON.stringify(card.metadata), "utf8") : 0;
   if (bytes <= METADATA_NOTE_BYTES) return [];
-  return [`Metadata is ${Math.round(bytes / 1024)} KB. Consider moving evidence and ledgers into the Spec, Plan or a document in the Item folder.`];
+  return [`Metadata is ${Math.round(bytes / 1024)} KB. Consider moving evidence and ledgers into the Spec or Plan, or keeping them where they live and linking to them.`];
 }
 
 function findCard(state, cardId) {
@@ -575,7 +587,7 @@ const tools = [
   {
     name: "planban_create_card",
     title: "Create Planban Card",
-    description: "Create a Planban roadmap card with optional placement, tags, metadata, and initial spec or plan markdown. Follow the installed Planban house style for all owner-facing fields and documents.",
+    description: `Create a Planban roadmap card with optional placement, tags, metadata, and initial spec or plan markdown. Follow the installed Planban house style for all owner-facing fields and documents. ${INDEX_RULE}`,
     inputSchema: schema.object({
       ...commonBoardProperties,
       title: { type: "string", description: "Card title." },
@@ -657,7 +669,7 @@ const tools = [
   {
     name: "planban_update_card",
     title: "Update Planban Card",
-    description: "Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Follow the installed Planban house style when owner-facing content changes.",
+    description: `Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Follow the installed Planban house style when owner-facing content changes. ${INDEX_RULE}`,
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
@@ -686,7 +698,7 @@ const tools = [
   {
     name: "planban_write_doc",
     title: "Write Planban Document",
-    description: "Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location.",
+    description: `Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location. ${INDEX_RULE} Documents are limited to 1 MB; pictures stored inside a document (data: addresses) and base64 are refused.`,
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
@@ -694,6 +706,19 @@ const tools = [
       markdown: { type: "string", description: "Full markdown contents." },
       expectedMtimeMs: { type: ["number", "null"], description: "Optional expected document mtime for stale-write protection." },
     }, ["cardId", "kind", "markdown"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "planban_move_files_out",
+    title: "Move Files Out of a Planban Card",
+    description:
+      "Tidy a card whose folder holds files, which Planban refuses to change until they are moved out. Moves every file in the card's folder, except its Spec and Plan, to the folder given in to (outside Planban, such as a folder in the project's repository), never overwriting or deleting anything, then adds a Files section to the card's Spec that refers to each file where it now lives, labelled with this machine's name. Run with dryRun true first and show the owner what would move; the owner chooses the destination.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      cardId: { type: "string", description: "Planban card id." },
+      to: { type: "string", description: "Destination folder: an absolute path, or a path relative to the repository." },
+      dryRun: { type: "boolean", description: "Report what would move, any paths that already exist there, and the Spec section, without changing anything." },
+    }, ["cardId", "to"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   {
@@ -1025,6 +1050,24 @@ async function callToolImpl(name, args) {
       },
     });
     return await boardResult(`Wrote ${payload.kind} document for ${payload.cardId}.`, repoIdFromCwd(cwd), payload);
+  }
+
+  if (name === "planban_move_files_out") {
+    const cwd = await cwdFromArgs(args);
+    const result = await moveFilesOut({
+      cwd,
+      cardId: requireString(args.cardId, "cardId"),
+      to: requireString(args.to, "to"),
+      dryRun: optionalBoolean(args.dryRun, "dryRun"),
+      actor: "agent",
+    });
+    const count = `${result.moves.length} file${result.moves.length === 1 ? "" : "s"}`;
+    const text = result.alreadyClean
+      ? `Card ${result.cardId} holds no files in its folder. Nothing to move.`
+      : result.dryRun
+        ? `Dry run: nothing changed. ${count} would move from card ${result.cardId} to ${result.destination}.${result.conflicts.length ? ` ${result.conflicts.length} already exist there, so the move would be refused; choose another folder.` : ""}`
+        : `Moved ${count} from card ${result.cardId} to ${result.destination} and added a Files section to its Spec. The card can be changed again.`;
+    return await boardResult(text, repoIdFromCwd(cwd), result);
   }
 
   if (name === "planban_launch_board") {
