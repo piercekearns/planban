@@ -353,6 +353,12 @@ async function main() {
 
   let ready;
   try {
+    // The disposable cold verifier needs ownership even if readiness fails.
+    // Keep this separate from the existing verified-PID handoff contract.
+    if (process.env.PLANBAN_VERIFIER_SPAWN_PID_FILE && child.pid) {
+      mkdirSync(dirname(process.env.PLANBAN_VERIFIER_SPAWN_PID_FILE), { recursive: true });
+      writeFileSync(process.env.PLANBAN_VERIFIER_SPAWN_PID_FILE, String(child.pid), "utf8");
+    }
     ready = await waitForDetachedServer({ baseUrl, child, cwd, logPath });
   } catch (error) {
     if (child.pid && child.exitCode === null) child.kill("SIGTERM");
