@@ -174,7 +174,14 @@ export const cleanupRequests = internalMutation({
       await ctx.db.delete(row._id);
     }
     for (const row of usage) await ctx.db.delete(row._id);
-    if (requests.length === 100 || usage.length === 100) await ctx.scheduler.runAfter(0, internal.oauth.cleanupRequests, {});
+    if (requests.length === 100 || usage.length === 100) {
+      await ctx.scheduler.runAfter(0, internal.oauth.cleanupRequests, {});
+    } else {
+      // Later requests or late approval can outlive the bucket's first job.
+      // Keep a bounded job alive until the last outstanding deadline passes.
+      const next = await ctx.db.query("oauthRequests").withIndex("by_expiry").order("asc").first();
+      if (next) await ctx.scheduler.runAfter(Math.max(0, next.expiresAt - Date.now()) + 1, internal.oauth.cleanupRequests, {});
+    }
   },
 });
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { getFunctionName } from "convex/server";
 import * as oauth from "../online/service/convex/oauth";
 import { authenticate } from "../online/service/convex/model/auth";
 import { connectionIsUsable, resolvedConnection } from "../online/service/convex/model/access";
@@ -12,6 +13,7 @@ const handler = (fn: any, ctx: any, args: any) => fn._handler(ctx, args);
 
 function fixture() {
   const rows: any[] = [];
+  const jobs: Array<{ at: number; fn: unknown; args: unknown }> = [];
   let sequence = 0;
   const db: any = {
     get: async (id: string) => rows.find((row) => row._id === id) ?? null,
@@ -21,16 +23,20 @@ function fixture() {
     delete: async (id: string) => { const index = rows.findIndex((row) => row._id === id); if (index >= 0) rows.splice(index, 1); },
     query(table: string) {
       const filters: Array<(row: any) => boolean> = [];
-      const matches = () => rows.filter((row) => row.table === table && filters.every((filter) => filter(row)));
+      let sort: "asc" | "desc" | null = null;
+      const matches = () => {
+        const found = rows.filter((row) => row.table === table && filters.every((filter) => filter(row)));
+        return sort ? found.sort((a, b) => (a.expiresAt - b.expiresAt) * (sort === "asc" ? 1 : -1)) : found;
+      };
       const query: any = { withIndex(_index: string, build: any) { const index: any = {
         eq(key: string, value: unknown) { filters.push((row) => row[key] === value); return index; },
         lt(key: string, value: any) { filters.push((row) => row[key] < value); return index; },
         lte(key: string, value: any) { filters.push((row) => row[key] <= value); return index; },
-      }; build(index); return query; }, unique: async () => matches()[0] ?? null, collect: async () => matches(), take: async (count: number) => matches().slice(0, count) };
+      }; build?.(index); return query; }, unique: async () => matches()[0] ?? null, collect: async () => matches(), take: async (count: number) => matches().slice(0, count), order(direction: "asc" | "desc") { sort = direction; return query; }, first: async () => matches()[0] ?? null };
       return query;
     },
   };
-  const ctx: any = { db, scheduler: { runAfter: async () => {} } };
+  const ctx: any = { db, scheduler: { runAfter: async (delay: number, fn: unknown, args: unknown) => { jobs.push({ at: Date.now() + delay, fn, args }); } } };
   const addMachine = (userId = "person", canAdminister = true) => db.insert("connections", { userId, kind: "machine", canAdminister, name: "Machine", clientName: "Machine", boards: "all", level: "complete", lastUsedAt: new Date().toISOString(), createdAt: new Date().toISOString() });
   async function request(label: string, purpose = "oauth") {
     const args = { requestHash: digest(`request-${label}`), browserHash: digest(`browser-${label}`), csrfHash: digest(`csrf-${label}`), clientId: "https://client.example/client.json", clientName: "Fixture app", redirectUri: "http://127.0.0.1:4444/callback", resource: "https://planban.example/mcp", scopes: ["planban:plan", "offline_access"], level: "plan", challenge: "a".repeat(43), state: `state-${label}`, purpose };
@@ -45,7 +51,16 @@ function fixture() {
   }
   const redeem = (args: any) => handler(oauth.redeem, ctx, args);
   const accessId = (tokenHash: string) => rows.find((row) => row.table === "connections" && row.tokenHash === tokenHash)._id;
-  return { ctx, rows, db, addMachine, request, approve, redeem, accessId };
+  async function runDueCleanup() {
+    for (let rounds = 0; rounds < 100; rounds++) {
+      const index = jobs.findIndex((job) => job.at <= Date.now() && getFunctionName(job.fn as any) === "oauth:cleanupRequests");
+      if (index < 0) return;
+      const [job] = jobs.splice(index, 1);
+      await handler(oauth.cleanupRequests, ctx, job!.args);
+    }
+    throw new Error("Cleanup did not settle in bounded batches");
+  }
+  return { ctx, rows, db, jobs, runDueCleanup, addMachine, request, approve, redeem, accessId };
 }
 
 test("explicit approval creates an independently revocable pending grant and one code redemption activates it", async () => {
@@ -188,6 +203,25 @@ test("cleanup respects a late-approved code's deadline beyond the original reque
   assert.equal((await f.db.get(grant)).revokedAt, undefined);
   assert.equal(f.rows.find((row) => row.table === "oauthRequests").codeExpiresAt - Date.now(), oauth.CODE_MS - 2);
   assert.equal((await f.redeem(args)).error, undefined);
+});
+
+test("scheduled cleanup follows later bucket requests and late-approved deadlines without a new request", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const f = fixture(), machine = await f.addMachine();
+  await f.request("bucket-first");
+  t.mock.timers.tick(2 * 60_000);
+  const second = await f.request("bucket-second");
+  t.mock.timers.tick(8 * 60_000 + 30_000);
+  const grant = await f.approve(second, machine);
+  t.mock.timers.tick(30_000);
+  await f.runDueCleanup();
+  assert.equal((await f.db.get(grant)).revokedAt, undefined, "the code is still valid at the first scheduled job");
+  assert.ok(f.jobs.some((job) => job.at > Date.now() && getFunctionName(job.fn as any) === "oauth:cleanupRequests"));
+  t.mock.timers.tick(60_000);
+  await f.runDueCleanup();
+  assert.equal(f.rows.filter((row) => row.table === "oauthRequests").length, 0);
+  assert.ok((await f.db.get(grant)).revokedAt);
+  assert.equal(f.jobs.filter((job) => getFunctionName(job.fn as any) === "oauth:cleanupRequests").length, 0, "cleanup stops once its outstanding requests are gone");
 });
 
 test("token revocation is idempotent and closes its exact family without revoking another app installation", async () => {
