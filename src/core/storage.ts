@@ -43,7 +43,7 @@ import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
-import { checkIndexCard, checkIndexDocument } from "./contentRules";
+import { checkIndexCard, checkIndexDocument, checkIndexText, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
 
 export { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 
@@ -141,6 +141,9 @@ function repositionedCards(before: PlanbanRoadmap, after: PlanbanRoadmap, pinned
 async function assertIndexWrite(state: PlanbanResolvedState, roadmap: PlanbanRoadmap) {
   const { written, removed } = changedCards(state.roadmap, roadmap);
   for (const card of written) checkIndexCard(card);
+  if (JSON.stringify(roadmap.project) !== JSON.stringify(state.roadmap.project)) {
+    checkIndexValue(roadmap.project, "the board details", MAX_DETAILS_BYTES);
+  }
   await assertCardsHoldNoFiles(state.planningRoot, [...written, ...removed]);
   // Nor may a reorder reposition a card holding files, though other cards may move around it.
   const holding = await cardsHoldingFiles(state.planningRoot, state.roadmap.roadmapItems.map((item) => item.id));
@@ -383,6 +386,7 @@ export async function initializeProject(input: {
   const cwd = resolve(input.cwd);
   const repoId = input.repoId ?? defaultRepoId(cwd);
   const title = input.title ?? repoId.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  checkIndexText(title, "the board title", MAX_DETAILS_BYTES);
   const planningRoot = defaultPlanningRoot(repoId);
   const liveRoadmapPath = roadmapPath(planningRoot);
 

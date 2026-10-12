@@ -388,28 +388,44 @@ test("move-files-out cannot be led back into Planban through a link, and refuses
   });
 });
 
-test("when a move stops partway, the files that moved are still recorded in the Spec", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+test("when a move cannot finish, everything moved so far goes back", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
   await withBoard(async ({ root, cwd, folder }) => {
     await createCard({ cwd, title: "Alpha", status: "up-next" });
     writeFileSync(join(folder("alpha"), "a.txt"), "a");
+    symlinkSync(join("z", "b.txt"), join(folder("alpha"), "b-link"));
     mkdirSync(join(folder("alpha"), "z"));
     writeFileSync(join(folder("alpha"), "z", "b.txt"), "b");
+    const specBefore = (await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown;
     const destination = join(root, "kept");
     mkdirSync(join(destination, "z"), { recursive: true });
     chmodSync(join(destination, "z"), 0o500);
     try {
-      await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: destination, machine: "Test Mac" }), /^Error: Moved 1 of 2 files, then stopped: .*Nothing was deleted, and the Spec lists the files that moved\./su);
+      await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: destination, machine: "Test Mac" }), /^Error: Nothing was moved: .*Everything is back in the card's folder\./su);
     } finally {
       chmodSync(join(destination, "z"), 0o700);
     }
-    assert.equal(readFileSync(join(destination, "a.txt"), "utf8"), "a");
-    assert.ok(existsSync(join(folder("alpha"), "z", "b.txt")), "the file that could not move stays put");
-    assert.match((await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, /- On Test Mac: .*kept[\\/]a\.txt\n$/u);
+    // a.txt and the link moved before z/b.txt failed; both are back exactly as they were.
+    assert.equal(readFileSync(join(folder("alpha"), "a.txt"), "utf8"), "a");
+    assert.equal(readlinkSync(join(folder("alpha"), "b-link")), join("z", "b.txt"));
+    assert.ok(!existsSync(join(destination, "a.txt")) && !existsSync(join(destination, "b-link")));
+    assert.equal((await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, specBefore);
     await assert.rejects(updateCard({ cwd, cardId: "alpha", summary: "Changed" }), PlanbanCardHoldsFilesError);
-    // Running again moves the rest.
+    // Running again, with the problem fixed, moves everything and the link still works.
     await moveFilesOut({ cwd, cardId: "alpha", to: destination, machine: "Test Mac" });
-    assert.equal(readFileSync(join(destination, "z", "b.txt"), "utf8"), "b");
+    assert.equal(readFileSync(join(destination, "b-link"), "utf8"), "b");
+    assert.match((await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, /- On Test Mac: .*kept[\\/]a\.txt\n/u);
     await updateCard({ cwd, cardId: "alpha", summary: "Changed" });
+  });
+});
+
+test("board titles are checked too, when a board is created or duplicated", async () => {
+  await withBoard(async ({ root }) => {
+    const { duplicateBoard } = await import("../src/core/registry");
+    await assert.rejects(
+      initializeProject({ cwd: join(root, "other"), repoId: "other", title: `Logo data:image/png;base64,${pngBase64}`, updateAgents: false }),
+      /^PlanbanValidationError: Not saved: the board title contains an embedded file/u,
+    );
+    await assert.rejects(duplicateBoard({ sourceRepoId: repoId, title: pngBase64 }), /Not saved: the board title contains an encoded file/u);
   });
 });
 

@@ -157,8 +157,25 @@ async function movedLinkTargets(folder: string, destination: string, files: stri
   return targets;
 }
 
-/** Moves one file without ever replacing an existing one. */
-async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string; linkTargets: Map<string, string> }) {
+/** Moves a plain file without ever replacing an existing one. */
+async function moveFile(source: string, target: string) {
+  await mkdir(dirname(target), { recursive: true });
+  const size = (await lstat(source)).size;
+  try {
+    // A hard link fails if the target exists, so nothing is ever replaced.
+    await link(source, target);
+  } catch (error) {
+    if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP", "EMLINK"].includes(errorCode(error))) throw error;
+    await copyFile(source, target, constants.COPYFILE_EXCL);
+    if ((await lstat(target)).size !== size) {
+      throw new Error(`Copying ${source} to ${target} did not complete; the original is untouched.`);
+    }
+  }
+  await unlink(source);
+}
+
+/** Moves one entry without ever replacing an existing one, and returns how to put it back. */
+async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string; linkTargets: Map<string, string> }): Promise<() => Promise<void>> {
   const source = join(input.folder, input.file);
   const target = join(input.destination, input.file);
   await mkdir(dirname(target), { recursive: true });
@@ -167,28 +184,30 @@ async function moveOne(input: { folder: string; file: string; destination: strin
     throw new Error(`${dirname(target)} now leads outside the chosen folder`);
   }
   if (input.file.endsWith("/")) {
+    const existed = await exists(target);
     await mkdir(target, { recursive: true });
     await rmdir(source);
-    return;
+    return async () => {
+      await mkdir(source, { recursive: true });
+      if (!existed) await rmdir(target).catch(() => undefined);
+    };
   }
   const info = await lstat(source);
   if (info.isSymbolicLink()) {
-    await symlink(input.linkTargets.get(input.file) ?? await readlink(source), target);
-  } else if (info.isFile()) {
-    try {
-      // A hard link fails if the target exists, so nothing is ever replaced.
-      await link(source, target);
-    } catch (error) {
-      if (!["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP", "EMLINK"].includes(errorCode(error))) throw error;
-      await copyFile(source, target, constants.COPYFILE_EXCL);
-      if ((await lstat(target)).size !== info.size) {
-        throw new Error(`Copying ${source} to ${target} did not complete; the original is untouched.`);
-      }
-    }
-  } else {
+    const original = await readlink(source);
+    await symlink(input.linkTargets.get(input.file) ?? original, target);
+    await unlink(source);
+    return async () => {
+      await mkdir(dirname(source), { recursive: true });
+      await symlink(original, source);
+      await unlink(target);
+    };
+  }
+  if (!info.isFile()) {
     throw new PlanbanValidationError(`${source} is not a file or a link, so Planban will not move it. Move it yourself.`);
   }
-  await unlink(source);
+  await moveFile(source, target);
+  return () => moveFile(target, source);
 }
 
 /** Removes folders inside the card folder that the move left empty. */
@@ -262,15 +281,32 @@ export async function moveFilesOut(input: {
 
     // Where each link should point once moved, worked out before anything moves.
     const linkTargets = await movedLinkTargets(folder, destination, files);
-    const moved: string[] = [];
+    // All or nothing: if any entry cannot move, everything moved so far goes back, so no link or
+    // reference is ever left pointing at a file that stayed behind.
+    let moved: string[] = [];
+    const undo: Array<{ file: string; back: () => Promise<void> }> = [];
     let failure: unknown = null;
     for (const file of files) {
       try {
-        await moveOne({ folder, file, destination, realDestination, linkTargets });
+        undo.push({ file, back: await moveOne({ folder, file, destination, realDestination, linkTargets }) });
         moved.push(file);
       } catch (error) {
         failure = error;
         break;
+      }
+    }
+    if (failure) {
+      for (const step of undo.reverse()) {
+        try {
+          await step.back();
+          moved = moved.filter((file) => file !== step.file);
+        } catch {
+          // Left where it is, and recorded below so it is not lost.
+        }
+      }
+      if (!moved.length) {
+        const reason = failure instanceof Error ? failure.message : String(failure);
+        throw new Error(`Nothing was moved: ${reason}. Everything is back in the card's folder. Fix the problem, or choose another folder, and run the command again.`);
       }
     }
     await removeEmptyFolders(folder);
@@ -302,7 +338,7 @@ export async function moveFilesOut(input: {
       ? ` The Files section could not be added to the card's Spec (${messageOf(recordingError)}), so add it yourself, for example with planban write-doc:\n\n${filesSection({ spec: spec.markdown, files: moved, destination, machine, now })}`
       : "";
     if (failure) {
-      throw new Error(`Moved ${moved.length} of ${files.length} files, then stopped: ${messageOf(failure)}. Nothing was deleted${recordingError ? "." : ", and the Spec lists the files that moved."} Fix the problem and run the command again to move the rest.${unrecorded}`);
+      throw new Error(`Moved ${moved.length} of ${files.length} files, then stopped: ${messageOf(failure)}, and could not put ${moved.length === 1 ? "that one" : "those"} back. Nothing was deleted${recordingError ? "." : ", and the Spec lists the files that moved."} Fix the problem and run the command again to move the rest.${unrecorded}`);
     }
     if (recordingError) {
       throw new Error(`Moved ${moved.length === 1 ? "the file" : `all ${moved.length} files`} to ${friendlyPath(destination)}, and nothing was deleted.${unrecorded}`);

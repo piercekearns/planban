@@ -14,6 +14,7 @@ import {
   roadmapPath,
   slugify,
 } from "./paths";
+import { checkIndexText, MAX_DETAILS_BYTES } from "./contentRules";
 import { ensureHistoryBaseline, recordHistoryVersion } from "./history";
 import { atomicWriteFile, appendLineDurably, withBoardWriteLock } from "./persistence";
 import { buildAgentContext } from "./protocol";
@@ -246,6 +247,7 @@ export async function duplicateBoard(input: {
   const { normalizeRoadmap } = await import("./storage");
   const sourceRoadmap = normalizeRoadmap(JSON.parse(await readFile(source.roadmapPath, "utf8")));
   const title = duplicateTitle(sourceRoadmap.project.title, input.title);
+  checkIndexText(title, "the board title", MAX_DETAILS_BYTES);
   const explicitRepoId = input.repoId?.trim() ? slugify(input.repoId) : null;
   if (explicitRepoId && registry.boards.some((board) => board.repoId === explicitRepoId)) {
     throw new Error(`Planban board already exists: ${explicitRepoId}`);
