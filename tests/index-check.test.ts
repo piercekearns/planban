@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { checkBoardIsIndex, filesInCard, picturesInTheWay } from "../src/core/indexCheck";
 import { embeddedFileIn, INDEX_NOT_STORAGE } from "../src/core/contentRules";
@@ -22,16 +22,17 @@ test("every way of putting a picture in a document is found; pictures on the web
     "![photo]",
     "[photo]: /tmp/photo.png",
   ].join("\n");
-  const found = picturesInTheWay(markdown, "/board/items/alpha").map((picture) => `${picture.alt}=${picture.where}`);
+  const folder = resolve("/board/items/alpha");
+  const found = picturesInTheWay(markdown, folder).map((picture) => `${picture.alt}=${picture.where}`);
   assert.deepEqual(found.sort(), [
-    "=/board/items/alpha/dark.png",
-    "Back=/board/items/alpha/images/back.png",
-    "Front=/board/items/alpha/renders/front.png",
-    "Hero=/board/items/alpha/hero-1x.png",
+    `=${join(folder, "dark.png")}`,
+    `Back=${join(folder, "images", "back.png")}`,
+    `Front=${join(folder, "renders", "front.png")}`,
+    `Hero=${join(folder, "hero-1x.png")}`,
     "Inline=stored in the document",
-    "Logo=/board/items/alpha/images/logo.png",
-    "Odd=/board/items/alpha/renders/100%.png",
-    "Side=/board/items/alpha/images/side view.png",
+    `Logo=${join(folder, "images", "logo.png")}`,
+    `Odd=${join(folder, "renders", "100%.png")}`,
+    `Side=${join(folder, "images", "side view.png")}`,
     "photo=/tmp/photo.png",
   ].sort());
 });

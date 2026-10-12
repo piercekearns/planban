@@ -1126,7 +1126,7 @@ test("a board goes online only when it is clean: files and local pictures in the
   const refusal: any = await takeOnline(fake.url, cwd).then(() => null, (error) => error);
   assert.ok(refusal instanceof PlanbanNotReadyForOnline, String(refusal));
   assert.match(refusal.message, /cannot go online yet; nothing has moved\. 1 file\(s\) and 2 picture\(s\) are in the way/);
-  assert.match(refusal.message, /file renders\/front\.png; picture in the Spec \(Front view\), .*items\/alpha\/renders\/front\.png; picture in the Spec \(Logo\), stored in the document/);
+  assert.match(refusal.message, /file renders\/front\.png; picture in the Spec \(Front view\), .*items[\\/]alpha[\\/]renders[\\/]front\.png; picture in the Spec \(Logo\), stored in the document/);
   assert.match(refusal.message, /Move each file in its folder to where it belongs.*labelled with its machine/s);
   assert.equal(fake.transfers.size, 0, "nothing moved");
   assert.equal(await readFile(join(folder, "spec.md"), "utf8"), spec, "nothing on this machine changed");
