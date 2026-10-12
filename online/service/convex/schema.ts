@@ -14,6 +14,8 @@ export const memberRole = v.union(v.literal("owner"), v.literal("editor"), v.lit
 export const agentLevel = v.union(v.literal("read"), v.literal("plan"), v.literal("complete"));
 
 export default defineSchema({
+  // Internal provider monitoring, separate from per-person board write usage.
+  providerUsageMonitors: defineTable({ policy: v.string(), state: v.any() }).index("by_policy", ["policy"]),
   boards: defineTable({
     boardId: v.string(),
     title: v.string(),
