@@ -102,7 +102,7 @@ regressions covered by executing these paths, not only matching their source tex
 The Windows CI job runs the same cold-install check with paths containing spaces.
 
 Updater CI separately checks the previous public version upgrade and repeated
-updates of the candidate with unchanged dependencies. Dependency changes must take
+updates of the candidate with unchanged dependencies, in both Codex and Claude Code. Dependency changes must take
 the clean-install fallback; only the unchanged-dependency scenario is required to
 reuse dependencies and meet the relative speed gate.
 
@@ -111,9 +111,21 @@ from the previous public version. For example:
 
 ```bash
 npm run release:upgrade-rehearsal -- --from-version 1.1.0 --expected-version 1.1.1
+npm run release:claude-upgrade-rehearsal -- --from-version 1.1.0 --expected-version 1.1.1
 ```
 
-The manual `Release readiness` workflow runs both gates against an exact commit SHA.
+The first command rehearses the Codex update. The second rehearses the Claude Code
+update: it installs the previous release from a local-folder marketplace, updates the
+same checkout to the candidate, re-adds the marketplace, runs
+`claude plugin update planban@planban`, and checks that the plugin reports the new
+version, that `claude mcp list` shows the Planban server connected, that the server
+lists its tools, and that a board made by the previous release can still be read and
+changed. It uses a throwaway home and Claude config folder and needs no Claude sign-in.
+Both need their CLI on your `PATH`; CI pins the versions in the workflow files.
+
+The manual `Release readiness` workflow runs the preflight and both upgrade
+rehearsals against an exact commit SHA. Preflight fails if that workflow stops
+running either rehearsal with a pinned CLI.
 
 In release notes, write Planban CLI examples as `node "$PLANBAN_ROOT/bin/planban.mjs" <command>`.
 Planban is not published to npm, so users do not have a bare `planban` command on

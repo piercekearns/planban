@@ -58,6 +58,15 @@ jobs:
           FROM_VERSION: ${{ inputs.from_version }}
         run: npm run release:upgrade-rehearsal -- --from-version "$FROM_VERSION" --expected-version "$EXPECTED_VERSION"
 
+      - name: Install the pinned Claude Code CLI used by the upgrade path
+        run: npm install --global @anthropic-ai/claude-code@2.1.296
+
+      - name: Rehearse the previous public release upgrade in Claude Code
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          FROM_VERSION: ${{ inputs.from_version }}
+        run: npm run release:claude-upgrade-rehearsal -- --from-version "$FROM_VERSION" --expected-version "$EXPECTED_VERSION"
+
       - name: Record verified release identity
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
