@@ -1091,6 +1091,18 @@ test("taking a board online sends text only: card files and local pictures becom
   assert.equal(await storage.pathExists(join(folder, "renders", "front.png")), true);
 });
 
+test("a resumed take-online starts again if the card files changed, so the online text is never a mix", async () => {
+  const before = await storage.loadState(cwd);
+  await killedAt("take-online:after-part", ["online", "take-online", fake.url, "--cwd", cwd]);
+  await mkdir(join(before.planningRoot, "items", "alpha"), { recursive: true });
+  await writeFile(join(before.planningRoot, "items", "alpha", "notes.txt"), "added meanwhile");
+  await takeOnline(fake.url, cwd, { confirmReferences: true });
+  assert.deepEqual([...fake.transfers.values()].map((transfer) => transfer.state), ["aborted", "committed"]);
+  const sent = [...fake.transfers.values()].at(-1)!.parts;
+  const spec = [...sent.values()].flatMap((part: any) => part.docs ?? []).find((doc: any) => doc.cardId === "alpha" && doc.kind === "spec");
+  assert.match(spec.markdown, /notes\.txt/);
+});
+
 test("a take-online that fails removes the partly copied online board and leaves this machine's board unchanged", async () => {
   const before = await storage.loadState(cwd);
   fake.failParts(true);

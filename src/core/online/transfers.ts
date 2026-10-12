@@ -1,6 +1,6 @@
 import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { listHistory } from "../history";
@@ -74,6 +74,8 @@ const journalSchema = z.object({
   startedAt: z.string(),
   /** Take Online: the account that started the upload. Only it can see, finish or cancel that upload. */
   userId: z.string().optional(),
+  /** Take Online: a fingerprint of the documents as converted for the online copy, so a resumed upload sends the same text. */
+  textDigest: z.string().optional(),
 });
 type TransferJournal = z.infer<typeof journalSchema>;
 
@@ -386,7 +388,10 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   // The online copy holds text only; files and local pictures become references.
   const { bundle } = await convertForOnline(await buildLocalBundle(cwd), planningRoot);
   bundle.roadmap.project.id = boardId;
-  if (journal?.phase === "uploading" && journal.localRevision !== bundle.roadmap.revision) {
+  const textDigest = createHash("sha256").update(JSON.stringify([bundle.docs, bundle.historyDocs ?? []])).digest("hex");
+  // Resuming continues part by part, so it must send exactly the same text:
+  // a board, or card files, changed since the interrupted upload start it again.
+  if (journal?.phase === "uploading" && (journal.localRevision !== bundle.roadmap.revision || (journal.textDigest !== undefined && journal.textDigest !== textDigest))) {
     // The board changed locally since the interrupted upload: cancel it and
     // upload the current board. If the service says that upload already
     // finished, the board is online: finish switching and report the
@@ -399,7 +404,7 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   }
   if (!journal) {
     const me = await onlineRequest<{ userId: string }>(url, "/api/v1/me");
-    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId };
+    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId, textDigest };
     await writeJournal(planningRoot, journal);
   }
   crashPoint("take-online:after-journal");
