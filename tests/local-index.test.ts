@@ -74,7 +74,7 @@ function dropFiles(folder: string) {
 }
 
 test("every local write refuses embedded files and oversized text, with advice on writing a reference", async () => {
-  await withBoard(async ({ cwd }) => {
+  await withBoard(async ({ cwd, planningRoot }) => {
     const card = (await createCard({ cwd, title: "Alpha", status: "up-next" })).createdCard;
     const refuses = (pattern: RegExp) => (error: unknown) => error instanceof PlanbanValidationError && pattern.test(error.message);
     const reference = /GitHub link.*local path labelled with its machine/su;
@@ -91,6 +91,9 @@ test("every local write refuses embedded files and oversized text, with advice o
     // Nothing was written, and ordinary text, including a document the size of the largest real Plan, still saves.
     assert.deepEqual((await loadState(cwd)).roadmap.roadmapItems.map((item) => item.id), ["alpha"]);
     await writeDoc({ cwd, cardId: card.id, kind: "plan", markdown: "Planning prose with a [link](https://github.com/o/r/blob/main/a.png). ".repeat(7_500) });
+    const table = ["|North|South|East|West|", "|---|---|---|---|", ...Array(160).fill("|north|south|east|west|")].join("\n");
+    await writeDoc({ cwd, cardId: card.id, kind: "plan", markdown: table });
+    assert.equal(readFileSync(join(planningRoot, "items", card.id, "plan.md"), "utf8"), table);
     await updateCard({ cwd, cardId: card.id, summary: "Renders live at Mac mini: ~/Projects/app/renders/front.png." });
   });
 });

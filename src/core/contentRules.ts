@@ -83,6 +83,13 @@ const isPayloadToken = (token: string) => /^(?:0x)?[0-9a-fA-F]+$/.test(token)
       || (!/^[a-z-]+$/.test(token) && !/^[A-Z][a-z]+$/.test(token) && !/^[a-z0-9]+(?:[-_][a-z0-9]+)+$/.test(token))));
 /** Escaped bytes, as printed by Python, JSON, C and od: \x89, \u0000, \377, \n. */
 const ESCAPE = /\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[abfnrtv'"\\])/g;
+/** Compact Markdown rows of ordinary words are prose; pipes are cell separators. */
+const isWordTableRow = (line: string) => /^\|.*\|$/.test(line)
+  && line.slice(1, -1).split("|").every((cell) => {
+    const words = cell.trim();
+    return /^(?:[a-z]+|[A-Z][a-z]+)(?:[ -](?:[a-z]+|[A-Z][a-z]+))*$/.test(words)
+      && !isPayloadToken(words);
+  });
 /**
  * A dense line: no spaces to speak of, 12 or more characters, and full of
  * punctuation, as uuencode, base85 and ASCII85 write. Not a web address and
@@ -90,12 +97,12 @@ const ESCAPE = /\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-7]{1,3}|[abfnrtv'"\\])/g
  */
 const isDenseLine = (line: string) => line.length >= 12
   && (line.match(/\s/g)?.length ?? 0) <= line.length * 0.05
-  && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line)
+  && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line) && !isWordTableRow(line)
   && ((line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1 || looksEncoded(line.replace(/[^A-Za-z0-9]/g, "")));
 /** Encoder rows sometimes have too little punctuation to start a block.
  * They can continue one, without treating ordinary words or references as payload. */
 const isCompactPayloadLine = (line: string) => line.length >= 12
-  && !/\s|:\/\//.test(line) && !/^[|:=*#~_-]+$/.test(line)
+  && !/\s|:\/\//.test(line) && !/^[|:=*#~_-]+$/.test(line) && !isWordTableRow(line)
   // Relative and absolute paths are references, even when a run of encoded
   // lines happens to precede them. Base85's alphabet does not contain '/'.
   && !/^(?:[A-Za-z0-9._~-]*\/){2,}[A-Za-z0-9._~-]*$/.test(line)
