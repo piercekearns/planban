@@ -233,6 +233,41 @@ export const TOOLS: ToolDefinition[] = [
 
 class ToolError extends Error {}
 
+interface DiscoveryPermission { boardId: string; canWrite: boolean; canComplete: boolean }
+
+/** Discovery is guidance; mutations retain their transactional access checks. */
+export function discoverTools(permissions: DiscoveryPermission[]): ToolDefinition[] {
+  const readable = [...new Set(permissions.map((access) => access.boardId))].sort();
+  const writable = [...new Set(permissions.filter((access) => access.canWrite).map((access) => access.boardId))].sort();
+  const complete = [...new Set(permissions.filter((access) => access.canWrite && access.canComplete).map((access) => access.boardId))].sort();
+  return TOOLS.flatMap((definition) => {
+    if (!definition.annotations.readOnlyHint && !writable.length) return [];
+    const tool = structuredClone(definition);
+    const properties = tool.inputSchema.properties as Record<string, JsonSchema>;
+    const boards = tool.annotations.readOnlyHint ? readable : writable;
+    if (properties.boardId) {
+      if (!boards.length) return [];
+      properties.boardId = { ...properties.boardId, enum: boards };
+    }
+    if (tool.name === "fetch" && !readable.length) return [];
+    if (!tool.annotations.readOnlyHint && properties.status) {
+      if (!complete.length) {
+        properties.status = { ...properties.status, enum: PLANBAN_STATUSES.filter((status) => status !== "complete") };
+        delete properties.completionConfirmed;
+        tool.description += " Completing work is not permitted on these boards.";
+      } else {
+        // A connection can plan on one board and complete on another. Only
+        // the latter board ids may be paired with the completion status.
+        tool.inputSchema.allOf = [{
+          if: { properties: { status: { const: "complete" } }, required: ["status"] },
+          then: { properties: { boardId: { enum: complete }, completionConfirmed: { const: true } }, required: ["completionConfirmed"] },
+        }];
+      }
+    }
+    return [tool];
+  });
+}
+
 /** The board operations a tool call may use, bound to the caller's connection. */
 export class McpService {
   constructor(private ctx: ActionCtx, private connectionId: Id<"connections">) {}
@@ -250,6 +285,12 @@ export class McpService {
 
   listBoards() {
     return this.call(() => this.ctx.runQuery(internal.boards.listBoards, { connectionId: this.connectionId }));
+  }
+
+  async listTools() {
+    // Let Convex authorization errors retain their type for the HTTP error
+    // boundary if a credential is revoked after initial authentication.
+    return discoverTools(await this.ctx.runQuery(internal.boards.mcpPermissions, { connectionId: this.connectionId }));
   }
 
   async getBoard(boardId: string): Promise<PlanbanRoadmap> {
@@ -428,7 +469,7 @@ async function handleMessage(message: JsonRpcRequest, service: McpService, origi
     case "ping":
       return rpcResult(message.id, {});
     case "tools/list":
-      return rpcResult(message.id, { tools: TOOLS, ttlMs: 3_600_000, cacheScope: "public" });
+      return rpcResult(message.id, { tools: await service.listTools(), ttlMs: 0, cacheScope: "private" });
     case "tools/call": {
       const name = String(message.params?.name ?? "");
       const args = (message.params?.arguments ?? {}) as Record<string, unknown>;

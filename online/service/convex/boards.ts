@@ -169,6 +169,26 @@ export const listBoards = internalQuery({
   },
 });
 
+/** One current snapshot for permission-dependent MCP discovery, never cached. */
+export const mcpPermissions = internalQuery({
+  args: { connectionId: v.id("connections") },
+  handler: async (ctx, { connectionId }) => {
+    const connection = await liveConnection(ctx, connectionId);
+    const memberships = await ctx.db.query("members").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
+    const permissions = [];
+    for (const member of memberships) {
+      if (!reaches(connection, member.boardId)) continue;
+      const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", member.boardId)).unique();
+      if (!board || board.authority === "importing") continue;
+      const access = await boardAccess(ctx, connectionId, member.boardId);
+      permissions.push({ boardId: board.boardId, level: access.level,
+        canWrite: board.authority === "online" && access.canWrite,
+        canComplete: board.authority === "online" && access.canComplete });
+    }
+    return permissions;
+  },
+});
+
 async function readableBoard(ctx: Parameters<typeof boardAccess>[0], connectionId: Parameters<typeof boardAccess>[1], boardId: string) {
   const access = await boardAccess(ctx, connectionId, boardId);
   if (access.board.authority === "importing") fail("not_found", `Online Board not found: ${boardId}`);

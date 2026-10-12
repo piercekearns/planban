@@ -22,23 +22,62 @@ CONVEX_AGENT_MODE=anonymous node scripts/setup-local.mjs   # once: development s
 Development sign-in (`planban online login http://127.0.0.1:3211 --dev-user owner`)
 works only on a local backend with `PLANBAN_DEV_AUTH=1`.
 
-Real sign-in uses Clerk. The backend's environment names the Clerk instance
-(`CLERK_ISSUER`, `CLERK_JWKS_URL`) and the public OAuth client the command
-line uses (`PLANBAN_CLI_CLIENT_ID`, registered with redirect addresses
-`http://127.0.0.1:53682/callback` to `:53686`). `planban online login <url>`
-then opens the browser to sign in with Clerk and keeps only this machine's own
-Planban sign-in. AI apps (ChatGPT, Claude) sign in through Clerk with client ID
-metadata documents; the service publishes `/.well-known/oauth-protected-resource/mcp`.
+## Browser sign-in and remote MCP
 
-Clerk behaviour seen on the development instance, which the code relies on:
-its access tokens are JWTs with `client_id`, `iat`, `jti` and no `sid` or
-`aud`, last 24 hours and cannot be revoked (so the service accepts the command
-line's token for one exchange only); and it sends codes to any loopback port,
-not just the registered ones, as RFC 8252 allows. The Clerk instance must serve
-Planban alone, since its tokens do not name an audience. Clerk gives every OAuth
-app refresh tokens; each new access token can be exchanged once, but only
-someone who completed the sign-in as that person ever holds a refresh token,
-and the command line does not ask for one.
+Clerk proves the human identity for an explicit Planban consent screen. Set
+`CLERK_ISSUER`, `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` and the canonical
+`PLANBAN_PUBLIC_URL` privately on the selected backend. The publishable key and
+issuer must belong to the same dedicated Clerk application. Never put secret
+values in command arguments, chat or committed files.
+
+Planban is the OAuth authorization server. Its discovery document is
+`/.well-known/oauth-authorization-server`; protected MCP resource discovery is
+`/.well-known/oauth-protected-resource/mcp`. Authorization uses S256 PKCE and
+freezes the client, callback, resource and requested permissions before the
+person chooses Allow or Cancel. The server verifies an active Clerk browser
+session, including the configured issuer and authorized party, and checks it
+again when a session-backed code is redeemed.
+
+`planban online login <url>` uses the predefined `planban-cli` client and
+`planban:machine` purpose. Its registered callbacks are
+`http://127.0.0.1:53682/callback` through `:53686/callback`. Code redemption
+returns this machine's own opaque credential directly. It persists until
+sign-out or about 90 days unused; it does not retain provider tokens or a
+refresh token. Signing out revokes that machine's connection.
+
+Remote agents use `planban:read`, `planban:plan` or `planban:complete`, with
+`offline_access` when needed. Access credentials last five minutes; rotating
+refresh credentials expire after 90 days unused, bounded by a one-year grant.
+Every credential belongs to one independently revocable connection. Refresh
+replay closes that family. Explicit new consent creates a separate connection;
+old revoked access and refresh-derived credentials stay refused. Direct Clerk
+OAuth bearer exchange and restoration of revoked connections are retired.
+
+Client metadata is fetched only from the reviewed exact publisher documents:
+
+- `https://chatgpt.com/oauth/codex/client.json`
+- `https://chatgpt.com/oauth/client.json`
+- `https://claude.ai/oauth/claude-code-client-metadata`
+
+The service trusts these publishers' DNS/TLS, follows no redirects, bounds
+response size/time and fetches no secondary URLs. Dynamic registration and
+arbitrary metadata publishers are disabled. Native callback ports may vary only
+on a registered literal loopback IP and exact path; localhost callbacks retain
+exact matching. Claude Code's reviewed native document omits `application_type`;
+that omission is recognized only for this exact publisher. The separate hosted
+Claude connector identity and acceptance remain unverified.
+
+MCP discovery reflects the credential's current board permissions. Read grants
+receive read tools; planning grants receive permitted writes without completion;
+completion is scoped to eligible boards and requires explicit confirmation.
+Discovery is private and uncached. Calls always recheck authorization inside the
+operation, regardless of previously discovered schemas.
+
+Deterministic tests and SDK simulations do not establish real sign-in or client
+acceptance. Provider-backed consent, native OAuth, refresh/revoke/reconnect and
+independent machines must be verified on the exact candidate. Hosted connectors
+cannot use a loopback-only backend; an externally reachable deployment and real
+owner identities remain separate acceptance gates.
 
 ## Checks
 
@@ -54,7 +93,6 @@ node --import tsx/esm online/scripts/access-convex.ts                    # conne
 node --import tsx/esm online/scripts/index-convex.ts                     # boards hold text only; no file routes
 node --import tsx/esm online/scripts/invites-convex.ts                   # invites, joining, roles, agent permissions
 node --import tsx/esm online/scripts/limits-convex.ts                    # board size and daily volume caps (needs PLANBAN_TEST_LIMITS; see the script)
-node --import tsx/esm online/scripts/clerk-tokens-convex.ts               # sign-in server tokens (see the script for its settings)
 (cd online/service && node scripts/mcp-sdk-check.mjs)                  # remote MCP with the official MCP SDK client
 online/scripts/demo-convex.sh                                            # two machines, CLI and local MCP
 ```
@@ -74,4 +112,4 @@ and in the card's spec (decision 21): the text check, the size and volume caps
 (`tests/no-file-serving.test.ts`). New ways of writing a file as text found
 later are follow-ups, not blockers; record them here.
 
-Follow-ups: none recorded yet.
+Historical direct-provider-token probes are archived in `retired/clerk-tokens-convex.ts`; they are not checks for the current enrollment boundary.

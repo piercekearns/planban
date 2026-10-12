@@ -2,9 +2,11 @@
 // therefore comes only from these reviewed publisher URLs, trusting their
 // DNS/TLS rather than accepting arbitrary caller-selected network targets.
 // Dynamic registration is disabled. Other clients need a reviewed policy.
+export const CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata";
 const METADATA_CLIENTS = new Set([
   "https://chatgpt.com/oauth/codex/client.json",
   "https://chatgpt.com/oauth/client.json",
+  CLAUDE_CODE_CLIENT_ID,
 ]);
 const MAX_BYTES = 5 * 1024;
 export function metadataClientAllowed(clientId: string): boolean { return METADATA_CLIENTS.has(clientId); }
@@ -32,7 +34,10 @@ export function parseClientMetadata(clientId: string, input: unknown): OAuthClie
   if (!METADATA_CLIENTS.has(clientId) || !input || typeof input !== "object" || Array.isArray(input)) return null;
   const doc = input as Record<string, unknown>;
   if (doc.client_id !== clientId || typeof doc.client_name !== "string" || !doc.client_name.trim() || doc.client_name.length > 200) return null;
-  const native = doc.application_type === "native";
+  // This exact reviewed publisher identifies a native CLI and publishes
+  // loopback callbacks while omitting the optional application_type field.
+  // Do not infer native behavior for any other document or override a type.
+  const native = doc.application_type === "native" || (clientId === CLAUDE_CODE_CLIENT_ID && doc.application_type === undefined);
   const redirects = doc.redirect_uris;
   if (!Array.isArray(redirects) || !redirects.length || redirects.length > 20 || redirects.some((value) => typeof value !== "string" || value.length > 2048 || !validRedirect(value, native))) return null;
   // Some publishers list a legacy preferred method and multiple supported

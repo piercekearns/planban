@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clientRedirectAllowed, loadOAuthClient, parseClientMetadata } from "../online/service/convex/model/oauthClient";
+import { CLAUDE_CODE_CLIENT_ID, clientRedirectAllowed, loadOAuthClient, parseClientMetadata } from "../online/service/convex/model/oauthClient";
 
 const codexId = "https://chatgpt.com/oauth/codex/client.json";
 const chatId = "https://chatgpt.com/oauth/client.json";
@@ -47,4 +47,15 @@ test("metadata loader never fetches unreviewed URLs or secondary locations and b
   assert.equal(await loadOAuthClient(codexId, fetcher), null);
   response = () => new Response(null, { status: 302, headers: { Location: "http://127.0.0.1/secrets" } });
   assert.equal(await loadOAuthClient(codexId, fetcher), null);
+});
+
+test("only the reviewed Claude Code publisher may omit its native application type", () => {
+  const { application_type: _unused, ...doc } = metadata(CLAUDE_CODE_CLIENT_ID);
+  const client = parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...doc, client_name: "Claude Code" })!;
+  assert.ok(client?.native);
+  assert.equal(clientRedirectAllowed(client, "http://127.0.0.1:54321/callback"), true);
+  for (const uri of ["http://localhost:54321/callback", "http://127.0.0.1:54321/callback?", "http://127.0.0.1:54321/callback/other", "http://attacker.example/callback"]) assert.equal(clientRedirectAllowed(client, uri), false);
+  assert.equal(parseClientMetadata(codexId, { ...doc, client_id: codexId }), null);
+  assert.equal(parseClientMetadata(CLAUDE_CODE_CLIENT_ID, { ...doc, application_type: "web" }), null);
+  assert.equal(parseClientMetadata("https://claude.ai/api/oauth/mcp-oauth-client-metadata", { ...doc, client_id: "https://claude.ai/api/oauth/mcp-oauth-client-metadata" }), null);
 });

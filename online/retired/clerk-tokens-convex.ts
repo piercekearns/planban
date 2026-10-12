@@ -1,3 +1,5 @@
+// Retired: tests the removed direct Clerk resource/bearer exchange.
+// Historical diagnostic only; do not run as current enrollment acceptance.
 // Checks how the service accepts sign-in-server (Clerk) access tokens, using a
 // stand-in sign-in server with its own signing key, so every rule can be
 // tested without real accounts. Run against a local backend whose environment
