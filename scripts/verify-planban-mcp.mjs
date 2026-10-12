@@ -232,6 +232,7 @@ async function main() {
       "planban_move_card",
       "planban_update_card",
       "planban_write_doc",
+      "planban_move_files_out",
       "planban_launch_board",
     ]);
     check("tools/list", `${tools.length} focused Planban tools exposed by default`);

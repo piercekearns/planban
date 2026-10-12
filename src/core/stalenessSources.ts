@@ -1,8 +1,10 @@
-// Gathers the inputs for stale signals: the local git merge log, the history index and doc mtimes.
+// Gathers the inputs for stale signals: the local git merge log, the history index, doc mtimes
+// and files held in card folders.
 // Every source is best effort: a failure yields no signals of that kind, never an error.
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { cardsHoldingFiles } from "./cardFiles";
 import { defaultPlanningRoot, expandHome, historyIndexPath, resolveInsideRoot, roadmapPath } from "./paths";
 import { computeStaleness, parseMergeLog, type BoardStaleness, type DocMtime, type MergeRecord } from "./staleness";
 import type { PlanbanHistoryEntry, PlanbanRoadmapItem } from "./types";
@@ -95,12 +97,13 @@ export async function collectStaleness(input: {
 }): Promise<BoardStaleness> {
   const now = input.now ?? Date.now();
   try {
-    const [merges, history, docMtimes] = await Promise.all([
+    const [merges, history, docMtimes, cardFiles] = await Promise.all([
       cachedMergeLog(input.cwd, now),
       readHistoryRows(input.planningRoot),
       readDocMtimes(input.planningRoot, input.items),
+      cardsHoldingFiles(input.planningRoot, input.items.map((item) => item.id)).catch(() => ({})),
     ]);
-    return computeStaleness({ items: input.items, history, docMtimes, merges, now });
+    return computeStaleness({ items: input.items, history, docMtimes, merges, cardFiles, now });
   } catch {
     return { cards: {}, wip: null };
   }

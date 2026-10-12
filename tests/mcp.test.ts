@@ -149,6 +149,7 @@ test("Planban MCP server registers focused tools", () => {
   assert.match(instructions, /never reopen the board after every write/u);
   assert.match(instructions, /call planban_launch_board once/u);
   assert.match(instructions, /explicit profiles/u);
+  assert.match(instructions, /index, not file storage: link to files; planban_move_files_out tidies/u);
   assert.doesNotMatch(instructions, /Codex|Claude/u);
   const wordCount = instructions.split(/\s+/u).length;
   assert.ok(wordCount >= 120 && wordCount <= 210, `instructions should stay compact (${wordCount} words)`);
@@ -168,6 +169,7 @@ test("Planban MCP server registers focused tools", () => {
       "planban_move_card",
       "planban_update_card",
       "planban_write_doc",
+      "planban_move_files_out",
       "planban_launch_board",
     ],
   );
@@ -696,7 +698,7 @@ test("Planban MCP reports stale signals on card and board reads, and notes overs
       { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "planban_get_board", arguments: { cwd } } },
       { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "planban_get_card", arguments: { cwd, cardId } } },
       { jsonrpc: "2.0", id: 7, method: "tools/call", params: {
-        name: "planban_update_card", arguments: { cwd, cardId, metadata: { ledger: "x".repeat(5_000) } },
+        name: "planban_update_card", arguments: { cwd, cardId, metadata: { ledger: "ledger entry ".repeat(400) } },
       } },
     ], { PLANBAN_HOME: planbanHome });
 

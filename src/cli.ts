@@ -22,6 +22,9 @@ import {
 } from "./core/storage";
 import { PLANBAN_STATUSES, type PlanbanStatus } from "./core/types";
 import { queryWorkItems, workItemQueryFromSearchParams } from "./core/workItemQuery";
+import { friendlyPath } from "./core/indexCheck";
+import { expandHome } from "./core/paths";
+import { moveFilesOut, type MoveFilesOutResult } from "./core/moveFilesOut";
 import { buildUpdateCommandPlan, runPlanbanUpdate } from "./core/updateRunner";
 import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
@@ -533,6 +536,40 @@ program
     if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
     const markdown = options.file ? readFileSync(options.file, "utf8") : await readStdin();
     print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown }), options);
+  });
+
+function describeMoveFilesOut(result: MoveFilesOutResult) {
+  if (result.alreadyClean) return `Card ${result.cardId} holds no files in its folder. Nothing to move.`;
+  const where = friendlyPath(result.destination);
+  const lines = result.dryRun
+    ? [`Dry run: nothing has changed. ${result.moves.length} file${result.moves.length === 1 ? "" : "s"} would move from card ${result.cardId} to ${where}:`]
+    : [`Moved ${result.moves.length} file${result.moves.length === 1 ? "" : "s"} from card ${result.cardId} to ${where}, and added a Files section to its Spec. The card can be changed again.`];
+  if (result.dryRun) {
+    lines.push(...result.moves.map((move) => `  ${move.from} -> ${friendlyPath(move.to)}`));
+    if (result.conflicts.length) {
+      lines.push("", "These already exist there, and Planban never overwrites a file, so the move would be refused:", ...result.conflicts.map((path) => `  ${friendlyPath(path)}`));
+    }
+    lines.push("", "This section would be added to the end of the card's Spec:", "", result.specSection);
+  }
+  return lines.join("\n");
+}
+
+program
+  .command("move-files-out")
+  .description("move the files in a card's folder out of Planban, and refer to them from its Spec")
+  .argument("<cardId>")
+  .requiredOption("--to <folder>", "folder to move the files to, such as a folder in the project's repository")
+  .option("--dry-run", "show what would move without changing anything")
+  .option("--cwd <path>", "project directory")
+  .option("-o, --output <format>", "output format")
+  .action(async (cardId, options) => {
+    const result = await moveFilesOut({
+      cwd: cwdOption(options.cwd),
+      cardId,
+      to: resolve(expandHome(options.to)),
+      dryRun: options.dryRun === true,
+    });
+    print(options.output === "json" ? result : describeMoveFilesOut(result), options);
   });
 
 program

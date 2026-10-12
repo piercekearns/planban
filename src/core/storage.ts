@@ -42,6 +42,8 @@ import { PLANBAN_STATUSES } from "./types";
 import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
+import { assertCardsHoldNoFiles, cardFolder } from "./cardFiles";
+import { checkIndexCard, checkIndexDocument } from "./contentRules";
 
 export { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 
@@ -71,6 +73,35 @@ function assertBaseRevision(state: PlanbanResolvedState, baseRevision?: number) 
       `Roadmap changed from revision ${baseRevision} to ${state.roadmap.revision}. Reload before saving.`,
     );
   }
+}
+
+// Fields that only record a card's place or the time it was touched. Renumbering
+// them when other cards move is not a change to the card.
+const PLACEMENT_ONLY_FIELDS = new Set(["priority", "boardRank", "groupRank", "updatedAt"]);
+
+function cardContent(item: PlanbanRoadmapItem) {
+  return JSON.stringify(Object.entries(item).filter(([key]) => !PLACEMENT_ONLY_FIELDS.has(key)).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** Cards a roadmap write adds, changes beyond placement, or removes. */
+function changedCards(before: PlanbanRoadmap, after: PlanbanRoadmap) {
+  const previous = new Map(before.roadmapItems.map((item) => [item.id, item]));
+  const nextIds = new Set(after.roadmapItems.map((item) => item.id));
+  return {
+    written: after.roadmapItems.filter((item) => {
+      const old = previous.get(item.id);
+      return !old || cardContent(old) !== cardContent(item);
+    }),
+    removed: before.roadmapItems.filter((item) => !nextIds.has(item.id)),
+  };
+}
+
+// Planban is an index, not storage (owner decisions 18 and 20): every card a
+// write touches must hold only text and must not hold files in its folder.
+async function assertIndexWrite(state: PlanbanResolvedState, roadmap: PlanbanRoadmap) {
+  const { written, removed } = changedCards(state.roadmap, roadmap);
+  for (const card of written) checkIndexCard(card);
+  await assertCardsHoldNoFiles(state.planningRoot, [...written, ...removed]);
 }
 
 async function readJson(path: string): Promise<unknown> {
@@ -362,6 +393,7 @@ export async function saveRoadmap(
   return withBoardWriteLock(state.planningRoot, async () => {
   assertRoadmapRelations(roadmap);
   assertGroupLifecycle(roadmap);
+  await assertIndexWrite(state, roadmap);
   if (history !== false) await ensureHistoryBaseline(state);
   const updated: PlanbanRoadmap = {
     ...roadmap,
@@ -493,6 +525,7 @@ export async function moveCard(input: {
   assertBaseRevision(state, input.baseRevision);
   const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
   if (!item) throw new Error(`Card not found: ${input.cardId}`);
+  await assertCardsHoldNoFiles(state.planningRoot, [item]);
   if (input.status === undefined && input.parentId === undefined && input.afterId === undefined) {
     throw new PlanbanValidationError("A status, parentId, or rank position is required.");
   }
@@ -743,10 +776,13 @@ export async function createCard(input: {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
+  if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, title, "spec");
+  if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, title, "plan");
   const existingIds = new Set(state.roadmap.roadmapItems.map((item) => item.id));
   let id = baseId || "card";
   let suffix = 2;
-  while (existingIds.has(id)) {
+  // A leftover folder may hold files; a new card never inherits it.
+  while (existingIds.has(id) || await pathExists(cardFolder(state.planningRoot, id))) {
     id = `${baseId || "card"}-${suffix}`;
     suffix += 1;
   }
@@ -853,6 +889,8 @@ export async function createGroup(input: {
     const title = input.title.trim();
     if (!title) throw new PlanbanValidationError("title is required");
     const summary = input.summary?.trim() || null;
+    if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, title, "spec");
+    if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, title, "plan");
 
     const itemIds = [...new Set((input.itemIds ?? []).map((id) => id.trim()))];
     if (itemIds.some((id) => !id)) throw new PlanbanValidationError("itemIds must contain non-empty card ids.");
@@ -874,7 +912,7 @@ export async function createGroup(input: {
     const existingIds = new Set(state.roadmap.roadmapItems.map((item) => item.id));
     let id = baseId || "group";
     let suffix = 2;
-    while (existingIds.has(id) || await pathExists(itemRoot(state.planningRoot, id))) {
+    while (existingIds.has(id) || await pathExists(itemRoot(state.planningRoot, id)) || await pathExists(cardFolder(state.planningRoot, id))) {
       id = `${baseId || "group"}-${suffix}`;
       suffix += 1;
     }
@@ -974,7 +1012,7 @@ export async function createCards(input: {
       const baseId = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "card";
       let id = baseId;
       let suffix = 2;
-      while (existingIds.has(id) || await pathExists(itemRoot(state.planningRoot, id))) { id = `${baseId}-${suffix}`; suffix += 1; }
+      while (existingIds.has(id) || await pathExists(itemRoot(state.planningRoot, id)) || await pathExists(cardFolder(state.planningRoot, id))) { id = `${baseId}-${suffix}`; suffix += 1; }
       existingIds.add(id);
       createdItems.push({
         id,
@@ -1246,6 +1284,8 @@ export async function writeDoc(input: {
   const state = await loadState(input.cwd);
   const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
   if (!item) throw new Error(`Card not found: ${input.cardId}`);
+  checkIndexDocument(input.markdown, item.id, input.kind);
+  await assertCardsHoldNoFiles(state.planningRoot, [item]);
 
   let relativePath = input.kind === "spec" ? item.specDoc : item.planDoc;
   if (!relativePath) {

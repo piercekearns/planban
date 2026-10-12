@@ -2,7 +2,7 @@
 // Pure and browser-safe; the git, history and file inputs are gathered by stalenessSources.ts.
 import type { PlanbanHistoryEntry, PlanbanRoadmapItem } from "./types";
 
-export type StalenessKind = "merged" | "doc-edited" | "quiet" | "awaiting-owner" | "group-behind";
+export type StalenessKind = "holds-files" | "merged" | "doc-edited" | "quiet" | "awaiting-owner" | "group-behind";
 
 export interface StalenessSignal {
   kind: StalenessKind;
@@ -27,11 +27,13 @@ export interface StalenessInput {
   history: Array<Pick<PlanbanHistoryEntry, "createdAt" | "affectedCards" | "affectedDocs">>;
   docMtimes: DocMtime[];
   merges: MergeRecord[];
+  /** Files in each card folder other than its Spec and Plan, for cards that hold any. */
+  cardFiles?: Record<string, string[]> | undefined;
   now: number;
 }
 
 export interface BoardStaleness {
-  /** Active cards with at least one signal, most relevant signal first. */
+  /** Active cards with at least one signal, and any card holding files, most relevant signal first. */
   cards: Record<string, StalenessSignal[]>;
   /** Reported to agents only when In Progress Items exceed the threshold. */
   wip: { count: number; threshold: number } | null;
@@ -46,8 +48,9 @@ const GROUP_BEHIND_SLACK_MS = DAY_MS;
 const DOC_WRITE_SLACK_MS = 2_000;
 const ACTIVE_STATUSES = new Set(["in-progress", "up-next"]);
 // Order used for the board chip and for sorting attention lists.
-export const STALENESS_KIND_ORDER: StalenessKind[] = ["merged", "doc-edited", "quiet", "group-behind", "awaiting-owner"];
-// Kinds an agent can fix by editing the card; awaiting-owner waits on the human instead.
+export const STALENESS_KIND_ORDER: StalenessKind[] = ["holds-files", "merged", "doc-edited", "quiet", "group-behind", "awaiting-owner"];
+// Kinds an agent can fix by editing the card; awaiting-owner waits on the human instead, and
+// holds-files blocks editing until the card's files are moved out.
 export const STALE_KINDS = new Set<StalenessKind>(["merged", "doc-edited", "quiet", "group-behind"]);
 
 // The next step is the owner's when Next action starts with "Owner:", the house-style convention.
@@ -126,6 +129,21 @@ export function parseMergeLog(text: string): MergeRecord[] {
   return [...earliest].map(([pr, at]) => ({ pr, mergedAt: new Date(at).toISOString() }));
 }
 
+/** The command that tidies a card holding files. */
+export function moveFilesOutCommand(cardId: string) {
+  return `planban move-files-out ${cardId} --to <folder>`;
+}
+
+// Planban is an index, not storage: a card whose folder holds files refuses changes until they are moved out.
+function holdsFilesSignal(item: PlanbanRoadmapItem, files: string[], now: number): StalenessSignal {
+  const shown = files.slice(0, 3).join(", ") + (files.length > 3 ? ` and ${files.length - 3} more` : "");
+  return {
+    kind: "holds-files",
+    detail: `Holds ${files.length} file${files.length === 1 ? "" : "s"} in its folder (${shown}); changes are refused until they are moved out with \`${moveFilesOutCommand(item.id)}\``,
+    since: item.updatedAt ?? new Date(now).toISOString(),
+  };
+}
+
 export function computeStaleness(input: StalenessInput): BoardStaleness {
   const mergedAt = new Map(input.merges.map((merge) => [merge.pr, time(merge.mergedAt)]));
   const firstSeen = new Map<string, number>();
@@ -151,9 +169,15 @@ export function computeStaleness(input: StalenessInput): BoardStaleness {
 
   const cards: Record<string, StalenessSignal[]> = {};
   for (const item of input.items) {
-    if (!ACTIVE_STATUSES.has(item.status)) continue;
+    const files = input.cardFiles?.[item.id];
+    if (!ACTIVE_STATUSES.has(item.status)) {
+      // Any card, whatever its status, refuses changes while it holds files.
+      if (files?.length) cards[item.id] = [holdsFilesSignal(item, files, input.now)];
+      continue;
+    }
     const updatedAt = time(item.updatedAt);
     const signals: StalenessSignal[] = [];
+    if (files?.length) signals.push(holdsFilesSignal(item, files, input.now));
 
     // A referenced PR merged after the card last changed (and after it existed).
     const floor = Math.max(updatedAt ?? -Infinity, firstSeen.get(item.id) ?? -Infinity);
@@ -211,6 +235,8 @@ export interface StalenessAttention {
   cards: Array<{ id: string; title: string; status: string; signals: StalenessSignal[] }>;
   total: number;
   awaitingOwner: number;
+  /** Cards whose folders hold files, so Planban refuses changes to them until tidied. */
+  holdingFiles: { ids: string[]; total: number };
   wip: BoardStaleness["wip"];
 }
 
@@ -228,6 +254,12 @@ export function stalenessAttention(staleness: BoardStaleness, items: PlanbanRoad
     }),
     total: stale.length,
     awaitingOwner: Object.values(staleness.cards).filter((signals) => signals.some((signal) => signal.kind === "awaiting-owner")).length,
+    holdingFiles: (() => {
+      const ids = Object.entries(staleness.cards)
+        .filter(([id, signals]) => byId.has(id) && signals.some((signal) => signal.kind === "holds-files"))
+        .map(([id]) => id);
+      return { ids: ids.slice(0, limit), total: ids.length };
+    })(),
     wip: staleness.wip,
   };
 }
@@ -235,6 +267,12 @@ export function stalenessAttention(staleness: BoardStaleness, items: PlanbanRoad
 /** One short line for agents, or null when nothing needs attention. */
 export function stalenessLine(attention: StalenessAttention): string | null {
   const parts: string[] = [];
+  const holding = attention.holdingFiles;
+  if (holding?.total) {
+    const ids = holding.ids.slice(0, 5).join(", ");
+    const more = holding.total > 5 ? `, +${holding.total - 5} more` : "";
+    parts.push(`${holding.total} card${holding.total === 1 ? " holds" : "s hold"} files in ${holding.total === 1 ? "its folder" : "their folders"} (${ids}${more}). Planban is an index, not file storage, so it refuses changes to ${holding.total === 1 ? "that card" : "those cards"} until the files are moved out with \`${moveFilesOutCommand("<card>")}\`.`);
+  }
   if (attention.total > 0) {
     const ids = attention.cards.slice(0, 5).map((card) => card.id).join(", ");
     const more = attention.total > 5 ? `, +${attention.total - 5} more` : "";
@@ -246,5 +284,6 @@ export function stalenessLine(attention: StalenessAttention): string | null {
 
 /** Short note shown under a card's title on the board. Only signals that need the owner are shown there. */
 export function stalenessChipLabel(signal: StalenessSignal): string | null {
+  if (signal.kind === "holds-files") return "Holds files";
   return signal.kind === "awaiting-owner" ? "Needs you" : null;
 }
