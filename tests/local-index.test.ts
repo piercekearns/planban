@@ -509,3 +509,25 @@ test("a reorder may move other cards around a card holding files, but never repo
     assert.deepEqual(await order(), ["beta", "gamma", "alpha"]);
   });
 });
+
+test("a board holding files, or text that embeds one, is not duplicated", async () => {
+  await withBoard(async ({ home, cwd, folder }) => {
+    const { duplicateBoard } = await import("../src/core/registry");
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    writeFileSync(join(folder("alpha"), "evidence.bin"), Buffer.from([0, 1, 2]));
+    await assert.rejects(
+      duplicateBoard({ sourceRepoId: repoId, repoId: "copy-a" }),
+      /^PlanbanConflictError: Not copied: a card folder holds files: alpha \(evidence\.bin\)\. Planban is an index.*planban move-files-out <card> --to <folder>/su,
+    );
+    assert.ok(!existsSync(join(home, "repos", "copy-a")), "a refused copy leaves no board behind");
+    rmSync(join(folder("alpha"), "evidence.bin"));
+
+    // A Spec written before strict Local Mode, with a picture stored inside it.
+    writeFileSync(join(folder("alpha"), "spec.md"), dataUriSpec);
+    await assert.rejects(duplicateBoard({ sourceRepoId: repoId, repoId: "copy-b" }), /Not saved: the Spec of card alpha contains an embedded file/u);
+    assert.ok(!existsSync(join(home, "repos", "copy-b")));
+    writeFileSync(join(folder("alpha"), "spec.md"), "# Alpha Spec\n");
+    const copied = await duplicateBoard({ sourceRepoId: repoId, repoId: "copy-c" });
+    assert.equal(copied.board.repoId, "copy-c");
+  });
+});

@@ -2,9 +2,12 @@
 // flagged, and Planban refuses every change to it until the files are moved
 // out. Reads still work. The check itself is shared with Take Online
 // (indexCheck.ts); this module adds the local refusal and its wording.
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PlanbanConflictError } from "./boardOperations";
+import { checkIndexCard, checkIndexDocument, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
 import { filesInCard, friendlyPath } from "./indexCheck";
+import { resolveInsideRoot } from "./paths";
 import { moveFilesOutCommand } from "./staleness";
 
 const LISTED_FILES = 8;
@@ -54,4 +57,35 @@ export async function assertCardsHoldNoFiles(planningRoot: string, cards: Array<
 export async function cardsHoldingFiles(planningRoot: string, cardIds: string[]): Promise<Record<string, string[]>> {
   const entries = await Promise.all(cardIds.map(async (id) => [id, await filesInCard(planningRoot, id)] as const));
   return Object.fromEntries(entries.filter(([, files]) => files.length > 0));
+}
+
+/**
+ * Refuses to copy a board that is not a clean index: a card folder (or a leftover folder of a
+ * deleted card) holding files, or text that embeds a file. Copying it would make another board
+ * holding the same files.
+ */
+export async function assertBoardIsIndex(planningRoot: string, roadmap: {
+  project: unknown;
+  roadmapItems: Array<{ id: string; title: string; specDoc?: string | null; planDoc?: string | null }>;
+}) {
+  const folders = (await readdir(join(planningRoot, "items"), { withFileTypes: true }).catch(() => []))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const holding = Object.entries(await cardsHoldingFiles(planningRoot, folders));
+  if (holding.length) {
+    const listed = holding.slice(0, 5).map(([id, files]) => `${id} (${listFiles(files, 3)})`).join("; ");
+    const more = holding.length > 5 ? `; and ${holding.length - 5} more` : "";
+    throw new PlanbanConflictError(
+      `Not copied: ${holding.length === 1 ? "a card folder holds" : `${holding.length} card folders hold`} files: ${listed}${more}. Planban is an index, not file storage, so a copy would hold the same files. Tidy each card with \`${moveFilesOutCommand("<card>")}\`, then copy the board again.`,
+    );
+  }
+  checkIndexValue(roadmap.project, "the board details", MAX_DETAILS_BYTES);
+  for (const card of roadmap.roadmapItems) {
+    checkIndexCard(card);
+    for (const [kind, path] of [["spec", card.specDoc], ["plan", card.planDoc]] as const) {
+      if (!path) continue;
+      const markdown = await (async () => readFile(resolveInsideRoot(planningRoot, path), "utf8"))().catch(() => null);
+      if (markdown !== null) checkIndexDocument(markdown, card.id, kind);
+    }
+  }
 }
