@@ -45,7 +45,7 @@ const PLANBAN_SAVE_FILE = /^\.(spec|plan)\.md\.\d+\.\d+\.[0-9a-f-]{36}\.tmp$/;
 /** Folder settings the operating system adds when a person opens the folder; never a person's file. */
 const SYSTEM_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 
-/** Every file in a card's folder other than its Spec and Plan, with paths inside the folder. */
+/** Every file in a card's folder other than its Spec and Plan, with paths inside the folder. An empty folder is listed as `name/`. */
 export async function filesInCard(planningRoot: string, cardId: string): Promise<string[]> {
   // Only plain card ids name folders; anything else could point outside the board.
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cardId) || cardId.includes("..")) return [];
@@ -56,7 +56,9 @@ export async function filesInCard(planningRoot: string, cardId: string): Promise
       const absolute = join(dir, entry.name);
       const path = relative(folder, absolute).split(sep).join("/");
       if (entry.isDirectory()) {
-        await walk(absolute);
+        // An empty folder is still something besides the card's text.
+        if ((await readdir(absolute).catch(() => null))?.length === 0) found.push(`${path}/`);
+        else await walk(absolute);
         continue;
       }
       if (dir === folder && (entry.name === "spec.md" || entry.name === "plan.md" || PLANBAN_SAVE_FILE.test(entry.name))) continue;

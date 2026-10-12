@@ -3,7 +3,7 @@
 // moved out, and `move-files-out` tidies it. Every board here lives in a temporary PLANBAN_HOME.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -173,15 +173,16 @@ test("move-files-out previews, refuses to overwrite, moves the files, records re
     dropFiles(folder("alpha"));
     mkdirSync(join(folder("alpha"), "evidence", "empty"), { recursive: true });
     symlinkSync("/tmp/elsewhere", join(folder("alpha"), "link"));
+    const linkTarget = readlinkSync(join(folder("alpha"), "link"));
     const destination = join(root, "repo", "docs", "alpha");
     const now = new Date("2026-10-12T09:00:00Z");
 
     const preview = await moveFilesOut({ cwd, cardId: "alpha", to: destination, dryRun: true, machine: "Test Mac", now });
     assert.equal(preview.dryRun, true);
-    assert.deepEqual(preview.moves.map((move) => move.from), ["evidence/run.log", "link", "shot.png"]);
+    assert.deepEqual(preview.moves.map((move) => move.from), ["evidence/empty/", "evidence/run.log", "link", "shot.png"]);
     assert.deepEqual(preview.conflicts, []);
     assert.match(preview.specSection, /^## Files\n\nMoved out of this card's Planban folder on 12 October 2026\. Planban is an index, not file storage, so these files now live here:\n\n/u);
-    assert.match(preview.specSection, /- On Test Mac: .*\/docs\/alpha\/evidence\/ \(a folder of 1 file\)\n- On Test Mac: .*\/docs\/alpha\/link\n- On Test Mac: .*\/docs\/alpha\/shot\.png\n$/u);
+    assert.match(preview.specSection, /- On Test Mac: .*[\\/]docs[\\/]alpha[\\/]evidence[\\/] \(a folder of 1 file\)\n- On Test Mac: .*[\\/]docs[\\/]alpha[\\/]link\n- On Test Mac: .*[\\/]docs[\\/]alpha[\\/]shot\.png\n$/u);
     assert.ok(existsSync(join(folder("alpha"), "shot.png")) && !existsSync(destination), "a dry run changes nothing");
 
     // Never overwrites: one clash refuses the whole move, and nothing moves.
@@ -197,19 +198,20 @@ test("move-files-out previews, refuses to overwrite, moves the files, records re
     await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: join(home, "files") }), /outside Planban's own folders/u);
 
     const result = await moveFilesOut({ cwd, cardId: "alpha", to: destination, machine: "Test Mac", now });
-    assert.equal(result.moves.length, 3);
+    assert.equal(result.moves.length, 4);
+    assert.ok(lstatSync(join(destination, "evidence", "empty")).isDirectory(), "an empty folder moves too");
     assert.deepEqual([...readFileSync(join(destination, "shot.png"))], [0x89, 0x50, 0x4e, 0x47]);
     assert.equal(readFileSync(join(destination, "evidence", "run.log"), "utf8"), "ok\n");
     assert.ok(lstatSync(join(destination, "link")).isSymbolicLink());
-    assert.equal(readlinkSync(join(destination, "link")), "/tmp/elsewhere");
+    assert.equal(readlinkSync(join(destination, "link")), linkTarget);
     assert.ok(!existsSync(join(folder("alpha"), "evidence")), "folders the move emptied are removed");
     assert.ok(existsSync(join(folder("alpha"), "spec.md")));
     const spec = (await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown;
     assert.ok(spec.startsWith("# Alpha Spec\n\nThe purpose.\n\n## Files\n\n"), spec);
-    assert.match(spec, /- On Test Mac: .*\/docs\/alpha\/shot\.png\n$/u);
+    assert.match(spec, /- On Test Mac: .*[\\/]docs[\\/]alpha[\\/]shot\.png\n$/u);
     const history = (await historyPayload(cwd)).entries.find((entry) => entry.operation === "card.files.move-out")!;
     assert.equal(history.operation, "card.files.move-out");
-    assert.match(history.summary, /^Moved 3 files out of Alpha to Test Mac: /u);
+    assert.match(history.summary, /^Moved 4 files out of Alpha to Test Mac: /u);
 
     // The card is clean again: it can be changed, and running again finds nothing to do.
     await updateCard({ cwd, cardId: "alpha", summary: "Tidied" });
@@ -341,5 +343,72 @@ test("MCP tools teach the rule, flag cards holding files, refuse writes to them,
     assert.ok(existsSync(join(destination, "evidence", "run.log")));
     assert.match(responses[8].result.content[0].text, /^Updated Planban card alpha\./u);
     assert.match((await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, /\n## Files\n/u);
+  });
+});
+
+test("an empty folder flags a card, and move-files-out keeps relative links working and records partial moves", async () => {
+  await withBoard(async ({ root, cwd, folder }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    mkdirSync(join(folder("alpha"), "drafts"));
+    await assert.rejects(updateCard({ cwd, cardId: "alpha", summary: "Changed" }), /holds 1 file in its folder, .*: drafts\/\./u);
+    const emptied = await moveFilesOut({ cwd, cardId: "alpha", to: join(root, "kept-empty"), machine: "Test Mac" });
+    assert.match(emptied.specSection, /kept-empty[\\/]drafts[\\/] \(an empty folder\)\n$/u);
+    assert.ok(lstatSync(join(root, "kept-empty", "drafts")).isDirectory());
+    assert.ok(!existsSync(join(folder("alpha"), "drafts")));
+    await updateCard({ cwd, cardId: "alpha", summary: "Changed" });
+
+    // Relative links: one to a file moving with it stays relative; one to a file staying behind becomes absolute.
+    writeFileSync(join(folder("alpha"), "shot.png"), "png");
+    writeFileSync(join(root, "outside.txt"), "outside");
+    symlinkSync("shot.png", join(folder("alpha"), "latest"));
+    const outsideLink = join(folder("alpha"), "outside");
+    symlinkSync(join("..", "..", "..", "..", "..", "outside.txt"), outsideLink);
+    assert.equal(readFileSync(outsideLink, "utf8"), "outside", "the test link works before the move");
+    const kept = join(root, "kept-links");
+    await moveFilesOut({ cwd, cardId: "alpha", to: kept, machine: "Test Mac" });
+    assert.equal(readlinkSync(join(kept, "latest")), "shot.png");
+    assert.equal(readFileSync(join(kept, "latest"), "utf8"), "png");
+    assert.equal(readlinkSync(join(kept, "outside")), join(root, "outside.txt"));
+    assert.equal(readFileSync(join(kept, "outside"), "utf8"), "outside");
+  });
+});
+
+test("move-files-out cannot be led back into Planban through a link, and refuses what it cannot move", { skip: process.platform === "win32" }, async () => {
+  await withBoard(async ({ root, cwd, home, folder }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    writeFileSync(join(folder("alpha"), "a.txt"), "a");
+    symlinkSync(home, join(root, "alias"));
+    await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: join(root, "alias", "kept") }), /outside Planban's own folders/u);
+    assert.ok(existsSync(join(folder("alpha"), "a.txt")));
+
+    // A named pipe is neither a file nor a link: nothing moves.
+    assert.equal(spawnSync("mkfifo", [join(folder("alpha"), "pipe")]).status, 0);
+    await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: join(root, "kept") }), /Nothing was moved: Planban moves only files, links and empty folders, and pipe is something else/u);
+    assert.ok(existsSync(join(folder("alpha"), "a.txt")) && !existsSync(join(root, "kept", "a.txt")));
+  });
+});
+
+test("when a move stops partway, the files that moved are still recorded in the Spec", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  await withBoard(async ({ root, cwd, folder }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    writeFileSync(join(folder("alpha"), "a.txt"), "a");
+    mkdirSync(join(folder("alpha"), "z"));
+    writeFileSync(join(folder("alpha"), "z", "b.txt"), "b");
+    const destination = join(root, "kept");
+    mkdirSync(join(destination, "z"), { recursive: true });
+    chmodSync(join(destination, "z"), 0o500);
+    try {
+      await assert.rejects(moveFilesOut({ cwd, cardId: "alpha", to: destination, machine: "Test Mac" }), /^Error: Moved 1 of 2 files, then stopped: .*Nothing was deleted, and the Spec lists the files that moved\./su);
+    } finally {
+      chmodSync(join(destination, "z"), 0o700);
+    }
+    assert.equal(readFileSync(join(destination, "a.txt"), "utf8"), "a");
+    assert.ok(existsSync(join(folder("alpha"), "z", "b.txt")), "the file that could not move stays put");
+    assert.match((await readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown, /- On Test Mac: .*kept[\\/]a\.txt\n$/u);
+    await assert.rejects(updateCard({ cwd, cardId: "alpha", summary: "Changed" }), PlanbanCardHoldsFilesError);
+    // Running again moves the rest.
+    await moveFilesOut({ cwd, cardId: "alpha", to: destination, machine: "Test Mac" });
+    assert.equal(readFileSync(join(destination, "z", "b.txt"), "utf8"), "b");
+    await updateCard({ cwd, cardId: "alpha", summary: "Changed" });
   });
 });

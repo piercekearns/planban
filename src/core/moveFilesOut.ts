@@ -4,8 +4,8 @@
 // and checked before the original is removed when the folders are on
 // different disks.
 import { constants } from "node:fs";
-import { copyFile, link, lstat, mkdir, readlink, readdir, rmdir, symlink, unlink } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { copyFile, link, lstat, mkdir, readlink, readdir, realpath, rmdir, symlink, unlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 import { cardFolder } from "./cardFiles";
 import { checkIndexDocument } from "./contentRules";
@@ -43,13 +43,15 @@ function referenceLines(files: string[], destination: string, machine: string) {
   const top = new Map<string, number>();
   for (const file of files) {
     const [first, ...rest] = file.split("/");
-    top.set(rest.length ? `${first}/` : first!, (top.get(rest.length ? `${first}/` : first!) ?? 0) + 1);
+    const name = rest.length ? `${first}/` : first!;
+    // An empty folder ("name/") adds the folder but no file.
+    top.set(name, (top.get(name) ?? 0) + (file.endsWith("/") ? 0 : 1));
   }
   return [...top].map(([name, count]) => {
     const where = friendlyPath(join(destination, name.replace(/\/$/, "")));
-    return name.endsWith("/")
-      ? `- On ${machine}: ${where}/ (a folder of ${count} file${count === 1 ? "" : "s"})`
-      : `- On ${machine}: ${where}`;
+    if (!name.endsWith("/")) return `- On ${machine}: ${where}`;
+    const contents = count ? `a folder of ${count} file${count === 1 ? "" : "s"}` : "an empty folder";
+    return `- On ${machine}: ${where}${where.startsWith("~") ? "/" : sep} (${contents})`;
   });
 }
 
@@ -65,12 +67,30 @@ function filesSection(input: { spec: string; files: string[]; destination: strin
   ].join("\n");
 }
 
+/** A path with every existing folder on the way resolved through links, so a link cannot lead back into Planban. */
+async function realPathOf(path: string): Promise<string> {
+  const real = await realpath(path).catch(() => null);
+  if (real) return real;
+  const parent = dirname(path);
+  return parent === path ? path : join(await realPathOf(parent), basename(path));
+}
+
+function inside(root: string, path: string) {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 /** Paths at the destination that already exist, or that sit under something that is not a folder. */
 async function conflictsAt(destination: string, files: string[]) {
   const conflicts: string[] = [];
   for (const file of files) {
     const target = join(destination, file);
-    if (await exists(target)) {
+    if (file.endsWith("/")) {
+      // An empty folder may join a folder already there; it replaces nothing.
+      const info = await lstat(target).catch(() => null);
+      if (info && !info.isDirectory()) conflicts.push(target.replace(/[\\/]$/u, ""));
+      if (info) continue;
+    } else if (await exists(target)) {
       conflicts.push(target);
       continue;
     }
@@ -91,12 +111,37 @@ function errorCode(error: unknown) {
   return error && typeof error === "object" && "code" in error ? String(error.code) : "";
 }
 
+/** Entries Planban will not move: anything but a file, a link or an empty folder. */
+async function unmovable(folder: string, files: string[]) {
+  const found: string[] = [];
+  for (const file of files) {
+    if (file.endsWith("/")) continue;
+    const info = await lstat(join(folder, file)).catch(() => null);
+    if (!info || !(info.isFile() || info.isSymbolicLink())) found.push(file);
+  }
+  return found;
+}
+
 /** Moves one file without ever replacing an existing one. */
-async function moveOne(source: string, target: string) {
+async function moveOne(input: { folder: string; file: string; destination: string; realDestination: string }) {
+  const source = join(input.folder, input.file);
+  const target = join(input.destination, input.file);
   await mkdir(dirname(target), { recursive: true });
+  // Checked again as each folder is made, in case a link appeared on the way since the start.
+  if (!inside(input.realDestination, await realpath(dirname(target)))) {
+    throw new Error(`${dirname(target)} now leads outside the chosen folder`);
+  }
+  if (input.file.endsWith("/")) {
+    await mkdir(target, { recursive: true });
+    await rmdir(source);
+    return;
+  }
   const info = await lstat(source);
   if (info.isSymbolicLink()) {
-    await symlink(await readlink(source), target);
+    const pointsAt = await readlink(source);
+    // A relative link keeps working if it points at something moving with it; otherwise it is made absolute.
+    const resolved = resolve(dirname(source), pointsAt);
+    await symlink(isAbsolute(pointsAt) || inside(input.folder, resolved) ? pointsAt : resolved, target);
   } else if (info.isFile()) {
     try {
       // A hard link fails if the target exists, so nothing is ever replaced.
@@ -109,7 +154,7 @@ async function moveOne(source: string, target: string) {
       }
     }
   } else {
-    throw new PlanbanValidationError(`${source} is not a regular file or link, so Planban will not move it. Move it yourself.`);
+    throw new PlanbanValidationError(`${source} is not a file or a link, so Planban will not move it. Move it yourself.`);
   }
   await unlink(source);
 }
@@ -150,7 +195,10 @@ export async function moveFilesOut(input: {
     const base = { cardId: item.id, title: item.title, dryRun: input.dryRun === true, machine, destination };
     if (!files.length) return { ...base, alreadyClean: true, moves: [], conflicts: [], specSection: "" };
 
-    if (isPathInsideRoot(state.planningRoot, destination) || isPathInsideRoot(defaultPlanbanRoot(), destination)) {
+    const realDestination = await realPathOf(destination);
+    const planbanFolders = [state.planningRoot, defaultPlanbanRoot()];
+    const realPlanbanFolders = await Promise.all(planbanFolders.map(realPathOf));
+    if (planbanFolders.some((root) => isPathInsideRoot(root, destination)) || realPlanbanFolders.some((root) => inside(root, realDestination))) {
       throw new PlanbanValidationError(`Choose a folder outside Planban's own folders (${friendlyPath(defaultPlanbanRoot())}), such as the project's repository or a shared drive. Planban is an index and keeps no files.`);
     }
     const destinationInfo = await lstat(destination).catch(() => null);
@@ -158,6 +206,10 @@ export async function moveFilesOut(input: {
       throw new PlanbanValidationError(`${friendlyPath(destination)} is a file, not a folder. Choose a folder to move the files to.`);
     }
 
+    const refused = await unmovable(folder, files);
+    if (refused.length) {
+      throw new PlanbanValidationError(`Nothing was moved: Planban moves only files, links and empty folders, and ${refused.join(", ")} ${refused.length === 1 ? "is" : "are"} something else. Move ${refused.length === 1 ? "it" : "them"} yourself, then run the command again.`);
+    }
     const moves = files.map((file) => ({ from: file, to: join(destination, file) }));
     const conflicts = await conflictsAt(destination, files);
     const spec = await readDoc({ cwd: state.cwd, cardId: item.id, kind: "spec" });
@@ -180,7 +232,7 @@ export async function moveFilesOut(input: {
     let failure: unknown = null;
     for (const file of files) {
       try {
-        await moveOne(join(folder, file), join(destination, file));
+        await moveOne({ folder, file, destination, realDestination });
         moved.push(file);
       } catch (error) {
         failure = error;
@@ -188,8 +240,10 @@ export async function moveFilesOut(input: {
       }
     }
     await removeEmptyFolders(folder);
+    let recorded = true;
     if (moved.length) {
-      await writeDoc({
+      try {
+        await writeDoc({
         cwd: state.cwd,
         cardId: item.id,
         kind: "spec",
@@ -201,11 +255,20 @@ export async function moveFilesOut(input: {
           affectedCards: [item.id],
           affectedDocs: [{ cardId: item.id, kind: "spec", path: item.specDoc ?? `items/${item.id}/spec.md` }],
         },
-      });
+        // Files left behind after a failure keep the card flagged; record the ones that moved anyway.
+        recordingMovedFiles: true,
+        });
+      } catch (error) {
+        if (!failure) throw error;
+        recorded = false;
+      }
     }
     if (failure) {
       const reason = failure instanceof Error ? failure.message : String(failure);
-      throw new Error(`Moved ${moved.length} of ${files.length} files, then stopped: ${reason}. Nothing was deleted, and the Spec lists the files that moved. Fix the problem and run the command again to move the rest.`);
+      const where = recorded
+        ? "the Spec lists the files that moved"
+        : `these moved and are not yet listed in the Spec: ${moved.map((file) => friendlyPath(join(destination, file))).join(", ")}`;
+      throw new Error(`Moved ${moved.length} of ${files.length} files, then stopped: ${reason}. Nothing was deleted, and ${where}. Fix the problem and run the command again to move the rest.`);
     }
     return { ...result, specSection: filesSection({ spec: spec.markdown, files: moved, destination, machine, now }) };
   });

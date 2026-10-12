@@ -1279,13 +1279,15 @@ export async function writeDoc(input: {
   markdown: string;
   expectedMtimeMs?: number | null | undefined;
   history?: PlanbanHistoryMeta | false | undefined;
+  /** Only for move-files-out: records files it moved even when a failure left others in the card folder. */
+  recordingMovedFiles?: boolean | undefined;
 }): Promise<PlanbanDocPayload> {
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
   if (!item) throw new Error(`Card not found: ${input.cardId}`);
   checkIndexDocument(input.markdown, item.id, input.kind);
-  await assertCardsHoldNoFiles(state.planningRoot, [item]);
+  if (!input.recordingMovedFiles) await assertCardsHoldNoFiles(state.planningRoot, [item]);
 
   let relativePath = input.kind === "spec" ? item.specDoc : item.planDoc;
   if (!relativePath) {
