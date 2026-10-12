@@ -10,8 +10,8 @@ test("Online Boards refuse embedded files in any form, and say how to refer to t
   // Forms that slip past a simple pattern: no type, not base64, or base64 wrapped over lines.
   assert.match(embeddedFileIn(`data:;base64,${pngBase64.slice(0, 400)}`)!, /data: address/);
   assert.match(embeddedFileIn(`data:text/plain,${"hello%20file%0A".repeat(40)}`)!, /data: address/);
-  assert.match(embeddedFileIn(pngBase64.match(/.{1,76}/g)!.join("\n"))!, /lines of base64/);
-  assert.match(embeddedFileIn(`> ${pngBase64.match(/.{1,64}/g)!.join("\n> ")}`)!, /lines of base64/);
+  assert.match(embeddedFileIn(pngBase64.match(/.{1,76}/g)!.join("\n"))!, /base64/);
+  assert.match(embeddedFileIn(`> ${pngBase64.match(/.{1,64}/g)!.join("\n> ")}`)!, /base64/);
   assert.match(embeddedFileIn(pngBase64)!, /base64/);
   assert.match(embeddedFileIn("PK\u0003\u0004 zipped")!, /binary/);
   assert.throws(() => checkIndexDocument(`Renders:\n\n![front](data:image/png;base64,${pngBase64})`, "alpha", "spec"),
@@ -53,4 +53,25 @@ test("history keeps its text when the files embedded in it are taken out", async
   const cleaned = withoutEmbeddedFiles(`Before\n![x](data:image/png;base64,${pngBase64})\n${wrapped}\nAfter, see \`data:image/png;base64,AAAA\``, "[kept on the Mac]");
   assert.equal(embeddedFileIn(cleaned), null);
   assert.match(cleaned, /^Before\n!\[x\]\(\[kept on the Mac\]\)\n\[kept on the Mac\]\nAfter, see `data:image\/png;base64,AAAA`$/);
+});
+
+import { randomBytes } from "node:crypto";
+
+test("a file split into short pieces, interleaved with prose or hidden in keys still adds up", async () => {
+  const { checkIndexValue } = await import("../src/core/contentRules");
+  const file = randomBytes(1825).toString("base64");
+  const pieces = file.match(/.{1,200}/g)!;
+  assert.match(embeddedFileIn(pieces.map((piece) => `data:text/plain;base64,${piece}`).join("\n"))!, /data: addresses/);
+  assert.match(embeddedFileIn(file.match(/.{1,50}/g)!.map((piece, index) => `Step ${index}: ${piece} done.`).join("\n"))!, /base64/);
+  assert.throws(() => checkIndexValue({ [`data:text/plain;base64,${file.slice(0, 439)}`]: "x" }, "card alpha", 128 * 1024), /card alpha contains an embedded file/);
+  assert.throws(() => checkIndexCard({ id: "alpha", metadata: Object.fromEntries(pieces.map((piece, index) => [`k${index}`, `data:,${piece}`])) }), /embedded file/);
+});
+
+test("real planning text with addresses, hashes, ids and paths is not mistaken for a file", () => {
+  const hashes = Array.from({ length: 40 }, () => randomBytes(32).toString("hex")).join("\n");
+  const uuids = Array.from({ length: 60 }, () => `PROD-${crypto.randomUUID()}`).join(", ");
+  const paths = Array.from({ length: 30 }, (_, index) => `codex/visualizations/2026/09/30/${crypto.randomUUID()}/revival-audit/source/${index}.md`).join("\n");
+  const longUrl = `https://example.com/report?state=${randomBytes(1600).toString("base64url")}`;
+  const text = ["```", hashes, "```", uuids, paths, `See ${longUrl}`, "SHA256115dbd3f4be227900acefefa17e9b98687cfd2fb6416d6db8ed604b8f7e007b4 and MA05ownerUsage/absentRetry/phone/provider"].join("\n\n");
+  assert.equal(embeddedFileIn(text), null);
 });

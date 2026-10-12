@@ -4,6 +4,7 @@
 //
 //   PLANBAN_ONLINE_URL=http://127.0.0.1:3411 node --import tsx/esm online/scripts/index-convex.ts
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createEmptyRoadmap, planCreateCard } from "../../src/core/boardOperations";
 
 const origin = (process.env.PLANBAN_ONLINE_URL ?? "http://127.0.0.1:3411").replace(/\/+$/, "");
@@ -81,6 +82,9 @@ const smuggling: Array<[string, (bundle: any) => void]> = [
   ["a history entry", (bundle) => { bundle.history = [{ entry: { version: 1, roadmapRevision: 1, createdAt: now, actor: "user", operation: "card.create", summary: picture, affectedCards: [], affectedDocs: [] }, roadmap: bundle.roadmap }]; }],
   ["retired card ids", (bundle) => { bundle.retiredIds = [picture]; }],
   ["history settings", (bundle) => { bundle.retention = { boardVersions: 100, note: picture }; }],
+  ["a column label", (bundle) => { bundle.roadmap.columns[0].label = encoded; }],
+  ["a metadata key", (bundle) => { bundle.roadmap.roadmapItems[0].metadata = { [`data:text/plain;base64,${Buffer.alloc(330, 2).toString("base64")}`]: "x" }; }],
+  ["an unknown history setting", (bundle) => { bundle.retention = { boardVersions: 100, somethingElse: 1 }; }],
 ];
 for (const [what, change] of smuggling) {
   const refused = await viaImport(what.replace(/\W+/g, "-").slice(0, 20).toLowerCase(), change);
@@ -97,5 +101,12 @@ const viaMcpWrapped = await mcp("tools/call", { name: "planban_update_card", arg
 assert.equal(viaMcpWrapped.result.isError, true);
 const example = await api(token, "POST", `/api/v1/boards/${boardId}/ops/updateCard`, { cardId, summary: "Reject input such as `data:image/png;base64,AAAA` in the upload validator.", baseRevision: await revision() });
 assert.equal(example.status, 200, "a short example in prose is fine");
-ok("a data: address with no type is refused through MCP; a short example in prose is accepted");
+const pieces = randomBytes(1825).toString("base64").match(/.{1,200}/g)!.map((piece) => `data:text/plain;base64,${piece}`).join("\n");
+const specNow = await api(token, "GET", `/api/v1/boards/${boardId}/docs/${cardId}/spec`);
+const split = await api(token, "POST", `/api/v1/boards/${boardId}/ops/writeDoc`, { cardId, kind: "spec", markdown: `# Pieces\n\n${pieces}\n`, expectedMtimeMs: specNow.json.mtimeMs });
+assert.equal(split.status, 400, "a file split into short pieces still adds up");
+const readPlan = await mcp("tools/call", { name: "planban_read_doc", arguments: { boardId, cardId, kind: "plan" } });
+const splitMcp = await mcp("tools/call", { name: "planban_write_doc", arguments: { boardId, cardId, kind: "plan", markdown: `# Pieces\n\n${pieces}`, expectedMtimeMs: JSON.parse(readPlan.result.content[0].text).mtimeMs ?? null } });
+assert.equal(splitMcp.result.isError, true);
+ok("a data: address with no type is refused through MCP, as is a file split into short pieces; a short example in prose is accepted");
 console.log(`All ${step} checks passed.`);

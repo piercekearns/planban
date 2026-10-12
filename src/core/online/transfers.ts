@@ -75,7 +75,7 @@ const journalSchema = z.object({
   startedAt: z.string(),
   /** Take Online: the account that started the upload. Only it can see, finish or cancel that upload. */
   userId: z.string().optional(),
-  /** Take Online: a fingerprint of the documents as converted for the online copy, so a resumed upload sends the same text. */
+  /** Take Online: a fingerprint of everything the upload sends, so a resumed upload sends exactly the same. */
   textDigest: z.string().optional(),
 });
 type TransferJournal = z.infer<typeof journalSchema>;
@@ -405,10 +405,13 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   // History cannot be tidied, so anything embedded in an old version is noted instead.
   const bundle = historyForOnline(await buildLocalBundle(cwd));
   bundle.roadmap.project.id = boardId;
-  const textDigest = createHash("sha256").update(JSON.stringify([bundle.docs, bundle.historyDocs ?? []])).digest("hex");
-  // Resuming continues part by part, so it must send exactly the same text:
-  // a board, or card files, changed since the interrupted upload start it again.
-  if (journal?.phase === "uploading" && (journal.localRevision !== bundle.roadmap.revision || (journal.textDigest !== undefined && journal.textDigest !== textDigest))) {
+  // Resuming continues part by part, so it must send exactly the same upload:
+  // the fingerprint covers what begins the upload and every part. Anything
+  // different, or an older record without a fingerprint, starts it again.
+  const textDigest = createHash("sha256").update(JSON.stringify({
+    roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], retention: bundle.retention ?? null, parts: uploadParts(bundle),
+  })).digest("hex");
+  if (journal?.phase === "uploading" && (journal.localRevision !== bundle.roadmap.revision || journal.textDigest !== textDigest)) {
     // The board changed locally since the interrupted upload: cancel it and
     // upload the current board. If the service says that upload already
     // finished, the board is online: finish switching and report the
@@ -474,10 +477,13 @@ async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, p
   await atomicWriteFile(join(planningRoot, "ONLINE-BOARD.txt"), `Authority moved to ${url}, board ${boardId}.\nThe roadmap snapshot, documents and history here are recovery evidence. Do not edit them.\n`);
   const roadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(url, boardPath(boardId))).roadmap;
   const onlineManifest: PlanbanProjectManifest = { ...manifest, storage: { kind: "online", url, boardId } };
+  // The note is written before the project switches, while the record of the
+  // move still exists, so a retry after any crash writes it again.
+  const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: roadmap.project.title, onlineSince: new Date().toISOString() });
+  crashPoint("take-online:after-note");
   await publishManifest(cwd, onlineManifest, onlineState(cwd, onlineManifest, roadmap));
   crashPoint("take-online:after-publish");
   await rm(transferJournalPath(planningRoot), { force: true });
-  const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: roadmap.project.title, onlineSince: new Date().toISOString() });
   await refreshBackup(url, boardId, { force: true });
   return { boardId, url, localSnapshot: snapshot, onlineNote, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
 }
@@ -703,14 +709,14 @@ export async function takeLocal(cwdInput: string, options: {
     // The journal moves with the board: the new local folder records that the
     // service still has to be told, so the next attempt to take it online finishes it.
     await writeJournal(root, { ...journal, phase: "published" });
+    // The board no longer lives online: its note goes before the project switches, so a retry removes it again.
+    const hadNote = await readOnlineNote(cwd).then((note) => !!note, () => true);
+    await removeOnlineNote(cwd);
     await publishManifest(cwd, localManifest, state);
     await rm(transferJournalPath(lockRoot), { force: true });
     crashPoint("take-local:after-publish");
     // Only now that this project is local is the online freeze lifted.
     await finishLocalTransfer(root).catch(() => undefined);
-    // The board no longer lives online: the project's note goes too.
-    const hadNote = !!(await readOnlineNote(cwd));
-    await removeOnlineNote(cwd);
     const repo = hadNote ? await gitRoot(cwd) : null;
     options.onProgress?.({ step: "done", message: "The board is on this machine" });
     return {

@@ -7,7 +7,7 @@
 // local board. Machines that never signed in make no network calls.
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { PlanbanConflictError } from "../boardOperations";
+import { PlanbanConflictError, PlanbanValidationError } from "../boardOperations";
 import { historyIndexPath } from "../paths";
 import { atomicWriteFile } from "../persistence";
 import { readBoardIdentity } from "../boardIdentity";
@@ -160,9 +160,27 @@ function noteFile(cwd: string) {
   return join(cwd, ".planban", ONLINE_NOTE);
 }
 
+/** The project's online note, or null if it has none; a damaged or incomplete note is an error that says what to do. */
 export async function readOnlineNote(cwd: string): Promise<OnlineNote | null> {
-  const note = await readJsonFile<OnlineNote>(noteFile(cwd));
-  return note && typeof note.url === "string" && typeof note.boardId === "string" ? note : null;
+  const text = await readFile(noteFile(cwd), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (text === null) return null;
+  let note: Partial<OnlineNote> | null = null;
+  try {
+    note = JSON.parse(text) as Partial<OnlineNote>;
+  } catch {
+    note = null;
+  }
+  const valid = !!note && typeof note.url === "string" && /^https?:\/\/[^\s/]+/i.test(note.url)
+    && typeof note.boardId === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(note.boardId)
+    && typeof note.title === "string" && note.title.length <= 200
+    && typeof note.onlineSince === "string" && !Number.isNaN(Date.parse(note.onlineSince));
+  if (!valid) {
+    throw new PlanbanValidationError(`This project's note ${noteFile(cwd)} says its board lives online, but the note is damaged or incomplete. Restore it from version control, or remove it if the board is not online.`);
+  }
+  return { note: typeof note!.note === "string" ? note!.note : "", url: note!.url!, boardId: note!.boardId!, title: note!.title!, onlineSince: note!.onlineSince! };
 }
 
 /** Written by Take Online (and by switching a project to an online board), for committing alongside the project. */
@@ -186,6 +204,8 @@ export async function removeOnlineNote(cwd: string) {
 async function staleFromNote(planningRoot: string, cwd: string, repoId: string): Promise<StaleCopy | null> {
   const note = await readOnlineNote(cwd);
   if (!note || note.boardId !== repoId) return null;
+  // This machine's own Take Online is finishing: its copy is not an older one.
+  if (await readJsonFile<{ direction?: string }>(join(planningRoot, "online-transfer.json")).then((journal) => journal?.direction === "online")) return null;
   const ignored = (await readJsonFile<Array<{ url: string; boardId: string }>>(join(planningRoot, INDEPENDENT_MARKER)) ?? [])
     .some((entry) => entry.url === note.url && entry.boardId === note.boardId);
   if (ignored) return null;

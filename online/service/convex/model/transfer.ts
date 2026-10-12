@@ -172,7 +172,8 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
   const retired = await retiredIds(ctx, at);
   let maxVersion = transfer.maxVersion;
   const versions = new Set<number>();
-  for (const version of input.history ?? []) {
+  let previousHistorical: PlanbanRoadmap | null = null;
+  for (const version of [...input.history ?? []].sort((a, b) => (a?.entry?.version ?? 0) - (b?.entry?.version ?? 0))) {
     const number = version?.entry?.version;
     if (!Number.isInteger(number) || number < 1 || versions.has(number)) fail("validation", "History versions must be unique whole numbers.");
     const clash = await ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("version", number)).first();
@@ -184,7 +185,9 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
     } catch (error) {
       throw asServiceError(error);
     }
-    checkCards(historical);
+    // Only what changed since the previous version in this part needs checking again.
+    checkCards(historical, previousHistorical);
+    previousHistorical = historical;
     await importHistoryVersion(ctx, at, version.entry, historical);
     await ctx.db.insert("boardFingerprints", { ...at, key: `${number}|${version.entry.createdAt}|${version.entry.operation}` });
     // Every id the board ever used that is not live now stays retired.

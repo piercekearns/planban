@@ -938,6 +938,23 @@ test("Take Online leaves a note in the project folder; a machine with the note k
   assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), true);
 });
 
+test("a take-online killed before writing its note writes it when run again; a damaged note says how to fix it", async () => {
+  const { second } = await secondMachineCopy();
+  await killedAt("take-online:after-rename", ["online", "take-online", fake.url, "--cwd", cwd]);
+  const notePath = join(cwd, ".planban", "online-board.json");
+  assert.equal(await storage.pathExists(notePath), false);
+  await killedAt("take-online:after-note", ["online", "take-online", fake.url, "--cwd", cwd]);
+  assert.equal(await storage.pathExists(notePath), true);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind ?? "local", "local", "killed after the note, before switching");
+  await takeOnline(fake.url, cwd);
+  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
+  assert.equal(JSON.parse(await readFile(notePath, "utf8")).boardId, "demo");
+
+  await writeFile(join(second, ".planban", "online-board.json"), JSON.stringify({ url: fake.url, boardId: "demo" }));
+  resetCopyChecks();
+  await assert.rejects(storage.updateCard({ cwd: second, cardId: "alpha", summary: "x", baseRevision: await revisionOf(second) }), /note .* is damaged or incomplete\. Restore it from version control, or remove it/);
+});
+
 test("Take Local removes the project's online note", async () => {
   await execFileAsync("git", ["init", "-q", cwd]);
   await takeOnline(fake.url, cwd);

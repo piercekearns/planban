@@ -20,7 +20,10 @@ function asServiceError(run: () => void) {
 export function checkCards(after: PlanbanRoadmap, before?: PlanbanRoadmap | null) {
   const previous = new Map((before?.roadmapItems ?? []).map((item) => [item.id, JSON.stringify(item)]));
   asServiceError(() => {
-    if (!before || JSON.stringify(before.project) !== JSON.stringify(after.project)) checkIndexValue(after.project, "the board's details", MAX_DETAILS_BYTES);
+    // Everything about the board other than its cards: details, columns and any other field.
+    const { roadmapItems: _after, ...details } = after;
+    const { roadmapItems: _before, ...previousDetails } = before ?? { roadmapItems: [] };
+    if (!before || JSON.stringify(previousDetails) !== JSON.stringify(details)) checkIndexValue(details, "the board's details", MAX_DETAILS_BYTES);
     for (const item of after.roadmapItems) {
       if (previous.get(item.id) !== JSON.stringify(item)) checkIndexCard(item);
     }
@@ -34,6 +37,8 @@ export function checkDocuments(docs: Array<{ cardId: string; kind: string; markd
 }
 
 const CARD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** The history settings Planban has. */
+const RETENTION_KEYS = new Set(["boardVersions", "cardVersions", "documentVersions", "hourlyDays", "maxAgeDays"]);
 
 /** What else Take Online brings: retired card ids, history settings and history entries. */
 export function checkImportedExtras(input: { retiredIds?: unknown; retention?: unknown; history?: Array<{ entry?: unknown }> }) {
@@ -42,7 +47,7 @@ export function checkImportedExtras(input: { retiredIds?: unknown; retention?: u
   }
   if (input.retention !== undefined && input.retention !== null) {
     const valid = typeof input.retention === "object" && !Array.isArray(input.retention)
-      && Object.values(input.retention as Record<string, unknown>).every((value) => typeof value === "number" && Number.isFinite(value));
+      && Object.entries(input.retention as Record<string, unknown>).every(([key, value]) => RETENTION_KEYS.has(key) && typeof value === "number" && Number.isFinite(value));
     if (!valid) fail("validation", "History settings must be numbers only.");
   }
   asServiceError(() => {
