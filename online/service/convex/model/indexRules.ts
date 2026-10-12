@@ -18,6 +18,9 @@ function asServiceError(run: () => void) {
  * of them when there is no `before`): its details and each card.
  */
 export function checkCards(after: PlanbanRoadmap, before?: PlanbanRoadmap | null) {
+  for (const item of after.roadmapItems) {
+    if (!CARD_ID.test(item.id)) fail("validation", "Online card ids must be plain card ids (letters, numbers, dots, dashes or underscores, starting with a letter or number).");
+  }
   const previous = new Map((before?.roadmapItems ?? []).map((item) => [item.id, JSON.stringify(item)]));
   asServiceError(() => {
     // Everything about the board other than its cards: details, columns and any other field.

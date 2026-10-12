@@ -1,5 +1,6 @@
 import express from "express";
 import { spawn } from "node:child_process";
+import { urlOpener } from "../core/openUrl";
 import { randomUUID } from "node:crypto";
 import { closeSync, createReadStream, existsSync, mkdirSync, openSync } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
@@ -220,12 +221,7 @@ function parseCardUpdate(value: unknown) {
 
 function openExternalUrl(url: string) {
   return new Promise<void>((resolveOpen, reject) => {
-    const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-    const args = process.platform === "darwin"
-      ? [url]
-      : process.platform === "win32"
-        ? ["/c", "start", "", url]
-        : [url];
+    const { command, args } = urlOpener(url);
     const child = spawn(command, args, { detached: true, stdio: "ignore" });
     child.once("error", reject);
     child.unref();
@@ -462,6 +458,20 @@ export async function startServer(options: ServeOptions) {
   let boardsVersion = 0;
   let activityVersion = 0;
   const currentBoard = await registerBoardFromCwd(cwd).catch(() => null);
+
+  // Binding the socket to loopback does not protect against DNS rebinding:
+  // an arbitrary web hostname can resolve to this socket. Trust the actual
+  // request authority before parsing bodies or serving any API or page.
+  app.use((req, res, next) => {
+    const host = req.header("Host") ?? "";
+    const authority = /^(127\.0\.0\.1|localhost|\[::1\])(?::([0-9]{1,5}))?$/i.exec(host);
+    const port = authority?.[2] === undefined ? 80 : Number(authority[2]);
+    if (!authority || port !== req.socket.localPort) {
+      res.status(403).json({ error: "Planban requests must use this server's loopback address and port." });
+      return;
+    }
+    next();
+  });
 
   app.use(express.json({ limit: "4mb" }));
 

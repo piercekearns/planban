@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { boardPath, cardPath } from "./apiPaths";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -354,10 +355,6 @@ interface HistoryPayload {
     maxAgeDays: number;
   };
   entries: HistoryEntry[];
-}
-
-function boardPath(repoId: string, path: string) {
-  return `/api/boards/${encodeURIComponent(repoId)}${path}`;
 }
 
 function repoIdFromPath() {
@@ -3837,7 +3834,7 @@ function DetailView({
     if (status === item.status) return;
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+      await api<PlanbanState>(cardPath(boardId, item.id, `/move`), {
         method: "POST",
         body: JSON.stringify({ status, baseRevision: state.roadmap.revision }),
       });
@@ -3862,7 +3859,7 @@ function DetailView({
         : placementSiblings.at(-1)?.id ?? null;
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+      await api<PlanbanState>(cardPath(boardId, item.id, `/move`), {
         method: "POST",
         body: JSON.stringify({ parentId, status, afterId, baseRevision: state.roadmap.revision }),
       });
@@ -3879,7 +3876,7 @@ function DetailView({
   async function saveObjective() {
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}`), {
+      await api<PlanbanState>(cardPath(boardId, item.id, ``), {
         method: "PATCH",
         body: JSON.stringify({
           summary: objectiveDraft.trim() || null,
@@ -3900,7 +3897,7 @@ function DetailView({
     setGroupOptimisticItems(previewGroupWorkspaceMove(state.roadmap.roadmapItems, activeId, move));
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${activeId}/move`), {
+      await api<PlanbanState>(cardPath(boardId, activeId, `/move`), {
         method: "POST",
         body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
       });
@@ -3994,7 +3991,7 @@ function DetailView({
     setGroupOptimisticItems(previewGroupWorkspaceMove(state.roadmap.roadmapItems, target.id, { afterId }));
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${target.id}/move`), {
+      await api<PlanbanState>(cardPath(boardId, target.id, `/move`), {
         method: "POST",
         body: JSON.stringify({ afterId, baseRevision: state.roadmap.revision }),
       });
@@ -4057,8 +4054,8 @@ function DetailView({
     async (kind: DocKind) => {
       const payload = await api<DocPayload>(
         previewVersion
-          ? boardPath(boardId, `/history/${previewVersion}/cards/${item.id}/docs/${kind}`)
-          : boardPath(boardId, `/cards/${item.id}/docs/${kind}`),
+          ? cardPath(boardId, item.id, `/docs/${kind}`, previewVersion)
+          : cardPath(boardId, item.id, `/docs/${kind}`),
       );
       setDocsByKind((current) => ({ ...current, [kind]: payload }));
       return payload;
@@ -4087,7 +4084,7 @@ function DetailView({
   async function saveDoc() {
     setBusy(true);
     try {
-      const payload = await api<DocPayload>(boardPath(boardId, `/cards/${item.id}/docs/${activeTab}`), {
+      const payload = await api<DocPayload>(cardPath(boardId, item.id, `/docs/${activeTab}`), {
         method: "PUT",
         body: JSON.stringify({ markdown: draft, expectedMtimeMs: doc?.mtimeMs ?? null }),
       });
@@ -5142,7 +5139,7 @@ function BoardView({
       for (const item of pendingItems) {
         try {
           const result = await api<{ linked: boolean; state?: PlanbanState }>(
-            boardPath(boardId, `/cards/${item.id}/codex-thread/sync`),
+            cardPath(boardId, item.id, `/codex-thread/sync`),
             { method: "POST", body: "{}" },
           );
           if (!cancelled && result.linked && result.state) {
@@ -5203,7 +5200,7 @@ function BoardView({
     const item = preview.state.roadmap.roadmapItems.find((entry) => entry.id === cardId);
     const confirmed = window.confirm(`Restore "${item?.title ?? cardId}" card details from v${preview.version} to the latest version?`);
     if (!confirmed) return;
-    const next = await api<PlanbanState>(boardPath(boardId, `/history/${preview.version}/cards/${cardId}/restore`), {
+    const next = await api<PlanbanState>(cardPath(boardId, cardId, `/restore`, preview.version), {
       method: "POST",
       body: JSON.stringify({ actor: "user" }),
     });
@@ -5216,7 +5213,7 @@ function BoardView({
     if (!preview) return;
     const confirmed = window.confirm(`Restore this ${kind} document from v${preview.version} to the latest version?`);
     if (!confirmed) return;
-    await api<DocPayload>(boardPath(boardId, `/history/${preview.version}/cards/${cardId}/docs/${kind}/restore`), {
+    await api<DocPayload>(cardPath(boardId, cardId, `/docs/${kind}/restore`, preview.version), {
       method: "POST",
       body: JSON.stringify({ actor: "user" }),
     });
@@ -5227,7 +5224,7 @@ function BoardView({
   async function moveItem(id: string, status: Status) {
     if (isPreviewing) return;
     try {
-      const next = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+      const next = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
         method: "POST",
         body: JSON.stringify({ status, baseRevision: state.roadmap.revision }),
       });
@@ -5249,7 +5246,7 @@ function BoardView({
     if (!confirmed) return;
 
     try {
-      const next = await api<PlanbanState>(boardPath(boardId, `/cards/${id}`), {
+      const next = await api<PlanbanState>(cardPath(boardId, id, ``), {
         method: "DELETE",
         body: JSON.stringify({ baseRevision: state.roadmap.revision }),
       });
@@ -5392,7 +5389,7 @@ function BoardView({
       const move = flattenedExecutionMoveForDrop(dragStartItems, id, resolvedOverId);
       if (!move) return;
       try {
-        const placed = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+        const placed = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
           method: "POST",
           body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
         });
@@ -5427,7 +5424,7 @@ function BoardView({
       if (!move) return;
       setItems(previewGroupWorkspaceMove(dragStartItems, id, move));
       try {
-        const placed = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+        const placed = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
           method: "POST",
           body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
         });
@@ -5472,7 +5469,7 @@ function BoardView({
     }));
 
     try {
-      const reordered = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+      const reordered = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
         method: "POST",
         body: JSON.stringify({
           baseRevision: state.roadmap.revision,
@@ -5526,7 +5523,7 @@ function BoardView({
         : await (async () => {
             const decision = groupPlacementDecision(pendingBoardPlacement, decisionInput.status, decisionInput.position);
             if (!decision) throw new Error("Placement is no longer valid.");
-            return api<PlanbanState>(boardPath(boardId, `/cards/${decision.activeId}/move`), {
+            return api<PlanbanState>(cardPath(boardId, decision.activeId, `/move`), {
               method: "POST",
               body: JSON.stringify({ ...decision.move, baseRevision: state.roadmap.revision }),
             });

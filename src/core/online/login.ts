@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultPlanbanRoot } from "../paths";
 import { spawn } from "node:child_process";
+import { urlOpener } from "../openUrl";
 import { serviceUrl, saveCredentials } from "./credentials";
 import { onlineRequest } from "./client";
 import { PlanbanValidationError } from "../boardOperations";
@@ -72,8 +73,7 @@ async function devLogin(url: string, options: LoginOptions) {
 }
 
 async function openBrowser(url: string) {
-  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
-  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+  const { command, args } = urlOpener(url);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: "ignore" });
     child.on("error", reject);
