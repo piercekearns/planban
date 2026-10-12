@@ -10,8 +10,8 @@ const reply = (value: unknown, status = 200) => new Response(JSON.stringify(valu
 });
 const error = (code: string, status = 400) => reply({ error: code }, status);
 
-async function form(request: Request): Promise<URLSearchParams | null> {
-  if (request.method !== "POST" || request.headers.has("Authorization") || !/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(request.headers.get("Content-Type") ?? "")) return null;
+export async function readOAuthForm(request: Request, allowAuthorization = false): Promise<URLSearchParams | null> {
+  if (request.method !== "POST" || (!allowAuthorization && request.headers.has("Authorization")) || !/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(request.headers.get("Content-Type") ?? "")) return null;
   const reader = request.body?.getReader();
   if (!reader) return null;
   try {
@@ -50,7 +50,7 @@ type SessionCheck = (sessionId: string, userId: string) => Promise<HumanIdentity
 
 /** Opaque codes and refresh credentials never substitute for human consent. */
 export async function tokenResponse(ctx: ActionCtx, request: Request, checkSession: SessionCheck = activeSessionIdentity): Promise<Response> {
-  const input = await form(request);
+  const input = await readOAuthForm(request);
   if (!input) return error("invalid_request");
   const clientId = input.get("client_id") ?? "";
   const resource = input.get("resource") ?? "";
@@ -97,7 +97,7 @@ export async function tokenResponse(ctx: ActionCtx, request: Request, checkSessi
 
 /** RFC 7009: unknown tokens have the same successful response as known ones. */
 export async function revocationResponse(ctx: ActionCtx, request: Request): Promise<Response> {
-  const input = await form(request);
+  const input = await readOAuthForm(request);
   if (!input) return error("invalid_request");
   const clientId = input.get("client_id") ?? "", token = input.get("token") ?? "";
   if (!clientId || clientId.length > 2048 || !token || token.length > 2048) return error("invalid_request");

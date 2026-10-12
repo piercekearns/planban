@@ -138,6 +138,18 @@ test("grant changes and refresh cannot expand an access credential beyond its ap
   assert.equal((await handler(oauth.refresh, f.ctx, { ...next, tokenHash: next.refreshHash, resource: "https://other.example/mcp" })).error, "invalid_grant");
 });
 
+test("browser-bound cancellation consumes a pending request without identity or a grant", async () => {
+  const f = fixture(), args = await f.request("cancel-without-identity");
+  for (const field of ["browserHash", "csrfHash"]) await assert.rejects(handler(oauth.denyRequest, f.ctx, { ...args, [field]: digest("wrong") }), /fresh authorization/);
+  const result = await handler(oauth.denyRequest, f.ctx, args);
+  assert.equal(result.redirectUri, args.redirectUri);
+  assert.equal(result.state, args.state);
+  assert.equal(f.rows.find((row) => row.table === "oauthRequests").status, "denied");
+  assert.equal(f.rows.filter((row) => row.table === "connections").length, 0);
+  await assert.rejects(handler(oauth.bindIdentity, f.ctx, { ...args, userId: "person", sessionId: "sess_fixture" }), /fresh authorization/);
+  await assert.rejects(handler(oauth.denyRequest, f.ctx, args), /fresh authorization/);
+});
+
 test("cross-user approval, agent approval and mismatched browser/CSRF are denied", async () => {
   const f = fixture(), machine = await f.addMachine(), other = await f.addMachine("other"), agent = await f.addMachine("person", false), args = await f.request("consent");
   for (const field of ["browserHash", "csrfHash"]) await assert.rejects(handler(oauth.bindIdentity, f.ctx, { ...args, userId: "person", [field]: digest("wrong") }), /fresh authorization/);

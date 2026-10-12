@@ -12,6 +12,7 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
+import { authorizationResponse, consentResponse, approvalResponse } from "./model/oauthConsent";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -395,6 +396,9 @@ for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mc
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(tokenResponse) });
 http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(revocationResponse) });
+http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(authorizationResponse) });
+http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(consentResponse) });
+http.route({ path: "/oauth/approve", method: "POST", handler: httpAction(approvalResponse) });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
 http.route({ pathPrefix: "/invite/", method: "GET", handler: invitePage });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });

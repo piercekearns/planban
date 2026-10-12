@@ -1,0 +1,92 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { Script } from "node:vm";
+import { test } from "node:test";
+import { getFunctionName } from "convex/server";
+import { authorizationResponse, approvalResponse, consentResponse } from "../online/service/convex/model/oauthConsent";
+
+const origin = "https://planban.example", clientId = "https://chatgpt.com/oauth/codex/client.json";
+const client = { clientId, name: "Codex", native: true, redirectUris: ["http://127.0.0.1/callback"] };
+const fields = { client_id: clientId, redirect_uri: "http://127.0.0.1:54321/callback", response_type: "code", resource: origin + "/mcp", code_challenge: "a".repeat(43), code_challenge_method: "S256", scope: "planban:plan offline_access", state: "client-state" };
+const authorize = (values = fields, headers: Record<string, string> = {}) => new Request(origin + "/oauth/authorize?" + new URLSearchParams(values), { headers });
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+async function configured(run: () => Promise<void>) {
+  const values = { PLANBAN_PUBLIC_URL: origin, CLERK_ISSUER: "https://fixture.clerk.example", CLERK_PUBLISHABLE_KEY: "pk_test_" + btoa("fixture.clerk.example$"), CLERK_SECRET_KEY: "synthetic-fixture-only" };
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  try { Object.assign(process.env, values); await run(); }
+  finally { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+}
+
+test("authorization freezes validated metadata and bindings, with independent host cookies and no unsafe redirect", async () => configured(async () => {
+  const stored: any[] = [];
+  const ctx: any = { runMutation: async (fn: any, args: any) => { assert.equal(getFunctionName(fn), "oauth:createRequest"); stored.push(args); } };
+  const response = await authorizationResponse(ctx, authorize(), async () => client);
+  assert.equal(response.status, 303);
+  const location = new URL(response.headers.get("Location")!);
+  assert.equal(location.origin, origin);
+  assert.equal(location.pathname, "/oauth/consent");
+  assert.equal(stored[0].requestHash, hash(location.searchParams.get("request")!));
+  assert.equal(stored[0].clientId, clientId);
+  assert.equal(stored[0].redirectUri, fields.redirect_uri);
+  assert.equal(stored[0].challenge, fields.code_challenge);
+  assert.deepEqual(stored[0].scopes, ["planban:plan", "offline_access"]);
+  const cookies = response.headers.getSetCookie();
+  assert.equal(cookies.length, 2);
+  for (const cookie of cookies) assert.match(cookie, /^__Host-planban_\w+=pb[bs]_[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=600; Secure$/);
+  assert.notEqual(stored[0].browserHash, stored[0].csrfHash);
+  const invalid = await authorizationResponse(ctx, authorize({ ...fields, redirect_uri: "https://attacker.example/callback" }), async () => client);
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.headers.get("Location"), null);
+  for (const override of [{ resource: "https://attacker.example" }, { scope: "planban:owner" }, { code_challenge_method: "plain" }, { response_type: "token" }]) {
+    const failed = await authorizationResponse(ctx, authorize({ ...fields, ...override }), async () => client);
+    assert.equal(failed.status, 303);
+    const redirect = new URL(failed.headers.get("Location")!);
+    assert.equal(redirect.origin, new URL(fields.redirect_uri).origin);
+    assert.equal(redirect.searchParams.get("iss"), origin);
+    assert.equal(redirect.searchParams.get("state"), fields.state);
+    assert.ok(redirect.searchParams.get("error"));
+  }
+  assert.equal(stored.length, 1, "invalid requests create no pending rows");
+}));
+
+test("consent escapes frozen metadata and approval requires origin, independent CSRF and verified identity", async () => configured(async () => {
+  const browser = "pbb_" + "b".repeat(43), csrf = "pbs_" + "c".repeat(43), requestSecret = "pbe_" + "d".repeat(43);
+  const cookie = `__Host-planban_browser=${browser}; __Host-planban_csrf=${csrf}`;
+  const calls: any[] = [];
+  const ctx: any = {
+    runQuery: async (_fn: unknown, args: any) => { assert.equal(args.browserHash, hash(browser)); return { ...fields, clientName: '</h1><script>alert("metadata")</script>', clientId, scopes: ["planban:plan", "offline_access"], purpose: "oauth" }; },
+    runMutation: async (fn: any, args: any) => { calls.push({ fn: getFunctionName(fn), args }); return { redirectUri: fields.redirect_uri, state: fields.state }; },
+  };
+  const page = await consentResponse(ctx, new Request(origin + "/oauth/consent?request=" + requestSecret, { headers: { Cookie: cookie } }));
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("Content-Security-Policy")!, /frame-ancestors 'none'/);
+  assert.equal(page.headers.get("Referrer-Policy"), "no-referrer");
+  const html = await page.text();
+  assert.ok(!html.includes('</h1><script>alert("metadata")</script>'));
+  assert.ok(html.includes("&lt;script&gt;"));
+  const script = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].at(-1)![1]!;
+  new Script(script);
+  const input = { request: requestSecret, csrf, decision: "allow", userId: "attacker", sessionId: "attacker" };
+  const post = (values = input, headers: Record<string, string> = {}) => new Request(origin + "/oauth/approve", { method: "POST", body: new URLSearchParams(values), headers: { Origin: origin, Cookie: cookie, Authorization: "Bearer synthetic.session", ...headers } });
+  let verified = 0;
+  const verify = async () => { verified++; return { userId: "user_fixture", sessionId: "sess_fixture" }; };
+  for (const invalid of [post(input, { Origin: "https://attacker.example" }), post({ ...input, csrf: "wrong" }), post(input, { Cookie: "" }), post(input, { Cookie: cookie + "; __Host-planban_csrf=" + csrf })]) assert.equal((await approvalResponse(ctx, invalid, verify)).status, 403);
+  assert.equal(verified, 0);
+  assert.equal(calls.length, 0);
+  const approved = await approvalResponse(ctx, post(), verify);
+  const result = await approved.json();
+  const callback = new URL(result.redirect);
+  assert.equal(callback.searchParams.get("iss"), origin);
+  assert.equal(callback.searchParams.get("state"), fields.state);
+  const code = callback.searchParams.get("code")!;
+  assert.match(code, /^pbc_[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(calls.map(({ fn }) => fn), ["oauth:bindIdentity", "oauth:approve"]);
+  assert.equal(calls[1].args.userId, "user_fixture");
+  assert.equal(calls[1].args.sessionId, "sess_fixture");
+  assert.equal(calls[1].args.codeHash, hash(code));
+  assert.ok(!JSON.stringify(calls).includes(code));
+  calls.length = 0;
+  const denied = await approvalResponse(ctx, post({ ...input, decision: "deny" }), async () => { throw new Error("denial needs no identity"); });
+  assert.equal(new URL((await denied.json()).redirect).searchParams.get("error"), "access_denied");
+  assert.deepEqual(calls.map(({ fn }) => fn), ["oauth:denyRequest"]);
+}));

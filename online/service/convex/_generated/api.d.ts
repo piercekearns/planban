@@ -34,6 +34,7 @@ import type * as model_limits from "../model/limits.js";
 import type * as model_liveToken from "../model/liveToken.js";
 import type * as model_mcp from "../model/mcp.js";
 import type * as model_oauthClient from "../model/oauthClient.js";
+import type * as model_oauthConsent from "../model/oauthConsent.js";
 import type * as model_oauthHttp from "../model/oauthHttp.js";
 import type * as model_retired from "../model/retired.js";
 import type * as model_rows from "../model/rows.js";
@@ -77,6 +78,7 @@ declare const fullApi: ApiFromModules<{
   "model/liveToken": typeof model_liveToken;
   "model/mcp": typeof model_mcp;
   "model/oauthClient": typeof model_oauthClient;
+  "model/oauthConsent": typeof model_oauthConsent;
   "model/oauthHttp": typeof model_oauthHttp;
   "model/retired": typeof model_retired;
   "model/rows": typeof model_rows;

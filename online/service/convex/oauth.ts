@@ -80,6 +80,17 @@ export const bindIdentity = internalMutation({
   },
 });
 
+/** Cancellation cannot create a grant and does not require a signed-in user. */
+export const denyRequest = internalMutation({
+  args: { requestHash: hash, browserHash: hash, csrfHash: hash },
+  handler: async (ctx, args) => {
+    const row = await requestRow(ctx, args.requestHash);
+    if (!row || row.status !== "pending" || row.expiresAt <= Date.now() || row.browserHash !== args.browserHash || row.csrfHash !== args.csrfHash) fail("unauthorized", "Start a fresh authorization request.");
+    await ctx.db.patch(row!._id, { status: "denied" });
+    return { redirectUri: row!.redirectUri, state: row!.state };
+  },
+});
+
 export const approve = internalMutation({
   args: { requestHash: hash, browserHash: hash, csrfHash: hash, userId: v.string(), sessionId: v.optional(v.string()), approverConnectionId: v.optional(v.id("connections")), codeHash: hash, deny: v.boolean() },
   handler: async (ctx, args) => {
