@@ -110,7 +110,7 @@ test("Claude localhost port flexibility freezes the original callback and preser
   for (const decision of ["allow", "deny"]) {
     const response = await approvalResponse(approvalCtx, new Request(origin + "/oauth/approve", {
       method: "POST", headers: { Origin: origin, Cookie: `__Host-planban_browser=${browser}; __Host-planban_csrf=${csrf}` },
-      body: JSON.stringify({ request: ticket, csrf, decision }),
+      body: new URLSearchParams({ request: ticket, csrf, decision }),
     }), async () => ({ userId: "fixture", sessionId: "session" }));
     const returned = new URL((await response.json()).redirect);
     assert.equal(returned.origin + returned.pathname, values.redirect_uri);
