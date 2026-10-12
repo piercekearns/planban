@@ -22,6 +22,7 @@ import { internalMutation, internalQuery, type MutationCtx } from "./_generated/
 import { boardAccess, liveConnection, reaches } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
+import { checkCards, checkDocuments } from "./model/indexRules";
 import { historyEntries, historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
 import { DOC_KINDS, currentRoadmap, docPayload, docRow, live, retiredIds, stateRow, type DocKind } from "./model/rows";
 
@@ -51,6 +52,9 @@ function attributionFor(connection: Doc<"connections">, actor: unknown): Attribu
 /** Writes the roadmap, documents and one history version. Runs inside the caller's mutation. */
 async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanRoadmap, change: PlannedChange, attribution: Attribution, now: string) {
   assertCommittable(change.roadmap);
+  // Planban is an index, not storage (owner decision 18).
+  checkCards(change.roadmap, previous);
+  checkDocuments(change.docWrites);
   const at = live(board);
   const committed = committedRoadmap(change.roadmap, now);
   await ctx.db.patch((await stateRow(ctx, at))._id, { roadmap: packJson(committed) });

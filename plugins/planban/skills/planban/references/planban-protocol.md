@@ -68,6 +68,16 @@ Planban deliberately separates repo discovery from live local state:
 
 Do not create or prefer `ROADMAP.md`.
 
+## Online Boards: an index, not storage
+
+An Online Board holds only Planban's own text: cards, Specs, Plans and their history. Everything else is a reference to where it lives, which agents follow with their own access:
+
+- a GitHub link, for files in a repository;
+- any web address, for documents, designs and other online material;
+- a local path labelled with its machine, such as `Mac mini: ~/Projects/northfold/renders/front.png`.
+
+Never paste a file, an image or encoded data (a `data:` address, base64) into a card or document on an Online Board; the service refuses it and says how to refer to the file instead. Documents are limited to 1 MB and cards to 128 KB. Taking a board online turns the files in its card folders, and pictures in its Specs and Plans, into references. Local boards are unchanged for now.
+
 ## Work Item Model
 
 Use these terms consistently:

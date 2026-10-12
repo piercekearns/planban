@@ -14,7 +14,6 @@ import { loadOnlineState, onlineState } from "./adapter";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readStaleMarker, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
-import { downloadAttachments, uploadLocalAttachments } from "./attachments";
 import { serviceUrl } from "./credentials";
 import { buildAgentContext } from "../protocol";
 import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
@@ -232,7 +231,7 @@ export class PlanbanConfirmationNeeded extends PlanbanValidationError {
  * half-copied online version is removed and the board stays on this machine
  * unchanged (owner decision 15).
  */
-export async function takeOnline(urlInput: string, cwdInput: string, options: { attachments?: boolean } & MoveOptions = {}) {
+export async function takeOnline(urlInput: string, cwdInput: string, options: MoveOptions = {}) {
   const url = serviceUrl(urlInput);
   await requireCredentials(url);
   const cwd = resolveProjectCwd(cwdInput);
@@ -257,21 +256,8 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: { 
     }
     options.onProgress?.({ step: "switch", message: "Switching this project to the online board" });
     const result = await finishTakeOnline(cwd, manifest, planningRoot, journal!);
-    if (!options.attachments) {
-      options.onProgress?.({ step: "done", message: "The board is online" });
-      return result;
-    }
-    options.onProgress?.({ step: "files", message: "Sending the files in each card's folder" });
-    // Card files go up once the board is online; re-running links files already stored.
-    const roadmap = JSON.parse(await readFile(result.localSnapshot, "utf8")) as { roadmapItems: Array<{ id: string }> };
-    try {
-      const attachments = await uploadLocalAttachments(url, boardId, planningRoot, roadmap.roadmapItems.map((item) => item.id));
-      options.onProgress?.({ step: "done", message: "The board is online" });
-      return { ...result, attachments };
-    } catch (error) {
-      // The board is online either way; the files can be sent again, and those already sent are only linked.
-      throw new PlanbanValidationError(`The board is online, but sending its files stopped (${error instanceof Error ? error.message : String(error)}). Finish with: planban online upload-files --cwd ${cwd} --from ${planningRoot}`);
-    }
+    options.onProgress?.({ step: "done", message: "The board is online" });
+    return result;
   });
 }
 
@@ -613,7 +599,6 @@ export async function takeLocal(cwdInput: string, options: {
       // The folder is this transfer's own; a partial earlier attempt is replaced.
       await rm(root, { recursive: true, force: true });
       await stageBundle(root, bundle);
-      await downloadAttachments(storage.url, storage.boardId, root);
       await step({ ...journal, phase: "staged" });
     }
     crashPoint("take-local:after-stage");
@@ -786,13 +771,3 @@ export async function restoreBackup(folder: string, cwdInput: string, repoId: st
   return { repoId, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length };
 }
 
-/**
- * Sends the files in a local board folder's card folders to this project's
- * Online Board, for cards it has. Safe to repeat: files already stored are
- * only linked. Used to finish an interrupted `take-online --attachments`.
- */
-export async function uploadFiles(cwdInput: string, folder: string) {
-  const { storage } = await requireOnline(cwdInput);
-  const roadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(storage.url, boardPath(storage.boardId))).roadmap;
-  return uploadLocalAttachments(storage.url, storage.boardId, resolve(folder), roadmap.roadmapItems.map((item) => item.id));
-}

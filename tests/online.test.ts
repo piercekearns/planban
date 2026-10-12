@@ -1001,24 +1001,6 @@ test("a copy of a board made before identities existed is still recognised by it
   assert.equal(refusal.stale.unsyncedChanges.length, 60);
 });
 
-test("take-online with attachments uploads card files once, and take-local brings them back", async () => {
-  const before = await storage.loadState(cwd);
-  const folder = join(before.planningRoot, "items", "alpha");
-  await mkdir(join(folder, "renders", "__pycache__"), { recursive: true });
-  await writeFile(join(folder, "renders", "front.png"), Buffer.from([137, 80, 78, 71, 1, 2, 3]));
-  await writeFile(join(folder, "notes.txt"), "Fabric notes");
-  await writeFile(join(folder, "model.blend1"), "autosave");
-  await writeFile(join(folder, "renders", "__pycache__", "x.pyc"), "cache");
-  const result: any = await takeOnline(fake.url, cwd, { attachments: true });
-  assert.equal(result.attachments.files, 2);
-  assert.equal(result.attachments.uploaded, 2);
-  assert.deepEqual(result.attachments.skipped.map((entry: { path: string }) => entry.path).sort(), ["model.blend1", "renders/__pycache__"]);
-  assert.deepEqual([...fake.attachments.values()].map((entry) => entry.path).sort(), ["notes.txt", "renders/front.png"]);
-  const returned = await takeLocal(cwd);
-  assert.deepEqual([...await readFile(join(returned.planningRoot, "items", "alpha", "renders", "front.png"))], [137, 80, 78, 71, 1, 2, 3]);
-  assert.equal(await readFile(join(returned.planningRoot, "items", "alpha", "notes.txt"), "utf8"), "Fabric notes");
-});
-
 test("a take-online that fails removes the partly copied online board and leaves this machine's board unchanged", async () => {
   const before = await storage.loadState(cwd);
   fake.failParts(true);
@@ -1250,15 +1232,6 @@ test("taking a shared board local says who loses access, and only goes ahead whe
   await takeLocal(cwd, { removeOthers: true });
   assert.equal((await storage.readManifest(cwd))?.storage?.kind, "local");
   assert.deepEqual(fake.members.map((member) => member.userId), ["dev-owner"]);
-});
-
-test("take-local never writes an attachment outside the board's folder, whatever the card id", async () => {
-  await takeOnline(fake.url, cwd);
-  fake.blobs.set("f".repeat(64), Buffer.from("escape"));
-  fake.attachments.set("evil", { id: "evil", cardId: "../../outside", path: "proof.txt", sha256: "f".repeat(64), size: 6, contentType: "text/plain", uploadedBy: "x", uploadedAt: new Date().toISOString() });
-  await assert.rejects(takeLocal(cwd), /Unsafe card id/);
-  assert.equal(await storage.pathExists(join(root, "home", "outside", "proof.txt")), false);
-  assert.equal((await storage.readManifest(cwd))?.storage?.kind, "online");
 });
 
 test("a sign-in the service no longer accepts asks the person to sign in again", async () => {

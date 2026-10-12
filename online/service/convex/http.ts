@@ -9,8 +9,7 @@ import { clerkConfigured, verifyClerkAccessToken } from "./model/clerk";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
-import { streamParts } from "./model/blobs";
-import { Sha256 } from "./model/sha256";
+import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   conflict: 409,
@@ -220,58 +219,9 @@ async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated):
       ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
     }));
   }
-  if (rest[0] === "attachments") {
-    if (rest.length === 1 && method === "GET") {
-      const cardId = url.searchParams.get("cardId");
-      return json(await ctx.runQuery(internal.attachments.list, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));
-    }
-    if (rest[1] === "begin" && rest.length === 2 && method === "POST") {
-      const input = await body(request);
-      const file = { cardId: String(input.cardId ?? ""), path: String(input.path ?? ""), sha256: String(input.sha256 ?? ""), size: Number(input.size), contentType: String(input.contentType ?? "application/octet-stream") };
-      return json(await ctx.runMutation(internal.attachments.begin, { connectionId, boardId, ...file }));
-    }
-    // One part of an upload, stored by Planban for that upload session only.
-    if (rest[1] === "uploads" && rest[3] === "parts" && rest.length === 5 && method === "PUT") {
-      const uploadId = rest[2]!;
-      const index = Number(rest[4]);
-      const { expected } = await ctx.runQuery(internal.attachments.partAllowed, { connectionId, boardId, uploadId, index });
-      const bytes = new Uint8Array(await request.arrayBuffer());
-      if (bytes.byteLength !== expected) return json({ error: { code: "validation", message: `This part must be ${expected} bytes.` } }, 400);
-      const storageId = await ctx.storage.store(new Blob([bytes]));
-      const recorded = await ctx.runMutation(internal.attachments.recordPart, { connectionId, boardId, uploadId, index, storageId, size: bytes.byteLength });
-      if (!recorded.stored) return json({ error: { code: "conflict", message: "This upload is no longer open." } }, 409);
-      return json({ stored: true, index });
-    }
-    if (rest[1] === "finish" && rest.length === 2 && method === "POST") {
-      const input = await body(request);
-      const uploadId = String(input.uploadId ?? "");
-      const { state, parts } = await ctx.runQuery(internal.attachments.partsToVerify, { connectionId, boardId, uploadId });
-      // Hash what actually arrived, part by part.
-      const hash = new Sha256();
-      let size = 0;
-      if (state === "open") {
-        for (const part of parts) {
-          const blob = await ctx.storage.get(part.storageId);
-          if (!blob) return json({ error: { code: "conflict", message: "A part of this upload is missing. Send it again." } }, 409);
-          const bytes = new Uint8Array(await blob.arrayBuffer());
-          hash.update(bytes);
-          size += bytes.byteLength;
-        }
-      }
-      const finished = await ctx.runMutation(internal.attachments.complete, {
-        connectionId, boardId, uploadId, sha256: state === "open" ? hash.hex() : "", size,
-        // Exactly the parts that were hashed; if any changed meanwhile, completing is refused.
-        partIds: parts.map((part) => part.id),
-      });
-      if ("rejected" in finished) return json({ error: { code: "validation", message: finished.rejected } }, 400);
-      return json(finished);
-    }
-    if (rest.length === 3 && rest[2] === "delete" && method === "POST") return json(await ctx.runMutation(internal.attachments.remove, { connectionId, boardId, attachmentId: rest[1]! }));
-    if (rest.length === 2 && method === "GET") {
-      const located = await ctx.runQuery(internal.attachments.locate, { connectionId, boardId, attachmentId: rest[1]! });
-      return streamParts(ctx, located.parts, located.contentType);
-    }
-  }
+  // Owner decision 18: Planban is an index, not storage. Online boards hold
+  // text only; files stay where they live and cards refer to them.
+  if (rest[0] === "attachments") return json({ error: { code: "not_found", message: INDEX_NOT_STORAGE } }, 404);
   if (rest[0] === "docs" && rest.length === 3 && method === "GET") {
     const kind = rest[2] === "plan" ? "plan" : rest[2] === "spec" ? "spec" : null;
     if (!kind) return json({ error: { code: "validation", message: "kind must be spec or plan." } }, 400);

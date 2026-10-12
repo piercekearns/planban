@@ -26,6 +26,7 @@ import type * as model_clerk from "../model/clerk.js";
 import type * as model_codec from "../model/codec.js";
 import type * as model_errors from "../model/errors.js";
 import type * as model_history from "../model/history.js";
+import type * as model_indexRules from "../model/indexRules.js";
 import type * as model_liveToken from "../model/liveToken.js";
 import type * as model_mcp from "../model/mcp.js";
 import type * as model_rows from "../model/rows.js";
@@ -60,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   "model/codec": typeof model_codec;
   "model/errors": typeof model_errors;
   "model/history": typeof model_history;
+  "model/indexRules": typeof model_indexRules;
   "model/liveToken": typeof model_liveToken;
   "model/mcp": typeof model_mcp;
   "model/rows": typeof model_rows;

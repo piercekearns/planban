@@ -15,6 +15,7 @@ import type { MutationCtx } from "../_generated/server";
 import { BOARD_ID_PATTERN } from "./access";
 import { packJson, packText } from "./codec";
 import { asServiceError, fail } from "./errors";
+import { checkCards, checkDocuments } from "./indexRules";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
 
@@ -100,6 +101,8 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
   try {
     roadmap = normalizeRoadmap(input.roadmap);
     assertCommittable(roadmap);
+    // Planban is an index, not storage (owner decision 18): the board arrives as text only.
+    checkCards(roadmap);
   } catch (error) {
     throw asServiceError(error);
   }
@@ -155,6 +158,8 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
   const roadmap = await currentRoadmap(ctx, at);
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
   let stamp = Date.now();
+  checkDocuments((input.docs ?? []).filter((doc) => typeof doc?.markdown === "string"));
+  checkDocuments((input.historyDocs ?? []).filter((doc) => typeof doc?.markdown === "string"));
   for (const doc of input.docs ?? []) {
     if (!DOC_KINDS.has(doc.kind) || typeof doc.markdown !== "string") fail("validation", `Document ${doc.cardId}/${doc.kind} is invalid.`);
     if (!live.has(doc.cardId)) fail("validation", `Upload contains a document for an unknown card: ${doc.cardId}`);
@@ -176,6 +181,7 @@ export async function putPart(ctx: MutationCtx, connection: Doc<"connections">, 
     } catch (error) {
       throw asServiceError(error);
     }
+    checkCards(historical);
     await importHistoryVersion(ctx, at, version.entry, historical);
     await ctx.db.insert("boardFingerprints", { ...at, key: `${number}|${version.entry.createdAt}|${version.entry.operation}` });
     // Every id the board ever used that is not live now stays retired.

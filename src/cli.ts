@@ -31,9 +31,8 @@ import { startServer } from "./server/server";
 import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
-import { downloadAttachment, listAttachments, removeAttachment, uploadAttachment } from "./core/online/attachments";
 import { invitePeople, joinBoard, listPeople, setMyAgents } from "./core/online/people";
-import { attachOnline, exportOnline, keepLocalCopy, keepSeparateBoard, restoreBackup, stopTakeOnline, takeLocal, takeOnline, uploadFiles } from "./core/online/transfers";
+import { attachOnline, exportOnline, keepLocalCopy, keepSeparateBoard, restoreBackup, stopTakeOnline, takeLocal, takeOnline } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -139,8 +138,7 @@ keys.command("create <url>").requiredOption("--board <id>", "the one board the k
   });
 online.command("status").action(async () => print(await onlineStatus(), {}));
 online.command("take-online <url>").option("--cwd <path>", "project directory")
-  .option("--attachments", "also upload the files in each card's folder (skips autosaves, logs, caches and files over 100 MB)")
-  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd), { attachments: !!options.attachments }), {}));
+  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
 online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")
   .action(async (options) => print(await stopTakeOnline(cwdOption(options.cwd)), {}));
 const onlineBoardOf = async (cwd: string) => {
@@ -148,32 +146,6 @@ const onlineBoardOf = async (cwd: string) => {
   if (!manifest?.enabled || manifest.storage?.kind !== "online") throw new Error("This project does not point to an Online Board.");
   return manifest.storage;
 };
-online.command("files").description("list a board's card attachments").option("--cwd <path>", "project directory").option("--card <id>", "only this card")
-  .action(async (options) => {
-    const storage = await onlineBoardOf(cwdOption(options.cwd));
-    print({ attachments: await listAttachments(storage.url, storage.boardId, options.card) }, {});
-  });
-online.command("attach-file <file>").description("attach a file to a card").option("--cwd <path>", "project directory").requiredOption("--card <id>", "card id")
-  .option("--as <path>", "path inside the card's folder (defaults to the file's name)")
-  .action(async (file, options) => {
-    const storage = await onlineBoardOf(cwdOption(options.cwd));
-    const absolute = resolve(file);
-    print(await uploadAttachment(storage.url, storage.boardId, options.card, options.as ?? basename(absolute), await readFile(absolute)), {});
-  });
-online.command("get-file <attachmentId>").description("download an attachment").option("--cwd <path>", "project directory").requiredOption("--out <file>", "where to save it")
-  .action(async (attachmentId, options) => {
-    const storage = await onlineBoardOf(cwdOption(options.cwd));
-    await writeFile(resolve(options.out), await downloadAttachment(storage.url, storage.boardId, attachmentId));
-    print({ saved: resolve(options.out) }, {});
-  });
-online.command("upload-files").description("send the card files in a local board folder (finishes an interrupted take-online --attachments)")
-  .option("--cwd <path>", "project directory").requiredOption("--from <folder>", "the local board folder")
-  .action(async (options) => print(await uploadFiles(cwdOption(options.cwd), options.from), {}));
-online.command("remove-file <attachmentId>").description("remove an attachment").option("--cwd <path>", "project directory")
-  .action(async (attachmentId, options) => {
-    const storage = await onlineBoardOf(cwdOption(options.cwd));
-    print(await removeAttachment(storage.url, storage.boardId, attachmentId), {});
-  });
 online.command("export").option("--cwd <path>", "project directory").requiredOption("--out <file>", "bundle destination")
   .action(async (options) => {
     await exportOnline(cwdOption(options.cwd), options.out);
