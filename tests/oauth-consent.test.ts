@@ -4,6 +4,7 @@ import { Script } from "node:vm";
 import { test } from "node:test";
 import { getFunctionName } from "convex/server";
 import { authorizationResponse, approvalResponse, consentResponse } from "../online/service/convex/model/oauthConsent";
+import { serviceDiscovery, authorizationServerDiscovery } from "../online/service/convex/http";
 
 const origin = "https://planban.example", clientId = "https://chatgpt.com/oauth/codex/client.json";
 const client = { clientId, name: "Codex", native: true, redirectUris: ["http://127.0.0.1/callback"] };
@@ -16,6 +17,25 @@ async function configured(run: () => Promise<void>) {
   try { Object.assign(process.env, values); await run(); }
   finally { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 }
+
+test("discovery names only the service issuer and explicit machine flow, and fails closed when unavailable", async () => configured(async () => {
+  const invoke = (fn: any) => fn._handler({}, new Request(origin + "/.well-known/planban.json"));
+  const service = await (await invoke(serviceDiscovery)).json();
+  assert.equal(service.signIn.issuer, origin);
+  assert.equal(service.signIn.cliClientId, "planban-cli");
+  assert.equal(service.signIn.scope, "planban:machine");
+  const metadata = await (await invoke(authorizationServerDiscovery)).json();
+  assert.equal(metadata.issuer, origin);
+  assert.equal(metadata.authorization_response_iss_parameter_supported, true);
+  assert.equal(metadata.client_id_metadata_document_supported, true);
+  assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ["none"]);
+  for (const field of ["authorization_endpoint", "token_endpoint", "revocation_endpoint"]) assert.equal(new URL(metadata[field]).origin, origin);
+  assert.ok(!JSON.stringify(metadata).includes("fixture.clerk.example"));
+  assert.ok(!metadata.scopes_supported.includes("openid"));
+  delete process.env.CLERK_PUBLISHABLE_KEY;
+  assert.equal((await (await invoke(serviceDiscovery)).json()).signIn, undefined);
+  assert.equal((await invoke(authorizationServerDiscovery)).status, 503);
+}));
 
 test("authorization freezes validated metadata and bindings, with independent host cookies and no unsafe redirect", async () => configured(async () => {
   const stored: any[] = [];

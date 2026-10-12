@@ -57,6 +57,7 @@ async function fakeService() {
   let rejectAccess = false;
   let failExport = false;
   let metadataOrigin: string | undefined;
+  let loginTokenOverride: Record<string, unknown> | undefined;
   let beforeFence: (() => void) | undefined;
   const docs = new Map<string, PlanbanDocPayload>();
   const transfers = new Map<string, { begin: any; parts: Map<number, any>; state: "open" | "committed" | "aborted" }>();
@@ -92,18 +93,19 @@ async function fakeService() {
       const body = raw && req.method !== "PUT" ? (req.headers["content-type"]?.includes("application/json") ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : undefined;
       requests.push({ method: req.method!, path, body });
       const json = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
-      // The fake also plays Clerk, the sign-in server.
-      if (path === "/.well-known/planban.json") return json(200, { signIn: { issuer: url, cliClientId: "cli", redirectPorts: [53682, 53683, 53684, 53685, 53686], scope: "openid email profile" } });
+      // The fake implements Planban's explicit service-owned enrollment.
+      if (path === "/.well-known/planban.json") return json(200, { signIn: { issuer: url, cliClientId: "planban-cli", redirectPorts: [53682, 53683, 53684, 53685, 53686], scope: "planban:machine" } });
       if (path === "/.well-known/oauth-authorization-server") return json(200, {
         issuer: url, token_endpoint: `${metadataOrigin ?? url}/oauth/token`, authorization_endpoint: `${metadataOrigin ?? url}/authorize`,
         revocation_endpoint: `${metadataOrigin ?? url}/oauth/revoke`, code_challenge_methods_supported: ["S256"],
+        authorization_response_iss_parameter_supported: true,
       });
       if (path === "/authorize" && req.method === "GET") {
         // A browser that is already signed in: straight back to the callback.
         auth = request;
-        assert.equal(auth.searchParams.get("client_id"), "cli");
+        assert.equal(auth.searchParams.get("client_id"), "planban-cli");
         assert.equal(auth.searchParams.get("resource"), url);
-        assert.equal(auth.searchParams.get("scope"), "openid email profile");
+        assert.equal(auth.searchParams.get("scope"), "planban:machine");
         assert.equal(auth.searchParams.get("code_challenge_method"), "S256");
         assert.match(auth.searchParams.get("redirect_uri")!, /^http:\/\/127\.0\.0\.1:5368[2-6]\/callback$/);
         const callback = new URL(auth.searchParams.get("redirect_uri")!);
@@ -112,7 +114,7 @@ async function fakeService() {
         return res.end();
       }
       if (path === "/oauth/token") {
-        assert.equal(body.client_id, "cli");
+        assert.equal(body.client_id, "planban-cli");
         if (body.grant_type === "refresh_token") {
           assert.equal(body.resource, url);
           refreshes++;
@@ -120,8 +122,10 @@ async function fakeService() {
         } else {
           assert.equal(body.code, "test-code");
           assert.equal(body.redirect_uri, auth!.searchParams.get("redirect_uri"));
+          assert.equal(body.resource, url);
           assert.equal(createHash("sha256").update(body.code_verifier).digest("base64url"), auth!.searchParams.get("code_challenge"));
-          return json(200, { access_token: "clerk-access", refresh_token: "clerk-refresh", expires_in: 86400 });
+          accessToken = "pbm_" + "m".repeat(43);
+          return json(200, loginTokenOverride ?? { access_token: accessToken, token_type: "Bearer", scope: "planban:machine", user_id: "dev-owner", expires_in: 90 * 86400 });
         }
         accessToken = `access-${requests.length}`;
         refreshToken = `refresh-${requests.length}`;
@@ -132,9 +136,7 @@ async function fakeService() {
         return json(200, {});
       }
       if (path === "/api/v1/auth/machine") {
-        if (req.headers.authorization !== "Bearer clerk-access") return json(401, { error: { code: "unauthorized", message: "Sign in again." } });
-        accessToken = "pbm_machine-token";
-        return json(201, { token: accessToken, userId: "dev-owner" });
+        return json(401, { error: { code: "unauthorized", message: "Bearer exchange is retired." } });
       }
       // A second account, which sees none of the first one's uploads.
       if (req.headers.authorization === "Bearer pbm_other-account") {
@@ -365,6 +367,7 @@ async function fakeService() {
   url = `http://127.0.0.1:${(server.address() as any).port}`;
   return {
     url, requests, errors, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
+    setLoginTokenResponse(value: Record<string, unknown>) { loginTokenOverride = value; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
     failExport(value: boolean) { failExport = value; }, setMetadataOrigin(value: string) { metadataOrigin = value; },
     beforeFence(fn: () => void) { beforeFence = fn; }, dropNextReply() { dropNextReply = true; }, failLiveToken() { failLiveToken = true; }, revoked, members, failParts(value: boolean) { failParts = value; }, failAbort(value: boolean) { failAbort = value; }, slowParts(ms: number) { slowPartsMs = ms; }, failNextBoardRead() { failNextBoardRead = true; }, dropFenceReply() { dropFenceReply = true; }, limitNextOp() { limitNextOp = true; }, onMe(fn: (() => Promise<void> | void) | undefined) { onMe = fn; }, failCopyCheck(value: boolean) { failCopyCheck = value; }, transfers, revokedTokens, attachments, blobs, failExportDocs(value: boolean) { failExportDocs = value; },
@@ -412,9 +415,10 @@ test("browser sign-in uses the service's sign-in server with PKCE, then keeps on
   } });
   assert.equal(result.signedIn, true);
   const credentials = (await readCredentials()).services[fake.url]!;
-  assert.equal(credentials.accessToken, "pbm_machine-token");
+  assert.equal(credentials.accessToken, "pbm_" + "m".repeat(43));
   assert.equal(credentials.refreshToken, "");
-  assert.deepEqual(fake.revoked, ["clerk-refresh"], "the sign-in server's refresh token is revoked");
+  assert.deepEqual(fake.revoked, [], "no provider access or refresh token participates");
+  assert.equal(fake.requests.some(({ path }) => path === "/api/v1/auth/machine"), false, "retired exchange is never called");
   // Windows has no owner-only file modes.
   if (process.platform !== "win32") assert.equal((await stat(join(credentialsRoot(), "credentials.json"))).mode & 0o777, 0o600);
   assert.equal(JSON.stringify(await onlineStatus()).includes("machine-token"), false);
@@ -427,6 +431,21 @@ test("browser sign-in uses the service's sign-in server with PKCE, then keeps on
 test("board-limited access is refused for browser sign-in, which always gives the machine full access", async () => {
   await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { access: "board", boards: "demo" }), /only to development sign-in/);
   await assert.rejects(() => onlineLogin("http://127.0.0.1:1", { boards: "demo" }), /only to development sign-in/);
+});
+
+test("CLI refuses provider, wrong-purpose or refreshing tokens before saving credentials", async () => {
+  for (const tokens of [
+    { access_token: "old.clerk.jwt", token_type: "Bearer", scope: "planban:machine" },
+    { access_token: "pba_" + "a".repeat(43), token_type: "Bearer", scope: "planban:machine" },
+    { access_token: "pbm_" + "a".repeat(43), token_type: "Bearer", scope: "planban:read" },
+    { access_token: "pbm_" + "a".repeat(43), token_type: "Bearer", scope: "planban:machine", refresh_token: "pbr_" + "r".repeat(43) },
+  ]) {
+    await saveCredentials(fake.url, null);
+    fake.setLoginTokenResponse(tokens);
+    await assert.rejects(onlineLogin(fake.url, { openBrowser: async (authorizeUrl) => { await fetch((await fetch(authorizeUrl, { redirect: "manual" })).headers.get("location")!); } }), /machine's own Planban sign-in/);
+    assert.equal((await readCredentials()).services[fake.url], undefined);
+  }
+  assert.equal(fake.requests.some(({ path }) => path === "/api/v1/auth/machine"), false);
 });
 
 test("the sign-in server's endpoints must belong to it", async () => {

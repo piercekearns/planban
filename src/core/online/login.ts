@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { hostname } from "node:os";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultPlanbanRoot } from "../paths";
@@ -104,6 +103,7 @@ async function signInEndpoints(url: string) {
     throw new PlanbanValidationError("This Online Board service has no browser sign-in yet. On a local development backend use --dev-user.");
   }
   const issuer = httpsOrLoopback(config.issuer, "The sign-in server").origin;
+  if (issuer !== url || config.cliClientId !== "planban-cli" || config.scope !== "planban:machine") throw new Error("This service must use explicit Planban machine authorization. Update it before signing in.");
   const response = await fetch(`${issuer}/.well-known/oauth-authorization-server`, { redirect: "error", signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error("The sign-in server's details could not be loaded.");
   const metadata = await response.json() as Record<string, unknown>;
@@ -117,6 +117,7 @@ async function signInEndpoints(url: string) {
     return value;
   };
   if (!(metadata.code_challenge_methods_supported as string[] | undefined)?.includes("S256")) throw new Error("The sign-in server does not support PKCE.");
+  if (metadata.authorization_response_iss_parameter_supported !== true) throw new Error("The sign-in server must identify itself in its callback.");
   return {
     issuer, clientId: config.cliClientId, ports: config.redirectPorts, scope: config.scope,
     authorize: endpoint("authorization_endpoint")!, token: endpoint("token_endpoint")!, revoke: endpoint("revocation_endpoint", false),
@@ -133,12 +134,12 @@ async function callbackListener(ports: number[], state: string, issuer: string) 
   const listener = createServer((req, res) => {
     const callback = new URL(req.url ?? "/", "http://127.0.0.1");
     if (callback.pathname !== "/callback" || callback.searchParams.get("state") !== state
-      || (callback.searchParams.has("iss") && callback.searchParams.get("iss")?.replace(/\/+$/, "") !== issuer)) {
+      || callback.searchParams.getAll("state").length !== 1 || callback.searchParams.getAll("iss").length !== 1 || callback.searchParams.get("iss") !== issuer) {
       res.writeHead(400).end("Invalid sign-in callback.");
       return;
     }
     const received = callback.searchParams.get("code");
-    if (!received) {
+    if (!received || callback.searchParams.getAll("code").length !== 1 || callback.searchParams.has("error")) {
       res.writeHead(400).end("Sign-in was not completed.");
       rejectCode(new Error(`Planban sign-in was not completed${callback.searchParams.get("error") ? ` (${callback.searchParams.get("error")})` : ""}.`));
       return;
@@ -165,12 +166,10 @@ async function callbackListener(ports: number[], state: string, issuer: string) 
 }
 
 /**
- * Browser sign-in (owner decision 6): the person signs in with Clerk (email
- * code or GitHub) as the Planban command line, a public OAuth client using
- * PKCE. The token is then exchanged for this machine's own Planban sign-in,
- * which lasts until sign-out or 90 days unused, with the person's full
- * access. Nothing keeps Clerk's tokens: a refresh token, if issued, is
- * revoked; its access tokens cannot be.
+ * Explicit service consent uses Clerk only to prove the human identity.
+ * Bound PKCE redemption directly issues this machine's own Planban token,
+ * independently revoked on sign-out or after 90 days unused. No provider
+ * access or refresh credentials are exchanged or retained.
  */
 export async function onlineLogin(urlInput: string, options: LoginOptions = {}) {
   const url = serviceUrl(urlInput);
@@ -195,24 +194,11 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
     const code = await callback.code;
     const exchanged = await fetch(server.token, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
-      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: server.clientId, code_verifier: verifier, redirect_uri: callback.redirectUri }),
+      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: server.clientId, code_verifier: verifier, redirect_uri: callback.redirectUri, resource: url }),
     });
-    const tokens = await exchanged.json().catch(() => ({})) as { access_token?: string; refresh_token?: string };
-    if (!exchanged.ok || !tokens.access_token) throw new Error("The sign-in server did not complete the sign-in. Run login again.");
-    const machine = await fetch(`${url}/api/v1/auth/machine`, {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
-      headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: `Planban CLI on ${hostname()}` }),
-    });
-    const signedIn = await machine.json().catch(() => ({})) as { token?: string; userId?: string; error?: { message?: string } };
-    if (!machine.ok || !signedIn.token) throw new Error(signedIn.error?.message ?? "This Online Board service did not accept the sign-in.");
-    // Nothing keeps the sign-in server's tokens. A refresh token, if one was
-    // issued, is revoked (best effort). Clerk's access tokens cannot be
-    // revoked; the service accepts this one for one exchange only.
-    if (server.revoke && tokens.refresh_token) {
-      await fetch(server.revoke, { method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000), body: new URLSearchParams({ token: tokens.refresh_token, client_id: server.clientId }) }).catch(() => undefined);
-    }
-    await saveCredentials(url, { clientId: "machine", accessToken: signedIn.token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(signedIn.userId ? { person: signedIn.userId } : {}) });
+    const tokens = await exchanged.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; token_type?: string; scope?: string; user_id?: string };
+    if (!exchanged.ok || !/^pbm_[A-Za-z0-9_-]{43}$/.test(tokens.access_token ?? "") || tokens.token_type !== "Bearer" || tokens.scope !== "planban:machine" || tokens.refresh_token) throw new Error("The sign-in server did not issue this machine's own Planban sign-in. Run login again.");
+    await saveCredentials(url, { clientId: "machine", accessToken: tokens.access_token!, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(tokens.user_id ? { person: tokens.user_id } : {}) });
     return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
   } finally {
     clearTimeout(timeout);

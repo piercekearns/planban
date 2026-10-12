@@ -26,6 +26,8 @@ function configuration() {
   } catch { return null; }
 }
 
+export function enrollmentConfigured(): boolean { return configuration() !== null; }
+
 function cookieNames(secure: boolean) {
   const prefix = secure ? "__Host-" : "";
   return { browser: `${prefix}planban_browser`, csrf: `${prefix}planban_csrf` };

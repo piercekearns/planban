@@ -5,14 +5,14 @@ import { ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { httpAction, type ActionCtx } from "./_generated/server";
 import { authenticate, devAuthEnabled, publicOrigin, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
-import { clerkConfigured } from "./model/clerk";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
-import { authorizationResponse, consentResponse, approvalResponse } from "./model/oauthConsent";
+import { authorizationResponse, consentResponse, approvalResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
+import { MACHINE_CLIENT_ID } from "./oauth";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -279,9 +279,7 @@ const mcp = httpAction(async (ctx, request) => {
     const auth = await authenticate(ctx, request);
     if (!auth) {
       return json({ error: { code: "unauthorized", message: "Sign in to Planban Online first." } }, 401, {
-        // Naming the scopes keeps AI apps from asking for everything the sign-in
-        // server offers (Clerk also lists public and private metadata, which
-        // Planban never uses), so the consent screen shows only what it needs.
+        // Resource scopes describe Planban permissions, not provider identity.
         "WWW-Authenticate": `Bearer realm="planban", resource_metadata="${publicOrigin()}/.well-known/oauth-protected-resource/mcp", scope="${PLANBAN_SCOPES.join(" ")}"`,
       });
     }
@@ -291,14 +289,11 @@ const mcp = httpAction(async (ctx, request) => {
   }
 });
 
-/** The scopes Planban uses: who you are, your name and picture, your email, and staying signed in. */
-const PLANBAN_SCOPES = ["openid", "profile", "email", "offline_access"];
-
-/** RFC 9728 metadata: Clerk is the sign-in server (CLERK_ISSUER). */
+/** RFC 9728: only our explicit service enrollment can issue resource tokens. */
 function protectedResourceFor(path: string) {
   return httpAction(async () => json({
     resource: `${publicOrigin()}${path}`,
-    authorization_servers: process.env.CLERK_ISSUER ? [process.env.CLERK_ISSUER] : [],
+    authorization_servers: enrollmentConfigured() ? [publicOrigin()] : [],
     bearer_methods_supported: ["header"],
     scopes_supported: PLANBAN_SCOPES,
     resource_name: "Planban Online",
@@ -373,21 +368,28 @@ const invitePage = httpAction(async (ctx, request) => {
 });
 
 /** What a Planban install needs to know to sign in here. */
-const serviceDiscovery = httpAction(async () => json({
+export const serviceDiscovery = httpAction(async () => json({
   service: "Planban Online",
   resource: publicOrigin(),
-  ...(clerkConfigured() && process.env.PLANBAN_CLI_CLIENT_ID ? {
+  ...(enrollmentConfigured() ? {
     signIn: {
-      issuer: process.env.CLERK_ISSUER,
-      cliClientId: process.env.PLANBAN_CLI_CLIENT_ID,
-      // The command-line client's registered loopback addresses.
-      redirectPorts: [53682, 53683, 53684, 53685, 53686],
-      // No offline_access: the command line keeps none of Clerk's tokens.
-      scope: "openid email profile",
+      issuer: publicOrigin(),
+      cliClientId: MACHINE_CLIENT_ID,
+      redirectPorts: CLI_REDIRECT_PORTS,
+      scope: "planban:machine",
     },
   } : {}),
   devSignIn: devAuthEnabled(),
 }, 200, { "Cache-Control": "public, max-age=300" }));
+
+export const authorizationServerDiscovery = httpAction(async () => enrollmentConfigured() ? json({
+  issuer: publicOrigin(), authorization_endpoint: `${publicOrigin()}/oauth/authorize`,
+  token_endpoint: `${publicOrigin()}/oauth/token`, revocation_endpoint: `${publicOrigin()}/oauth/revoke`,
+  response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
+  code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+  revocation_endpoint_auth_methods_supported: ["none"], scopes_supported: [...PLANBAN_SCOPES, "planban:machine"],
+  authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: true,
+}, 200, { "Cache-Control": "public, max-age=300" }) : json({ error: "temporarily_unavailable" }, 503));
 
 const http = httpRouter();
 for (const method of ["GET", "POST", "PUT"] as const) http.route({ pathPrefix: "/api/v1/", method, handler: api });
@@ -400,6 +402,7 @@ http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(author
 http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(consentResponse) });
 http.route({ path: "/oauth/approve", method: "POST", handler: httpAction(approvalResponse) });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
+http.route({ path: "/.well-known/oauth-authorization-server", method: "GET", handler: authorizationServerDiscovery });
 http.route({ pathPrefix: "/invite/", method: "GET", handler: invitePage });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
 http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedMcpResource });
