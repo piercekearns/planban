@@ -58,15 +58,44 @@ test("requires release readiness to rehearse Codex and Claude Code upgrades with
     packageJson: { allowScripts: {} },
     packageLock: { packages: {} },
   });
+  const claudeInstallMissing = ".github/workflows/release-readiness.yml must install a pinned Claude Code CLI version in a required step";
+  const claudeRunMissing = ".github/workflows/release-readiness.yml must run the Claude Code upgrade rehearsal (npm run release:claude-upgrade-rehearsal) in a required step after the pinned CLI install";
+  const claudeRun = "      - run: npm run release:claude-upgrade-rehearsal -- --from-version \"$FROM_VERSION\" --expected-version \"$EXPECTED_VERSION\"";
 
   assert.deepEqual(audit(readiness), []);
-  assert.deepEqual(audit(readiness.replace("@anthropic-ai/claude-code@2.1.296", "@anthropic-ai/claude-code@latest")), [
-    ".github/workflows/release-readiness.yml must install a pinned Claude Code CLI version",
-  ]);
-  assert.deepEqual(audit(readiness.replace(/^.*release:claude-upgrade-rehearsal.*$/mu, "")), [
-    ".github/workflows/release-readiness.yml must run the Claude Code upgrade rehearsal (npm run release:claude-upgrade-rehearsal)",
-  ]);
+  assert.deepEqual(audit(readiness.replace("@anthropic-ai/claude-code@2.1.296", "@anthropic-ai/claude-code@latest")), [claudeInstallMissing]);
+  assert.deepEqual(audit(readiness.replace(claudeRun, "")), [claudeRunMissing]);
   assert.deepEqual(audit(readiness.replace(/^.*@openai\/codex.*$/mu, "")), [
-    ".github/workflows/release-readiness.yml must install a pinned Codex CLI version",
+    ".github/workflows/release-readiness.yml must install a pinned Codex CLI version in a required step",
   ]);
+});
+
+test("does not let a disabled Claude Code rehearsal satisfy release readiness", () => {
+  const readiness = workflows[".github/workflows/release-readiness.yml"];
+  const audit = (source: string) => auditReleasePolicy({
+    remoteUrl: "https://github.com/piercekearns/planban.git",
+    workflows: { ...workflows, ".github/workflows/release-readiness.yml": source },
+    packageJson: { allowScripts: {} },
+    packageLock: { packages: {} },
+  });
+  const claudeRunMissing = ".github/workflows/release-readiness.yml must run the Claude Code upgrade rehearsal (npm run release:claude-upgrade-rehearsal) in a required step after the pinned CLI install";
+  const claudeRun = "      - run: npm run release:claude-upgrade-rehearsal -- --from-version \"$FROM_VERSION\" --expected-version \"$EXPECTED_VERSION\"";
+  const disabled = (replacement: string) => audit(readiness.replace(claudeRun, replacement));
+
+  assert.deepEqual(disabled(`      # ${claudeRun.trim()}`), [claudeRunMissing]);
+  assert.deepEqual(disabled(`      - if: false\n  ${claudeRun.replace("- ", "")}`), [claudeRunMissing]);
+  assert.deepEqual(disabled(`      - continue-on-error: true\n  ${claudeRun.replace("- ", "")}`), [claudeRunMissing]);
+  assert.deepEqual(disabled(`      - run: |\n          # npm run release:claude-upgrade-rehearsal -- --from-version 1.1.6\n          echo skipped`), [claudeRunMissing]);
+  assert.deepEqual(disabled(`${claudeRun.slice(0, -1)} || true"`), [claudeRunMissing]);
+  assert.deepEqual(audit(readiness.replace("    runs-on: ubuntu-24.04", "    runs-on: ubuntu-24.04\n    continue-on-error: true")), [
+    ".github/workflows/release-readiness.yml must install a pinned Codex CLI version in a required step",
+    ".github/workflows/release-readiness.yml must run the Codex upgrade rehearsal (npm run release:upgrade-rehearsal) in a required step after the pinned CLI install",
+    ".github/workflows/release-readiness.yml must install a pinned Claude Code CLI version in a required step",
+    claudeRunMissing,
+  ]);
+  const installAfterRun = readiness.split("\n");
+  const installIndex = installAfterRun.findIndex((line) => line.includes("@anthropic-ai/claude-code"));
+  const [installLine] = installAfterRun.splice(installIndex, 1);
+  installAfterRun.splice(installAfterRun.length - 1, 0, installLine);
+  assert.deepEqual(audit(installAfterRun.join("\n")), [claudeRunMissing]);
 });

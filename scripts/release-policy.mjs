@@ -1,3 +1,5 @@
+import { parse as parseYaml } from "yaml";
+
 export const BLACKSMITH_LINUX_RUNNER = "blacksmith-2vcpu-ubuntu-2404";
 export const GITHUB_LINUX_RUNNER = "ubuntu-24.04";
 
@@ -5,9 +7,49 @@ export const RELEASE_READINESS_WORKFLOW = ".github/workflows/release-readiness.y
 
 // Both supported hosts must rehearse the previous public release upgrade with a pinned CLI.
 const REQUIRED_RELEASE_REHEARSALS = [
-  { host: "Codex", install: /npm install --global @openai\/codex@\d+\.\d+\.\d+\s*$/mu, script: "release:upgrade-rehearsal" },
-  { host: "Claude Code", install: /npm install --global @anthropic-ai\/claude-code@\d+\.\d+\.\d+\s*$/mu, script: "release:claude-upgrade-rehearsal" },
+  { host: "Codex", install: /^npm install --global @openai\/codex@\d+\.\d+\.\d+$/u, script: "release:upgrade-rehearsal" },
+  { host: "Claude Code", install: /^npm install --global @anthropic-ai\/claude-code@\d+\.\d+\.\d+$/u, script: "release:claude-upgrade-rehearsal" },
 ];
+
+// Shell command lines from workflow steps that always run and whose failure fails the job.
+// Steps or jobs with any `if:` or a non-false `continue-on-error:` are skipped, and
+// commented-out lines are ignored, so a disabled gate cannot satisfy the policy.
+function requiredRunLines(source) {
+  const workflow = parseYaml(source);
+  const lines = [];
+  for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+    if (!job || job.if !== undefined || (job["continue-on-error"] ?? false) !== false) continue;
+    (job.steps ?? []).forEach((step, stepIndex) => {
+      if (!step || step.if !== undefined || (step["continue-on-error"] ?? false) !== false) return;
+      if (typeof step.run !== "string") return;
+      for (const line of step.run.split(/\r?\n/u).map((entry) => entry.trim())) {
+        if (line && !line.startsWith("#")) lines.push({ jobId, stepIndex, line });
+      }
+    });
+  }
+  return lines;
+}
+
+function auditReleaseRehearsals(source) {
+  let lines;
+  try {
+    lines = requiredRunLines(source);
+  } catch (error) {
+    return [`${RELEASE_READINESS_WORKFLOW} is not valid YAML: ${error.message}`];
+  }
+  const findings = [];
+  for (const rehearsal of REQUIRED_RELEASE_REHEARSALS) {
+    const install = lines.find(({ line }) => rehearsal.install.test(line));
+    if (!install) findings.push(`${RELEASE_READINESS_WORKFLOW} must install a pinned ${rehearsal.host} CLI version in a required step`);
+    const runPattern = new RegExp(`^npm run ${rehearsal.script} -- [^|;&]*$`, "u");
+    const run = lines.find(({ jobId, stepIndex, line }) => runPattern.test(line)
+      && (!install || (jobId === install.jobId && stepIndex > install.stepIndex)));
+    if (!run) {
+      findings.push(`${RELEASE_READINESS_WORKFLOW} must run the ${rehearsal.host} upgrade rehearsal (npm run ${rehearsal.script}) in a required step after the pinned CLI install`);
+    }
+  }
+  return findings;
+}
 
 export function githubRemoteOwner(remoteUrl) {
   const match = remoteUrl.trim().match(/github\.com(?::|\/)([^/]+)\//iu);
@@ -48,18 +90,8 @@ export function auditReleasePolicy({ remoteUrl, workflows, packageJson, packageL
   }
 
   const readiness = workflows[RELEASE_READINESS_WORKFLOW];
-  if (readiness === undefined) {
-    findings.push(`${RELEASE_READINESS_WORKFLOW} is missing`);
-  } else {
-    for (const rehearsal of REQUIRED_RELEASE_REHEARSALS) {
-      if (!rehearsal.install.test(readiness)) {
-        findings.push(`${RELEASE_READINESS_WORKFLOW} must install a pinned ${rehearsal.host} CLI version`);
-      }
-      if (!new RegExp(`npm run ${rehearsal.script} -- `, "u").test(readiness)) {
-        findings.push(`${RELEASE_READINESS_WORKFLOW} must run the ${rehearsal.host} upgrade rehearsal (npm run ${rehearsal.script})`);
-      }
-    }
-  }
+  if (readiness === undefined) findings.push(`${RELEASE_READINESS_WORKFLOW} is missing`);
+  else findings.push(...auditReleaseRehearsals(readiness));
 
   const reviewed = Object.entries(packageJson.allowScripts ?? {})
     .filter(([, allowed]) => allowed === true)
