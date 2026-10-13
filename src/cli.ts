@@ -626,8 +626,9 @@ program
     if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
     let expectedMtimeMs: number | null | undefined;
     if (options.expectedMtime !== undefined) {
-      expectedMtimeMs = options.expectedMtime === "new" ? null : Number(options.expectedMtime);
-      if (expectedMtimeMs !== null && !Number.isFinite(expectedMtimeMs)) throw new Error("--expected-mtime is the mtimeMs value from read-doc, or new");
+      const raw = String(options.expectedMtime).trim();
+      expectedMtimeMs = raw === "new" ? null : Number(raw);
+      if (expectedMtimeMs !== null && (!raw || !Number.isFinite(expectedMtimeMs))) throw new Error("--expected-mtime is the mtimeMs value from read-doc, or new");
     }
     const markdown = options.file ? readFileSync(options.file, "utf8") : await readStdin();
     print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown, ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs }) }), options);

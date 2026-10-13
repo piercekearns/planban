@@ -255,8 +255,10 @@ test("the CLI's write-doc states the document version it was based on when given
     assert.equal(stale.status, 1);
     const asNew = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", "new"], home, "# New\n");
     assert.equal(asNew.status, 1, "an existing document can't be written as new");
-    const bad = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", "soon"], home, "# Bad\n");
-    assert.equal(bad.status, 1);
+    for (const value of ["soon", "", " "]) assert.equal(cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", value], home, "# Bad\n").status, 1, `refuses ${JSON.stringify(value)}`);
+    await createCard({ cwd, title: "Beta", status: "up-next" });
+    const created = cli(["write-doc", "beta", "plan", "--cwd", cwd, "--expected-mtime", "new", "-o", "json"], home, "# New plan\n");
+    assert.equal(created.status, 0, created.stderr);
     const ok = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", String(read.mtimeMs), "-o", "json"], home, "# Fresh\n");
     assert.equal(ok.status, 0, ok.stderr);
     assert.equal(JSON.parse(ok.stdout).markdown, "# Fresh\n");
