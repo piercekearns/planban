@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, resolvedConnection } from "./model/access";
+import { connectionOrigin, publicOrigin } from "./model/auth";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 
@@ -17,7 +18,11 @@ export const resolveToken = internalQuery({
     const connection = await ctx.db.query("connections").withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash)).unique();
     const resolved = connection ? await resolvedConnection(ctx, connection._id) : null;
     if (!connection || !resolved) return null;
-    return { connectionId: connection._id, lastUsedAt: connection.lastUsedAt, ...(resolved.kind === "oauth" ? { oauthResource: resolved.oauthResource ?? "" } : {}) };
+    return {
+      connectionId: connection._id, lastUsedAt: connection.lastUsedAt,
+      ...(resolved.kind === "oauth" || resolved.oauthResource !== undefined ? { oauthResource: resolved.oauthResource ?? "" } : {}),
+      ...(resolved.serviceOrigin ? { serviceOrigin: resolved.serviceOrigin } : {}),
+    };
   },
 });
 
@@ -56,6 +61,7 @@ export const createDevConnection = internalMutation({
       canAdminister: args.boards === "all" && args.level === "complete",
       createdAt: now,
       lastUsedAt: now,
+      serviceOrigin: publicOrigin(),
     });
     return { connectionId: id };
   },
@@ -135,6 +141,7 @@ export const createKey = internalMutation({
     const id = await ctx.db.insert("connections", {
       userId: connection.userId, kind: "key", name, clientName: `Key: ${name}`, tokenHash: args.tokenHash,
       boards: [args.boardId], level: args.level, canAdminister: false, createdAt: now, lastUsedAt: now,
+      serviceOrigin: connectionOrigin(connection),
       ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}),
     });
     return { id, name, boardId: args.boardId, level: args.level, ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}) };

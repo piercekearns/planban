@@ -11,7 +11,8 @@ export interface Authenticated {
 }
 
 export interface AuthVerifier {
-  authenticate(ctx: ActionCtx, bearer: string): Promise<Authenticated | null>;
+  /** `origin` is the service address the request arrived through, from requestOrigin. */
+  authenticate(ctx: ActionCtx, bearer: string, origin: string): Promise<Authenticated | null>;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
@@ -27,11 +28,14 @@ export function randomSecret(prefix: string): string {
 }
 
 export const planbanTokenVerifier: AuthVerifier = {
-  async authenticate(ctx, bearer) {
+  async authenticate(ctx, bearer, origin) {
     if (!/^pb[a-z]_[A-Za-z0-9_-]{20,}$/.test(bearer)) return null;
     const resolved = await ctx.runQuery(internal.connections.resolveToken, { tokenHash: await sha256Hex(bearer) });
     if (!resolved) return null;
-    if (resolved.oauthResource !== undefined && (!publicOrigin() || !resolved.oauthResource || ![publicOrigin(), `${publicOrigin()}/mcp`].includes(resolved.oauthResource))) return null;
+    // A credential works only through the address it was issued for.
+    if (resolved.oauthResource !== undefined) {
+      if (![origin, `${origin}/mcp`].includes(resolved.oauthResource)) return null;
+    } else if ((resolved.serviceOrigin ?? legacyOrigin()) !== origin) return null;
     if (Date.now() - Date.parse(resolved.lastUsedAt) >= 60 * 60 * 1000) {
       await ctx.runMutation(internal.connections.touch, { connectionId: resolved.connectionId });
     }
@@ -44,6 +48,47 @@ export function publicOrigin() {
   return (process.env.PLANBAN_PUBLIC_URL ?? process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
 }
 
+/** The hosting provider's own address for this backend. */
+function nativeOrigin() {
+  return (process.env.CONVEX_SITE_URL ?? "").replace(/\/+$/, "");
+}
+
+/**
+ * Credentials issued before addresses were recorded belong to the native
+ * address, which was the only address then. They stop working through any
+ * other address instead of being silently rewritten.
+ */
+export function legacyOrigin() {
+  return nativeOrigin() || publicOrigin();
+}
+
+export const EDGE_PROOF_HEADER = "Planban-Edge-Proof";
+
+/**
+ * The service address a request arrived through, or null when that can't be
+ * trusted. With PLANBAN_EDGE_PROOF_SHA256 set, the public address sits in front
+ * of the native one and adds a shared proof to every request it forwards; a
+ * request without that proof came straight to the native address. Host,
+ * forwarded headers and Origin are never evidence of either.
+ */
+export async function requestOrigin(request: Request): Promise<string | null> {
+  const proofHash = process.env.PLANBAN_EDGE_PROOF_SHA256;
+  const service = publicOrigin(), native = nativeOrigin();
+  if (proofHash === undefined) {
+    // One address: a separate public address without the proof fails closed.
+    return service && (!native || native === service) ? service : null;
+  }
+  if (!/^[a-f0-9]{64}$/.test(proofHash) || !service || !native || service === native) return null;
+  const proof = request.headers.get(EDGE_PROOF_HEADER);
+  return proof && await sha256Hex(proof) === proofHash ? service : native;
+}
+
+/** The address a connection's credentials belong to; personal keys inherit it from their creator. */
+export function connectionOrigin(connection: { oauthResource?: string; serviceOrigin?: string }): string {
+  if (connection.oauthResource) return new URL(connection.oauthResource).origin;
+  return connection.serviceOrigin ?? legacyOrigin();
+}
+
 // Direct Clerk OAuth credentials cannot identify a grant incarnation. They
 // remain denied even after a new service-owned connection is authorized.
 const verifiers: AuthVerifier[] = [planbanTokenVerifier];
@@ -52,8 +97,10 @@ export async function authenticate(ctx: ActionCtx, request: Request): Promise<Au
   const header = request.headers.get("Authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   if (!match) return null;
+  const origin = await requestOrigin(request);
+  if (!origin) return null;
   for (const verifier of verifiers) {
-    const result = await verifier.authenticate(ctx, match[1]!);
+    const result = await verifier.authenticate(ctx, match[1]!, origin);
     if (result) return result;
   }
   return null;

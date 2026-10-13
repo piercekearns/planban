@@ -201,6 +201,8 @@ export default defineSchema({
     authorizationVersion: v.optional(v.number()),
     oauthPending: v.optional(v.boolean()),
     oauthResource: v.optional(v.string()),
+    /** The service address a dev sign-in or personal key works through; absent on older ones (see legacyOrigin). */
+    serviceOrigin: v.optional(v.string()),
     /** Access credentials are aliases of an independently revocable grant. */
     oauthConnectionId: v.optional(v.id("connections")),
   }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"]),
