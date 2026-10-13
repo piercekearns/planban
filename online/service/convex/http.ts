@@ -252,7 +252,7 @@ const api = httpAction(async (ctx, request) => {
 });
 
 /** Development sign-in for local backends only: returns a bearer token for a named test person. */
-const devToken = httpAction(async (ctx, request) => {
+export const devTokenResponse: RouteHandler = async (ctx, request) => {
   if (!devAuthEnabled()) return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   const input = await body(request);
   const userId = typeof input.userId === "string" && /^[a-z0-9-]{1,40}$/.test(input.userId) ? input.userId : null;
@@ -268,7 +268,7 @@ const devToken = httpAction(async (ctx, request) => {
     level,
   });
   return json({ token, connectionId, userId }, 201);
-});
+};
 
 /**
  * Remote MCP over Streamable HTTP. An unauthenticated request gets the
@@ -416,7 +416,7 @@ export function atServiceOnly(handler: RouteHandler): RouteHandler {
 }
 
 for (const method of ["GET", "POST", "PUT"] as const) http.route({ pathPrefix: "/api/v1/", method, handler: api });
-http.route({ path: "/dev/token", method: "POST", handler: devToken });
+http.route({ path: "/dev/token", method: "POST", handler: httpAction(atServiceOnly(devTokenResponse)) });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });

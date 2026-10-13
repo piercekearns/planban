@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { authenticate, connectionOrigin, EDGE_PROOF_HEADER, requestOrigin } from "../online/service/convex/model/auth";
-import { atServiceOnly } from "../online/service/convex/http";
+import { atServiceOnly, devTokenResponse } from "../online/service/convex/http";
 import { tokenResponse } from "../online/service/convex/model/oauthHttp";
 import { createKey, resolveToken } from "../online/service/convex/connections";
 
@@ -150,5 +150,22 @@ test("behind the edge: credential and invitation routes refuse direct requests b
   await withEnv({ PLANBAN_PUBLIC_URL: NATIVE, CONVEX_SITE_URL: NATIVE }, async () => {
     const guarded = atServiceOnly(async () => new Response("ok"));
     assert.equal((await guarded({} as any, new Request(`${NATIVE}/oauth/authorize`))).status, 200);
+  });
+});
+
+test("a local development sign-in behind an edge is refused without the proof", async () => {
+  const local = "http://127.0.0.1:3211";
+  await withEnv({ ...edge, CONVEX_SITE_URL: local }, async () => {
+    const prior = process.env.PLANBAN_DEV_AUTH;
+    process.env.PLANBAN_DEV_AUTH = "1";
+    try {
+      let created = 0;
+      const ctx: any = { runMutation: async () => { created++; return { connectionId: "c1" }; } };
+      const sent = () => new Request(`${local}/dev/token`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: "dev-user" }) });
+      assert.equal((await atServiceOnly(devTokenResponse)(ctx, sent())).status, 503);
+      assert.equal(created, 0);
+    } finally {
+      if (prior === undefined) delete process.env.PLANBAN_DEV_AUTH; else process.env.PLANBAN_DEV_AUTH = prior;
+    }
   });
 });
