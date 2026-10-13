@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { makeFunctionReference } from "convex/server";
-import { internalAction, internalMutation, internalQuery, type ActionCtx } from "./_generated/server";
-import { USAGE_POLICY, USAGE_CLOUD, collectionFailure, usageEnabled, mailEnabled, parseUsage, emptyMonitor, observeUsage, finishUsage, canSend, monitorStale, type MonitorState, type Reading, type Batch } from "./model/providerUsage";
+import { internalAction, internalMutation, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server";
+import { USAGE_POLICY, USAGE_CLOUD, collectionFailure, usageEnabled, mailEnabled, parseUsage, emptyMonitor, observeUsage, expiryNoticeDue, expiryNoticePayload, claimExpiryNotice, finishUsage, canSend, monitorStale, type MonitorState, type Reading, type Batch } from "./model/providerUsage";
 
 const observeRef = makeFunctionReference<"mutation">("providerUsage:observe");
 const finishRef = makeFunctionReference<"mutation">("providerUsage:finish");
@@ -26,6 +26,51 @@ export const finish = internalMutation({
     await ctx.db.patch(row._id, { state: row.state });
   },
 });
+
+const expiryClaimRef = makeFunctionReference<"mutation">("providerUsage:claimExpiryReminder");
+const expiryNotedRef = makeFunctionReference<"mutation">("providerUsage:noteExpiryNotice");
+
+async function monitorRow(ctx: MutationCtx) {
+  return ctx.db.query("providerUsageMonitors").withIndex("by_policy", q => q.eq("policy", USAGE_POLICY)).unique();
+}
+
+/** Whether to send the renewal reminder now; records the first attempt before any send. */
+export const claimExpiryReminder = internalMutation({
+  args: { now: v.number() },
+  handler: async (ctx, { now }): Promise<number | null> => {
+    if (!mailEnabled(process.env)) return null;
+    const row = await monitorRow(ctx);
+    const state: MonitorState = row?.state ?? emptyMonitor();
+    const expiry = expiryNoticeDue(process.env, state, now);
+    if (expiry === null) return null;
+    const send = claimExpiryNotice(state, expiry, now);
+    if (row) await ctx.db.patch(row._id, { state }); else await ctx.db.insert("providerUsageMonitors", { policy: USAGE_POLICY, state });
+    return send ? expiry : null;
+  },
+});
+
+export const noteExpiryNotice = internalMutation({
+  args: { expiry: v.number() },
+  handler: async (ctx, { expiry }) => {
+    const row = await monitorRow(ctx);
+    if (!row) return;
+    const state = row.state as MonitorState;
+    state.expiryNoticeFor = expiry;
+    await ctx.db.patch(row._id, { state });
+  },
+});
+
+/** Reminds hello@planban.ai once, a week before the usage key expires; retried only inside the provider's duplicate window. */
+export async function remindBeforeExpiry(ctx: Pick<ActionCtx, "runMutation">, now = Date.now()) {
+  const expiry = await ctx.runMutation(expiryClaimRef, { now }) as number | null;
+  if (expiry === null) return "not_due";
+  const response = await fetch("https://api.resend.com/emails", { method: "POST", redirect: "error",
+    headers: { Authorization: `Bearer ${process.env.PLANBAN_USAGE_EMAIL_KEY}`, "Content-Type": "application/json", "Idempotency-Key": `planban-usage-key-expiry-${expiry}` },
+    body: expiryNoticePayload(expiry), signal: AbortSignal.timeout(10000) }).catch(() => null);
+  if (!response?.ok) { await response?.body?.cancel(); return "retry"; }
+  await ctx.runMutation(expiryNotedRef, { expiry });
+  return "sent";
+}
 
 /** Internal operational inspection; no dashboard, public tool or credential. */
 export const status = internalQuery({ args: {}, handler: async ctx => {
@@ -63,6 +108,7 @@ export async function runUsagePoll(ctx: Pick<ActionCtx, "runMutation">): Promise
     await ctx.runMutation(observeRef, { reading: null, status: credentialFailure, now: Date.now() });
     return credentialFailure;
   }
+  await remindBeforeExpiry(ctx).catch(() => undefined);
   const started = Date.now(); let reading: Reading | null = null; let status = "unavailable";
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10000);
   try {

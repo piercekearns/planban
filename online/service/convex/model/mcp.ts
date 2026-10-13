@@ -19,7 +19,14 @@ import type { ServiceErrorData } from "./errors";
 const MODERN_VERSION = "2026-07-28";
 const LEGACY_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 const SUPPORTED_VERSIONS = [MODERN_VERSION, ...LEGACY_VERSIONS];
-const SERVER_INFO = { name: "Planban Online", version: "0.2.0" };
+// Title, icon and website let AI apps show Planban by its own name and mark (MCP Implementation fields).
+const SERVER_INFO = {
+  name: "Planban Online",
+  title: "Planban",
+  version: "0.2.0",
+  websiteUrl: "https://planban.ai",
+  icons: [{ src: "https://planban.ai/assets/planban-logo-512.png", mimeType: "image/png", sizes: ["512x512"] }],
+};
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 

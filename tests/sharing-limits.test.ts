@@ -157,3 +157,12 @@ test("cutting off everything works in batches until nothing is left", async () =
   delete agentKey.revokedAt; agentKey.canAdminister = false;
   await assert.rejects(handler(revokeAllOthers, ctx, { connectionId: "m-0" }), /your own sign-in/);
 });
+
+test("the MCP server introduces itself as Planban, with its icon and website", async () => {
+  const service: any = new Proxy({}, { get: () => () => ({}) });
+  const response = await handleMcp(new Request("https://app.example/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } }) }), service, "https://app.example");
+  const info = (await response.json()).result.serverInfo;
+  assert.equal(info.title, "Planban");
+  assert.equal(info.websiteUrl, "https://planban.ai");
+  assert.deepEqual(info.icons, [{ src: "https://planban.ai/assets/planban-logo-512.png", mimeType: "image/png", sizes: ["512x512"] }]);
+});

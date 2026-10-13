@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { getFunctionName } from "convex/server";
 import { USAGE_POLICY, USAGE_CLOUD, USAGE_SITE, HOUR, LEASE, RETRY_WINDOW, collectionConfigured, usageEnabled, mailEnabled, parseUsage, utcMonth, emptyMonitor, observeUsage, finishUsage, canSend, monitorStale, type Reading } from "../online/service/convex/model/providerUsage";
 import { boundedJson, runUsagePoll, status as usageStatus } from "../online/service/convex/providerUsage";
 
@@ -145,6 +146,7 @@ test("action crash after mocked acceptance retries immutable provider bytes/key 
     };
     const ctx: any = { runMutation: async (_ref: unknown, args: any) => {
       if ("reading" in args) return observeUsage(state, args.reading, args.status, args.now, mailEnabled(process.env));
+      if (!("id" in args)) return null; // the renewal reminder's claim: not due with this key
       if (loseAck) { loseAck = false; throw new Error("simulated process loss before durable acknowledgement"); }
       finishUsage(state, args.id, args.fence, args.outcome, args.now); return null;
     } };
@@ -251,4 +253,56 @@ test("enabled collection records redacted expiry/auth/parser/stream/timeout and 
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved.env)) delete process.env[k]; Object.assign(process.env, saved.env); globalThis.fetch = saved.fetch; Date.now = saved.now; globalThis.setTimeout = saved.timer;
   }
+});
+
+test("the usage key's renewal reminder is due once, in its last week", async () => {
+  const { expiryNoticeDue, expiryNoticePayload, EXPIRY_NOTICE_MS, emptyMonitor: empty } = await import("../online/service/convex/model/providerUsage");
+  const start = Date.parse("2026-11-01T00:00:00Z");
+  const expiry = start + EXPIRY_NOTICE_MS + HOUR;
+  const env = { PLANBAN_USAGE_KEY_EXPIRES_AT: String(expiry) };
+  assert.equal(expiryNoticeDue(env, empty(), start), null, "not yet in the last week");
+  assert.equal(expiryNoticeDue(env, empty(), start + 2 * HOUR), expiry, "due within the last week");
+  assert.equal(expiryNoticeDue(env, { ...empty(), expiryNoticeFor: expiry }, start + 2 * HOUR), null, "sent once per key");
+  assert.equal(expiryNoticeDue(env, empty(), expiry + 1), null, "an expired key is reported as expired instead");
+  assert.equal(expiryNoticeDue({ PLANBAN_USAGE_KEY_EXPIRES_AT: "soon" }, empty(), start), null);
+  const mail = JSON.parse(expiryNoticePayload(expiry));
+  assert.equal(mail.to[0], "hello@planban.ai");
+  assert.match(mail.subject, /Usage monitor key expires soon/);
+  assert.match(mail.text, new RegExp(new Date(expiry).toUTCString().replace(/[()+]/g, ".")));
+});
+
+test("the renewal reminder records its first attempt, retries only within the duplicate window, then stops", async () => {
+  const { claimExpiryNotice, emptyMonitor: empty, RETRY_WINDOW: window } = await import("../online/service/convex/model/providerUsage");
+  const state = empty();
+  const expiry = Date.parse("2026-11-12T16:27:00Z");
+  const first = expiry - 3 * 24 * HOUR;
+  assert.equal(claimExpiryNotice(state, expiry, first), true);
+  assert.deepEqual(state.expiryNoticeAttempt, { expiry, firstAt: first }, "recorded before sending");
+  assert.equal(claimExpiryNotice(state, expiry, first + HOUR), true, "a retry inside the window is allowed");
+  assert.equal(claimExpiryNotice(state, expiry, first + window), false, "past the window it counts as sent");
+  assert.equal(state.expiryNoticeFor, expiry);
+  assert.equal(claimExpiryNotice(state, expiry, first + window + HOUR), false);
+  const renewed = expiry + 30 * 24 * HOUR;
+  assert.equal(claimExpiryNotice(state, renewed, renewed - 2 * 24 * HOUR), true, "a renewed key gets its own reminder");
+});
+
+test("the reminder's send path: success, provider failure, and no send when not due", async () => {
+  const { remindBeforeExpiry } = await import("../online/service/convex/providerUsage");
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const ctx = (claim: number | null) => ({ runMutation: async (fn: any) => { const name = getFunctionName(fn); calls.push(name); return name === "providerUsage:claimExpiryReminder" ? claim : null; } }) as any;
+  try {
+    let sentKey = "";
+    globalThis.fetch = (async (_url: string, init: any) => { sentKey = init.headers["Idempotency-Key"]; return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }) as typeof fetch;
+    assert.equal(await remindBeforeExpiry(ctx(1234)), "sent");
+    assert.equal(sentKey, "planban-usage-key-expiry-1234");
+    assert.deepEqual(calls, ["providerUsage:claimExpiryReminder", "providerUsage:noteExpiryNotice"]);
+    calls.length = 0;
+    globalThis.fetch = (async () => new Response("no", { status: 500 })) as typeof fetch;
+    assert.equal(await remindBeforeExpiry(ctx(1234)), "retry");
+    assert.deepEqual(calls, ["providerUsage:claimExpiryReminder"], "a failed send isn't recorded as sent");
+    calls.length = 0;
+    globalThis.fetch = (async () => { throw new Error("must not send"); }) as typeof fetch;
+    assert.equal(await remindBeforeExpiry(ctx(null)), "not_due");
+  } finally { globalThis.fetch = realFetch; }
 });

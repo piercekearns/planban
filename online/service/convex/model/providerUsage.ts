@@ -1,9 +1,12 @@
 import { Sha256 } from "./sha256";
 
-// Provisioning evidence binds this policy to one nondefault development target.
-export const USAGE_POLICY = "planban-547105-3200106-hardy-tortoise-315-v1";
-export const USAGE_CLOUD = "https://hardy-tortoise-315.eu-west-1.convex.cloud";
-export const USAGE_SITE = "https://hardy-tortoise-315.eu-west-1.convex.site";
+// Provisioning evidence binds this policy to exactly one deployment: Planban's
+// production deployment (team 547105, project 3204497). Usage is shared by the
+// team, so only one deployment watches it; on any other deployment, staging
+// included, the monitor stays off.
+export const USAGE_POLICY = "planban-547105-3204497-canny-turtle-411-v1";
+export const USAGE_CLOUD = "https://canny-turtle-411.eu-west-1.convex.cloud";
+export const USAGE_SITE = "https://canny-turtle-411.eu-west-1.convex.site";
 export const USAGE_DASHBOARD = "https://dashboard.convex.dev/t/pierce-kearns-73417/usage";
 export const HOUR = 3600000;
 export const LEASE = 60000;
@@ -26,6 +29,10 @@ export type Batch = {
 export type MonitorState = {
   lastAttemptAt?: number; lastSuccess?: Reading; status?: string;
   covered: Record<string, true>; batches: Batch[];
+  /** The usage key expiry a renewal reminder has been sent (or given up) for. */
+  expiryNoticeFor?: number;
+  /** The first attempt at the current reminder, so retries stay inside the provider's duplicate window. */
+  expiryNoticeAttempt?: { expiry: number; firstAt: number };
 };
 export const emptyMonitor = (): MonitorState => ({ covered: {}, batches: [] });
 export const utcMonth = (now: number) => new Date(now).toISOString().slice(0, 7);
@@ -44,6 +51,45 @@ export function collectionFailure(env: Settings, now: number): string | null {
   if (!Number.isSafeInteger(expiry) || expiry <= 0) return "credential_invalid_expiry";
   return expiry > now ? null : "credential_expired";
 }
+/** A renewal reminder goes out once the usage key is this close to expiring. */
+export const EXPIRY_NOTICE_MS = 7 * 24 * HOUR;
+
+/** The usage key's expiry when a renewal reminder is due and not yet sent; otherwise null. */
+export function expiryNoticeDue(env: Settings, state: MonitorState, now: number): number | null {
+  const expiry = Number(env.PLANBAN_USAGE_KEY_EXPIRES_AT);
+  if (!Number.isSafeInteger(expiry) || expiry <= now || expiry - now > EXPIRY_NOTICE_MS) return null;
+  return state.expiryNoticeFor === expiry ? null : expiry;
+}
+
+/**
+ * Claims a reminder send, changing state. The first attempt is recorded before
+ * sending; retries with the same idempotency key happen only inside the
+ * provider's duplicate window, after which the reminder counts as sent, so an
+ * accepted email whose reply was lost is never sent a second time.
+ */
+export function claimExpiryNotice(state: MonitorState, expiry: number, now: number): boolean {
+  if (state.expiryNoticeFor === expiry) return false;
+  const attempt = state.expiryNoticeAttempt;
+  if (attempt?.expiry === expiry) {
+    if (now - attempt.firstAt < RETRY_WINDOW) return true;
+    state.expiryNoticeFor = expiry;
+    return false;
+  }
+  state.expiryNoticeAttempt = { expiry, firstAt: now };
+  return true;
+}
+
+export function expiryNoticePayload(expiry: number): string {
+  const when = new Date(expiry).toUTCString();
+  const text = [
+    `Planban's usage monitor key expires on ${when}.`,
+    "After that, included-usage warnings stop until a new key is set. Create a new production deploy key that can only view usage, then set it and its expiry on the production deployment.",
+    USAGE_DASHBOARD,
+  ].join("\n\n");
+  const html = `<html lang="en"><body style="font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#0d0d0d"><h1 style="font-size:22px">Planban usage monitor key expiring</h1><div style="white-space:pre-wrap;line-height:1.6">${escape(text)}</div></body></html>`;
+  return JSON.stringify({ from: "Planban <alerts@planban.ai>", to: ["hello@planban.ai"], subject: "[Planban] Usage monitor key expires soon", text, html });
+}
+
 export function mailEnabled(env: Settings): boolean {
   return usageEnabled(env) && env.PLANBAN_USAGE_EMAIL_ENABLED === "1" && !!env.PLANBAN_USAGE_EMAIL_KEY;
 }
@@ -77,9 +123,9 @@ export function warningPayload(reading: Reading, events: Event[]): string {
   const rows = events.map(e => `${DEFINITIONS[e.metric].label}: ${reading.values[e.metric]} ${DEFINITIONS[e.metric].unit} (${e.level}% warning; shared team inclusion ${DEFINITIONS[e.metric].included} ${DEFINITIONS[e.metric].unit}).`);
   const [year, month] = reading.month.split("-").map(Number);
   const resets = new Date(Date.UTC(year!, month!, 1)).toISOString();
-  const text = ["Planban staging included-usage warning", "", ...rows, "", "These are this development deployment's contributions against shared team inclusions. Team coverage is incomplete; this is not a team total or remaining balance.", "Starter use beyond included amounts can incur charges. Resource warnings do not stop service. Native $10 spending warning and $20 usage disable remain separate; seat fees are excluded.", `Observed: ${new Date(reading.at).toISOString()}. Calendar month: ${reading.month}; resets ${resets}.`, "Storage, search and AI Gateway are not covered.", USAGE_DASHBOARD].join("\n");
+  const text = ["Planban included-usage warning", "", ...rows, "", "These are the production deployment's contributions against shared team inclusions. Team coverage is incomplete; this is not a team total or remaining balance.", "Starter use beyond included amounts can incur charges. Resource warnings do not stop service. Native $10 spending warning and $20 usage disable remain separate; seat fees are excluded.", `Observed: ${new Date(reading.at).toISOString()}. Calendar month: ${reading.month}; resets ${resets}.`, "Storage, search and AI Gateway are not covered.", USAGE_DASHBOARD].join("\n");
   const html = `<html lang="en"><body style="font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#0d0d0d"><h1 style="font-size:22px">Planban usage warning</h1><div style="white-space:pre-wrap;line-height:1.6">${escape(text)}</div></body></html>`;
-  return JSON.stringify({ from: "Planban <alerts@planban.ai>", to: ["hello@planban.ai"], subject: "[Planban staging] Included-usage warning", text, html });
+  return JSON.stringify({ from: "Planban <alerts@planban.ai>", to: ["hello@planban.ai"], subject: "[Planban] Included-usage warning", text, html });
 }
 
 /** Transactional state transition; caller persists it before any external send. */
