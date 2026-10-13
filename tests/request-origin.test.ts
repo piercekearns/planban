@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { authenticate, connectionOrigin, EDGE_PROOF_HEADER, requestOrigin } from "../online/service/convex/model/auth";
+import { atServiceOnly } from "../online/service/convex/http";
+import { tokenResponse } from "../online/service/convex/model/oauthHttp";
 import { createKey, resolveToken } from "../online/service/convex/connections";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -43,12 +45,16 @@ test("one address: the public address is trusted only when it is the native one"
   });
 });
 
-test("behind the edge: only the shared proof makes a request public, never host or forwarding headers", async () => {
+test("behind the edge: only the shared proof admits a request, never host or forwarding headers", async () => {
   await withEnv(edge, async () => {
     assert.equal(await requestOrigin(request(`${NATIVE}/mcp`, { [EDGE_PROOF_HEADER]: PROOF })), PUBLIC);
-    assert.equal(await requestOrigin(request(`${NATIVE}/mcp`)), NATIVE);
-    assert.equal(await requestOrigin(request(`${NATIVE}/mcp`, { [EDGE_PROOF_HEADER]: "wrong" })), NATIVE);
-    assert.equal(await requestOrigin(request(`${PUBLIC}/mcp`, { Host: "app.planban.example", "X-Forwarded-Host": "app.planban.example", Origin: PUBLIC })), NATIVE);
+    assert.equal(await requestOrigin(request(`${NATIVE}/mcp`)), null);
+    assert.equal(await requestOrigin(request(`${NATIVE}/mcp`, { [EDGE_PROOF_HEADER]: "wrong" })), null);
+    const duplicated = new Headers({ Authorization: BEARER });
+    duplicated.append(EDGE_PROOF_HEADER, PROOF);
+    duplicated.append(EDGE_PROOF_HEADER, PROOF);
+    assert.equal(await requestOrigin(new Request(`${NATIVE}/mcp`, { headers: duplicated })), null);
+    assert.equal(await requestOrigin(request(`${PUBLIC}/mcp`, { Host: "app.planban.example", "X-Forwarded-Host": "app.planban.example", Origin: PUBLIC })), null);
   });
   for (const broken of [{ ...edge, PLANBAN_EDGE_PROOF_SHA256: "not-a-hash" }, { ...edge, CONVEX_SITE_URL: undefined }, { ...edge, CONVEX_SITE_URL: PUBLIC }]) {
     await withEnv(broken, async () => {
@@ -70,10 +76,12 @@ test("behind the edge: every credential kind works only through the address it b
     // Personal keys and dev sign-ins carry their address.
     assert.deepEqual(await authenticate(resolving({ serviceOrigin: PUBLIC }), viaEdge), { connectionId: "c1" });
     assert.equal(await authenticate(resolving({ serviceOrigin: PUBLIC }), direct), null);
-    // Older credentials without an address belong to the native address only.
-    assert.equal(await authenticate(resolving({}), viaEdge), null);
-    assert.deepEqual(await authenticate(resolving({}), direct), { connectionId: "c1" });
-    assert.equal(await authenticate(resolving({ oauthResource: NATIVE }), viaEdge), null);
+    // Older credentials without an address belong to the native address,
+    // which accepts no credentials once the edge is in front of it.
+    for (const legacy of [{}, { serviceOrigin: NATIVE }, { oauthResource: NATIVE }]) {
+      assert.equal(await authenticate(resolving(legacy), viaEdge), null);
+      assert.equal(await authenticate(resolving(legacy), direct), null);
+    }
   });
 });
 
@@ -116,5 +124,31 @@ test("machine sign-ins expose their resource, and personal keys inherit their cr
     assert.equal(rows.find((row) => row.tokenHash === "k1").serviceOrigin, PUBLIC);
     assert.equal(rows.find((row) => row.tokenHash === "k2").serviceOrigin, NATIVE);
     assert.equal((await handler(resolveToken, ctx, { tokenHash: "k1" })).serviceOrigin, PUBLIC);
+  });
+});
+
+test("behind the edge: credential and invitation routes refuse direct requests before doing anything", async () => {
+  await withEnv(edge, async () => {
+    let reached = 0;
+    const guarded = atServiceOnly(async () => { reached++; return new Response("ok"); });
+    const direct = await guarded({} as any, new Request(`${NATIVE}/invite/pbi_secret`));
+    assert.equal(direct.status, 503);
+    assert.equal((await direct.text()).includes("pbi_secret"), false);
+    assert.equal(reached, 0);
+    assert.equal((await guarded({} as any, new Request(`${NATIVE}/invite/x`, { headers: { [EDGE_PROOF_HEADER]: PROOF } }))).status, 200);
+    assert.equal(reached, 1);
+
+    // A valid-looking public refresh sent straight to the native token endpoint never reaches a mutation.
+    const touched: string[] = [];
+    const ctx: any = { runMutation: async () => { touched.push("mutation"); throw new Error("must not run"); }, runQuery: async () => { touched.push("query"); return null; } };
+    const body = new URLSearchParams({ grant_type: "refresh_token", client_id: "https://client.example/meta", resource: `${PUBLIC}/mcp`, refresh_token: `pbr_${"a".repeat(43)}` });
+    const refused = await atServiceOnly(tokenResponse)(ctx, new Request(`${NATIVE}/oauth/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }));
+    assert.equal(refused.status, 503);
+    assert.deepEqual(touched, []);
+  });
+  // One address: the guard is transparent.
+  await withEnv({ PLANBAN_PUBLIC_URL: NATIVE, CONVEX_SITE_URL: NATIVE }, async () => {
+    const guarded = atServiceOnly(async () => new Response("ok"));
+    assert.equal((await guarded({} as any, new Request(`${NATIVE}/oauth/authorize`))).status, 200);
   });
 });

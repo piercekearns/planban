@@ -20,7 +20,7 @@ test("the online service answers only with Planban's own content types, never as
   }
   // HTML is only the invite page, which Planban writes itself and escapes.
   assert.equal([...http.matchAll(/text\/html/g)].length, 1);
-  assert.match(http, /const invitePage = httpAction/);
+  assert.match(http, /const invitePageResponse: RouteHandler = async/);
   // No route serves attachments.
   assert.match(http, /rest\[0\] === "attachments"\) return json\(\{ error: \{ code: "not_found"/);
 });

@@ -5,7 +5,7 @@ import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { httpAction, type ActionCtx } from "./_generated/server";
-import { authenticate, devAuthEnabled, publicOrigin, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
+import { atServiceAddress, authenticate, devAuthEnabled, publicOrigin, randomSecret, sha256Hex, type Authenticated } from "./model/auth";
 import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
@@ -358,7 +358,7 @@ async function verifiedEmailsOf(userId: string): Promise<string[]> {
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
 /** The page an invite link opens: what it is for, and how to join. */
-const invitePage = httpAction(async (ctx, request) => {
+const invitePageResponse: RouteHandler = async (ctx, request) => {
   const token = inviteToken(new URL(request.url).pathname);
   const invite = token ? await ctx.runQuery(internal.invites.preview, { tokenHash: await sha256Hex(token) }) : null;
   const page = (title: string, body: string) => new Response(
@@ -373,7 +373,7 @@ const invitePage = httpAction(async (ctx, request) => {
     + `<p>To join, run this in a terminal on your computer. Planban opens your browser to sign in with your own account:</p>`
     + `<pre style="background:#f4f4f5;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all">planban online join ${escapeHtml(link)}</pre>`
     + `<p style="color:#666">The link works until ${escapeHtml(new Date(invite.expiresAt).toUTCString())}.</p>`);
-});
+};
 
 /** What a Planban install needs to know to sign in here. */
 export const serviceDiscovery = httpAction(async () => json({
@@ -402,22 +402,35 @@ export const authorizationServerDiscovery = httpAction(async () => enrollmentCon
 }, 200, { "Cache-Control": "public, max-age=300" }) : json({ error: "temporarily_unavailable" }, 503));
 
 const http = httpRouter();
+type RouteHandler = (ctx: ActionCtx, request: Request) => Promise<Response>;
+
+/**
+ * Routes that create, exchange or reveal credentials or capability links. A
+ * request that didn't arrive through the service address gets a generic
+ * refusal that echoes nothing back.
+ */
+export function atServiceOnly(handler: RouteHandler): RouteHandler {
+  return async (ctx, request) => await atServiceAddress(request)
+    ? await handler(ctx, request)
+    : json({ error: "temporarily_unavailable" }, 503);
+}
+
 for (const method of ["GET", "POST", "PUT"] as const) http.route({ pathPrefix: "/api/v1/", method, handler: api });
 http.route({ path: "/dev/token", method: "POST", handler: devToken });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
-http.route({ path: "/oauth/token", method: "POST", handler: httpAction(tokenResponse) });
-http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(revocationResponse) });
-http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(authorizationResponse) });
-http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(consentResponse) });
-http.route({ path: "/oauth/machine/start", method: "POST", handler: httpAction(machineStartResponse) });
-http.route({ path: "/oauth/machine/launch", method: "GET", handler: httpAction(machineLaunchResponse) });
-http.route({ path: "/oauth/machine/cancel", method: "POST", handler: httpAction(machineCancelResponse) });
-http.route({ path: "/oauth/validity", method: "POST", handler: httpAction(consentValidityResponse) });
-http.route({ path: "/oauth/approve", method: "POST", handler: httpAction(approvalResponse) });
+http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });
+http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(atServiceOnly(revocationResponse)) });
+http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(atServiceOnly(authorizationResponse)) });
+http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(atServiceOnly(consentResponse)) });
+http.route({ path: "/oauth/machine/start", method: "POST", handler: httpAction(atServiceOnly(machineStartResponse)) });
+http.route({ path: "/oauth/machine/launch", method: "GET", handler: httpAction(atServiceOnly(machineLaunchResponse)) });
+http.route({ path: "/oauth/machine/cancel", method: "POST", handler: httpAction(atServiceOnly(machineCancelResponse)) });
+http.route({ path: "/oauth/validity", method: "POST", handler: httpAction(atServiceOnly(consentValidityResponse)) });
+http.route({ path: "/oauth/approve", method: "POST", handler: httpAction(atServiceOnly(approvalResponse)) });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
 http.route({ path: "/.well-known/oauth-authorization-server", method: "GET", handler: authorizationServerDiscovery });
-http.route({ pathPrefix: "/invite/", method: "GET", handler: invitePage });
+http.route({ pathPrefix: "/invite/", method: "GET", handler: httpAction(atServiceOnly(invitePageResponse)) });
 http.route({ path: "/.well-known/oauth-protected-resource", method: "GET", handler: protectedResource });
 http.route({ path: "/.well-known/oauth-protected-resource/mcp", method: "GET", handler: protectedMcpResource });
 http.route({

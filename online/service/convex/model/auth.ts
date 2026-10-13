@@ -65,11 +65,12 @@ export function legacyOrigin() {
 export const EDGE_PROOF_HEADER = "Planban-Edge-Proof";
 
 /**
- * The service address a request arrived through, or null when that can't be
- * trusted. With PLANBAN_EDGE_PROOF_SHA256 set, the public address sits in front
+ * The service address a request arrived through, or null when it must be
+ * refused. With PLANBAN_EDGE_PROOF_SHA256 set, the public address sits in front
  * of the native one and adds a shared proof to every request it forwards; a
- * request without that proof came straight to the native address. Host,
- * forwarded headers and Origin are never evidence of either.
+ * request without that proof came straight to the native address, which then
+ * accepts no credentials at all. Host, forwarded headers and Origin are never
+ * evidence either way.
  */
 export async function requestOrigin(request: Request): Promise<string | null> {
   const proofHash = process.env.PLANBAN_EDGE_PROOF_SHA256;
@@ -80,7 +81,13 @@ export async function requestOrigin(request: Request): Promise<string | null> {
   }
   if (!/^[a-f0-9]{64}$/.test(proofHash) || !service || !native || service === native) return null;
   const proof = request.headers.get(EDGE_PROOF_HEADER);
-  return proof && await sha256Hex(proof) === proofHash ? service : native;
+  return proof && await sha256Hex(proof) === proofHash ? service : null;
+}
+
+/** Sign-in, consent, token and invitation routes serve only the trusted service address. */
+export async function atServiceAddress(request: Request): Promise<boolean> {
+  const origin = await requestOrigin(request);
+  return origin !== null && origin === publicOrigin();
 }
 
 /** The address a connection's credentials belong to; personal keys inherit it from their creator. */
