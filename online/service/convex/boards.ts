@@ -396,7 +396,15 @@ export const exportHistory = internalQuery({
         docs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown });
       }
       if (history.length > 0 && bytes + size > PAGE_BYTES) break;
-      history.push(version);
+      // Pruning can move a document body onto the first kept version without
+      // that version naming it; Local Mode finds bodies through the names, so
+      // the export names every body the version holds.
+      const named = new Set(version.entry.affectedDocs.map((ref) => `${ref.cardId}/${ref.kind}`));
+      const extra = docs.filter((doc) => !named.has(`${doc.cardId}/${doc.kind}`)).map((doc) => {
+        const item = version.roadmap.roadmapItems.find((entry) => entry.id === doc.cardId);
+        return { cardId: doc.cardId, kind: doc.kind, path: (doc.kind === "spec" ? item?.specDoc : item?.planDoc) ?? `items/${doc.cardId}/${doc.kind}.md` };
+      });
+      history.push(extra.length ? { ...version, entry: { ...version.entry, affectedDocs: [...version.entry.affectedDocs, ...extra] } } : version);
       historyDocs.push(...docs);
       bytes += size;
     }
