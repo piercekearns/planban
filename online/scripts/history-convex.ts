@@ -123,8 +123,6 @@ const first = afterPrune.history[0].entry.version;
 assert.ok(first > 2, "the oldest versions were pruned");
 assert.ok(afterPrune.historyDocs.some((doc: any) => doc.cardId === cardId && doc.kind === "spec" && doc.version === first && doc.markdown === "# Written once\n"),
   "the document body written before the cut is kept at the first kept version");
-assert.ok(afterPrune.history[0].entry.affectedDocs.some((ref: any) => ref.cardId === cardId && ref.kind === "spec"),
-  "the first kept version names the document it now holds, so history reads find it after Take Local too");
 const oldestDoc = await api("GET", `/api/v1/boards/${pruned}/history/${first}/cards/${cardId}/docs/spec`);
 assert.equal(oldestDoc.json.markdown, "# Written once\n");
 ok(`pruning to 1,000 versions keeps each document's body for the versions that remain (${Math.round((Date.now() - started) / 1000)} s of edits)`);

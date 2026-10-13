@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { ensureDemoBoard } from "../src/core/demo";
 import { retainedHistoryEntries } from "../src/core/history";
-import { eventsPath, historyIndexPath, historyRoadmapPath, historyRoot, historyVersionRoot, registryPath } from "../src/core/paths";
+import { eventsPath, historyDocPath, historyIndexPath, historyRoadmapPath, historyRoot, historyVersionRoot, registryPath } from "../src/core/paths";
 import { roadmapV1Schema } from "../src/core/schema";
 import type { PlanbanHistoryEntry, PlanbanHistoryIndex } from "../src/core/types";
 import { queryWorkItems } from "../src/core/workItemQuery";
@@ -1438,6 +1438,23 @@ test("finds historical docs after many unrelated board-only document versions", 
   });
   assert.equal(historicalDoc.exists, true);
   assert.match(historicalDoc.markdown, /Original retained doc/);
+});
+
+test("finds a document body stored at a version that doesn't name it, as after Take Local of a pruned online board", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+  await createCard({ cwd, title: "Beta", status: "pending" });
+  const version = (await historyPayload(cwd)).currentVersion;
+  const state = await loadState(cwd);
+  const carried = historyDocPath(state.planningRoot, version, "alpha", "spec");
+  await mkdir(dirname(carried), { recursive: true });
+  await writeFile(carried, "# Alpha Spec\n\nCarried onto a kept version.\n");
+
+  const found = await readHistoryDoc({ cwd, version, cardId: "alpha", kind: "spec" });
+  assert.equal(found.exists, true);
+  assert.match(found.markdown, /Carried onto a kept version/);
+  const before = await readHistoryDoc({ cwd, version: version - 1, cardId: "alpha", kind: "spec" });
+  assert.doesNotMatch(before.markdown, /Carried onto a kept version/, "an earlier version keeps its own body");
 });
 
 function syntheticHistoryEntry(version: number, createdAt: string): PlanbanHistoryEntry {
