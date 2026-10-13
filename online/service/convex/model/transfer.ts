@@ -273,13 +273,7 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
   });
   await ctx.db.patch(transfer._id, { state: "committed", updatedAt: now });
   if (previousGeneration > 0) {
-    // Cleaning up the previous generation also carries its files over (see
-    // attachments.ts); until that finishes the board cannot be frozen.
-    if (await ctx.db.query("attachments").withIndex("by_board_generation", (q) => q.eq("boardId", board!.boardId).eq("generation", previousGeneration)).first()) {
-      await ctx.db.patch(board!._id, { carryFrom: previousGeneration });
-    }
-    // Clean-up is not urgent; starting it a few seconds later also lets a
-    // re-run of take-online --attachments re-link files before they move.
+    // Clean-up of the previous generation is not urgent.
     await ctx.scheduler.runAfter(CLEANUP_DELAY_MS, internal.transfers.cleanupGeneration, { boardId: board!.boardId, generation: previousGeneration });
   }
   return { boardId: board!.boardId, roadmap: committed };
