@@ -103,6 +103,25 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
 
 const REGISTRATION_BYTES = 4096;
 
+/** The body's bytes, or null once it passes `limit`; stops reading there. */
+async function readAtMost(request: Request, limit: number): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
+  return out;
+}
+
 /** RFC 7591 registration, for claude.ai's connector only (owner decision 22). */
 export async function registrationResponse(ctx: ActionCtx, request: Request): Promise<Response> {
   if (!configuration()) return rejected("temporarily_unavailable", 503);
@@ -111,9 +130,9 @@ export async function registrationResponse(ctx: ActionCtx, request: Request): Pr
   if (length !== null && !(/^\d+$/.test(length) && Number(length) <= REGISTRATION_BYTES)) return rejected("invalid_client_metadata");
   let input: unknown;
   try {
-    const text = await request.text();
-    if (text.length > REGISTRATION_BYTES) return rejected("invalid_client_metadata");
-    input = JSON.parse(text);
+    const bytes = await readAtMost(request, REGISTRATION_BYTES);
+    if (!bytes) return rejected("invalid_client_metadata");
+    input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch { return rejected("invalid_client_metadata"); }
   const parsed = parseClaudeRegistration(input);
   if ("error" in parsed) return rejected(parsed.error);

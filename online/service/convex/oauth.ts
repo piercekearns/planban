@@ -8,7 +8,7 @@ import type { Doc } from "./_generated/dataModel";
 import { connectionIsUsable, liveConnection } from "./model/access";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
-import { metadataClientAllowed, REGISTERED_CLIENT_NAME, registeredClientId, type OAuthClient } from "./model/oauthClient";
+import { MAX_REGISTRATIONS_PER_PERSON, metadataClientAllowed, REGISTERED_CLIENT_NAME, registeredClientId, type OAuthClient } from "./model/oauthClient";
 
 export const REQUEST_MS = 10 * 60_000;
 export const MACHINE_REQUEST_MS = 5 * 60_000;
@@ -206,7 +206,11 @@ export const approve = internalMutation({
       // The first approval makes the registration that person's; it no longer expires.
       const registration = await registrationRow(ctx, row!.clientId);
       if (!registrationUsable(registration, args.userId)) fail("unauthorized", "This connection request has ended. Add the connector again.");
-      if (!registration!.userId) await ctx.db.patch(registration!._id, { userId: args.userId, expiresAt: undefined });
+      if (!registration!.userId) {
+        const held = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", args.userId)).filter((q) => q.eq(q.field("revokedAt"), undefined)).take(MAX_REGISTRATIONS_PER_PERSON);
+        if (held.length >= MAX_REGISTRATIONS_PER_PERSON) fail("rate_limited", `You have ${MAX_REGISTRATIONS_PER_PERSON} Claude connections. Remove one on the connections page first.`);
+        await ctx.db.patch(registration!._id, { userId: args.userId, expiresAt: undefined });
+      }
     }
     const now = new Date().toISOString();
     // Pending grants are visible and revocable before code redemption; they

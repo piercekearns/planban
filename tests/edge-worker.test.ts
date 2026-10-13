@@ -97,3 +97,16 @@ test("limits sign-in starts per caller address before forwarding, and refuses th
   assert.equal(unlimited.response.status, 503);
   assert.equal(unlimited.seen.length, 0);
 });
+
+test("registrations use their own limiter, and a streamed body past the cap fails the upload", async () => {
+  const used: string[] = [];
+  const limiter = (name: string) => ({ limit: async () => { used.push(name); return { success: true }; } });
+  const limited: Env = { ...env, SIGNIN_LIMITER: limiter("signin"), REGISTER_LIMITER: limiter("register") };
+  await through(new Request(`${PUBLIC}/oauth/register`, { method: "POST", headers: { "CF-Connecting-IP": "160.79.104.1" }, body: "{}" }), undefined, limited);
+  await through(new Request(`${PUBLIC}/oauth/authorize`, { headers: { "CF-Connecting-IP": "203.0.113.9" } }), undefined, limited);
+  assert.deepEqual(used, ["register", "signin"]);
+
+  const big = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(MAX_BODY_BYTES)); controller.enqueue(new Uint8Array(10)); controller.close(); } });
+  const { seen } = await through(new Request(`${PUBLIC}/mcp`, { method: "POST", body: big, duplex: "half" } as any));
+  await assert.rejects(new Response(seen[0]!.init.body as ReadableStream).arrayBuffer());
+});

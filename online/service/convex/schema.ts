@@ -238,7 +238,7 @@ export default defineSchema({
   oauthRegistrations: defineTable({
     clientId: v.string(), redirectUris: v.array(v.string()), createdAt: v.number(),
     expiresAt: v.optional(v.number()), userId: v.optional(v.string()), revokedAt: v.optional(v.string()),
-  }).index("by_clientId", ["clientId"]).index("by_expiry", ["expiresAt"]),
+  }).index("by_clientId", ["clientId"]).index("by_expiry", ["expiresAt"]).index("by_user", ["userId"]),
 
   oauthCleanup: defineTable({ name: v.string(), ticket: v.number(), dueAt: v.optional(v.number()) })
     .index("by_name", ["name"]),

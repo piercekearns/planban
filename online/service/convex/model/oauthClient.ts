@@ -103,11 +103,12 @@ export async function loadOAuthClient(clientId: string, fetcher: typeof fetch = 
   finally { clearTimeout(timer); controller.abort(); if (reader) await reader.cancel().catch(() => {}); }
 }
 
-/** Claude's published connector callbacks; claude.com is its newer address. */
+/** Claude's published connector callback (claude.com/docs/connectors/building/authentication). */
 export const CLAUDE_REDIRECTS: readonly string[] = Object.freeze([
   "https://claude.ai/api/mcp/auth_callback",
-  "https://claude.com/api/mcp/auth_callback",
 ]);
+/** How many Claude registrations one person may hold at once. */
+export const MAX_REGISTRATIONS_PER_PERSON = 25;
 export const REGISTERED_CLIENT_NAME = "Claude (claude.ai)";
 const REGISTERED_ID = /^pbc_[A-Za-z0-9_-]{43}$/;
 export function registeredClientId(clientId: string): boolean { return REGISTERED_ID.test(clientId); }

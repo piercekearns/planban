@@ -14,14 +14,22 @@ export interface Env {
   PUBLIC_HOST: string;
   /** Shared secret; the backend holds only its SHA-256 as PLANBAN_EDGE_PROOF_SHA256. */
   EDGE_PROOF: string;
-  /** Workers rate-limiting binding for sign-in starts, per caller address. */
-  SIGNIN_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  /** Per-caller limit on sign-in starts and authorize requests. */
+  SIGNIN_LIMITER?: Limiter;
+  /** Per-caller limit on claude.ai registrations, which arrive from Anthropic's shared addresses. */
+  REGISTER_LIMITER?: Limiter;
 }
+type Limiter = { limit(options: { key: string }): Promise<{ success: boolean }> };
 
-// The backend's sign-in quota is shared by every caller, and it can't see a
-// trustworthy caller address. Cloudflare sets CF-Connecting-IP itself, so
-// limit each caller here before one can use up everyone's quota.
-const LIMITED = new Set(["POST /oauth/machine/start", "POST /oauth/register", "GET /oauth/authorize"]);
+// The backend's sign-in quotas are shared by every caller and it can't see a
+// trustworthy caller address; Cloudflare sets CF-Connecting-IP itself. These
+// limits slow any one address. They don't stop many addresses together from
+// reaching the backend's shared quota, which stays as the outer cost bound.
+const LIMITED: Record<string, keyof Pick<Env, "SIGNIN_LIMITER" | "REGISTER_LIMITER">> = {
+  "POST /oauth/machine/start": "SIGNIN_LIMITER",
+  "GET /oauth/authorize": "SIGNIN_LIMITER",
+  "POST /oauth/register": "REGISTER_LIMITER",
+};
 
 export const EDGE_PROOF_HEADER = "Planban-Edge-Proof";
 /** Larger than any accepted Spec or Plan write, below the backend's own request limit. */
@@ -78,6 +86,18 @@ function configured(env: Env): { upstream: URL; host: string } | null {
   } catch { return null; }
 }
 
+/** Passes a body through, failing the upload once it passes `limit` bytes, with or without Content-Length. */
+function capped(body: ReadableStream<Uint8Array>, limit: number): ReadableStream<Uint8Array> {
+  let seen = 0;
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      seen += chunk.byteLength;
+      if (seen > limit) controller.error(new Error("payload_too_large"));
+      else controller.enqueue(chunk);
+    },
+  }));
+}
+
 /** A redirect may only go to the consent page on this public address. */
 function allowedLocation(location: string, host: string): boolean {
   if (location.startsWith(`${CONSENT_PATH}?`)) return true;
@@ -96,10 +116,12 @@ export default {
     const route = routed(url.pathname, request.method);
     if (route === "none") return refuse(404, "not_found");
     if (route === "method") return refuse(405, "method_not_allowed");
-    if (LIMITED.has(`${request.method} ${url.pathname}`)) {
+    const limiterName = LIMITED[`${request.method} ${url.pathname}`];
+    if (limiterName) {
       const caller = request.headers.get("CF-Connecting-IP");
-      if (!env.SIGNIN_LIMITER || !caller) return refuse(503, "temporarily_unavailable");
-      if (!(await env.SIGNIN_LIMITER.limit({ key: caller })).success) return refuse(429, "rate_limited");
+      const limiter = env[limiterName];
+      if (!limiter || !caller) return refuse(503, "temporarily_unavailable");
+      if (!(await limiter.limit({ key: caller })).success) return refuse(429, "rate_limited");
     }
     const length = request.headers.get("Content-Length");
     if (length !== null && !(/^\d+$/.test(length) && Number(length) <= MAX_BODY_BYTES)) return refuse(413, "payload_too_large");
@@ -119,7 +141,7 @@ export default {
       upstream = await fetch(target.href, {
         method: request.method,
         headers,
-        body: hasBody ? request.body : undefined,
+        body: hasBody && request.body ? capped(request.body, MAX_BODY_BYTES) : undefined,
         redirect: "manual",
         cache: "no-store",
         signal: request.signal,

@@ -4,7 +4,9 @@ import { getFunctionName } from "convex/server";
 import { CLAUDE_REDIRECTS, parseClaudeRegistration, REGISTERED_CLIENT_NAME } from "../online/service/convex/model/oauthClient";
 import { authorizationResponse, registrationResponse } from "../online/service/convex/model/oauthConsent";
 import { approve, register, registeredClient, REGISTRATION_MS } from "../online/service/convex/oauth";
-import { revoke } from "../online/service/convex/connections";
+import { list, revoke } from "../online/service/convex/connections";
+import { resolvedConnection } from "../online/service/convex/model/access";
+import { MAX_REGISTRATIONS_PER_PERSON } from "../online/service/convex/model/oauthClient";
 
 const handler = (fn: any, ctx: any, args: any) => fn._handler(ctx, args);
 const origin = "https://planban.example";
@@ -30,7 +32,7 @@ function store() {
       for (const [key, value] of Object.entries(patch)) if (value === undefined) delete row[key]; else row[key] = value;
     },
     delete: async (id: string) => { rows.splice(rows.findIndex((row) => row._id === id), 1); },
-    normalizeId: (_table: string, id: string) => rows.some((row) => row._id === id) ? id : null,
+    normalizeId: (table: string, id: string) => rows.some((row) => row._id === id && row._table === table) ? id : null,
     query: (table: string) => {
       let match = (row: any) => row._table === table;
       const query: any = {
@@ -44,6 +46,10 @@ function store() {
           return query;
         },
         order: () => query,
+        filter: (build: (q: any) => any) => {
+          const q: any = { field: (name: string) => ({ name }), eq: (a: any, b: any) => (row: any) => row[a.name] === b };
+          const predicate = build(q); const prior = match; match = (row) => prior(row) && predicate(row); return query;
+        },
         unique: async () => rows.find(match) ?? null,
         first: async () => rows.find(match) ?? null,
         collect: async () => rows.filter(match),
@@ -63,6 +69,7 @@ test("only Claude's own callbacks, as a public authorization-code client, can re
     [{ ...claudeBody, redirect_uris: [CLAUDE_REDIRECTS[0], "https://evil.example/cb"] }, "invalid_redirect_uri"],
     [{ ...claudeBody, redirect_uris: ["https://claude.ai/api/mcp/auth_callback?x=1"] }, "invalid_redirect_uri"],
     [{ ...claudeBody, redirect_uris: [] }, "invalid_redirect_uri"],
+    [{ ...claudeBody, redirect_uris: ["https://claude.com/api/mcp/auth_callback"] }, "invalid_redirect_uri"],
     [{ ...claudeBody, token_endpoint_auth_method: "client_secret_post" }, "invalid_client_metadata"],
     [{ ...claudeBody, grant_types: ["client_credentials"] }, "invalid_client_metadata"],
     [{ ...claudeBody, grant_types: ["refresh_token"] }, "invalid_client_metadata"],
@@ -118,7 +125,7 @@ test("an unused registration expires; the first approver owns it; others and exp
     await assert.rejects(approveAs("bob", "2"), /ended/);
 
     // Owned registrations don't expire; unowned ones do.
-    await handler(register, ctx, { clientId: `pbc_${"f".repeat(43)}`, redirectUris: [CLAUDE_REDIRECTS[1]] });
+    await handler(register, ctx, { clientId: `pbc_${"f".repeat(43)}`, redirectUris: [CLAUDE_REDIRECTS[0]] });
     const RealNow = Date.now;
     Date.now = () => RealNow() + REGISTRATION_MS + 1;
     try {
@@ -128,21 +135,67 @@ test("an unused registration expires; the first approver owns it; others and exp
   });
 });
 
-test("revoking a Claude connection ends its registration and every grant made through it", async () => {
+test("registrations are listed with their date, removable directly, and removal takes effect at once", async () => {
   const { ctx, rows } = store();
   const now = new Date().toISOString();
   const base = { userId: "alice", boards: "all", level: "complete", createdAt: now, lastUsedAt: now };
   const machine = await ctx.db.insert("connections", { ...base, kind: "machine", name: "Mac", clientName: "Mac", canAdminister: true });
-  await ctx.db.insert("oauthRegistrations", { clientId: CLIENT, redirectUris: [CLAUDE_REDIRECTS[0]], createdAt: Date.now(), userId: "alice" });
-  const grantA = await ctx.db.insert("connections", { ...base, kind: "oauth", name: REGISTERED_CLIENT_NAME, clientName: REGISTERED_CLIENT_NAME, canAdminister: false, oauthClientId: CLIENT, oauthResource: `${origin}/mcp`, authorizationVersion: 2 });
-  const grantB = await ctx.db.insert("connections", { ...base, kind: "oauth", name: REGISTERED_CLIENT_NAME, clientName: REGISTERED_CLIENT_NAME, canAdminister: false, oauthClientId: CLIENT, oauthResource: `${origin}/mcp`, authorizationVersion: 2 });
+  const registrationId = await ctx.db.insert("oauthRegistrations", { clientId: CLIENT, redirectUris: [CLAUDE_REDIRECTS[0]], createdAt: Date.now(), userId: "alice" });
+  const unconnected = await ctx.db.insert("oauthRegistrations", { clientId: `pbc_${"u".repeat(43)}`, redirectUris: [CLAUDE_REDIRECTS[0]], createdAt: Date.now(), userId: "alice" });
+  await ctx.db.insert("oauthRegistrations", { clientId: `pbc_${"o".repeat(43)}`, redirectUris: [CLAUDE_REDIRECTS[0]], createdAt: Date.now(), userId: "bob" });
+  const grant = { ...base, kind: "oauth", name: REGISTERED_CLIENT_NAME, clientName: REGISTERED_CLIENT_NAME, canAdminister: false, oauthClientId: CLIENT, oauthResource: `${origin}/mcp`, authorizationVersion: 2 };
+  const grantA = await ctx.db.insert("connections", grant);
+  const alias = await ctx.db.insert("connections", { ...grant, name: "Access credential", oauthConnectionId: grantA, tokenHash: "alias" });
   const other = await ctx.db.insert("connections", { ...base, kind: "oauth", name: "Codex", clientName: "Codex", canAdminister: false, oauthClientId: "https://chatgpt.com/oauth/codex/client.json", oauthResource: `${origin}/mcp`, authorizationVersion: 2 });
-  await handler(revoke, ctx, { connectionId: machine, targetId: grantA });
-  assert.ok(rows.find((row) => row._table === "oauthRegistrations").revokedAt);
+
+  const listed = await handler(list, ctx, { connectionId: machine });
+  assert.deepEqual(listed.registrations.map((entry: any) => [entry.id, entry.name, entry.connected]), [[registrationId, REGISTERED_CLIENT_NAME, true], [unconnected, REGISTERED_CLIENT_NAME, false]]);
+  assert.ok(listed.registrations.every((entry: any) => !Number.isNaN(Date.parse(entry.registeredAt))));
+
+  // Another person's registration can't be removed by this one.
+  const bobs = rows.find((row) => row.userId === "bob")._id;
+  await assert.rejects(handler(revoke, ctx, { connectionId: machine, targetId: bobs }), /not found/);
+
+  // Removing the registration alone already refuses its grant and access alias.
+  rows.find((row) => row._id === registrationId).revokedAt = now;
+  assert.equal(await resolvedConnection(ctx as any, grantA as any), null);
+  assert.equal(await resolvedConnection(ctx as any, alias as any), null);
+  assert.ok(await resolvedConnection(ctx as any, other as any));
+  delete rows.find((row) => row._id === registrationId).revokedAt;
+
+  await handler(revoke, ctx, { connectionId: machine, targetId: registrationId });
+  assert.ok(rows.find((row) => row._id === registrationId).revokedAt);
   assert.ok((await ctx.db.get(grantA)).revokedAt);
-  assert.ok((await ctx.db.get(grantB)).revokedAt);
   assert.equal((await ctx.db.get(other)).revokedAt, undefined);
-  assert.equal(await handler(registeredClient, ctx, { clientId: CLIENT }), null);
+  assert.equal((await handler(list, ctx, { connectionId: machine })).registrations.length, 1);
+
+  // Cutting off the grant also ends its registration.
+  const second = await ctx.db.insert("connections", { ...grant, oauthClientId: `pbc_${"u".repeat(43)}` });
+  await handler(revoke, ctx, { connectionId: machine, targetId: second });
+  assert.ok(rows.find((row) => row._id === unconnected).revokedAt);
+});
+
+test("one person can hold at most the capped number of Claude registrations", async () => {
+  const { ctx } = store();
+  await configured(async () => {
+    for (let i = 0; i < MAX_REGISTRATIONS_PER_PERSON; i++) await ctx.db.insert("oauthRegistrations", { clientId: `pbc_${String(i).padStart(43, "h")}`, redirectUris: [CLAUDE_REDIRECTS[0]], createdAt: Date.now(), userId: "alice" });
+    await handler(register, ctx, { clientId: CLIENT, redirectUris: [CLAUDE_REDIRECTS[0]] });
+    await ctx.db.insert("oauthRequests", { requestHash: "9".repeat(64), browserHash: "b".repeat(64), csrfHash: "c".repeat(64), clientId: CLIENT, clientName: REGISTERED_CLIENT_NAME, redirectUri: CLAUDE_REDIRECTS[0], resource: `${origin}/mcp`, scopes: ["planban:read"], level: "read", challenge: "x".repeat(43), state: "s", purpose: "oauth", status: "pending", expiresAt: Date.now() + 60_000, userId: "alice", sessionId: "sess" });
+    await assert.rejects(handler(approve, ctx, { requestHash: "9".repeat(64), browserHash: "b".repeat(64), csrfHash: "c".repeat(64), userId: "alice", sessionId: "sess", codeHash: "e".repeat(64), deny: false }), /Remove one/);
+  });
+});
+
+test("the registration route stops reading a streamed body past its byte limit", async () => {
+  await configured(async () => {
+    let calls = 0;
+    const ctx: any = { runMutation: async () => { calls++; return { createdAt: Date.now() }; } };
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({ pull(controller) { pulled++; controller.enqueue(new Uint8Array(1024).fill(32)); } });
+    const response = await registrationResponse(ctx, new Request(`${origin}/oauth/register`, { method: "POST", headers: { "Content-Type": "application/json" }, body: endless, duplex: "half" } as any));
+    assert.equal(response.status, 400);
+    assert.ok(pulled < 10);
+    assert.equal(calls, 0);
+  });
 });
 
 test("authorization for a registered client uses the stored registration, never a metadata fetch", async () => {
@@ -160,7 +213,7 @@ test("authorization for a registered client uses the stored registration, never 
     assert.equal(fetched, 0);
     assert.equal(created[0][0], "oauth:createRequest");
     assert.equal(created[0][1].clientName, REGISTERED_CLIENT_NAME);
-    const wrongCallback = await authorizationResponse(ctx, new Request(`${origin}/oauth/authorize?${new URLSearchParams({ ...fields, redirect_uri: CLAUDE_REDIRECTS[1] })}`), loader);
+    const wrongCallback = await authorizationResponse(ctx, new Request(`${origin}/oauth/authorize?${new URLSearchParams({ ...fields, redirect_uri: "https://claude.com/api/mcp/auth_callback" })}`), loader);
     assert.equal(wrongCallback.status, 400);
     const unknown = await authorizationResponse(ctx, new Request(`${origin}/oauth/authorize?${new URLSearchParams({ ...fields, client_id: `pbc_${"z".repeat(43)}` })}`), loader);
     assert.equal(unknown.status, 400);
