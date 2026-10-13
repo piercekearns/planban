@@ -41,7 +41,7 @@ import type {
 import { PLANBAN_STATUSES } from "./types";
 import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
-import { loadOnlineState, onlineCacheRoot, onlineOperation, refuseOnline } from "./online/adapter";
+import { loadOnlineState, onlineCacheRoot, onlineOperation, onlineState, refuseOnline } from "./online/adapter";
 import { boardPath, onlineRequest } from "./online/client";
 import { assertNotStaleCopy, checkInBackground, ONLINE_NOTE, STALE_MARKER } from "./online/copyCheck";
 import { credentialsPath } from "./online/credentials";
@@ -903,7 +903,11 @@ export async function historyPayload(cwd: string) {
 }
 
 export async function loadHistoryState(input: { cwd: string; version: number }): Promise<PlanbanResolvedState> {
-  await refuseForOnline(input.cwd, "History version reads");
+  const online = await onlineManifest(input.cwd);
+  if (online?.storage?.kind === "online") {
+    const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(online.storage.url, boardPath(online.storage.boardId, `/history/${input.version}`));
+    return onlineState(resolveProjectCwd(input.cwd), online, roadmap);
+  }
   const state = await loadState(input.cwd);
   const { readHistoryRoadmap } = await import("./history");
   return { ...state, roadmap: await readHistoryRoadmap(state, input.version) };
@@ -915,7 +919,10 @@ export async function readHistoryDoc(input: {
   cardId: string;
   kind: "spec" | "plan";
 }): Promise<PlanbanDocPayload> {
-  await refuseForOnline(input.cwd, "History document reads");
+  const online = await onlineManifest(input.cwd);
+  if (online?.storage?.kind === "online") {
+    return onlineRequest<PlanbanDocPayload>(online.storage.url, boardPath(online.storage.boardId, `/history/${input.version}/cards/${encodeURIComponent(input.cardId)}/docs/${input.kind}`));
+  }
   const state = await loadState(input.cwd);
   return resolveHistoryDoc(state, input.version, input.cardId, input.kind);
 }
@@ -924,8 +931,10 @@ export async function restoreBoardVersion(input: {
   cwd: string;
   version: number;
   actor?: PlanbanHistoryActor | undefined;
+  baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
-  await refuseForOnline(input.cwd, "History restore");
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreBoard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const restored = await restoreRoadmapFromHistory({ state, version: input.version, actor: input.actor });
@@ -944,8 +953,10 @@ export async function restoreCardVersion(input: {
   version: number;
   cardId: string;
   actor?: PlanbanHistoryActor | undefined;
+  baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
-  await refuseForOnline(input.cwd, "History restore");
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const restoredCard = await restoreCardFromHistory({ state, version: input.version, cardId: input.cardId });
@@ -972,8 +983,13 @@ export async function restoreDocVersion(input: {
   cardId: string;
   kind: "spec" | "plan";
   actor?: PlanbanHistoryActor | undefined;
+  baseRevision?: number | undefined;
 }): Promise<PlanbanDocPayload> {
-  await refuseForOnline(input.cwd, "History restore");
+  const online = await onlineManifest(input.cwd);
+  if (online) {
+    await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreDoc", input);
+    return readDoc({ cwd: input.cwd, cardId: input.cardId, kind: input.kind });
+  }
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const historicalDoc = await resolveHistoryDoc(state, input.version, input.cardId, input.kind);
