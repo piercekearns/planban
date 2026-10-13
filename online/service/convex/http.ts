@@ -99,6 +99,9 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     return json(await ctx.runQuery(internal.copies.check, { connectionId, fingerprints, ...(typeof input.uid === "string" ? { uid: input.uid } : {}) }));
   }
   if (parts[0] === "connections" && parts.length === 1 && method === "GET") return json(await ctx.runQuery(internal.connections.list, { connectionId }));
+  if (parts[0] === "connections" && parts.length === 2 && parts[1] === "revoke-others" && method === "POST") {
+    return json(await ctx.runMutation(internal.connections.revokeAllOthers, { connectionId }));
+  }
   if (parts[0] === "connections" && parts.length === 3 && parts[2] === "revoke" && method === "POST") {
     return json(await ctx.runMutation(internal.connections.revoke, { connectionId, targetId: parts[1]! }));
   }

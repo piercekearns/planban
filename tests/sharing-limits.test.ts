@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as invites from "../online/service/convex/invites";
-import { createKey, MAX_ACTIVE_KEYS } from "../online/service/convex/connections";
+import { createKey, list, MAX_ACTIVE_KEYS, revokeAllOthers } from "../online/service/convex/connections";
+import { resolvedConnection } from "../online/service/convex/model/access";
 import { DAILY_INVITE_EMAILS, DAILY_INVITES, DAILY_KEYS, SERVICE_DAILY_INVITE_EMAILS } from "../online/service/convex/model/limits";
 import { handleMcp, MAX_BATCH } from "../online/service/convex/model/mcp";
 
@@ -14,6 +15,7 @@ function store() {
     get: async (id: string) => rows.find((row) => row._id === id) ?? null,
     insert: async (table: string, value: any) => { const id = `${table}-${++sequence}`; rows.push({ ...value, _id: id, _table: table, _n: sequence }); return id; },
     patch: async (id: string, patch: any) => Object.assign(rows.find((row) => row._id === id), patch),
+    delete: async (id: string) => { rows.splice(rows.findIndex((row) => row._id === id), 1); },
     normalizeId: (table: string, id: string) => rows.some((row) => row._id === id && row._table === table) ? id : null,
     query: (table: string) => {
       let match = (row: any) => row._table === table;
@@ -115,4 +117,43 @@ test("MCP refuses a batch above the limit before running any of it", async () =>
   const small = await handleMcp(new Request("https://app.example/mcp", { method: "POST", body: JSON.stringify([call(1), call(2)]) }), service, "https://app.example");
   assert.equal(small.status, 200);
   assert.equal((await small.json()).length, 2);
+});
+
+test("old active keys behind lots of revoked history stay listed, count toward the cap, and get cut off", async () => {
+  const { ctx, rows } = store();
+  const owner = await ownerWithBoard(ctx);
+  const now = new Date().toISOString();
+  const keyRow = (id: string, n: number, revoked: boolean) => ({ _table: "connections", _id: id, _n: n, userId: "owner", kind: "key", name: id, clientName: "Key", boards: ["shared"], level: "read", canAdminister: false, createdAt: now, lastUsedAt: now, ...(revoked ? { revokedAt: now } : {}) });
+  for (let n = 0; n < MAX_ACTIVE_KEYS; n += 1) rows.push(keyRow(`old-${n}`, 10_000 + n, false));
+  for (let n = 0; n < 1000; n += 1) rows.push(keyRow(`revoked-${n}`, 20_000 + n, true));
+  rows.push({ _table: "oauthRegistrations", _id: "reg-1", _n: 30_000, clientId: `pbc_${"r".repeat(43)}`, redirectUris: [], createdAt: Date.now(), userId: "owner" });
+
+  const listed = await handler(list, ctx, { connectionId: owner });
+  const activeKeys = listed.connections.filter((entry: any) => entry.kind === "key" && entry.active);
+  assert.equal(activeKeys.length, MAX_ACTIVE_KEYS, "every active key is listed despite newer revoked history");
+  await assert.rejects(handler(createKey, ctx, { connectionId: owner, tokenHash: "k-new", name: "One too many", boardId: "shared", level: "read" }), /50 active personal access keys/);
+
+  let result: any;
+  do result = await handler(revokeAllOthers, ctx, { connectionId: owner }); while (result.more);
+  assert.equal(await resolvedConnection(ctx as any, "old-0" as any), null, "the oldest key is cut off too");
+  assert.ok(rows.filter((row) => row._table === "connections" && row._id.startsWith("old-")).every((row) => row.revokedAt));
+  assert.ok(await resolvedConnection(ctx as any, owner as any), "the connection making the request stays signed in");
+  assert.equal(rows.some((row) => row._table === "oauthRegistrations"), false, "Claude registrations are removed too");
+});
+
+test("cutting off everything works in batches until nothing is left", async () => {
+  const { ctx, rows } = store();
+  const owner = await ownerWithBoard(ctx);
+  const now = new Date().toISOString();
+  for (let n = 0; n < 450; n += 1) rows.push({ _table: "connections", _id: `m-${n}`, _n: 40_000 + n, userId: "owner", kind: "machine", name: "Mac", clientName: "Mac", boards: "all", level: "complete", canAdminister: true, createdAt: now, lastUsedAt: now });
+  const first = await handler(revokeAllOthers, ctx, { connectionId: owner });
+  assert.deepEqual([first.revoked, first.more], [200, true]);
+  let rounds = 1;
+  let result = first;
+  while (result.more) { result = await handler(revokeAllOthers, ctx, { connectionId: owner }); rounds += 1; }
+  assert.equal(rounds, 3);
+  assert.ok(rows.filter((row) => row._id.startsWith("m-")).every((row) => row.revokedAt));
+  const agentKey = rows.find((row) => row._id === "m-0");
+  delete agentKey.revokedAt; agentKey.canAdminister = false;
+  await assert.rejects(handler(revokeAllOthers, ctx, { connectionId: "m-0" }), /your own sign-in/);
 });

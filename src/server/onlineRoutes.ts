@@ -191,6 +191,17 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
     if (!(await readCredentials()).services[url]) return { signedIn: false, url, connections: [] };
     return { signedIn: true, url, ...await onlineRequest<object>(url, "/api/v1/connections") };
   }));
+  /** Cut off every other machine, agent, key and Claude registration, in the service's batches. */
+  app.post("/api/online/connections/revoke-others", relay(async () => {
+    const url = await defaultService();
+    let revoked = 0;
+    for (let round = 0; round < 50; round += 1) {
+      const result = await onlineRequest<{ revoked: number; registrations: number; more: boolean }>(url, "/api/v1/connections/revoke-others", {});
+      revoked += result.revoked + result.registrations;
+      if (!result.more) return { revoked, complete: true };
+    }
+    return { revoked, complete: false };
+  }));
   app.post("/api/online/connections/:id/:action", relay(async (req) => {
     const url = await defaultService();
     const action = req.params.action === "access" ? "access" : req.params.action === "restore" ? "restore" : "revoke";

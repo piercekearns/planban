@@ -97,7 +97,7 @@ function store(rows: any[]) {
         const q: any = { eq: (field: string, value: unknown) => { wanted[field] = value; return q; } };
         range(q);
         const found = rows.filter((row) => row.table === table && Object.entries(wanted).every(([field, value]) => row[field] === value));
-        const result: any = { unique: async () => found[0] ?? null, order: () => result, take: async (count: number) => found.slice(0, count) };
+        const result: any = { unique: async () => found[0] ?? null, order: () => result, take: async (count: number) => found.slice(0, count), collect: async () => found };
         return result;
       },
     }),

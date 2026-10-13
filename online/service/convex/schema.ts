@@ -207,7 +207,9 @@ export default defineSchema({
     serviceOrigin: v.optional(v.string()),
     /** Access credentials are aliases of an independently revocable grant. */
     oauthConnectionId: v.optional(v.id("connections")),
-  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"]),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"])
+    // Every credential a person hasn't revoked, however much revoked history they have.
+    .index("by_user_revoked", ["userId", "revokedAt"]),
 
   /** Explicit consent, frozen client/redirect/resource/PKCE and one-use code. */
   oauthRequests: defineTable({
