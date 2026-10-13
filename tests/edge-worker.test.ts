@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import worker, { EDGE_PROOF_HEADER, MAX_BODY_BYTES, type Env } from "../online/edge/worker";
 
-const env: Env = { UPSTREAM: "https://native-123.convex.example", PUBLIC_HOST: "app.planban.example", EDGE_PROOF: "p".repeat(48) };
+const env: Env = { UPSTREAM: "https://native-123.eu-west-1.convex.site", PUBLIC_HOST: "app.planban.example", EDGE_PROOF: "p".repeat(48) };
 const PUBLIC = "https://app.planban.example";
 
 type Seen = { url: string; init: RequestInit & { headers: Headers } };
@@ -17,7 +17,7 @@ test("forwards known routes to the fixed upstream with a fresh proof, never the 
   const { response, seen } = await through(new Request(`${PUBLIC}/mcp?x=1`, { method: "POST", headers: { [EDGE_PROOF_HEADER]: "forged", Authorization: "Bearer pba_x", "Content-Type": "application/json" }, body: "{}" }));
   assert.equal(response.status, 200);
   assert.equal(seen.length, 1);
-  assert.equal(seen[0]!.url, "https://native-123.convex.example/mcp?x=1");
+  assert.equal(seen[0]!.url, "https://native-123.eu-west-1.convex.site/mcp?x=1");
   assert.equal(seen[0]!.init.headers.get(EDGE_PROOF_HEADER), env.EDGE_PROOF);
   assert.equal(seen[0]!.init.headers.get("Authorization"), "Bearer pba_x");
   assert.equal(seen[0]!.init.redirect, "manual");
@@ -26,7 +26,7 @@ test("forwards known routes to the fixed upstream with a fresh proof, never the 
 
 test("refuses other hosts, unknown routes, wrong methods, odd paths and oversized bodies without forwarding", async () => {
   const cases: Array<[Request, number]> = [
-    [new Request("https://native-123.convex.example/mcp", { method: "POST" }), 421],
+    [new Request("https://native-123.eu-west-1.convex.site/mcp", { method: "POST" }), 421],
     [new Request("http://app.planban.example/mcp", { method: "POST" }), 421],
     [new Request(`${PUBLIC}/`), 404],
     [new Request(`${PUBLIC}/dev/token`, { method: "POST" }), 404],
@@ -45,7 +45,7 @@ test("refuses other hosts, unknown routes, wrong methods, odd paths and oversize
 });
 
 test("fails closed until configured with a real https upstream and a strong proof", async () => {
-  for (const broken of [{ ...env, UPSTREAM: "unset" }, { ...env, UPSTREAM: "http://native-123.convex.example" }, { ...env, UPSTREAM: "https://native-123.convex.example/base" }, { ...env, EDGE_PROOF: "short" }, { ...env, UPSTREAM: PUBLIC }]) {
+  for (const broken of [{ ...env, UPSTREAM: "unset" }, { ...env, UPSTREAM: "https://wrong-target.example/#name.convex.site" }, { ...env, UPSTREAM: "https://evil.example" }, { ...env, UPSTREAM: "https://native-123.convex.site.evil.example" }, { ...env, UPSTREAM: "https://native-123.convex.site:8443" }, { ...env, UPSTREAM: "https://native-123.convex.site/" }, { ...env, UPSTREAM: "https://user@native-123.convex.site" }, { ...env, UPSTREAM: "http://native-123.eu-west-1.convex.site" }, { ...env, UPSTREAM: "https://native-123.eu-west-1.convex.site/base" }, { ...env, EDGE_PROOF: "short" }, { ...env, UPSTREAM: PUBLIC }]) {
     const { response, seen } = await through(new Request(`${PUBLIC}/mcp`, { method: "POST" }), undefined, broken);
     assert.equal(response.status, 503);
     assert.equal(seen.length, 0);
@@ -65,7 +65,7 @@ test("passes only the consent hand-over redirect and keeps each cookie separate"
   assert.deepEqual(ok.response.headers.getSetCookie(), ["__Host-a=1; Path=/; Secure; HttpOnly", "__Host-b=2; Path=/; Secure; HttpOnly"]);
   assert.equal((await through(new Request(`${PUBLIC}/oauth/machine/launch`), () => new Response(null, { status: 303, headers: { Location: "/oauth/consent?request=pbe_y" } }))).response.status, 303);
 
-  for (const location of ["https://native-123.convex.example/oauth/consent?request=x", "https://evil.example/oauth/consent", `${PUBLIC}/oauth/token`, "//evil.example/oauth/consent", "/elsewhere"]) {
+  for (const location of ["https://native-123.eu-west-1.convex.site/oauth/consent?request=x", "https://evil.example/oauth/consent", `${PUBLIC}/oauth/token`, "//evil.example/oauth/consent", "/elsewhere"]) {
     const refused = await through(new Request(`${PUBLIC}/oauth/machine/launch`), () => new Response(null, { status: 302, headers: { Location: location } }));
     assert.equal(refused.response.status, 502, location);
     assert.equal(refused.response.headers.get("Location"), null);

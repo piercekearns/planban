@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { getFunctionName } from "convex/server";
 import { CLAUDE_REDIRECTS, parseClaudeRegistration, REGISTERED_CLIENT_NAME } from "../online/service/convex/model/oauthClient";
 import { authorizationResponse, registrationResponse } from "../online/service/convex/model/oauthConsent";
-import { approve, register, registeredClient, REGISTRATION_MS } from "../online/service/convex/oauth";
+import { approve, refresh, register, registeredClient, REGISTRATION_MS } from "../online/service/convex/oauth";
 import { list, revoke } from "../online/service/convex/connections";
 import { resolvedConnection } from "../online/service/convex/model/access";
 import { MAX_REGISTRATIONS_PER_PERSON } from "../online/service/convex/model/oauthClient";
@@ -156,15 +156,15 @@ test("registrations are listed with their date, removable directly, and removal 
   const bobs = rows.find((row) => row.userId === "bob")._id;
   await assert.rejects(handler(revoke, ctx, { connectionId: machine, targetId: bobs }), /not found/);
 
-  // Removing the registration alone already refuses its grant and access alias.
-  rows.find((row) => row._id === registrationId).revokedAt = now;
+  // Without its registration, a grant and its access alias are refused even before they're marked.
+  const saved = rows.splice(rows.findIndex((row) => row._id === registrationId), 1)[0];
   assert.equal(await resolvedConnection(ctx as any, grantA as any), null);
   assert.equal(await resolvedConnection(ctx as any, alias as any), null);
   assert.ok(await resolvedConnection(ctx as any, other as any));
-  delete rows.find((row) => row._id === registrationId).revokedAt;
+  rows.push(saved);
 
   await handler(revoke, ctx, { connectionId: machine, targetId: registrationId });
-  assert.ok(rows.find((row) => row._id === registrationId).revokedAt);
+  assert.equal(rows.some((row) => row._id === registrationId), false);
   assert.ok((await ctx.db.get(grantA)).revokedAt);
   assert.equal((await ctx.db.get(other)).revokedAt, undefined);
   assert.equal((await handler(list, ctx, { connectionId: machine })).registrations.length, 1);
@@ -172,7 +172,7 @@ test("registrations are listed with their date, removable directly, and removal 
   // Cutting off the grant also ends its registration.
   const second = await ctx.db.insert("connections", { ...grant, oauthClientId: `pbc_${"u".repeat(43)}` });
   await handler(revoke, ctx, { connectionId: machine, targetId: second });
-  assert.ok(rows.find((row) => row._id === unconnected).revokedAt);
+  assert.equal(rows.some((row) => row._id === unconnected), false);
 });
 
 test("one person can hold at most the capped number of Claude registrations", async () => {
@@ -218,4 +218,17 @@ test("authorization for a registered client uses the stored registration, never 
     const unknown = await authorizationResponse(ctx, new Request(`${origin}/oauth/authorize?${new URLSearchParams({ ...fields, client_id: `pbc_${"z".repeat(43)}` })}`), loader);
     assert.equal(unknown.status, 400);
   });
+});
+
+test("a removed registration's grants can't refresh even before they're marked revoked", async () => {
+  const { ctx, rows } = store();
+  const now = new Date().toISOString();
+  const grant = await ctx.db.insert("connections", { userId: "alice", kind: "oauth", name: REGISTERED_CLIENT_NAME, clientName: REGISTERED_CLIENT_NAME, boards: "all", level: "read", canAdminister: false, createdAt: now, lastUsedAt: now, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), oauthClientId: CLIENT, oauthResource: `${origin}/mcp`, authorizationVersion: 2 });
+  const refreshRow = { tokenHash: "r".repeat(64), connectionId: grant, clientId: CLIENT, resource: `${origin}/mcp`, scopes: ["planban:read", "offline_access"], expiresAt: Date.now() + 86_400_000 };
+  await ctx.db.insert("oauthRefresh", refreshRow);
+  const args = { tokenHash: "r".repeat(64), clientId: CLIENT, resource: `${origin}/mcp`, accessHash: "a".repeat(64), refreshHash: "n".repeat(64) };
+  assert.deepEqual(await handler(refresh, ctx, args), { error: "invalid_grant" });
+  await ctx.db.insert("oauthRegistrations", { clientId: CLIENT, redirectUris: [CLAUDE_REDIRECTS[0]], createdAt: Date.now(), userId: "alice" });
+  assert.equal((await handler(refresh, ctx, args)).refresh, true);
+  assert.ok(rows.some((row) => row._table === "connections" && row.oauthConnectionId === grant));
 });

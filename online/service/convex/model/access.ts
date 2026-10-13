@@ -18,10 +18,10 @@ export function connectionIsUsable(connection: Doc<"connections"> | null): conne
 }
 
 /** A claude.ai registration's own revocation ends everything made through it at once. */
-async function registrationLive(ctx: QueryCtx, connection: Doc<"connections">): Promise<boolean> {
+export async function registrationLive(ctx: QueryCtx, connection: Doc<"connections">): Promise<boolean> {
   if (!connection.oauthClientId || !registeredClientId(connection.oauthClientId)) return true;
   const registration = await ctx.db.query("oauthRegistrations").withIndex("by_clientId", (q) => q.eq("clientId", connection.oauthClientId!)).unique();
-  return !!registration && !registration.revokedAt && registration.userId === connection.userId;
+  return !!registration && registration.userId === connection.userId;
 }
 
 export async function resolvedConnection(ctx: QueryCtx, connectionId: Id<"connections">): Promise<Doc<"connections"> | null> {

@@ -6,7 +6,7 @@ import { internalMutation, internalQuery, type MutationCtx } from "./_generated/
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, resolvedConnection } from "./model/access";
 import { connectionOrigin, publicOrigin } from "./model/auth";
-import { REGISTERED_CLIENT_NAME, registeredClientId } from "./model/oauthClient";
+import { MAX_REGISTRATIONS_PER_PERSON, REGISTERED_CLIENT_NAME, registeredClientId } from "./model/oauthClient";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 
@@ -96,11 +96,11 @@ export const list = internalQuery({
     if (!connection.canAdminister) return { connections: [describe(connection, connection._id)] };
     const all = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
     const grants = all.filter((row) => !row.oauthConnectionId);
-    const registrations = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
+    const registrations = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", connection.userId)).take(MAX_REGISTRATIONS_PER_PERSON);
     return {
       connections: grants.map((row) => describe(row, connectionId)),
       // Every claude.ai registration this person approved, connected or not (owner decision 22).
-      registrations: registrations.filter((row) => !row.revokedAt).map((row) => ({
+      registrations: registrations.map((row) => ({
         id: row._id, name: REGISTERED_CLIENT_NAME, registeredAt: new Date(row.createdAt).toISOString(),
         connected: grants.some((grant) => grant.oauthClientId === row.clientId && connectionIsUsable(grant)),
       })),
@@ -136,12 +136,12 @@ export const revoke = internalMutation({
 });
 
 /**
- * Revoking the registration is authoritative at once: every connection made
- * through it is refused from then on (see resolvedConnection). Grants are
- * also marked revoked here, a bounded batch at a time.
+ * Removing the registration is authoritative at once: with its row gone,
+ * every connection made through it is refused (see registrationLive), and no
+ * history accumulates. Grants are also marked revoked, a bounded batch at a time.
  */
 async function endRegistration(ctx: MutationCtx, registration: Doc<"oauthRegistrations">, now: string) {
-  if (!registration.revokedAt) await ctx.db.patch(registration._id, { revokedAt: now });
+  await ctx.db.delete(registration._id);
   if (!registration.userId) return;
   const grants = await ctx.db.query("connections").withIndex("by_user_client", (q) => q.eq("userId", registration.userId!).eq("oauthClientId", registration.clientId))
     .filter((q) => q.eq(q.field("revokedAt"), undefined)).take(50);

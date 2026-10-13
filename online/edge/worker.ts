@@ -78,8 +78,10 @@ function routed(pathname: string, method: string): "ok" | "method" | "none" {
 
 function configured(env: Env): { upstream: URL; host: string } | null {
   try {
+    // Exactly a Convex HTTP actions origin: nothing that could carry the proof elsewhere.
+    if (!/^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)?\.convex\.site$/.test(env.UPSTREAM ?? "")) return null;
     const upstream = new URL(env.UPSTREAM);
-    if (upstream.protocol !== "https:" || upstream.pathname !== "/" || upstream.search || upstream.username || upstream.password) return null;
+    if (upstream.origin !== env.UPSTREAM || upstream.port || upstream.username || upstream.password || upstream.hash || upstream.search) return null;
     if (!/^[a-z0-9.-]+$/.test(env.PUBLIC_HOST ?? "") || upstream.host === env.PUBLIC_HOST) return null;
     if (typeof env.EDGE_PROOF !== "string" || env.EDGE_PROOF.length < 32) return null;
     return { upstream, host: env.PUBLIC_HOST };

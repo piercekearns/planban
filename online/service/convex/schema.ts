@@ -233,11 +233,11 @@ export default defineSchema({
   /**
    * claude.ai's self-registrations (owner decision 22): only Claude's own
    * callback addresses, public clients. Unused ones expire; the first person
-   * to approve one owns it, and revoking its connection ends it.
+   * to approve one owns it, and removing it (or its connection) deletes it.
    */
   oauthRegistrations: defineTable({
     clientId: v.string(), redirectUris: v.array(v.string()), createdAt: v.number(),
-    expiresAt: v.optional(v.number()), userId: v.optional(v.string()), revokedAt: v.optional(v.string()),
+    expiresAt: v.optional(v.number()), userId: v.optional(v.string()),
   }).index("by_clientId", ["clientId"]).index("by_expiry", ["expiresAt"]).index("by_user", ["userId"]),
 
   oauthCleanup: defineTable({ name: v.string(), ticket: v.number(), dueAt: v.optional(v.number()) })

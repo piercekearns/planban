@@ -5,7 +5,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { connectionIsUsable, liveConnection } from "./model/access";
+import { connectionIsUsable, liveConnection, registrationLive } from "./model/access";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 import { MAX_REGISTRATIONS_PER_PERSON, metadataClientAllowed, REGISTERED_CLIENT_NAME, registeredClientId, type OAuthClient } from "./model/oauthClient";
@@ -124,7 +124,7 @@ async function registrationRow(ctx: QueryCtx, clientId: string) {
 }
 
 function registrationUsable(row: Doc<"oauthRegistrations"> | null, userId?: string): row is Doc<"oauthRegistrations"> {
-  if (!row || row.revokedAt) return false;
+  if (!row) return false;
   if (row.userId) return userId === undefined || row.userId === userId;
   return row.expiresAt !== undefined && row.expiresAt > Date.now();
 }
@@ -207,7 +207,7 @@ export const approve = internalMutation({
       const registration = await registrationRow(ctx, row!.clientId);
       if (!registrationUsable(registration, args.userId)) fail("unauthorized", "This connection request has ended. Add the connector again.");
       if (!registration!.userId) {
-        const held = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", args.userId)).filter((q) => q.eq(q.field("revokedAt"), undefined)).take(MAX_REGISTRATIONS_PER_PERSON);
+        const held = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", args.userId)).take(MAX_REGISTRATIONS_PER_PERSON);
         if (held.length >= MAX_REGISTRATIONS_PER_PERSON) fail("rate_limited", `You have ${MAX_REGISTRATIONS_PER_PERSON} Claude connections. Remove one on the connections page first.`);
         await ctx.db.patch(registration!._id, { userId: args.userId, expiresAt: undefined });
       }
@@ -254,7 +254,7 @@ export const redeem = internalMutation({
     const row = await ctx.db.query("oauthRequests").withIndex("by_codeHash", (q) => q.eq("codeHash", args.codeHash)).unique();
     if (!row || row.status !== "approved" || !row.connectionId || (row.purpose === "machine" && row.expiresAt <= Date.now()) || (row.codeExpiresAt ?? 0) <= Date.now() || row.clientId !== args.clientId || row.redirectUri !== args.redirectUri || row.resource !== args.resource || row.challenge !== args.challenge) return invalid();
     const connection = await ctx.db.get(row.connectionId);
-    if (!connection || connection.revokedAt || !connection.oauthPending) return invalid();
+    if (!connection || connection.revokedAt || !connection.oauthPending || !await registrationLive(ctx, connection)) return invalid();
     if (row.approverConnectionId && !connectionIsUsable(await ctx.db.get(row.approverConnectionId))) return invalid();
     if (!row.approverConnectionId && (!row.sessionId || args.sessionId !== row.sessionId || args.sessionUserId !== row.userId)) return invalid();
     await ctx.db.patch(row._id, { status: "consumed" });
@@ -357,7 +357,7 @@ export const refresh = internalMutation({
       if (connection && !connection.revokedAt) await ctx.db.patch(connection._id, { revokedAt: new Date().toISOString() });
       return invalid();
     }
-    if (row.expiresAt <= Date.now() || !connectionIsUsable(connection) || connection.authorizationVersion !== 2 || connection.kind !== "oauth" || connection.oauthConnectionId) return invalid();
+    if (row.expiresAt <= Date.now() || !connectionIsUsable(connection) || !await registrationLive(ctx, connection) || connection.authorizationVersion !== 2 || connection.kind !== "oauth" || connection.oauthConnectionId) return invalid();
     if (args.requestedScopes) {
       const approved = new Set(row.scopes), requested = new Set(args.requestedScopes);
       if (requested.size !== args.requestedScopes.length || requested.size !== approved.size || args.requestedScopes.some((scope) => !approved.has(scope))) return { error: "invalid_scope" as const };
