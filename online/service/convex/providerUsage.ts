@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { makeFunctionReference } from "convex/server";
 import { internalAction, internalMutation, internalQuery, type ActionCtx } from "./_generated/server";
-import { USAGE_POLICY, USAGE_CLOUD, collectionFailure, usageEnabled, mailEnabled, parseUsage, emptyMonitor, observeUsage, finishUsage, canSend, monitorStale, type MonitorState, type Reading, type Batch } from "./model/providerUsage";
+import { USAGE_POLICY, USAGE_CLOUD, collectionFailure, usageEnabled, mailEnabled, parseUsage, emptyMonitor, observeUsage, expiryNoticeDue, expiryNoticePayload, finishUsage, canSend, monitorStale, type MonitorState, type Reading, type Batch } from "./model/providerUsage";
 
 const observeRef = makeFunctionReference<"mutation">("providerUsage:observe");
 const finishRef = makeFunctionReference<"mutation">("providerUsage:finish");
@@ -26,6 +26,38 @@ export const finish = internalMutation({
     await ctx.db.patch(row._id, { state: row.state });
   },
 });
+
+const expiryStateRef = makeFunctionReference<"query">("providerUsage:monitorState");
+const expiryNotedRef = makeFunctionReference<"mutation">("providerUsage:noteExpiryNotice");
+
+export const monitorState = internalQuery({ args: {}, handler: async (ctx): Promise<MonitorState> => {
+  const row = await ctx.db.query("providerUsageMonitors").withIndex("by_policy", q => q.eq("policy", USAGE_POLICY)).unique();
+  return row?.state ?? emptyMonitor();
+} });
+
+export const noteExpiryNotice = internalMutation({
+  args: { expiry: v.number() },
+  handler: async (ctx, { expiry }) => {
+    if (!usageEnabled(process.env)) return;
+    const row = await ctx.db.query("providerUsageMonitors").withIndex("by_policy", q => q.eq("policy", USAGE_POLICY)).unique();
+    const state: MonitorState = row?.state ?? emptyMonitor();
+    state.expiryNoticeFor = expiry;
+    if (row) await ctx.db.patch(row._id, { state }); else await ctx.db.insert("providerUsageMonitors", { policy: USAGE_POLICY, state });
+  },
+});
+
+/** Reminds hello@planban.ai once, a week before the usage key expires. The key is the idempotency key, so a retry is never a second email. */
+async function remindBeforeExpiry(ctx: Pick<ActionCtx, "runMutation" | "runQuery">) {
+  if (!mailEnabled(process.env)) return;
+  const state = await ctx.runQuery(expiryStateRef, {}) as MonitorState;
+  const expiry = expiryNoticeDue(process.env, state, Date.now());
+  if (expiry === null) return;
+  const response = await fetch("https://api.resend.com/emails", { method: "POST", redirect: "error",
+    headers: { Authorization: `Bearer ${process.env.PLANBAN_USAGE_EMAIL_KEY}`, "Content-Type": "application/json", "Idempotency-Key": `planban-usage-key-expiry-${expiry}` },
+    body: expiryNoticePayload(expiry), signal: AbortSignal.timeout(10000) }).catch(() => null);
+  if (response?.ok) await ctx.runMutation(expiryNotedRef, { expiry });
+  else await response?.body?.cancel();
+}
 
 /** Internal operational inspection; no dashboard, public tool or credential. */
 export const status = internalQuery({ args: {}, handler: async ctx => {
@@ -56,13 +88,14 @@ export async function boundedJson(response: Response): Promise<unknown> {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function runUsagePoll(ctx: Pick<ActionCtx, "runMutation">): Promise<string> {
+export async function runUsagePoll(ctx: Pick<ActionCtx, "runMutation"> & Partial<Pick<ActionCtx, "runQuery">>): Promise<string> {
   if (!usageEnabled(process.env)) return "disabled";
   const credentialFailure = collectionFailure(process.env, Date.now());
   if (credentialFailure) {
     await ctx.runMutation(observeRef, { reading: null, status: credentialFailure, now: Date.now() });
     return credentialFailure;
   }
+  if (ctx.runQuery) await remindBeforeExpiry(ctx as Pick<ActionCtx, "runMutation" | "runQuery">).catch(() => undefined);
   const started = Date.now(); let reading: Reading | null = null; let status = "unavailable";
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10000);
   try {

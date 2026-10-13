@@ -252,3 +252,19 @@ test("enabled collection records redacted expiry/auth/parser/stream/timeout and 
     for (const k of Object.keys(process.env)) if (!(k in saved.env)) delete process.env[k]; Object.assign(process.env, saved.env); globalThis.fetch = saved.fetch; Date.now = saved.now; globalThis.setTimeout = saved.timer;
   }
 });
+
+test("the usage key's renewal reminder is due once, in its last week", async () => {
+  const { expiryNoticeDue, expiryNoticePayload, EXPIRY_NOTICE_MS, emptyMonitor: empty } = await import("../online/service/convex/model/providerUsage");
+  const start = Date.parse("2026-11-01T00:00:00Z");
+  const expiry = start + EXPIRY_NOTICE_MS + HOUR;
+  const env = { PLANBAN_USAGE_KEY_EXPIRES_AT: String(expiry) };
+  assert.equal(expiryNoticeDue(env, empty(), start), null, "not yet in the last week");
+  assert.equal(expiryNoticeDue(env, empty(), start + 2 * HOUR), expiry, "due within the last week");
+  assert.equal(expiryNoticeDue(env, { ...empty(), expiryNoticeFor: expiry }, start + 2 * HOUR), null, "sent once per key");
+  assert.equal(expiryNoticeDue(env, empty(), expiry + 1), null, "an expired key is reported as expired instead");
+  assert.equal(expiryNoticeDue({ PLANBAN_USAGE_KEY_EXPIRES_AT: "soon" }, empty(), start), null);
+  const mail = JSON.parse(expiryNoticePayload(expiry));
+  assert.equal(mail.to[0], "hello@planban.ai");
+  assert.match(mail.subject, /Usage monitor key expires soon/);
+  assert.match(mail.text, new RegExp(new Date(expiry).toUTCString().replace(/[()+]/g, ".")));
+});

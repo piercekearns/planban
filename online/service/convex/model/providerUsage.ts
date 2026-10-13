@@ -29,6 +29,8 @@ export type Batch = {
 export type MonitorState = {
   lastAttemptAt?: number; lastSuccess?: Reading; status?: string;
   covered: Record<string, true>; batches: Batch[];
+  /** The usage key expiry a renewal reminder has already been sent for. */
+  expiryNoticeFor?: number;
 };
 export const emptyMonitor = (): MonitorState => ({ covered: {}, batches: [] });
 export const utcMonth = (now: number) => new Date(now).toISOString().slice(0, 7);
@@ -47,6 +49,27 @@ export function collectionFailure(env: Settings, now: number): string | null {
   if (!Number.isSafeInteger(expiry) || expiry <= 0) return "credential_invalid_expiry";
   return expiry > now ? null : "credential_expired";
 }
+/** A renewal reminder goes out once the usage key is this close to expiring. */
+export const EXPIRY_NOTICE_MS = 7 * 24 * HOUR;
+
+/** The usage key's expiry when a renewal reminder is due and not yet sent; otherwise null. */
+export function expiryNoticeDue(env: Settings, state: MonitorState, now: number): number | null {
+  const expiry = Number(env.PLANBAN_USAGE_KEY_EXPIRES_AT);
+  if (!Number.isSafeInteger(expiry) || expiry <= now || expiry - now > EXPIRY_NOTICE_MS) return null;
+  return state.expiryNoticeFor === expiry ? null : expiry;
+}
+
+export function expiryNoticePayload(expiry: number): string {
+  const when = new Date(expiry).toUTCString();
+  const text = [
+    `Planban's usage monitor key expires on ${when}.`,
+    "After that, included-usage warnings stop until a new key is set. Create a new production deploy key that can only view usage, then set it and its expiry on the production deployment.",
+    USAGE_DASHBOARD,
+  ].join("\n\n");
+  const html = `<html lang="en"><body style="font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#0d0d0d"><h1 style="font-size:22px">Planban usage monitor key expiring</h1><div style="white-space:pre-wrap;line-height:1.6">${escape(text)}</div></body></html>`;
+  return JSON.stringify({ from: "Planban <alerts@planban.ai>", to: ["hello@planban.ai"], subject: "[Planban] Usage monitor key expires soon", text, html });
+}
+
 export function mailEnabled(env: Settings): boolean {
   return usageEnabled(env) && env.PLANBAN_USAGE_EMAIL_ENABLED === "1" && !!env.PLANBAN_USAGE_EMAIL_KEY;
 }
