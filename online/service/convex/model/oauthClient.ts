@@ -4,10 +4,13 @@
 // Dynamic registration is open to claude.ai only (owner decision 22): see
 // parseClaudeRegistration. Other clients need a reviewed policy.
 export const CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata";
+/** claude.ai's custom connectors use this document by default; self-registration is the fallback. */
+export const CLAUDE_WEB_CLIENT_ID = "https://claude.ai/oauth/mcp-oauth-client-metadata";
 const METADATA_CLIENTS = new Set([
   "https://chatgpt.com/oauth/codex/client.json",
   "https://chatgpt.com/oauth/client.json",
   CLAUDE_CODE_CLIENT_ID,
+  CLAUDE_WEB_CLIENT_ID,
 ]);
 const MAX_BYTES = 5 * 1024;
 export function metadataClientAllowed(clientId: string): boolean { return METADATA_CLIENTS.has(clientId); }
@@ -48,12 +51,18 @@ export function parseClientMetadata(clientId: string, input: unknown): OAuthClie
   const native = doc.application_type === "native" || (clientId === CLAUDE_CODE_CLIENT_ID && doc.application_type === undefined);
   const redirects = doc.redirect_uris;
   if (!Array.isArray(redirects) || !redirects.length || redirects.length > 20 || redirects.some((value) => typeof value !== "string" || value.length > 2048 || !validRedirect(value, native, clientId === CLAUDE_CODE_CLIENT_ID))) return null;
+  // claude.ai may only send people back to its own published connector callback.
+  const claudeWeb = clientId === CLAUDE_WEB_CLIENT_ID;
+  if (claudeWeb && (native || redirects.some((value) => !CLAUDE_REDIRECTS.includes(value)))) return null;
   // Some publishers list a legacy preferred method and multiple supported
   // methods. We accept only the intersection with our public-client method.
   const methods = doc.token_endpoint_auth_methods_supported ?? [doc.token_endpoint_auth_method];
   if (!Array.isArray(methods) || !methods.includes("none")) return null;
+  // Other listed grants (claude.ai also lists jwt-bearer) are ignored: the
+  // token endpoint only ever issues authorization_code and refresh_token.
   if (!Array.isArray(doc.grant_types) || !doc.grant_types.includes("authorization_code") || !Array.isArray(doc.response_types) || !doc.response_types.includes("code")) return null;
-  return Object.freeze({ clientId, name: doc.client_name.trim(), redirectUris: Object.freeze([...new Set(redirects as string[])]), native });
+  // Named as the self-registered Claude connector is, so both paths read the same on the consent page.
+  return Object.freeze({ clientId, name: claudeWeb ? REGISTERED_CLIENT_NAME : doc.client_name.trim(), redirectUris: Object.freeze([...new Set(redirects as string[])]), native });
 }
 
 export function clientRedirectAllowed(client: OAuthClient, redirectUri: string): boolean {
