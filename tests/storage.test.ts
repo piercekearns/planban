@@ -1457,6 +1457,25 @@ test("finds a document body stored at a version that doesn't name it, as after T
   assert.doesNotMatch(before.markdown, /Carried onto a kept version/, "an earlier version keeps its own body");
 });
 
+test("taking a board online uploads every stored history body, including ones a version doesn't name", async () => {
+  await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
+  await createCard({ cwd, title: "Alpha", status: "pending" });
+  await createCard({ cwd, title: "Beta", status: "pending" });
+  const version = (await historyPayload(cwd)).currentVersion;
+  const state = await loadState(cwd);
+  const carried = historyDocPath(state.planningRoot, version, "alpha", "spec");
+  await mkdir(dirname(carried), { recursive: true });
+  await writeFile(carried, "# Alpha Spec\n\nCarried onto a kept version.\n");
+
+  const { buildLocalBundle } = await import("../src/core/online/transfers");
+  const bundle = await buildLocalBundle(cwd);
+  const atVersion = (bundle.historyDocs ?? []).filter((doc) => doc.version === version && doc.cardId === "alpha" && doc.kind === "spec");
+  assert.equal(atVersion.length, 1, "the carried body goes up once");
+  assert.match(atVersion[0]!.markdown, /Carried onto a kept version/);
+  const keys = (bundle.historyDocs ?? []).map((doc) => `${doc.version}/${doc.cardId}/${doc.kind}`);
+  assert.equal(new Set(keys).size, keys.length, "no body is sent twice");
+});
+
 function syntheticHistoryEntry(version: number, createdAt: string): PlanbanHistoryEntry {
   return {
     version,

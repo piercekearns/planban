@@ -1,10 +1,10 @@
-import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { listHistory } from "../history";
-import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyDocPath, historyIndexPath, historyRoadmapPath, isPathInsideRoot, manifestPath, resolveInsideRoot, slugify } from "../paths";
+import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyDocPath, historyIndexPath, historyRoadmapPath, historyVersionRoot, isPathInsideRoot, manifestPath, resolveInsideRoot, slugify } from "../paths";
 import { atomicWriteFile, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
@@ -123,17 +123,31 @@ export async function buildLocalBundle(cwd: string): Promise<BoardBundle> {
   }
   const history = await listHistory(state);
   const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
-  for (const entry of history.entries) {
-    for (const doc of entry.affectedDocs) {
-      const path = historyDocPath(state.planningRoot, entry.version, doc.cardId, doc.kind);
-      if (await pathExists(path)) historyDocs.push({ version: entry.version, cardId: doc.cardId, kind: doc.kind, markdown: await readFile(path, "utf8") });
+  const versions = await Promise.all(history.entries.map(async (entry) => ({
+    entry, roadmap: JSON.parse(await readFile(historyRoadmapPath(state.planningRoot, entry.version), "utf8")),
+  })));
+  for (const { entry, roadmap } of versions) {
+    // Every body a version holds goes up, named or not: a board that came back
+    // from Online Mode can hold a body that online pruning carried onto a kept
+    // version without naming it there (see resolveHistoryDoc).
+    const cardIds = new Set<string>([
+      ...((roadmap?.roadmapItems ?? []) as Array<{ id: string }>).map((item) => item.id),
+      ...entry.affectedDocs.map((doc) => doc.cardId),
+    ]);
+    const bySlug = new Map([...cardIds].map((id) => [slugify(id), id]));
+    let folders: string[] = [];
+    try { folders = await readdir(join(historyVersionRoot(state.planningRoot, entry.version), "docs")); } catch { continue; }
+    for (const folder of folders) {
+      const cardId = bySlug.get(folder);
+      if (!cardId) continue;
+      for (const kind of ["spec", "plan"] as const) {
+        const path = historyDocPath(state.planningRoot, entry.version, cardId, kind);
+        if (await pathExists(path)) historyDocs.push({ version: entry.version, cardId, kind, markdown: await readFile(path, "utf8") });
+      }
     }
   }
   return bundleSchema.parse({ format: "planban-board-bundle", version: 1, roadmap: state.roadmap, docs,
-    historyDocs, retention: history.retention,
-    history: await Promise.all(history.entries.map(async (entry) => ({
-      entry, roadmap: JSON.parse(await readFile(historyRoadmapPath(state.planningRoot, entry.version), "utf8")),
-    }))),
+    historyDocs, retention: history.retention, history: versions,
   });
 }
 
