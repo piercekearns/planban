@@ -247,6 +247,24 @@ function cli(args: string[], home: string, input?: string) {
   });
 }
 
+test("the CLI's write-doc states the document version it was based on when given one", async () => {
+  await withBoard(async ({ cwd, home }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    const read = JSON.parse(cli(["read-doc", "alpha", "spec", "--cwd", cwd, "-o", "json"], home).stdout);
+    const stale = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", String(read.mtimeMs - 1000)], home, "# Stale\n");
+    assert.equal(stale.status, 1);
+    const asNew = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", "new"], home, "# New\n");
+    assert.equal(asNew.status, 1, "an existing document can't be written as new");
+    for (const value of ["soon", "", " "]) assert.equal(cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", value], home, "# Bad\n").status, 1, `refuses ${JSON.stringify(value)}`);
+    await createCard({ cwd, title: "Beta", status: "up-next" });
+    const created = cli(["write-doc", "beta", "plan", "--cwd", cwd, "--expected-mtime", "new", "-o", "json"], home, "# New plan\n");
+    assert.equal(created.status, 0, created.stderr);
+    const ok = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", String(read.mtimeMs), "-o", "json"], home, "# Fresh\n");
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(ok.stdout).markdown, "# Fresh\n");
+  });
+});
+
 test("the CLI refuses embedded files and flagged cards, and tidies with move-files-out", async () => {
   await withBoard(async ({ root, cwd, home, folder }) => {
     await createCard({ cwd, title: "Alpha", status: "up-next" });

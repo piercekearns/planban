@@ -620,11 +620,18 @@ program
   .argument("<kind>")
   .option("--cwd <path>", "project directory")
   .option("--file <path>", "read markdown from a file instead of stdin")
+  .option("--expected-mtime <mtimeMs|new>", "the document version this edit is based on: mtimeMs from read-doc, or new for a document that doesn't exist yet (required for Online Boards)")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, kind, options) => {
     if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
+    let expectedMtimeMs: number | null | undefined;
+    if (options.expectedMtime !== undefined) {
+      const raw = String(options.expectedMtime).trim();
+      expectedMtimeMs = raw === "new" ? null : Number(raw);
+      if (expectedMtimeMs !== null && (!raw || !Number.isFinite(expectedMtimeMs))) throw new Error("--expected-mtime is the mtimeMs value from read-doc, or new");
+    }
     const markdown = options.file ? readFileSync(options.file, "utf8") : await readStdin();
-    print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown }), options);
+    print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown, ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs }) }), options);
   });
 
 function describeMoveFilesOut(result: MoveFilesOutResult) {

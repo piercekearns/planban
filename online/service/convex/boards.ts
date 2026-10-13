@@ -663,7 +663,7 @@ async function writeDoc(ctx: MutationCtx, board: Doc<"boards">, current: Planban
   const existing = await docRow(ctx, live(board), cardId, kind);
   // Documents also state the version they were based on: their stamp, or null for a new document.
   if (input.expectedMtimeMs === undefined) {
-    fail("validation", "Online document edits must state the document version they were based on (expectedMtimeMs, or null for a new document).", { currentRevision: current.revision });
+    fail("validation", "Online document edits must state the document version they were based on: expectedMtimeMs from reading it, or null for a new document (on the command line, --expected-mtime <mtimeMs> or --expected-mtime new).", { currentRevision: current.revision });
   }
   if (existing && existing.stamp !== input.expectedMtimeMs) fail("conflict", "Document changed online. Reload before saving.", { currentRevision: current.revision });
   if (!existing && input.expectedMtimeMs !== null) fail("conflict", "Document was removed online. Reload before saving.", { currentRevision: current.revision });
