@@ -594,7 +594,7 @@ export function WaitingInvites({ invites, busy, onCancel }: { invites: WaitingIn
         <div className="people-row" key={invite.id}>
           <span className="face-col connection-icon">{invite.email ? <Mail size={14} /> : <Link size={14} />}</span>
           <div className="who"><b>{invite.email ?? "Invite link"}</b>
-            <small>{invite.email ? "Sent" : "Made"} {timeAgo(invite.createdAt)} · works until {until(invite.expiresAt)}{invite.email ? "" : ` · ${invite.joined ? `${invite.joined} joined` : "nobody has joined yet"}`}</small></div>
+            <small>{invite.email ? "Invited" : "Created"} {timeAgo(invite.createdAt)} · works until {until(invite.expiresAt)}{invite.email ? "" : ` · ${invite.joined ? `${invite.joined} joined` : "nobody has joined yet"}`}</small></div>
           <div className="col"><span className="muted">{ROLE_LABEL[invite.role]}</span></div>
           <button className="online-board-button quiet" disabled={busy} aria-label={`Cancel the invitation ${invite.email ? `for ${invite.email}` : "link"}`} onClick={() => onCancel(invite)}>Cancel</button>
         </div>
@@ -614,15 +614,21 @@ export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
+  const loads = useRef(0);
   const load = useCallback(async () => {
-    const people = await request<BoardPeople>(`${base}/people`).catch((failure) => {
-      setError(failure instanceof Error ? failure.message : String(failure));
+    // Only the newest load may update the panel, so an older answer can't bring back a cancelled invitation.
+    const current = ++loads.current;
+    const failed = (failure: unknown, prefix = "") => {
+      if (current === loads.current) setError(prefix + (failure instanceof Error ? failure.message : String(failure)));
       return null;
-    });
-    setBoard(people);
+    };
+    const people = await request<BoardPeople>(`${base}/people`).catch((failure) => failed(failure));
     // Only the owner may see invitations; anyone else would be refused.
     const owner = people?.people.some((person) => person.you && person.role === "owner");
-    setInvites(owner ? (await request<{ invites: WaitingInvite[] }>(`${base}/invites`).catch(() => null))?.invites ?? [] : []);
+    const waiting = owner ? await request<{ invites: WaitingInvite[] }>(`${base}/invites`).catch((failure) => failed(failure, "Planban couldn't show the waiting invitations: ")) : null;
+    if (current !== loads.current) return;
+    setBoard(people);
+    setInvites(waiting?.invites ?? []);
   }, [base]);
   useEffect(() => {
     void load();
@@ -635,8 +641,8 @@ export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId:
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
-      setBusy(false);
       await load();
+      setBusy(false);
     }
   }
   const me = board?.people.find((person) => person.you);
