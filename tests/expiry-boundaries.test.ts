@@ -33,9 +33,11 @@ function store() {
           range(q);
           return query;
         },
+        order: () => query,
         unique: async () => rows.find(match) ?? null,
         first: async () => rows.find(match) ?? null,
         collect: async () => rows.filter(match),
+        take: async (count: number) => rows.filter(match).slice(0, count),
       };
       return query;
     },

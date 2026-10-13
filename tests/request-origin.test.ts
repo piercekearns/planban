@@ -90,13 +90,15 @@ function store(rows: any[]) {
   const db: any = {
     get: async (id: string) => rows.find((row) => row._id === id) ?? null,
     insert: async (table: string, value: any) => { const id = `${table}-${++sequence}`; rows.push({ ...value, _id: id, table }); return id; },
+    patch: async (id: string, fields: any) => Object.assign(rows.find((row) => row._id === id), fields),
     query: (table: string) => ({
       withIndex: (_name: string, range: (q: any) => any) => {
         const wanted: Record<string, unknown> = {};
         const q: any = { eq: (field: string, value: unknown) => { wanted[field] = value; return q; } };
         range(q);
         const found = rows.filter((row) => row.table === table && Object.entries(wanted).every(([field, value]) => row[field] === value));
-        return { unique: async () => found[0] ?? null };
+        const result: any = { unique: async () => found[0] ?? null, order: () => result, take: async (count: number) => found.slice(0, count) };
+        return result;
       },
     }),
   };

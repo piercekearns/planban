@@ -8,6 +8,11 @@ import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, reso
 import { connectionOrigin, publicOrigin } from "./model/auth";
 import { MAX_REGISTRATIONS_PER_PERSON, REGISTERED_CLIENT_NAME, registeredClientId } from "./model/oauthClient";
 import { fail } from "./model/errors";
+import { chargeAdmin } from "./model/limits";
+
+/** Bounds from the security review: active keys per person, and how many connections a listing reads. */
+export const MAX_ACTIVE_KEYS = 50;
+const LIST_LIMIT = 500;
 import { agentLevel } from "./schema";
 
 /** A connection is marked used at most this often, to avoid a write per request. */
@@ -94,7 +99,8 @@ export const list = internalQuery({
   handler: async (ctx, { connectionId }) => {
     const connection = await liveConnection(ctx, connectionId);
     if (!connection.canAdminister) return { connections: [describe(connection, connection._id)] };
-    const all = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
+    // The newest connections first, bounded; long-revoked history beyond that isn't listed.
+    const all = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).order("desc").take(LIST_LIMIT);
     const grants = all.filter((row) => !row.oauthConnectionId);
     const registrations = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", connection.userId)).take(MAX_REGISTRATIONS_PER_PERSON);
     return {
@@ -173,6 +179,11 @@ export const createKey = internalMutation({
     // their agents do caps it again whenever it acts.
     if (access.role === "viewer" && args.level !== "read") fail("forbidden", "A viewer's key can only read.");
     if (args.expiresAt && !(Date.parse(args.expiresAt) > Date.now())) fail("validation", "The expiry must be in the future.");
+    const held = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).order("desc").take(1000);
+    if (held.filter((row) => row.kind === "key" && connectionIsUsable(row)).length >= MAX_ACTIVE_KEYS) {
+      fail("rate_limited", `You have ${MAX_ACTIVE_KEYS} active personal access keys. Revoke one before creating another.`);
+    }
+    await chargeAdmin(ctx, connection.userId, "keys");
     const now = new Date().toISOString();
     const id = await ctx.db.insert("connections", {
       userId: connection.userId, kind: "key", name, clientName: `Key: ${name}`, tokenHash: args.tokenHash,

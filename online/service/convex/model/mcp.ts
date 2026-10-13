@@ -394,14 +394,16 @@ async function callTool(service: McpService, origin: string, name: string, args:
     case "search": {
       const query = stringArg(args, "query");
       const results: Array<{ id: string; title: string; url: string }> = [];
-      for (const board of await service.listBoards()) {
+      // Bounded work per call: the first boards listed, and a capped result count.
+      for (const board of (await service.listBoards()).slice(0, SEARCH_MAX_BOARDS)) {
         const roadmap = await service.getBoard(board.boardId);
         const matches = queryWorkItems(roadmap.roadmapItems, { search: query, projection: "flattened" }).matches.slice(0, 10);
         for (const { item } of matches) {
           results.push({ id: `${board.boardId}/${item.id}`, title: `${item.title} (${board.title})`, url: cardUrl(origin, board.boardId, item.id) });
         }
+        if (results.length >= SEARCH_MAX_RESULTS) break;
       }
-      return { results };
+      return { results: results.slice(0, SEARCH_MAX_RESULTS) };
     }
     case "fetch": {
       const [id, cardId] = stringArg(args, "id").split("/");
@@ -495,6 +497,11 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 }
 
+/** Most messages one MCP request may carry, and how much a search call reads. */
+export const MAX_BATCH = 10;
+export const SEARCH_MAX_BOARDS = 25;
+export const SEARCH_MAX_RESULTS = 50;
+
 export async function handleMcp(request: Request, service: McpService, origin: string): Promise<Response> {
   if (request.method !== "POST") {
     // Modern clients never GET; legacy clients may try to open a stream. This server sends none.
@@ -507,6 +514,11 @@ export async function handleMcp(request: Request, service: McpService, origin: s
     return jsonResponse(rpcError(null, -32700, "Parse error"), 400);
   }
   const headerVersion = request.headers.get("MCP-Protocol-Version");
+  // Current MCP doesn't batch; older clients may. A large batch is refused
+  // whole, before any of it runs, so one request can't do unbounded work.
+  if (Array.isArray(payload) && (payload.length === 0 || payload.length > MAX_BATCH)) {
+    return jsonResponse(rpcError(null, -32600, `Invalid request: send at most ${MAX_BATCH} messages at once.`), 400);
+  }
   const messages = Array.isArray(payload) ? payload as JsonRpcRequest[] : [payload as JsonRpcRequest];
   const responses = [];
   for (const message of messages) {

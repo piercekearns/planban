@@ -7,6 +7,14 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { boardAccess, liveConnection } from "./model/access";
 import { fail } from "./model/errors";
+import { chargeAdmin } from "./model/limits";
+
+/** Bounds on sharing (security review): pending invitations per board, joins per link, emails to one address. */
+export const MAX_PENDING_INVITES = 50;
+export const MAX_LINK_JOINS = 100;
+export const MAX_MEMBERS = 200;
+export const MAX_EMAILS_PER_ADDRESS_PER_DAY = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Invite links last 7 days (owner decision 15). */
 export const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -33,8 +41,19 @@ export const create = internalMutation({
     const access = await ownerAccess(ctx, connectionId, boardId);
     if (access.board.authority !== "online" || access.board.localTransfer) fail("conflict", "People can only be invited while the board is online.");
     const address = email?.trim().toLowerCase();
-    if (address !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) fail("validation", "That does not look like an email address.");
+    if (address !== undefined && (address.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address))) fail("validation", "That does not look like an email address.");
     const now = Date.now();
+    const recent = await ctx.db.query("invites").withIndex("by_board", (q) => q.eq("boardId", boardId)).order("desc").take(500);
+    if (recent.filter(usable).length >= MAX_PENDING_INVITES) fail("rate_limited", `This board has ${MAX_PENDING_INVITES} invitations waiting. Cancel some before inviting more.`);
+    if (address) {
+      if (recent.some((invite) => usable(invite) && invite.email === address)) fail("conflict", `${address} already has an invitation waiting for this board. Cancel it to send another.`);
+      const toAddress = await ctx.db.query("invites").withIndex("by_email", (q) => q.eq("email", address)).order("desc").take(MAX_EMAILS_PER_ADDRESS_PER_DAY);
+      if (toAddress.filter((invite) => now - Date.parse(invite.createdAt) < DAY_MS).length >= MAX_EMAILS_PER_ADDRESS_PER_DAY) {
+        fail("rate_limited", `${address} has had as many Planban invitations as it can receive today. Share an invite link instead, or try tomorrow.`);
+      }
+    }
+    await chargeAdmin(ctx, access.connection.userId, "invites");
+    if (address) await chargeAdmin(ctx, access.connection.userId, "inviteEmails");
     const id = await ctx.db.insert("invites", {
       boardId, tokenHash, role, ...(address ? { email: address } : {}), createdBy: access.connection.userId,
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + INVITE_LIFETIME_MS).toISOString(), joinedBy: [],
@@ -47,7 +66,7 @@ export const list = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string() },
   handler: async (ctx, { connectionId, boardId }) => {
     await ownerAccess(ctx, connectionId, boardId);
-    const invites = await ctx.db.query("invites").withIndex("by_board", (q) => q.eq("boardId", boardId)).collect();
+    const invites = await ctx.db.query("invites").withIndex("by_board", (q) => q.eq("boardId", boardId)).order("desc").take(500);
     return { invites: invites.filter(usable).map(describe) };
   },
 });
@@ -101,8 +120,13 @@ export const accept = internalMutation({
       fail("forbidden", `This invite is for ${invite!.email}. Sign in with an account whose verified email is that address to join.`);
     }
     const existing = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", board!.boardId).eq("userId", connection.userId)).unique();
-    if (!existing) await ctx.db.insert("members", { boardId: board!.boardId, userId: connection.userId, role: invite!.role });
+    if (!existing) {
+      const members = await ctx.db.query("members").withIndex("by_board", (q) => q.eq("boardId", board!.boardId)).take(MAX_MEMBERS);
+      if (members.length >= MAX_MEMBERS) fail("rate_limited", `This board already has ${MAX_MEMBERS} people. Ask the board owner.`);
+      await ctx.db.insert("members", { boardId: board!.boardId, userId: connection.userId, role: invite!.role });
+    }
     if (!invite!.joinedBy.includes(connection.userId)) {
+      if (invite!.joinedBy.length >= MAX_LINK_JOINS) fail("rate_limited", `This invite link has been used ${MAX_LINK_JOINS} times. Ask the board owner for a new one.`);
       await ctx.db.patch(invite!._id, {
         joinedBy: [...invite!.joinedBy, connection.userId],
         // An email invite is for one person: used once.

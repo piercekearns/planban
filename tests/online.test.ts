@@ -50,6 +50,7 @@ async function fakeService() {
   let accessToken = "access-0";
   let refreshToken = "refresh-0";
   let refreshes = 0;
+  let beforeDocRead: (() => Promise<void>) | null = null;
   let auth: URL | undefined;
   let registration: any;
   let bundle: BoardBundle | undefined;
@@ -242,7 +243,12 @@ async function fakeService() {
         failNextBoardRead = false;
         return json(503, { error: { code: "unavailable", message: "The service is busy." } });
       }
-      if (!suffix) return json(200, { roadmap: roadmap(), authority });
+      if (!suffix) {
+        // Like the service: a reader that already has this revision is told so.
+        const since = request.searchParams.get("since");
+        if (since !== null && Number(since) === roadmap().revision) return json(200, { unchanged: true, revision: roadmap().revision, authority });
+        return json(200, { roadmap: roadmap(), authority });
+      }
       if (suffix === "/changes") return json(200, { revision: roadmap().revision });
       if (suffix === "/export/meta") {
         if (failExport) return json(500, { error: { message: "Export interrupted" } });
@@ -321,6 +327,8 @@ async function fakeService() {
       }
       if (suffix.startsWith("/docs/")) {
         const [, , cardId, kind] = suffix.split("/").map(decodeURIComponent);
+        // A test can change the board while a document is being read.
+        if (beforeDocRead) { const run = beforeDocRead; beforeDocRead = null; await run(); }
         return json(200, docs.get(`${cardId}/${kind}`) ?? { cardId, kind, exists: false, path: null, markdown: "", mtimeMs: null });
       }
       if (suffix.startsWith("/ops/")) {
@@ -381,7 +389,7 @@ async function fakeService() {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   url = `http://127.0.0.1:${(server.address() as any).port}`;
   return {
-    url, requests, errors, issuedMachines, get refreshes() { return refreshes; }, get bundle() { return bundle!; }, get authority() { return authority; },
+    url, requests, errors, issuedMachines, get refreshes() { return refreshes; }, set beforeDocRead(run: (() => Promise<void>) | null) { beforeDocRead = run; }, get bundle() { return bundle!; }, get authority() { return authority; },
     setMachineLease(ms: number) { leaseMs = ms; },
     setLoginTokenResponse(value: Record<string, unknown>) { loginTokenOverride = value; },
     expireAccess() { accessToken = "expired"; }, rejectRefresh() { rejectRefresh = true; }, rejectAccess() { rejectAccess = true; },
@@ -1107,6 +1115,20 @@ test("every machine keeps a local backup of an Online Board it uses, and it rest
   assert.deepEqual(fetched, ["/api/v1/boards/demo/docs/alpha/spec"], "only the changed document is downloaded");
   assert.equal(await readFile(join(backup, "docs", "alpha.spec.md"), "utf8"), "# Changed online");
   assert.equal(JSON.parse(await readFile(join(backup, "roadmap.json"), "utf8")).roadmapItems[0].summary, "Backed up");
+
+  // Someone saves while the backup is reading the changed document: the
+  // backup never pairs a newer body with an older roadmap.
+  const latest = await storage.readDoc({ cwd: second, cardId: "alpha", kind: "spec" });
+  await storage.writeDoc({ cwd: second, cardId: "alpha", kind: "spec", markdown: "# Before the race", expectedMtimeMs: latest.mtimeMs });
+  fake.beforeDocRead = async () => {
+    const current = await storage.readDoc({ cwd: second, cardId: "alpha", kind: "spec" });
+    await storage.writeDoc({ cwd: second, cardId: "alpha", kind: "spec", markdown: "# Saved during the backup", expectedMtimeMs: current.mtimeMs });
+  };
+  await refreshBackup(fake.url, "demo", { force: true });
+  const savedMeta = JSON.parse(await readFile(join(backup, "backup.json"), "utf8"));
+  const savedBody = await readFile(join(backup, "docs", "alpha.spec.md"), "utf8");
+  assert.equal(savedBody, "# Saved during the backup");
+  assert.equal(savedMeta.revision, await revisionOf(second), "the saved roadmap is the one that body belongs to");
   const today = new Date().toISOString().slice(0, 10);
   assert.ok(await storage.pathExists(join(backupRoot(fake.url, "demo"), "daily", today, "roadmap.json")));
 
@@ -1116,7 +1138,7 @@ test("every machine keeps a local backup of an Online Board it uses, and it rest
   const state = await storage.loadState(restoredCwd);
   assert.equal(state.manifest.storage?.kind, "local");
   assert.equal(state.roadmap.roadmapItems[0]!.summary, "Backed up");
-  assert.equal((await storage.readDoc({ cwd: restoredCwd, cardId: "alpha", kind: "spec" })).markdown, "# Changed online");
+  assert.equal((await storage.readDoc({ cwd: restoredCwd, cardId: "alpha", kind: "spec" })).markdown, "# Saved during the backup");
 });
 
 test("signing out revokes this machine's connection on the service, then forgets it locally", async () => {
