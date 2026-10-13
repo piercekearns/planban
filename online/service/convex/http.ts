@@ -99,6 +99,9 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     return json(await ctx.runQuery(internal.copies.check, { connectionId, fingerprints, ...(typeof input.uid === "string" ? { uid: input.uid } : {}) }));
   }
   if (parts[0] === "connections" && parts.length === 1 && method === "GET") return json(await ctx.runQuery(internal.connections.list, { connectionId }));
+  if (parts[0] === "connections" && parts.length === 2 && parts[1] === "revoke-others" && method === "POST") {
+    return json(await ctx.runMutation(internal.connections.revokeAllOthers, { connectionId }));
+  }
   if (parts[0] === "connections" && parts.length === 3 && parts[2] === "revoke" && method === "POST") {
     return json(await ctx.runMutation(internal.connections.revoke, { connectionId, targetId: parts[1]! }));
   }
@@ -186,7 +189,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
       connectionId, boardId, tokenHash: await sha256Hex(token), role, ...(typeof input.email === "string" && input.email.trim() ? { email: input.email } : {}),
     });
     const link = `${publicOrigin()}/invite/${token}`;
-    const emailSent = created.email ? await sendInviteEmail(created.email, role, link) : false;
+    const emailSent = created.email ? await sendInviteEmail(created.email, role, link, created.id) : false;
     // The link is shown once; only its hash is stored.
     return json({ invite: created, link, emailSent }, 201);
   }
@@ -334,7 +337,7 @@ function inviteToken(input: string) {
  * Sends an email invite through Resend when the service is set up for it
  * (RESEND_API_KEY and PLANBAN_INVITE_FROM); otherwise the owner shares the link.
  */
-export async function sendInviteEmail(to: string, role: string, link: string) {
+export async function sendInviteEmail(to: string, role: string, link: string, inviteId?: string) {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.PLANBAN_INVITE_FROM;
   if (!key || !from) return false;
@@ -344,7 +347,8 @@ export async function sendInviteEmail(to: string, role: string, link: string) {
   catch { return false; }
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    // One logical invitation is sent at most once, even if this request is retried.
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...(inviteId ? { "Idempotency-Key": `planban-invite-${inviteId}` } : {}) },
     body: JSON.stringify({
       from, to: [to], ...message,
     }),
@@ -372,7 +376,12 @@ const invitePageResponse: RouteHandler = async (ctx, request) => {
   const page = (title: string, body: string) => new Response(
     `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title>`
     + `<body style="font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#111"><h1 style="font-size:22px">${escapeHtml(title)}</h1>${body}</body>`,
-    { status: invite ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" } },
+    { status: invite ? 200 : 404, headers: {
+      "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex",
+      // A static page: no scripts, no framing, nothing loaded from elsewhere.
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
+    } },
   );
   if (!invite) return page("This invite has expired", "<p>Invite links work for 7 days. Ask the board owner for a new one.</p>");
   const link = `${publicOrigin()}/invite/${token}`;

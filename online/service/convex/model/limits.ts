@@ -17,6 +17,12 @@ export const BOARD_STORED_LIMIT = 256 * 1024 * 1024;
 export const DAILY_WRITES = 5_000;
 export const DAILY_WRITE_BYTES = 64 * 1024 * 1024;
 export const DAILY_IMPORT_BYTES = 1024 * 1024 * 1024;
+/** Sharing and keys are bounded too, so no one account can flood mail or grow metadata. */
+export const DAILY_INVITES = 30;
+export const DAILY_INVITE_EMAILS = 10;
+export const SERVICE_DAILY_INVITE_EMAILS = 200;
+export const DAILY_KEYS = 20;
+const SERVICE = "*service*";
 
 /** A test backend may set lower limits (PLANBAN_TEST_LIMITS="board,writes,writeBytes,importBytes"); never higher. */
 function limit(index: number, fallback: number) {
@@ -69,4 +75,24 @@ export async function chargeImport(ctx: MutationCtx, userId: string, bytes: numb
     fail("rate_limited", `This account has reached today's limit of ${MB(limit(3, DAILY_IMPORT_BYTES))} taken online. It resets at midnight UTC.`);
   }
   await ctx.db.patch(row._id, { importBytes: row.importBytes + bytes });
+}
+
+type AdminCounter = "invites" | "inviteEmails" | "keys";
+const ADMIN_LIMITS: Record<AdminCounter, { daily: number; what: string }> = {
+  invites: { daily: DAILY_INVITES, what: "invitations" },
+  inviteEmails: { daily: DAILY_INVITE_EMAILS, what: "invitation emails" },
+  keys: { daily: DAILY_KEYS, what: "new personal access keys" },
+};
+
+/** Counts one invitation, invitation email or key against the account's day; refuses past the limit. */
+export async function chargeAdmin(ctx: MutationCtx, userId: string, counter: AdminCounter) {
+  const row = await usageRow(ctx, userId);
+  const { daily, what } = ADMIN_LIMITS[counter];
+  if ((row[counter] ?? 0) + 1 > daily) fail("rate_limited", `This account has reached today's limit of ${daily} ${what} on Planban Online. It resets at midnight UTC.`);
+  if (counter === "inviteEmails") {
+    const service = await usageRow(ctx, SERVICE);
+    if ((service.inviteEmails ?? 0) + 1 > SERVICE_DAILY_INVITE_EMAILS) fail("rate_limited", "Planban Online has sent as many invitation emails as it can today. Share an invite link instead, or try tomorrow.");
+    await ctx.db.patch(service._id, { inviteEmails: (service.inviteEmails ?? 0) + 1 });
+  }
+  await ctx.db.patch(row._id, { [counter]: (row[counter] ?? 0) + 1 });
 }

@@ -768,15 +768,16 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
     </div>
   );
   const cutOffEverything = () => {
-    const others = live.filter((connection) => !connection.current);
-    if (!others.length || !window.confirm(`Cut off all ${others.length} other agents, keys and machines? This Mac stays signed in.`)) return;
+    if (!window.confirm("Cut off every other agent, key, machine and Claude registration on your account? This Mac stays signed in.")) return;
+    // The service revokes the complete set, not just what this list shows.
     void act(async () => {
-      for (const connection of others) await request(`/api/online/connections/${encodeURIComponent(connection.id)}/revoke`, {});
+      const result = await request<{ complete: boolean }>("/api/online/connections/revoke-others", {});
+      if (!result.complete) throw new Error("Some connections are still being cut off. Choose Cut off everything again to finish.");
     });
   };
   return (
     <Modal eyebrow="Your account" title="Connections" onClose={onClose}
-      footer={data?.signedIn && live.some((connection) => !connection.current) ? <button className="danger" disabled={busy} onClick={cutOffEverything}>Cut off everything</button> : undefined}>
+      footer={data?.signedIn ? <button className="danger" disabled={busy} onClick={cutOffEverything}>Cut off everything</button> : undefined}>
       {!data ? <div className="online-board-section"><p className="muted">Loading…</p></div> : !data.signedIn ? (
         <div className="online-board-section"><p className="muted">This Mac is not signed in to Planban Online. Connections appear here once you take a board online.</p></div>
       ) : (

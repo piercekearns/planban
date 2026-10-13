@@ -49,3 +49,14 @@ export const expireUsage = internalMutation({
     if (old.length === BATCH) await ctx.scheduler.runAfter(0, internal.maintenance.expireUsage, {});
   },
 });
+
+/** Expired invitations are kept a week for the owner's list, then removed in batches. */
+export const expireInvites = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const old = await ctx.db.query("invites").withIndex("by_expiry", (q) => q.lt("expiresAt", cutoff)).take(BATCH);
+    for (const row of old) await ctx.db.delete(row._id);
+    if (old.length === BATCH) await ctx.scheduler.runAfter(0, internal.maintenance.expireInvites, {});
+  },
+});

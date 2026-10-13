@@ -119,7 +119,7 @@ export default defineSchema({
     role: memberRole,
     /** What this person lets their agents do on this board; see memberAgentLevel for the default. Everyone on the board can see it. */
     agentLevel: v.optional(agentLevel),
-  }).index("by_board_user", ["boardId", "userId"]).index("by_user", ["userId"]),
+  }).index("by_board_user", ["boardId", "userId"]).index("by_user", ["userId"]).index("by_board", ["boardId"]),
 
   /** Invites to a board: a link anyone may use for 7 days, or an email invite for one person. Only the hash of the link's secret is kept. */
   invites: defineTable({
@@ -132,7 +132,7 @@ export default defineSchema({
     expiresAt: v.string(),
     joinedBy: v.array(v.string()),
     revokedAt: v.optional(v.string()),
-  }).index("by_tokenHash", ["tokenHash"]).index("by_board", ["boardId"]),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_board", ["boardId"]).index("by_email", ["email"]).index("by_expiry", ["expiresAt"]),
 
   /** Who last changed each card, for faces on shared boards; survives history trimming. */
   cardChanges: defineTable({
@@ -162,6 +162,10 @@ export default defineSchema({
     writes: v.number(),
     bytes: v.number(),
     importBytes: v.number(),
+    /** Invitations created, invitation emails sent and personal keys created today. */
+    invites: v.optional(v.number()),
+    inviteEmails: v.optional(v.number()),
+    keys: v.optional(v.number()),
   }).index("by_user_day", ["userId", "day"]).index("by_day", ["day"]),
 
   /** How a person appears to others on shared boards (name and picture from the sign-in account). */
@@ -203,7 +207,9 @@ export default defineSchema({
     serviceOrigin: v.optional(v.string()),
     /** Access credentials are aliases of an independently revocable grant. */
     oauthConnectionId: v.optional(v.id("connections")),
-  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"]),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"])
+    // Every credential a person hasn't revoked, however much revoked history they have.
+    .index("by_user_revoked", ["userId", "revokedAt"]),
 
   /** Explicit consent, frozen client/redirect/resource/PKCE and one-use code. */
   oauthRequests: defineTable({

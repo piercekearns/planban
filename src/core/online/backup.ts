@@ -129,6 +129,11 @@ async function refreshOnce(url: string, boardId: string, root: string, options: 
             const match = /^(.*)\.(spec|plan)\.md$/.exec(name);
             if (match && !live.has(decodeURIComponent(match[1]!))) await rm(join(staging, "docs", name), { force: true });
           }
+          // Those documents were read as they are now. If the board moved past
+          // this roadmap meanwhile, a body could be newer than the roadmap it is
+          // saved with, so start again rather than save a mixed copy.
+          const after = await onlineRequest<{ unchanged?: boolean }>(url, boardPath(boardId, `?since=${roadmap.revision}`));
+          if (!after.unchanged) throw new PlanbanConflictError("The board changed while it was being backed up.");
         }
         await atomicWriteFile(join(staging, "roadmap.json"), JSON.stringify(roadmap, null, 2) + "\n");
         const meta: BackupMeta = {

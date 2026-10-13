@@ -2,12 +2,23 @@
 // request. Bearer secrets Planban issues itself are stored only as hashes.
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, resolvedConnection } from "./model/access";
 import { connectionOrigin, publicOrigin } from "./model/auth";
 import { MAX_REGISTRATIONS_PER_PERSON, REGISTERED_CLIENT_NAME, registeredClientId } from "./model/oauthClient";
 import { fail } from "./model/errors";
+import { chargeAdmin } from "./model/limits";
+
+/** Bounds from the security review: active keys per person, and how many connections a listing reads. */
+export const MAX_ACTIVE_KEYS = 50;
+const HISTORY_LIMIT = 100;
+const REVOKE_BATCH = 200;
+
+/** A person's connections that haven't been revoked: complete, through the by_user_revoked index. */
+async function notRevoked(ctx: QueryCtx, userId: string) {
+  return ctx.db.query("connections").withIndex("by_user_revoked", (q) => q.eq("userId", userId).eq("revokedAt", undefined)).collect();
+}
 import { agentLevel } from "./schema";
 
 /** A connection is marked used at most this often, to avoid a write per request. */
@@ -94,8 +105,14 @@ export const list = internalQuery({
   handler: async (ctx, { connectionId }) => {
     const connection = await liveConnection(ctx, connectionId);
     if (!connection.canAdminister) return { connections: [describe(connection, connection._id)] };
-    const all = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
-    const grants = all.filter((row) => !row.oauthConnectionId);
+    // Everything not revoked is always listed, read through its own index so
+    // no amount of revoked history can push a live credential off the list.
+    // Recent revoked history follows, bounded. Access credentials are aliases
+    // of grants and aren't listed.
+    const unrevoked = await notRevoked(ctx, connection.userId);
+    const recent = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).order("desc").take(HISTORY_LIMIT);
+    const seen = new Set(unrevoked.map((row) => row._id));
+    const grants = [...unrevoked, ...recent.filter((row) => row.revokedAt && !seen.has(row._id))].filter((row) => !row.oauthConnectionId);
     const registrations = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", connection.userId)).take(MAX_REGISTRATIONS_PER_PERSON);
     return {
       connections: grants.map((row) => describe(row, connectionId)),
@@ -105,6 +122,31 @@ export const list = internalQuery({
         connected: grants.some((grant) => grant.oauthClientId === row.clientId && connectionIsUsable(grant)),
       })),
     };
+  },
+});
+
+/**
+ * Cuts off every other machine, agent, key and Claude registration of this
+ * person, keeping only the connection making the request. Works on the
+ * complete unrevoked set in bounded batches; call again while `more` is true.
+ */
+export const revokeAllOthers = internalMutation({
+  args: { connectionId: v.id("connections") },
+  handler: async (ctx, { connectionId }) => {
+    const connection = await liveConnection(ctx, connectionId);
+    if (!connection.canAdminister) fail("forbidden", "Cut off connections from your own sign-in, not from an agent or key.");
+    const now = new Date().toISOString();
+    const keep = new Set<string>([connection._id, ...(connection.oauthConnectionId ? [connection.oauthConnectionId] : [])]);
+    const others = (await ctx.db.query("connections").withIndex("by_user_revoked", (q) => q.eq("userId", connection.userId).eq("revokedAt", undefined)).take(REVOKE_BATCH + keep.size + 1))
+      .filter((row) => !keep.has(row._id));
+    for (const row of others.slice(0, REVOKE_BATCH)) await ctx.db.patch(row._id, { revokedAt: now });
+    let registrations = 0;
+    for (const registration of await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", connection.userId)).take(REVOKE_BATCH)) {
+      await ctx.db.delete(registration._id);
+      registrations += 1;
+    }
+    // One row past the batch shows whether more remain once this batch is done.
+    return { revoked: Math.min(others.length, REVOKE_BATCH), registrations, more: others.length > REVOKE_BATCH };
   },
 });
 
@@ -173,6 +215,11 @@ export const createKey = internalMutation({
     // their agents do caps it again whenever it acts.
     if (access.role === "viewer" && args.level !== "read") fail("forbidden", "A viewer's key can only read.");
     if (args.expiresAt && !(Date.parse(args.expiresAt) > Date.now())) fail("validation", "The expiry must be in the future.");
+    const held = await notRevoked(ctx, connection.userId);
+    if (held.filter((row) => row.kind === "key" && connectionIsUsable(row)).length >= MAX_ACTIVE_KEYS) {
+      fail("rate_limited", `You have ${MAX_ACTIVE_KEYS} active personal access keys. Revoke one before creating another.`);
+    }
+    await chargeAdmin(ctx, connection.userId, "keys");
     const now = new Date().toISOString();
     const id = await ctx.db.insert("connections", {
       userId: connection.userId, kind: "key", name, clientName: `Key: ${name}`, tokenHash: args.tokenHash,

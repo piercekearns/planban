@@ -9,5 +9,6 @@ if (usageEnabled(process.env)) crons.hourly("Planban included usage warnings", {
 crons.daily("expire idempotency records", { hourUTC: 3, minuteUTC: 0 }, internal.maintenance.expireOperations, {});
 crons.daily("cancel abandoned uploads", { hourUTC: 3, minuteUTC: 15 }, internal.maintenance.cancelAbandonedTransfers, {});
 crons.daily("forget old daily usage", { hourUTC: 4, minuteUTC: 0 }, internal.maintenance.expireUsage, {});
+crons.daily("remove long-expired invitations", { hourUTC: 4, minuteUTC: 15 }, internal.maintenance.expireInvites, {});
 crons.daily("forget used sign-in tokens", { hourUTC: 3, minuteUTC: 45 }, internal.maintenance.expireMachineExchanges, {});
 export default crons;
