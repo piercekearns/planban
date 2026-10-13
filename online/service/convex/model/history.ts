@@ -168,6 +168,21 @@ export async function importHistoryVersion(ctx: MutationCtx, at: BoardRows, entr
  * last body of each document from the dropped versions moves to it, so every
  * kept version can still show its documents.
  */
+/**
+ * A document body moved onto the first kept version is named by that version's
+ * entry too, as Local Mode names every document a version holds, so reading
+ * history finds it the same way online and after Take Local.
+ */
+async function noteMovedDoc(ctx: MutationCtx, historyId: Doc<"history">["_id"], cardId: string, kind: "spec" | "plan") {
+  const row = await ctx.db.get(historyId);
+  if (!row) return;
+  const entry = row.entry as PlanbanHistoryEntry;
+  if (entry.affectedDocs.some((ref) => ref.cardId === cardId && ref.kind === kind)) return;
+  const next = { ...entry, affectedDocs: [...entry.affectedDocs, { cardId, kind, path: `items/${cardId}/${kind}.md` }] };
+  await ctx.db.patch(historyId, { entry: next });
+  await addStored(ctx, { boardId: row.boardId, generation: row.generation }, sizeOf(next) - sizeOf(row.entry), { allowOverLimit: true });
+}
+
 export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: number) {
   if (cutoff <= 0) return;
   const { boardId, generation } = at;
@@ -198,8 +213,10 @@ export async function pruneHistory(ctx: MutationCtx, at: BoardRows, cutoff: numb
         .withIndex("by_board_doc_version", (q) => q.eq("boardId", boardId).eq("generation", generation).eq("cardId", doc.cardId).eq("kind", doc.kind).lte("version", first.version))
         .order("desc")
         .first();
-      if (first && applies?._id === doc._id) await ctx.db.patch(doc._id, { version: first.version });
-      else {
+      if (first && applies?._id === doc._id) {
+        await ctx.db.patch(doc._id, { version: first.version });
+        await noteMovedDoc(ctx, first._id, doc.cardId, doc.kind);
+      } else {
         await ctx.db.delete(doc._id);
         await addStored(ctx, at, -sizeOf(doc.markdown));
       }

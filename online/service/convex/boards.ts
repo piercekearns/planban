@@ -240,6 +240,25 @@ export const history = internalQuery({
   },
 });
 
+/**
+ * A restored card keeps a reference to every document it still has: restoring
+ * card details never drops a document, so the roadmap and stored documents
+ * stay consistent for export and Take Local.
+ */
+async function keepLiveDocRefs(ctx: MutationCtx, at: BoardRows, current: PlanbanRoadmap, items: PlanbanRoadmap["roadmapItems"]) {
+  const now = new Map(current.roadmapItems.map((item) => [item.id, item]));
+  const out = [];
+  for (const item of items) {
+    let next = item;
+    for (const [kind, field] of [["spec", "specDoc"], ["plan", "planDoc"]] as const) {
+      if (next[field] || !(await docRow(ctx, at, item.id, kind))) continue;
+      next = { ...next, [field]: now.get(item.id)?.[field] ?? `items/${item.id}/${kind}.md` };
+    }
+    out.push(next);
+  }
+  return out;
+}
+
 function historyVersionArg(input: Record<string, unknown>): number {
   const version = Number(input.version);
   if (!Number.isInteger(version) || version < 1) fail("validation", "version must be a history version number.");
@@ -546,14 +565,15 @@ export const run = internalMutation({
             // The whole board can change at once, so only the person's own sign-in may do it.
             if (!access.connection.canAdminister) fail("forbidden", "Only your own sign-in can restore the whole board.");
             change = {
-              roadmap: { ...snapshot!, revision: current.revision },
+              roadmap: { ...snapshot!, revision: current.revision, roadmapItems: await keepLiveDocRefs(ctx, at, current, snapshot!.roadmapItems) },
               history: { actor: attribution.actor, operation: "history.restore.board", summary: `Restored board from v${version}`, affectedCards: snapshot!.roadmapItems.map((item) => item.id) },
               docWrites: [],
             };
           } else {
             const cardId = String(input.cardId ?? "");
-            const restored = snapshot!.roadmapItems.find((item) => item.id === cardId);
-            if (!restored) fail("not_found", `Card ${cardId} does not exist in v${version}`);
+            const found = snapshot!.roadmapItems.find((item) => item.id === cardId);
+            if (!found) fail("not_found", `Card ${cardId} does not exist in v${version}`);
+            const [restored] = await keepLiveDocRefs(ctx, at, current, [found!]);
             const exists = current.roadmapItems.some((item) => item.id === cardId);
             const items = exists ? current.roadmapItems.map((item) => (item.id === cardId ? restored! : item)) : [...current.roadmapItems, restored!];
             change = {
