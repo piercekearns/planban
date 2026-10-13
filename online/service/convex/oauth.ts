@@ -3,12 +3,12 @@
 // bind approval, code redemption and rotating credentials to one connection.
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { connectionIsUsable, liveConnection } from "./model/access";
+import { connectionIsUsable, liveConnection, registrationLive } from "./model/access";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
-import { metadataClientAllowed } from "./model/oauthClient";
+import { MAX_REGISTRATIONS_PER_PERSON, metadataClientAllowed, REGISTERED_CLIENT_NAME, registeredClientId, type OAuthClient } from "./model/oauthClient";
 
 export const REQUEST_MS = 10 * 60_000;
 export const MACHINE_REQUEST_MS = 5 * 60_000;
@@ -16,6 +16,9 @@ export const CODE_MS = 60_000;
 export const ACCESS_MS = 5 * 60_000;
 export const REFRESH_IDLE_MS = 90 * 24 * 60 * 60_000;
 export const GRANT_MS = 365 * 24 * 60 * 60_000;
+/** An unused claude.ai registration lasts this long. */
+export const REGISTRATION_MS = 24 * 60 * 60_000;
+const REGISTRATION_METER = "registration:claude.ai";
 const invalid = () => ({ error: "invalid_grant" as const });
 const hash = v.string();
 const SCOPES = new Set(["planban:read", "planban:plan", "planban:complete", "offline_access"]);
@@ -103,6 +106,40 @@ export const reserveMetadataFetch = internalMutation({
   },
 });
 
+/** Records a validated claude.ai registration. The HTTP layer validates its metadata. */
+export const register = internalMutation({
+  args: { clientId: v.string(), redirectUris: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    if (!registeredClientId(args.clientId)) fail("validation", "Invalid registration.");
+    await meterRequest(ctx, REGISTRATION_METER);
+    const now = Date.now();
+    await ctx.db.insert("oauthRegistrations", { clientId: args.clientId, redirectUris: args.redirectUris, createdAt: now, expiresAt: now + REGISTRATION_MS });
+    await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);
+    return { createdAt: now };
+  },
+});
+
+async function registrationRow(ctx: QueryCtx, clientId: string) {
+  return ctx.db.query("oauthRegistrations").withIndex("by_clientId", (q) => q.eq("clientId", clientId)).unique();
+}
+
+function registrationUsable(row: Doc<"oauthRegistrations"> | null, userId?: string): row is Doc<"oauthRegistrations"> {
+  if (!row) return false;
+  if (row.userId) return userId === undefined || row.userId === userId;
+  return row.expiresAt !== undefined && row.expiresAt > Date.now();
+}
+
+/** A live claude.ai registration as an OAuth client, or null. */
+export const registeredClient = internalQuery({
+  args: { clientId: v.string() },
+  handler: async (ctx, { clientId }): Promise<OAuthClient | null> => {
+    if (!registeredClientId(clientId)) return null;
+    const row = await registrationRow(ctx, clientId);
+    if (!registrationUsable(row)) return null;
+    return { clientId, name: REGISTERED_CLIENT_NAME, redirectUris: row.redirectUris, native: false };
+  },
+});
+
 export const createRequest = internalMutation({
   args: { requestHash: hash, browserHash: hash, csrfHash: hash, clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(), scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(), purpose: v.union(v.literal("oauth"), v.literal("machine")) },
   handler: async (ctx, args) => {
@@ -165,6 +202,16 @@ export const approve = internalMutation({
       return { denied: true, redirectUri: row!.redirectUri, state: row!.state };
     }
     if (!/^[a-f0-9]{64}$/.test(args.codeHash)) fail("validation", "Invalid authorization code.");
+    if (registeredClientId(row!.clientId)) {
+      // The first approval makes the registration that person's; it no longer expires.
+      const registration = await registrationRow(ctx, row!.clientId);
+      if (!registrationUsable(registration, args.userId)) fail("unauthorized", "This connection request has ended. Add the connector again.");
+      if (!registration!.userId) {
+        const held = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", args.userId)).take(MAX_REGISTRATIONS_PER_PERSON);
+        if (held.length >= MAX_REGISTRATIONS_PER_PERSON) fail("rate_limited", `You have ${MAX_REGISTRATIONS_PER_PERSON} Claude connections. Remove one on the connections page first.`);
+        await ctx.db.patch(registration!._id, { userId: args.userId, expiresAt: undefined });
+      }
+    }
     const now = new Date().toISOString();
     // Pending grants are visible and revocable before code redemption; they
     // have no credential and cannot authorize resource work.
@@ -207,7 +254,7 @@ export const redeem = internalMutation({
     const row = await ctx.db.query("oauthRequests").withIndex("by_codeHash", (q) => q.eq("codeHash", args.codeHash)).unique();
     if (!row || row.status !== "approved" || !row.connectionId || (row.purpose === "machine" && row.expiresAt <= Date.now()) || (row.codeExpiresAt ?? 0) <= Date.now() || row.clientId !== args.clientId || row.redirectUri !== args.redirectUri || row.resource !== args.resource || row.challenge !== args.challenge) return invalid();
     const connection = await ctx.db.get(row.connectionId);
-    if (!connection || connection.revokedAt || !connection.oauthPending) return invalid();
+    if (!connection || connection.revokedAt || !connection.oauthPending || !await registrationLive(ctx, connection)) return invalid();
     if (row.approverConnectionId && !connectionIsUsable(await ctx.db.get(row.approverConnectionId))) return invalid();
     if (!row.approverConnectionId && (!row.sessionId || args.sessionId !== row.sessionId || args.sessionUserId !== row.userId)) return invalid();
     await ctx.db.patch(row._id, { status: "consumed" });
@@ -259,20 +306,23 @@ export const cleanupRequests = internalMutation({
     await ctx.db.patch(state._id, { dueAt: undefined });
     const requests = await ctx.db.query("oauthRequests").withIndex("by_expiry", (q) => q.lte("expiresAt", Date.now())).take(100);
     const usage = await ctx.db.query("oauthUsage").withIndex("by_bucket", (q) => q.lt("bucket", Math.floor(Date.now() / REQUEST_MS))).take(100);
+    const registrations = await ctx.db.query("oauthRegistrations").withIndex("by_expiry", (q) => q.gt("expiresAt", 0).lte("expiresAt", Date.now())).take(100);
+    for (const row of registrations) await ctx.db.delete(row._id);
     for (const row of requests) {
       const grant = row.connectionId ? await ctx.db.get(row.connectionId) : null;
       if (grant?.oauthPending && !grant.revokedAt) await ctx.db.patch(grant._id, { revokedAt: new Date().toISOString() });
       await ctx.db.delete(row._id);
     }
     for (const row of usage) await ctx.db.delete(row._id);
-    if (requests.length === 100 || usage.length === 100) {
+    if (requests.length === 100 || usage.length === 100 || registrations.length === 100) {
       await scheduleCleanup(ctx, 0);
     } else {
       // Later requests or late approval can outlive the bucket's first job.
       // Keep a bounded job alive until the last outstanding deadline passes.
       const next = await ctx.db.query("oauthRequests").withIndex("by_expiry").order("asc").first();
       const nextUsage = await ctx.db.query("oauthUsage").withIndex("by_bucket").order("asc").first();
-      const deadline = Math.min(next?.expiresAt ?? Infinity, nextUsage ? (nextUsage.bucket + 1) * REQUEST_MS : Infinity);
+      const nextRegistration = await ctx.db.query("oauthRegistrations").withIndex("by_expiry", (q) => q.gt("expiresAt", 0)).order("asc").first();
+      const deadline = Math.min(next?.expiresAt ?? Infinity, nextUsage ? (nextUsage.bucket + 1) * REQUEST_MS : Infinity, nextRegistration?.expiresAt ?? Infinity);
       if (Number.isFinite(deadline)) await scheduleCleanup(ctx, Math.max(0, deadline - Date.now()) + 1);
     }
   },
@@ -307,7 +357,7 @@ export const refresh = internalMutation({
       if (connection && !connection.revokedAt) await ctx.db.patch(connection._id, { revokedAt: new Date().toISOString() });
       return invalid();
     }
-    if (row.expiresAt <= Date.now() || !connectionIsUsable(connection) || connection.authorizationVersion !== 2 || connection.kind !== "oauth" || connection.oauthConnectionId) return invalid();
+    if (row.expiresAt <= Date.now() || !connectionIsUsable(connection) || !await registrationLive(ctx, connection) || connection.authorizationVersion !== 2 || connection.kind !== "oauth" || connection.oauthConnectionId) return invalid();
     if (args.requestedScopes) {
       const approved = new Set(row.scopes), requested = new Set(args.requestedScopes);
       if (requested.size !== args.requestedScopes.length || requested.size !== approved.size || args.requestedScopes.some((scope) => !approved.has(scope))) return { error: "invalid_scope" as const };

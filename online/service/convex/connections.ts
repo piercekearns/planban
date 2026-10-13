@@ -2,10 +2,11 @@
 // request. Bearer secrets Planban issues itself are stored only as hashes.
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, resolvedConnection } from "./model/access";
 import { connectionOrigin, publicOrigin } from "./model/auth";
+import { MAX_REGISTRATIONS_PER_PERSON, REGISTERED_CLIENT_NAME, registeredClientId } from "./model/oauthClient";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 
@@ -94,7 +95,16 @@ export const list = internalQuery({
     const connection = await liveConnection(ctx, connectionId);
     if (!connection.canAdminister) return { connections: [describe(connection, connection._id)] };
     const all = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", connection.userId)).collect();
-    return { connections: all.filter((row) => !row.oauthConnectionId).map((row) => describe(row, connectionId)) };
+    const grants = all.filter((row) => !row.oauthConnectionId);
+    const registrations = await ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", connection.userId)).take(MAX_REGISTRATIONS_PER_PERSON);
+    return {
+      connections: grants.map((row) => describe(row, connectionId)),
+      // Every claude.ai registration this person approved, connected or not (owner decision 22).
+      registrations: registrations.map((row) => ({
+        id: row._id, name: REGISTERED_CLIENT_NAME, registeredAt: new Date(row.createdAt).toISOString(),
+        connected: grants.some((grant) => grant.oauthClientId === row.clientId && connectionIsUsable(grant)),
+      })),
+    };
   },
 });
 
@@ -103,14 +113,40 @@ export const revoke = internalMutation({
   args: { connectionId: v.id("connections"), targetId: v.string() },
   handler: async (ctx, { connectionId, targetId }) => {
     const connection = await liveConnection(ctx, connectionId);
+    const registrationId = targetId === "self" ? null : ctx.db.normalizeId("oauthRegistrations", targetId);
+    if (registrationId) {
+      const registration = await ctx.db.get(registrationId);
+      if (!registration || !connection.canAdminister || registration.userId !== connection.userId) fail("not_found", "Connection not found.");
+      await endRegistration(ctx, registration!, new Date().toISOString());
+      return { revoked: true, id: registration!._id };
+    }
     const id = targetId === "self" ? connection._id : ctx.db.normalizeId("connections", targetId);
     const target = id ? await ctx.db.get(id) : null;
     const allowed = target && !target.oauthConnectionId && (target._id === connection._id || (connection.canAdminister && target.userId === connection.userId));
     if (!allowed) fail("not_found", "Connection not found.");
-    if (!target!.revokedAt) await ctx.db.patch(target!._id, { revokedAt: new Date().toISOString() });
+    const now = new Date().toISOString();
+    if (!target!.revokedAt) await ctx.db.patch(target!._id, { revokedAt: now });
+    if (target!.oauthClientId && registeredClientId(target!.oauthClientId)) {
+      // A claude.ai registration ends with its connection.
+      const registration = await ctx.db.query("oauthRegistrations").withIndex("by_clientId", (q) => q.eq("clientId", target!.oauthClientId!)).unique();
+      if (registration) await endRegistration(ctx, registration, now);
+    }
     return { revoked: true, id: target!._id };
   },
 });
+
+/**
+ * Removing the registration is authoritative at once: with its row gone,
+ * every connection made through it is refused (see registrationLive), and no
+ * history accumulates. Grants are also marked revoked, a bounded batch at a time.
+ */
+async function endRegistration(ctx: MutationCtx, registration: Doc<"oauthRegistrations">, now: string) {
+  await ctx.db.delete(registration._id);
+  if (!registration.userId) return;
+  const grants = await ctx.db.query("connections").withIndex("by_user_client", (q) => q.eq("userId", registration.userId!).eq("oauthClientId", registration.clientId))
+    .filter((q) => q.eq(q.field("revokedAt"), undefined)).take(50);
+  for (const grant of grants) await ctx.db.patch(grant._id, { revokedAt: now });
+}
 
 /**
  * Personal access keys (owner decision 5): named, for one board, at one

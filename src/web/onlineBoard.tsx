@@ -719,11 +719,14 @@ interface Connection {
 }
 
 /** Your connections, under your account (approved mockup): each agent and key, what it may do, when it was last used. */
+/** A claude.ai self-registration this person approved (owner decision 22). */
+type Registration = { id: string; name: string; registeredAt: string; connected: boolean };
+
 export function ConnectionsModal({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<{ signedIn: boolean; connections: Connection[] } | null>(null);
+  const [data, setData] = useState<{ signedIn: boolean; connections: Connection[]; registrations?: Registration[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => setData(await request<{ signedIn: boolean; connections: Connection[] }>("/api/online/connections").catch((failure) => {
+  const load = useCallback(async () => setData(await request<{ signedIn: boolean; connections: Connection[]; registrations?: Registration[] }>("/api/online/connections").catch((failure) => {
     setError(failure instanceof Error ? failure.message : String(failure));
     return null;
   })), []);
@@ -780,6 +783,18 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
         <>
           <div className="online-board-section"><h3>Agents</h3>{agents.length ? agents.map((connection) => row(connection, <Bot size={16} />, connection.kind === "oauth")) : <p className="muted">No AI apps are connected.</p>}</div>
           <div className="online-board-section"><h3>Machines</h3>{machines.map((connection) => row(connection, <Laptop size={16} />, false))}</div>
+          {data.registrations?.length ? (
+            <div className="online-board-section"><h3>Claude registrations</h3>
+              {data.registrations.map((registration) => (
+                <div className="people-row" key={registration.id}>
+                  <span className="face-col connection-icon"><Bot size={16} /></span>
+                  <div className="who"><b>{registration.name}</b><small>Registered {timeAgo(registration.registeredAt)} · {registration.connected ? "connected" : "not connected"}</small></div>
+                  <div className="col wide" />
+                  <button className="online-board-button" disabled={busy} onClick={() => void act(() => request(`/api/online/connections/${encodeURIComponent(registration.id)}/revoke`, {}))}>Remove</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="online-board-section"><h3>Personal access keys</h3>{keys.length ? keys.map((connection) => row(connection, <KeyRound size={16} />, false)) : <p className="muted">No keys. Create one from the command line with planban online keys create.</p>}</div>
         </>
       )}

@@ -12,7 +12,7 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
-import { authorizationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
+import { authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
@@ -395,6 +395,8 @@ export const authorizationServerDiscovery = httpAction(async () => enrollmentCon
   planban_machine_start_endpoint: `${publicOrigin()}/oauth/machine/start`,
   planban_machine_cancel_endpoint: `${publicOrigin()}/oauth/machine/cancel`,
   token_endpoint: `${publicOrigin()}/oauth/token`, revocation_endpoint: `${publicOrigin()}/oauth/revoke`,
+  // Self-registration is for claude.ai only (owner decision 22).
+  registration_endpoint: `${publicOrigin()}/oauth/register`,
   response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
   code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
   revocation_endpoint_auth_methods_supported: ["none"], scopes_supported: [...PLANBAN_SCOPES, "planban:machine"],
@@ -421,6 +423,7 @@ for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mc
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });
 http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(atServiceOnly(revocationResponse)) });
+http.route({ path: "/oauth/register", method: "POST", handler: httpAction(atServiceOnly(registrationResponse)) });
 http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(atServiceOnly(authorizationResponse)) });
 http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(atServiceOnly(consentResponse)) });
 http.route({ path: "/oauth/machine/start", method: "POST", handler: httpAction(atServiceOnly(machineStartResponse)) });

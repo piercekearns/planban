@@ -3,6 +3,7 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { fail } from "./errors";
+import { registeredClientId } from "./oauthClient";
 
 export const BOARD_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -16,9 +17,17 @@ export function connectionIsUsable(connection: Doc<"connections"> | null): conne
   return true;
 }
 
+/** A claude.ai registration's own revocation ends everything made through it at once. */
+export async function registrationLive(ctx: QueryCtx, connection: Doc<"connections">): Promise<boolean> {
+  if (!connection.oauthClientId || !registeredClientId(connection.oauthClientId)) return true;
+  const registration = await ctx.db.query("oauthRegistrations").withIndex("by_clientId", (q) => q.eq("clientId", connection.oauthClientId!)).unique();
+  return !!registration && registration.userId === connection.userId;
+}
+
 export async function resolvedConnection(ctx: QueryCtx, connectionId: Id<"connections">): Promise<Doc<"connections"> | null> {
   const connection = await ctx.db.get(connectionId);
   if (!connectionIsUsable(connection)) return null;
+  if (!await registrationLive(ctx, connection)) return null;
   if (!connection.oauthConnectionId) return connection;
   const grant = await ctx.db.get(connection.oauthConnectionId);
   if (!connectionIsUsable(grant) || grant.kind !== "oauth" || grant.authorizationVersion !== 2 || grant.oauthConnectionId

@@ -3,7 +3,7 @@ import { internal } from "../_generated/api";
 import type { ActionCtx } from "../_generated/server";
 import { MACHINE_CLIENT_ID, REQUEST_MS, scopeLevel } from "../oauth";
 import { publicOrigin, randomSecret, sha256Hex } from "./auth";
-import { loadOAuthClient, clientRedirectAllowed, metadataClientAllowed, type OAuthClient } from "./oauthClient";
+import { loadOAuthClient, clientRedirectAllowed, metadataClientAllowed, parseClaudeRegistration, REGISTERED_CLIENT_NAME, registeredClientId, type OAuthClient } from "./oauthClient";
 import { verifyHumanSession, type HumanIdentity } from "./humanSession";
 import { readOAuthForm } from "./oauthHttp";
 
@@ -77,13 +77,18 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
   if (!scopes.length || scopes.length > 4 || new Set(scopes).size !== scopes.length || (machine ? scopes.length !== 1 || scopes[0] !== "planban:machine" : !scopes.some((scope) => scope.startsWith("planban:")) || scopes.some((scope) => !(PLANBAN_SCOPES as readonly string[]).includes(scope)))) return rejected("invalid_scope");
   const challenge = input.get("code_challenge") ?? "";
   if (input.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return rejected("invalid_request");
-  if (!machine) {
+  const registered = registeredClientId(clientId);
+  if (!machine && !registered) {
     if (!metadataClientAllowed(clientId)) return rejected("invalid_client");
     try {
       if (!await ctx.runMutation(internal.oauth.reserveMetadataFetch, { clientId })) return rejected("temporarily_unavailable", 429);
     } catch { return rejected("temporarily_unavailable", 503); }
   }
-  const client = machine ? { clientId, name: "Planban CLI", redirectUris: CLI_REDIRECT_PORTS.map((port) => `http://127.0.0.1:${port}/callback`), native: true } : await loader(clientId);
+  let client: OAuthClient | null;
+  if (machine) client = { clientId, name: "Planban CLI", redirectUris: CLI_REDIRECT_PORTS.map((port) => `http://127.0.0.1:${port}/callback`), native: true };
+  else if (registered) {
+    try { client = await ctx.runQuery(internal.oauth.registeredClient, { clientId }); } catch { return rejected("temporarily_unavailable", 503); }
+  } else client = await loader(clientId);
   if (!client || !(machine ? client.redirectUris.includes(redirectUri) : clientRedirectAllowed(client, redirectUri))) return rejected("invalid_client");
   const cookies = browserCookies(request, config.secure) ?? { browser: randomSecret("pbb_"), csrf: randomSecret("pbs_") };
   const requestSecret = randomSecret("pbe_");
@@ -94,6 +99,52 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
     for (const name of ["browser", "csrf"] as const) headers.append("Set-Cookie", `${names[name]}=${cookies[name]}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${REQUEST_MS / 1000}${config.secure ? "; Secure" : ""}`);
     return new Response(null, { status: 303, headers });
   } catch { return rejected("temporarily_unavailable", 503); }
+}
+
+const REGISTRATION_BYTES = 4096;
+
+/** The body's bytes, or null once it passes `limit`; stops reading there. */
+async function readAtMost(request: Request, limit: number): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
+  return out;
+}
+
+/** RFC 7591 registration, for claude.ai's connector only (owner decision 22). */
+export async function registrationResponse(ctx: ActionCtx, request: Request): Promise<Response> {
+  if (!configuration()) return rejected("temporarily_unavailable", 503);
+  if (!/^application\/json(\s*;|$)/i.test(request.headers.get("Content-Type") ?? "")) return rejected("invalid_client_metadata");
+  const length = request.headers.get("Content-Length");
+  if (length !== null && !(/^\d+$/.test(length) && Number(length) <= REGISTRATION_BYTES)) return rejected("invalid_client_metadata");
+  let input: unknown;
+  try {
+    const bytes = await readAtMost(request, REGISTRATION_BYTES);
+    if (!bytes) return rejected("invalid_client_metadata");
+    input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch { return rejected("invalid_client_metadata"); }
+  const parsed = parseClaudeRegistration(input);
+  if ("error" in parsed) return rejected(parsed.error);
+  const clientId = randomSecret("pbc_");
+  try {
+    const { createdAt } = await ctx.runMutation(internal.oauth.register, { clientId, redirectUris: parsed.redirectUris });
+    return json({
+      client_id: clientId, client_id_issued_at: Math.floor(createdAt / 1000), client_name: REGISTERED_CLIENT_NAME,
+      redirect_uris: parsed.redirectUris, grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    }, 201);
+  } catch { return rejected("temporarily_unavailable", 429); }
 }
 
 export async function machineStartResponse(ctx: ActionCtx, request: Request): Promise<Response> {
