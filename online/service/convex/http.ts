@@ -158,6 +158,14 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
     return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound }));
   }
+  if (rest[0] === "history" && rest.length === 2 && method === "GET") {
+    return json(await ctx.runQuery(internal.boards.historyVersion, { connectionId, boardId, version: Number(rest[1]) }));
+  }
+  if (rest[0] === "history" && rest.length === 6 && rest[2] === "cards" && rest[4] === "docs" && method === "GET") {
+    const kind = rest[5] === "spec" || rest[5] === "plan" ? rest[5] : null;
+    if (!kind) return json({ error: { code: "validation", message: "kind must be spec or plan." } }, 400);
+    return json(await ctx.runQuery(internal.boards.historyDoc, { connectionId, boardId, version: Number(rest[1]), cardId: rest[3]!, kind }));
+  }
   if (rest[0] === "history" && method === "GET") {
     const after = url.searchParams.get("after");
     return json(await ctx.runQuery(internal.boards.history, { connectionId, boardId, ...(after === null ? {} : { after: Number(after) }) }));

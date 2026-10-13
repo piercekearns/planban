@@ -1,6 +1,7 @@
 // History checks against a local Convex backend: card ids that are also
-// JavaScript property names, document bodies kept across pruning, and
-// imports larger than the history cap. Creates throwaway boards only.
+// JavaScript property names, reading and restoring old versions, document
+// bodies kept across pruning, and imports larger than the history cap.
+// Creates throwaway boards only.
 //
 //   PLANBAN_ONLINE_URL=http://127.0.0.1:3211 node --import tsx/esm online/scripts/history-convex.ts
 import assert from "node:assert/strict";
@@ -51,6 +52,64 @@ assert.deepEqual(latest.roadmapItems.map((item: { id: string }) => item.id).sort
 assert.equal(latest.roadmapItems.find((item: { id: string }) => item.id === "constructor").title, "Constructor");
 ok("cards whose ids are JavaScript property names rebuild correctly from history");
 
+const restore = `restore-${Date.now().toString(36)}`;
+revision = (await api("POST", "/api/v1/boards/import", board(restore))).json.roadmap.revision;
+const original = await op(restore, "createCard", { title: "Restorable", summary: "First summary", specMarkdown: "# First spec\n", baseRevision: revision });
+const restoreId = original.result.createdCard.id;
+revision = original.roadmap.revision;
+const versionAfterCreate = (await api("GET", `/api/v1/boards/${restore}/history`)).json.currentVersion;
+revision = (await op(restore, "updateCard", { cardId: restoreId, summary: "Second summary", baseRevision: revision })).roadmap.revision;
+const docNow = (await api("GET", `/api/v1/boards/${restore}/docs/${restoreId}/spec`)).json;
+revision = (await op(restore, "writeDoc", { cardId: restoreId, kind: "spec", markdown: "# Second spec\n", expectedMtimeMs: docNow.mtimeMs, baseRevision: revision })).roadmap.revision;
+revision = (await op(restore, "createCard", { title: "Added later", baseRevision: revision })).roadmap.revision;
+
+const oldBoard = await api("GET", `/api/v1/boards/${restore}/history/${versionAfterCreate}`);
+assert.equal(oldBoard.status, 200, JSON.stringify(oldBoard.json));
+assert.equal(oldBoard.json.roadmap.roadmapItems.find((item: any) => item.id === restoreId).summary, "First summary");
+const oldDoc = await api("GET", `/api/v1/boards/${restore}/history/${versionAfterCreate}/cards/${restoreId}/docs/spec`);
+assert.deepEqual([oldDoc.json.exists, oldDoc.json.markdown], [true, "# First spec\n"]);
+ok("an online board shows an old version and its documents as they were");
+
+const stale = await api("POST", `/api/v1/boards/${restore}/ops/restoreCard`, { version: versionAfterCreate, cardId: restoreId, baseRevision: revision - 1 });
+assert.equal(stale.status, 409, JSON.stringify(stale.json));
+const missing = await api("POST", `/api/v1/boards/${restore}/ops/restoreCard`, { version: 99999, cardId: restoreId, baseRevision: revision });
+assert.equal(missing.status, 404, JSON.stringify(missing.json));
+const restoredCard = await op(restore, "restoreCard", { version: versionAfterCreate, cardId: restoreId, baseRevision: revision });
+revision = restoredCard.roadmap.revision;
+assert.equal(restoredCard.roadmap.roadmapItems.find((item: any) => item.id === restoreId).summary, "First summary");
+assert.equal(restoredCard.roadmap.roadmapItems.length, 2, "restoring one card leaves the others");
+revision = (await op(restore, "restoreDoc", { version: versionAfterCreate, cardId: restoreId, kind: "spec", baseRevision: revision })).roadmap.revision;
+assert.equal((await api("GET", `/api/v1/boards/${restore}/docs/${restoreId}/spec`)).json.markdown, "# First spec\n");
+const wholeBoard = await op(restore, "restoreBoard", { version: versionAfterCreate, baseRevision: revision });
+assert.deepEqual(wholeBoard.roadmap.roadmapItems.map((item: any) => item.id), [restoreId], "restoring the board removes the card added later");
+assert.ok(wholeBoard.roadmap.revision > revision, "a restore is a new revision, not a rewind");
+const latestEntry = (await api("GET", `/api/v1/boards/${restore}/history`)).json.entries.reduce((a: any, b: any) => (b.version > a.version ? b : a));
+assert.equal(latestEntry.operation, "history.restore.board");
+
+// A Plan written after the restored version stays referenced, so export and Take Local still match.
+revision = wholeBoard.roadmap.revision;
+revision = (await op(restore, "writeDoc", { cardId: restoreId, kind: "plan", markdown: "# Later plan\n", expectedMtimeMs: null, baseRevision: revision })).roadmap.revision;
+for (const name of ["restoreCard", "restoreBoard"]) {
+  const back = await op(restore, name, { version: versionAfterCreate, cardId: restoreId, baseRevision: revision });
+  revision = back.roadmap.revision;
+  assert.ok(back.roadmap.roadmapItems.find((item: any) => item.id === restoreId).planDoc, `${name} keeps the later Plan's reference`);
+  const docs = (await api("GET", `/api/v1/boards/${restore}/export/docs?offset=0&limit=100`)).json.docs;
+  for (const doc of docs) {
+    const item = back.roadmap.roadmapItems.find((entry: any) => entry.id === doc.cardId);
+    assert.ok(item && (doc.kind === "spec" ? item.specDoc : item.planDoc), `${name}: exported ${doc.kind} of ${doc.cardId} has a reference`);
+  }
+}
+
+// A retried restore with the same idempotency key applies once.
+const retryBody = JSON.stringify({ version: versionAfterCreate, cardId: restoreId, baseRevision: revision });
+const key = `restore-retry-${Date.now()}`;
+const sendKeyed = () => fetch(`${origin}/api/v1/boards/${restore}/ops/restoreCard`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": key }, body: retryBody });
+const firstTry = await (await sendKeyed()).json() as any;
+const secondTry = await (await sendKeyed()).json() as any;
+assert.equal(secondTry.replayed, true);
+assert.equal(secondTry.roadmap.revision, firstTry.roadmap.revision, "the retry returns the original result without a new version");
+ok("an online board restores a card, a document and the whole board as new versions, refusing stale or missing versions");
+
 const pruned = `prune-${Date.now().toString(36)}`;
 revision = (await api("POST", "/api/v1/boards/import", board(pruned))).json.roadmap.revision;
 const created = await op(pruned, "createCard", { title: "Documented", specMarkdown: "# Written once\n", baseRevision: revision });
@@ -64,6 +123,8 @@ const first = afterPrune.history[0].entry.version;
 assert.ok(first > 2, "the oldest versions were pruned");
 assert.ok(afterPrune.historyDocs.some((doc: any) => doc.cardId === cardId && doc.kind === "spec" && doc.version === first && doc.markdown === "# Written once\n"),
   "the document body written before the cut is kept at the first kept version");
+const oldestDoc = await api("GET", `/api/v1/boards/${pruned}/history/${first}/cards/${cardId}/docs/spec`);
+assert.equal(oldestDoc.json.markdown, "# Written once\n");
 ok(`pruning to 1,000 versions keeps each document's body for the versions that remain (${Math.round((Date.now() - started) / 1000)} s of edits)`);
 
 const big = `bigimport-${Date.now().toString(36)}`;

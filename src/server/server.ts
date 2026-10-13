@@ -1379,6 +1379,7 @@ export async function startServer(options: ServeOptions) {
         cwd: cwdForBoard,
         version,
         actor: parseActor(req.body?.actor),
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -1400,6 +1401,7 @@ export async function startServer(options: ServeOptions) {
         version,
         cardId: req.params.id,
         actor: parseActor(req.body?.actor),
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -1437,6 +1439,7 @@ export async function startServer(options: ServeOptions) {
         cardId: req.params.id,
         kind,
         actor: parseActor(req.body?.actor),
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, doc: payload.path });
       res.json(payload);

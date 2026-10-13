@@ -8,7 +8,6 @@
  * @module
  */
 
-import type * as attachments from "../attachments.js";
 import type * as boards from "../boards.js";
 import type * as connections from "../connections.js";
 import type * as copies from "../copies.js";
@@ -22,7 +21,6 @@ import type * as maintenance from "../maintenance.js";
 import type * as members from "../members.js";
 import type * as model_access from "../model/access.js";
 import type * as model_auth from "../model/auth.js";
-import type * as model_blobs from "../model/blobs.js";
 import type * as model_cardChanges from "../model/cardChanges.js";
 import type * as model_clerk from "../model/clerk.js";
 import type * as model_codec from "../model/codec.js";
@@ -52,7 +50,6 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  attachments: typeof attachments;
   boards: typeof boards;
   connections: typeof connections;
   copies: typeof copies;
@@ -66,7 +63,6 @@ declare const fullApi: ApiFromModules<{
   members: typeof members;
   "model/access": typeof model_access;
   "model/auth": typeof model_auth;
-  "model/blobs": typeof model_blobs;
   "model/cardChanges": typeof model_cardChanges;
   "model/clerk": typeof model_clerk;
   "model/codec": typeof model_codec;

@@ -6,7 +6,6 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import { liveConnection } from "./model/access";
 import { fail } from "./model/errors";
 import { abortTransfer, beginTransfer, commitTransfer, putPart, requireOwnConnection } from "./model/transfer";
-import { carryOrReleaseAttachments } from "./attachments";
 
 const CLEANUP_BATCH = 25;
 
@@ -73,8 +72,6 @@ export const cleanupGeneration = internalMutation({
       removed += await deleteSome(ctx, table, boardId, generation);
       if (removed >= CLEANUP_BATCH) break;
     }
-    // Files first: those of cards that still exist move to the live generation.
-    if (removed < CLEANUP_BATCH) removed += await carryOrReleaseAttachments(ctx, boardId, generation);
     if (removed > 0) {
       await ctx.scheduler.runAfter(0, internal.transfers.cleanupGeneration, { boardId, generation });
       return;

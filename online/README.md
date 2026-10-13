@@ -113,9 +113,7 @@ online/scripts/demo-convex.sh                                            # two m
 Online Boards hold text only (owner decision 18). The service has no file
 routes, and every write (edits, remote MCP, Take Online) refuses embedded
 files and oversized documents (`src/core/contentRules.ts`). The attachment
-storage built earlier is kept but not routed: `convex/attachments.ts`,
-`convex/model/blobs.ts`, `src/core/online/attachments.ts`, and its check in
-`online/retired/attachments-convex.ts`.
+storage built for the prototype has been removed, along with its tables.
 
 The guarantee has three layers, set out at the top of `src/core/contentRules.ts`
 and in the card's spec (decision 21): the text check, the size and volume caps

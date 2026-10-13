@@ -665,11 +665,6 @@ test("unsupported online file operations refuse rather than using local snapshot
     () => storage.saveRoadmap(state, state.roadmap),
     () => storage.exportFlatVersion1({ cwd, exportId: "backup" }),
     () => storage.reconstructHierarchy({ cwd, groups: [], baseRevision: state.roadmap.revision }),
-    () => storage.loadHistoryState({ cwd, version: 1 }),
-    () => storage.readHistoryDoc({ cwd, version: 1, cardId: "alpha", kind: "spec" }),
-    () => storage.restoreBoardVersion({ cwd, version: 1 }),
-    () => storage.restoreCardVersion({ cwd, version: 1, cardId: "alpha" }),
-    () => storage.restoreDocVersion({ cwd, version: 1, cardId: "alpha", kind: "spec" }),
     () => storage.initializeProject({ cwd }),
     () => duplicateBoard({ sourceRepoId: "demo" }),
   ]) await assert.rejects(run(), (error: any) => error instanceof storage.PlanbanValidationError && /not yet available for Online Boards/.test(error.message));

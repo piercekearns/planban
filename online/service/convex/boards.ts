@@ -14,6 +14,7 @@ import {
   planReorderCards,
   planUpdateCard,
   planWriteDoc,
+  normalizeColumnPriorities,
   type PlannedChange,
 } from "../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from "../../../src/core/types";
@@ -31,6 +32,7 @@ import { reserveRetiredId } from "./model/retired";
 export const BOARD_OPERATIONS = [
   "createCard", "createCards", "createGroup", "updateCard", "moveCard",
   "setCardParent", "reorderCards", "deleteArchivedCard", "writeDoc",
+  "restoreBoard", "restoreCard", "restoreDoc",
 ] as const;
 export type BoardOperation = (typeof BOARD_OPERATIONS)[number];
 
@@ -238,6 +240,58 @@ export const history = internalQuery({
   },
 });
 
+/**
+ * A restored card keeps a reference to every document it still has: restoring
+ * card details never drops a document, so the roadmap and stored documents
+ * stay consistent for export and Take Local.
+ */
+async function keepLiveDocRefs(ctx: MutationCtx, at: BoardRows, current: PlanbanRoadmap, items: PlanbanRoadmap["roadmapItems"]) {
+  const now = new Map(current.roadmapItems.map((item) => [item.id, item]));
+  const out = [];
+  for (const item of items) {
+    let next = item;
+    for (const [kind, field] of [["spec", "specDoc"], ["plan", "planDoc"]] as const) {
+      if (next[field] || !(await docRow(ctx, at, item.id, kind))) continue;
+      next = { ...next, [field]: now.get(item.id)?.[field] ?? `items/${item.id}/${kind}.md` };
+    }
+    out.push(next);
+  }
+  return out;
+}
+
+function historyVersionArg(input: Record<string, unknown>): number {
+  const version = Number(input.version);
+  if (!Number.isInteger(version) || version < 1) fail("validation", "version must be a history version number.");
+  return version;
+}
+
+/** A document as it stood at a history version: its latest recorded body at or before it. */
+async function historyDocAt(ctx: Parameters<typeof currentRoadmap>[0], at: BoardRows, version: number, cardId: string, kind: DocKind) {
+  const row = await ctx.db.query("historyDocs").withIndex("by_board_doc_version", (q) =>
+    q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", cardId).eq("kind", kind).lte("version", version)).order("desc").first();
+  return row ? unpackText(row.markdown) : null;
+}
+
+/** The board as it stood at a history version, for reading. */
+export const historyVersion = internalQuery({
+  args: { connectionId: v.id("connections"), boardId: v.string(), version: v.number() },
+  handler: async (ctx, { connectionId, boardId, version }) => {
+    const { board } = await readableBoard(ctx, connectionId, boardId);
+    const roadmap = await roadmapAtVersion(ctx, live(board), version);
+    if (!roadmap) fail("not_found", `History version not found: v${version}`);
+    return { roadmap };
+  },
+});
+
+export const historyDoc = internalQuery({
+  args: { connectionId: v.id("connections"), boardId: v.string(), version: v.number(), cardId: v.string(), kind: v.union(v.literal("spec"), v.literal("plan")) },
+  handler: async (ctx, { connectionId, boardId, version, cardId, kind }) => {
+    const { board } = await readableBoard(ctx, connectionId, boardId);
+    const markdown = await historyDocAt(ctx, live(board), version, cardId, kind);
+    return { cardId, kind, path: null, exists: markdown !== null, markdown: markdown ?? "", mtimeMs: null };
+  },
+});
+
 async function allDocs(ctx: Parameters<typeof currentRoadmap>[0], at: BoardRows, roadmap: PlanbanRoadmap) {
   const docs: BoardBundle["docs"] = [];
   for (const item of roadmap.roadmapItems) {
@@ -387,7 +441,6 @@ export const fence = internalMutation({
     if (!/^[A-Za-z0-9-]{8,80}$/.test(transferId)) fail("validation", "transferId must be 8 to 80 letters, digits or dashes.");
     if (expectedGeneration !== undefined && expectedGeneration !== board.generation) fail("conflict", "This board was taken online again since this Take Local started. Run Take Local again.");
     if (board.authority !== "online") fail("conflict", "This board is already being taken local, or is local already.");
-    if (board.carryFrom !== undefined) fail("conflict", "This board is still moving its files after being taken online. Try Take Local again in a minute.");
     // Owner decision 15: everyone else loses access, so the person must have
     // confirmed exactly who that is. Checked here, in the same step.
     const members = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", boardId)).collect();
@@ -487,6 +540,52 @@ export const run = internalMutation({
     try {
       if (op === "writeDoc") {
         outcome = await writeDoc(ctx, access.board, current, input, now, attribution);
+      } else if (op === "restoreBoard" || op === "restoreCard" || op === "restoreDoc") {
+        // Restores state the revision they were based on, like any edit, and
+        // pass the same completion and ownership checks.
+        requireBaseRevision(current, input);
+        const version = historyVersionArg(input);
+        let change: PlannedChange;
+        if (op === "restoreDoc") {
+          const cardId = String(input.cardId ?? "");
+          const kind = input.kind as DocKind;
+          if (!DOC_KINDS.has(kind)) fail("validation", "kind must be spec or plan.");
+          const markdown = await historyDocAt(ctx, at, version, cardId, kind);
+          if (markdown === null) fail("not_found", `${kind} document not found in v${version}`);
+          const planned = planWriteDoc(current, { cardId, kind }, { now });
+          change = {
+            roadmap: planned.roadmap ?? current,
+            history: { actor: attribution.actor, operation: "history.restore.doc", summary: `Restored ${kind} document from v${version}`, affectedCards: [cardId], affectedDocs: [{ cardId, kind, path: planned.path }] },
+            docWrites: [{ cardId, kind, path: planned.path, markdown: markdown! }],
+          };
+        } else {
+          const snapshot = await roadmapAtVersion(ctx, at, version);
+          if (!snapshot) fail("not_found", `History version not found: v${version}`);
+          if (op === "restoreBoard") {
+            // The whole board can change at once, so only the person's own sign-in may do it.
+            if (!access.connection.canAdminister) fail("forbidden", "Only your own sign-in can restore the whole board.");
+            change = {
+              roadmap: { ...snapshot!, revision: current.revision, roadmapItems: await keepLiveDocRefs(ctx, at, current, snapshot!.roadmapItems) },
+              history: { actor: attribution.actor, operation: "history.restore.board", summary: `Restored board from v${version}`, affectedCards: snapshot!.roadmapItems.map((item) => item.id) },
+              docWrites: [],
+            };
+          } else {
+            const cardId = String(input.cardId ?? "");
+            const found = snapshot!.roadmapItems.find((item) => item.id === cardId);
+            if (!found) fail("not_found", `Card ${cardId} does not exist in v${version}`);
+            const [restored] = await keepLiveDocRefs(ctx, at, current, [found!]);
+            const exists = current.roadmapItems.some((item) => item.id === cardId);
+            const items = exists ? current.roadmapItems.map((item) => (item.id === cardId ? restored! : item)) : [...current.roadmapItems, restored!];
+            change = {
+              roadmap: { ...current, roadmapItems: normalizeColumnPriorities(items) },
+              history: { actor: attribution.actor, operation: "history.restore.card", summary: `Restored ${restored!.title} from v${version}`, affectedCards: [cardId] },
+              docWrites: [],
+            };
+          }
+        }
+        checkOwnerControlled(current, change.roadmap, access, completionConfirmed);
+        const { committed, version: written } = await commit(ctx, access.board, current, change, attribution, now);
+        outcome = { committed, version: written, result: {} };
       } else {
         if (op === "setCardParent") {
           // Only re-parenting: status and other move fields are not accepted here.

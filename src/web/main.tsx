@@ -5188,7 +5188,7 @@ function BoardView({
     if (!confirmed) return;
     const next = await api<PlanbanState>(boardPath(boardId, `/history/${preview.version}/restore-board`), {
       method: "POST",
-      body: JSON.stringify({ actor: "user" }),
+      body: JSON.stringify({ actor: "user", baseRevision: state.roadmap.revision }),
     });
     setPreview(null);
     onStateChange(next);
@@ -5202,7 +5202,7 @@ function BoardView({
     if (!confirmed) return;
     const next = await api<PlanbanState>(cardPath(boardId, cardId, `/restore`, preview.version), {
       method: "POST",
-      body: JSON.stringify({ actor: "user" }),
+      body: JSON.stringify({ actor: "user", baseRevision: state.roadmap.revision }),
     });
     setPreview(null);
     onStateChange(next);
@@ -5215,7 +5215,7 @@ function BoardView({
     if (!confirmed) return;
     await api<DocPayload>(cardPath(boardId, cardId, `/docs/${kind}/restore`, preview.version), {
       method: "POST",
-      body: JSON.stringify({ actor: "user" }),
+      body: JSON.stringify({ actor: "user", baseRevision: state.roadmap.revision }),
     });
     setPreview(null);
     await refreshState();
