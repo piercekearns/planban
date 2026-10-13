@@ -8,7 +8,7 @@ import type express from "express";
 import { PlanbanValidationError } from "../core/boardOperations";
 import { requestedMemberRole } from "../core/memberRoles";
 import { readManifest, resolvePlanningRoot } from "../core/storage";
-import { boardPath, onlineRequest } from "../core/online/client";
+import { boardPath, onlineRequest, requireCredentials } from "../core/online/client";
 import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { knownStaleCopy } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
@@ -194,9 +194,12 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
   /** Cut off every other machine, agent, key and Claude registration, in the service's batches. */
   app.post("/api/online/connections/revoke-others", relay(async () => {
     const url = await defaultService();
+    // Every batch acts as the account that started, even if someone signs in
+    // as another account on this machine meanwhile.
+    const credentials = await requireCredentials(url);
     let revoked = 0;
     for (let round = 0; round < 50; round += 1) {
-      const result = await onlineRequest<{ revoked: number; registrations: number; more: boolean }>(url, "/api/v1/connections/revoke-others", {});
+      const result = await onlineRequest<{ revoked: number; registrations: number; more: boolean }>(url, "/api/v1/connections/revoke-others", {}, { credentials });
       revoked += result.revoked + result.registrations;
       if (!result.more) return { revoked, complete: true };
     }
