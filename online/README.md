@@ -136,6 +136,11 @@ registrations and authorize requests per caller. It answers nothing until
 `UPSTREAM` is set to the backend's `https://<deployment>.convex.site` address
 and the `EDGE_PROOF` secret is set.
 
+Invitation emails need two more backend settings: `RESEND_API_KEY`, a
+send-only key for the sending domain, and `PLANBAN_INVITE_FROM`, for example
+`Planban <invites@planban.ai>`. Without both, invitations work only as links
+the owner shares, and the invite form says so.
+
 ## claude.ai self-registration
 
 `POST /oauth/register` accepts RFC 7591 registrations only for Claude's own

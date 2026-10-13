@@ -574,6 +574,35 @@ export function HistoryAuthor({ attribution, actor }: { attribution?: { userId: 
 const LEVEL_LABEL = { read: "Read", plan: "Plan", complete: "Plan and complete" } as const;
 const ROLE_LABEL = { owner: "Owner", editor: "Editor", viewer: "Viewer" } as const;
 
+/** An invitation nobody has used up yet, as the owner's invite list returns it. */
+export interface WaitingInvite {
+  id: string;
+  role: "editor" | "viewer";
+  email: string | null;
+  createdAt: string;
+  expiresAt: string;
+  joined: number;
+}
+
+/** The owner's waiting invitations, each with Cancel, so an address can be invited again. */
+export function WaitingInvites({ invites, busy, onCancel }: { invites: WaitingInvite[]; busy: boolean; onCancel: (invite: WaitingInvite) => void }) {
+  if (!invites.length) return null;
+  const until = (at: string) => new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return (
+    <div className="online-board-section"><h3>Waiting invitations</h3>
+      {invites.map((invite) => (
+        <div className="people-row" key={invite.id}>
+          <span className="face-col connection-icon">{invite.email ? <Mail size={14} /> : <Link size={14} />}</span>
+          <div className="who"><b>{invite.email ?? "Invite link"}</b>
+            <small>{invite.email ? "Sent" : "Made"} {timeAgo(invite.createdAt)} · works until {until(invite.expiresAt)}{invite.email ? "" : ` · ${invite.joined ? `${invite.joined} joined` : "nobody has joined yet"}`}</small></div>
+          <div className="col"><span className="muted">{ROLE_LABEL[invite.role]}</span></div>
+          <button className="online-board-button quiet" disabled={busy} aria-label={`Cancel the invitation ${invite.email ? `for ${invite.email}` : "link"}`} onClick={() => onCancel(invite)}>Cancel</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
  * People on an online board (approved mockup): each person's role, and what
  * their agents may do. You choose for your own agents; you can see the
@@ -581,13 +610,20 @@ const ROLE_LABEL = { owner: "Owner", editor: "Editor", viewer: "Viewer" } as con
  */
 export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId: string; boardTitle: string; onInvite: () => void; onClose: () => void }) {
   const [board, setBoard] = useState<BoardPeople | null>(null);
+  const [invites, setInvites] = useState<WaitingInvite[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
-  const load = useCallback(async () => setBoard(await request<BoardPeople>(`${base}/people`).catch((failure) => {
-    setError(failure instanceof Error ? failure.message : String(failure));
-    return null;
-  })), [base]);
+  const load = useCallback(async () => {
+    const people = await request<BoardPeople>(`${base}/people`).catch((failure) => {
+      setError(failure instanceof Error ? failure.message : String(failure));
+      return null;
+    });
+    setBoard(people);
+    // Only the owner may see invitations; anyone else would be refused.
+    const owner = people?.people.some((person) => person.you && person.role === "owner");
+    setInvites(owner ? (await request<{ invites: WaitingInvite[] }>(`${base}/invites`).catch(() => null))?.invites ?? [] : []);
+  }, [base]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -642,6 +678,11 @@ export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId:
           </div>
         ))}
       </div>
+      {iOwn ? <WaitingInvites invites={invites} busy={busy} onCancel={(invite) => {
+        if (window.confirm(invite.email ? `Cancel the invitation for ${invite.email}? Its link stops working.` : "Cancel this invite link? It stops working, and people who already joined stay on the board.")) {
+          void act(() => request(`${base}/invites/${encodeURIComponent(invite.id)}/revoke`, {}));
+        }
+      }} /> : null}
       <div className="online-board-section"><p className="muted" style={{ margin: 0, fontSize: 12, lineHeight: "18px" }}>Each person chooses what their own agents may do: read, plan, or plan and complete. An agent can never do more than its person. You choose for your agents; you can see the others' choices.</p></div>
       {error ? <div className="online-board-section"><p className="online-board-error" role="alert">{error}</p></div> : null}
     </Modal>
