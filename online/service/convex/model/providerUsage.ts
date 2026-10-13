@@ -1,9 +1,12 @@
 import { Sha256 } from "./sha256";
 
-// Provisioning evidence binds this policy to one nondefault development target.
-export const USAGE_POLICY = "planban-547105-3200106-hardy-tortoise-315-v1";
-export const USAGE_CLOUD = "https://hardy-tortoise-315.eu-west-1.convex.cloud";
-export const USAGE_SITE = "https://hardy-tortoise-315.eu-west-1.convex.site";
+// Provisioning evidence binds this policy to exactly one deployment: Planban's
+// production deployment (team 547105, project 3204497). Usage is shared by the
+// team, so only one deployment watches it; on any other deployment, staging
+// included, the monitor stays off.
+export const USAGE_POLICY = "planban-547105-3204497-canny-turtle-411-v1";
+export const USAGE_CLOUD = "https://canny-turtle-411.eu-west-1.convex.cloud";
+export const USAGE_SITE = "https://canny-turtle-411.eu-west-1.convex.site";
 export const USAGE_DASHBOARD = "https://dashboard.convex.dev/t/pierce-kearns-73417/usage";
 export const HOUR = 3600000;
 export const LEASE = 60000;
@@ -77,9 +80,9 @@ export function warningPayload(reading: Reading, events: Event[]): string {
   const rows = events.map(e => `${DEFINITIONS[e.metric].label}: ${reading.values[e.metric]} ${DEFINITIONS[e.metric].unit} (${e.level}% warning; shared team inclusion ${DEFINITIONS[e.metric].included} ${DEFINITIONS[e.metric].unit}).`);
   const [year, month] = reading.month.split("-").map(Number);
   const resets = new Date(Date.UTC(year!, month!, 1)).toISOString();
-  const text = ["Planban staging included-usage warning", "", ...rows, "", "These are this development deployment's contributions against shared team inclusions. Team coverage is incomplete; this is not a team total or remaining balance.", "Starter use beyond included amounts can incur charges. Resource warnings do not stop service. Native $10 spending warning and $20 usage disable remain separate; seat fees are excluded.", `Observed: ${new Date(reading.at).toISOString()}. Calendar month: ${reading.month}; resets ${resets}.`, "Storage, search and AI Gateway are not covered.", USAGE_DASHBOARD].join("\n");
+  const text = ["Planban included-usage warning", "", ...rows, "", "These are the production deployment's contributions against shared team inclusions. Team coverage is incomplete; this is not a team total or remaining balance.", "Starter use beyond included amounts can incur charges. Resource warnings do not stop service. Native $10 spending warning and $20 usage disable remain separate; seat fees are excluded.", `Observed: ${new Date(reading.at).toISOString()}. Calendar month: ${reading.month}; resets ${resets}.`, "Storage, search and AI Gateway are not covered.", USAGE_DASHBOARD].join("\n");
   const html = `<html lang="en"><body style="font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#0d0d0d"><h1 style="font-size:22px">Planban usage warning</h1><div style="white-space:pre-wrap;line-height:1.6">${escape(text)}</div></body></html>`;
-  return JSON.stringify({ from: "Planban <alerts@planban.ai>", to: ["hello@planban.ai"], subject: "[Planban staging] Included-usage warning", text, html });
+  return JSON.stringify({ from: "Planban <alerts@planban.ai>", to: ["hello@planban.ai"], subject: "[Planban] Included-usage warning", text, html });
 }
 
 /** Transactional state transition; caller persists it before any external send. */
