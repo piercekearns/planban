@@ -29,8 +29,10 @@ export type Batch = {
 export type MonitorState = {
   lastAttemptAt?: number; lastSuccess?: Reading; status?: string;
   covered: Record<string, true>; batches: Batch[];
-  /** The usage key expiry a renewal reminder has already been sent for. */
+  /** The usage key expiry a renewal reminder has been sent (or given up) for. */
   expiryNoticeFor?: number;
+  /** The first attempt at the current reminder, so retries stay inside the provider's duplicate window. */
+  expiryNoticeAttempt?: { expiry: number; firstAt: number };
 };
 export const emptyMonitor = (): MonitorState => ({ covered: {}, batches: [] });
 export const utcMonth = (now: number) => new Date(now).toISOString().slice(0, 7);
@@ -57,6 +59,24 @@ export function expiryNoticeDue(env: Settings, state: MonitorState, now: number)
   const expiry = Number(env.PLANBAN_USAGE_KEY_EXPIRES_AT);
   if (!Number.isSafeInteger(expiry) || expiry <= now || expiry - now > EXPIRY_NOTICE_MS) return null;
   return state.expiryNoticeFor === expiry ? null : expiry;
+}
+
+/**
+ * Claims a reminder send, changing state. The first attempt is recorded before
+ * sending; retries with the same idempotency key happen only inside the
+ * provider's duplicate window, after which the reminder counts as sent, so an
+ * accepted email whose reply was lost is never sent a second time.
+ */
+export function claimExpiryNotice(state: MonitorState, expiry: number, now: number): boolean {
+  if (state.expiryNoticeFor === expiry) return false;
+  const attempt = state.expiryNoticeAttempt;
+  if (attempt?.expiry === expiry) {
+    if (now - attempt.firstAt < RETRY_WINDOW) return true;
+    state.expiryNoticeFor = expiry;
+    return false;
+  }
+  state.expiryNoticeAttempt = { expiry, firstAt: now };
+  return true;
 }
 
 export function expiryNoticePayload(expiry: number): string {
