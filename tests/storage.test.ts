@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { ensureDemoBoard } from "../src/core/demo";
 import { retainedHistoryEntries } from "../src/core/history";
-import { eventsPath, historyDocPath, historyIndexPath, historyRoadmapPath, historyRoot, historyVersionRoot, registryPath } from "../src/core/paths";
+import { eventsPath, historyCarriedDocsPath, historyDocPath, historyIndexPath, historyRoadmapPath, historyRoot, historyVersionRoot, registryPath } from "../src/core/paths";
 import { roadmapV1Schema } from "../src/core/schema";
 import type { PlanbanHistoryEntry, PlanbanHistoryIndex } from "../src/core/types";
 import { queryWorkItems } from "../src/core/workItemQuery";
@@ -1457,21 +1457,26 @@ test("finds a document body stored at a version that doesn't name it, as after T
   assert.doesNotMatch(before.markdown, /Carried onto a kept version/, "an earlier version keeps its own body");
 });
 
-test("taking a board online uploads every stored history body, including ones a version doesn't name", async () => {
+test("taking a board online uploads the history bodies Take Local recorded as carried, including deleted cards", async () => {
   await initializeProject({ cwd, title: "Storage Test", repoId, updateAgents: false });
   await createCard({ cwd, title: "Alpha", status: "pending" });
   await createCard({ cwd, title: "Beta", status: "pending" });
   const version = (await historyPayload(cwd)).currentVersion;
   const state = await loadState(cwd);
+  // As Take Local stages them: the bodies, and the record of which cards they belong to.
   const carried = historyDocPath(state.planningRoot, version, "alpha", "spec");
-  await mkdir(dirname(carried), { recursive: true });
+  const gone = historyDocPath(state.planningRoot, version, "deleted-card", "plan");
+  for (const path of [carried, gone]) await mkdir(dirname(path), { recursive: true });
   await writeFile(carried, "# Alpha Spec\n\nCarried onto a kept version.\n");
+  await writeFile(gone, "# Deleted card's plan\n");
+  await writeFile(historyCarriedDocsPath(state.planningRoot, version), JSON.stringify({ docs: [{ cardId: "alpha", kind: "spec" }, { cardId: "deleted-card", kind: "plan" }] }));
 
   const { buildLocalBundle } = await import("../src/core/online/transfers");
   const bundle = await buildLocalBundle(cwd);
   const atVersion = (bundle.historyDocs ?? []).filter((doc) => doc.version === version && doc.cardId === "alpha" && doc.kind === "spec");
   assert.equal(atVersion.length, 1, "the carried body goes up once");
   assert.match(atVersion[0]!.markdown, /Carried onto a kept version/);
+  assert.ok((bundle.historyDocs ?? []).some((doc) => doc.version === version && doc.cardId === "deleted-card" && doc.kind === "plan"), "a deleted card's carried body goes up too");
   const keys = (bundle.historyDocs ?? []).map((doc) => `${doc.version}/${doc.cardId}/${doc.kind}`);
   assert.equal(new Set(keys).size, keys.length, "no body is sent twice");
 });

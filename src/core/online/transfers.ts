@@ -1,10 +1,10 @@
-import { cp, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { listHistory } from "../history";
-import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyDocPath, historyIndexPath, historyRoadmapPath, historyVersionRoot, isPathInsideRoot, manifestPath, resolveInsideRoot, slugify } from "../paths";
+import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyCarriedDocsPath, historyDocPath, historyIndexPath, historyRoadmapPath, isPathInsideRoot, manifestPath, resolveInsideRoot, slugify } from "../paths";
 import { atomicWriteFile, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
@@ -111,6 +111,19 @@ async function publishManifest(cwd: string, manifest: PlanbanProjectManifest, st
   await registerBoardFromState(state);
 }
 
+const carriedDocsSchema = z.object({ docs: z.array(z.object({ cardId: z.string(), kind: z.enum(["spec", "plan"]) })) });
+
+async function readCarriedDocs(planningRoot: string, version: number) {
+  let raw: string;
+  try {
+    raw = await readFile(historyCarriedDocsPath(planningRoot, version), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return carriedDocsSchema.parse(JSON.parse(raw)).docs;
+}
+
 export async function buildLocalBundle(cwd: string): Promise<BoardBundle> {
   const state = await loadState(cwd);
   if (state.manifest.storage?.kind === "online") throw new PlanbanValidationError("This board is already online. Use online export.");
@@ -126,24 +139,14 @@ export async function buildLocalBundle(cwd: string): Promise<BoardBundle> {
   const versions = await Promise.all(history.entries.map(async (entry) => ({
     entry, roadmap: JSON.parse(await readFile(historyRoadmapPath(state.planningRoot, entry.version), "utf8")),
   })));
-  for (const { entry, roadmap } of versions) {
-    // Every body a version holds goes up, named or not: a board that came back
-    // from Online Mode can hold a body that online pruning carried onto a kept
-    // version without naming it there (see resolveHistoryDoc).
-    const cardIds = new Set<string>([
-      ...((roadmap?.roadmapItems ?? []) as Array<{ id: string }>).map((item) => item.id),
-      ...entry.affectedDocs.map((doc) => doc.cardId),
-    ]);
-    const bySlug = new Map([...cardIds].map((id) => [slugify(id), id]));
-    let folders: string[] = [];
-    try { folders = await readdir(join(historyVersionRoot(state.planningRoot, entry.version), "docs")); } catch { continue; }
-    for (const folder of folders) {
-      const cardId = bySlug.get(folder);
-      if (!cardId) continue;
-      for (const kind of ["spec", "plan"] as const) {
-        const path = historyDocPath(state.planningRoot, entry.version, cardId, kind);
-        if (await pathExists(path)) historyDocs.push({ version: entry.version, cardId, kind, markdown: await readFile(path, "utf8") });
-      }
+  for (const { entry } of versions) {
+    // The version's named bodies, plus any that Take Local recorded as carried
+    // onto it by online pruning (see historyCarriedDocsPath).
+    const refs = new Map<string, { cardId: string; kind: "spec" | "plan" }>();
+    for (const doc of [...entry.affectedDocs, ...await readCarriedDocs(state.planningRoot, entry.version)]) refs.set(`${doc.cardId}/${doc.kind}`, { cardId: doc.cardId, kind: doc.kind });
+    for (const doc of refs.values()) {
+      const path = historyDocPath(state.planningRoot, entry.version, doc.cardId, doc.kind);
+      if (await pathExists(path)) historyDocs.push({ version: entry.version, cardId: doc.cardId, kind: doc.kind, markdown: await readFile(path, "utf8") });
     }
   }
   return bundleSchema.parse({ format: "planban-board-bundle", version: 1, roadmap: state.roadmap, docs,
@@ -641,13 +644,19 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     await writeJson(historyRoadmapPath(root, version.entry.version), version.roadmap);
   }
   const historyPaths = new Set<string>();
+  const named = new Set(bundle.history.flatMap(({ entry }) => entry.affectedDocs.map((ref) => `${entry.version}/${ref.cardId}/${ref.kind}`)));
+  const carried = new Map<number, Array<{ cardId: string; kind: "spec" | "plan" }>>();
   for (const doc of bundle.historyDocs ?? []) {
     if (!versions.has(doc.version)) throw new PlanbanValidationError("Export contains a document for an unknown history version.");
     const path = historyDocPath(root, doc.version, doc.cardId, doc.kind);
     if (historyPaths.has(path)) throw new PlanbanValidationError("Export contains conflicting historical document paths.");
     historyPaths.add(path);
     await atomicWriteFile(path, doc.markdown);
+    if (!named.has(`${doc.version}/${doc.cardId}/${doc.kind}`)) carried.set(doc.version, [...(carried.get(doc.version) ?? []), { cardId: doc.cardId, kind: doc.kind }]);
   }
+  // Bodies online pruning carried onto a version without naming them keep
+  // their identity, so a later Take Online sends them back.
+  for (const [version, docs] of carried) await writeJson(historyCarriedDocsPath(root, version), { docs });
   await writeJson(historyIndexPath(root), { version: 1, latestVersion: Math.max(0, ...versions),
     retention: { boardVersions: 100, cardVersions: 25, documentVersions: 25, hourlyDays: 2, maxAgeDays: 90, ...(bundle.retention ?? {}) },
     entries: bundle.history.map(({ entry }) => entry).sort((a, b) => a.version - b.version),

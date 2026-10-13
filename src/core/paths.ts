@@ -121,6 +121,15 @@ export function historyRoadmapPath(planningRoot: string, version: number): strin
   return join(historyVersionRoot(planningRoot, version), ROADMAP_FILE);
 }
 
+/**
+ * Document bodies a version holds without naming them in its entry, kept by
+ * card id and kind. Only Take Local writes it: online history pruning carries
+ * the body that still applies onto the first kept version.
+ */
+export function historyCarriedDocsPath(planningRoot: string, version: number): string {
+  return join(historyVersionRoot(planningRoot, version), "carried-docs.json");
+}
+
 export function historyDocPath(planningRoot: string, version: number, cardId: string, kind: "spec" | "plan"): string {
   return join(historyVersionRoot(planningRoot, version), "docs", slugify(cardId), `${kind}.md`);
 }
