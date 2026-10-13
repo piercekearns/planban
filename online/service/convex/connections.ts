@@ -6,6 +6,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { BOARD_ID_PATTERN, boardAccess, connectionIsUsable, liveConnection, resolvedConnection } from "./model/access";
 import { connectionOrigin, publicOrigin } from "./model/auth";
+import { registeredClientId } from "./model/oauthClient";
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 
@@ -107,7 +108,16 @@ export const revoke = internalMutation({
     const target = id ? await ctx.db.get(id) : null;
     const allowed = target && !target.oauthConnectionId && (target._id === connection._id || (connection.canAdminister && target.userId === connection.userId));
     if (!allowed) fail("not_found", "Connection not found.");
-    if (!target!.revokedAt) await ctx.db.patch(target!._id, { revokedAt: new Date().toISOString() });
+    const now = new Date().toISOString();
+    if (!target!.revokedAt) await ctx.db.patch(target!._id, { revokedAt: now });
+    if (target!.oauthClientId && registeredClientId(target!.oauthClientId)) {
+      // A claude.ai registration ends with its connection, along with every
+      // other grant made through it.
+      const registration = await ctx.db.query("oauthRegistrations").withIndex("by_clientId", (q) => q.eq("clientId", target!.oauthClientId!)).unique();
+      if (registration && !registration.revokedAt) await ctx.db.patch(registration._id, { revokedAt: now });
+      const grants = await ctx.db.query("connections").withIndex("by_user_client", (q) => q.eq("userId", target!.userId).eq("oauthClientId", target!.oauthClientId)).collect();
+      for (const grant of grants) if (!grant.revokedAt) await ctx.db.patch(grant._id, { revokedAt: now });
+    }
     return { revoked: true, id: target!._id };
   },
 });

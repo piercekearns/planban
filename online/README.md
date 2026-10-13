@@ -124,3 +124,26 @@ and in the card's spec (decision 21): the text check, the size and volume caps
 later are follow-ups, not blockers; record them here.
 
 Historical direct-provider-token probes are archived in `retired/clerk-tokens-convex.ts`; they are not checks for the current enrollment boundary.
+
+## The public address (app.planban.ai)
+
+`edge/` is a Cloudflare Worker that serves the public address and forwards
+only this service's routes to the backend's native address. It adds a shared
+proof to every request; the backend holds only the proof's SHA-256 as
+`PLANBAN_EDGE_PROOF_SHA256`. With that setting and a `PLANBAN_PUBLIC_URL`
+different from the native address, the backend accepts credentials only
+through the Worker, and its sign-in, consent, token and invitation routes
+refuse direct requests. The Worker also limits sign-in starts, claude.ai
+registrations and authorize requests per caller. It answers nothing until
+`UPSTREAM` is set to the backend's `https://<deployment>.convex.site` address
+and the `EDGE_PROOF` secret is set.
+
+## claude.ai self-registration
+
+`POST /oauth/register` accepts RFC 7591 registrations only for Claude's own
+connector callbacks, as public clients using the authorization-code flow
+with PKCE. An unused registration expires after a day. The first person to
+approve one owns it; it appears on their connections page as Claude
+(claude.ai), and revoking it there ends the registration and every grant
+made through it. Other clients still register by published metadata
+documents from the reviewed list.

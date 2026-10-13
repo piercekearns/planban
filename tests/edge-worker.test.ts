@@ -59,14 +59,14 @@ test("passes only the consent hand-over redirect and keeps each cookie separate"
     headers.append("Set-Cookie", "__Host-b=2; Path=/; Secure; HttpOnly");
     return new Response(null, { status: 303, headers });
   };
-  const ok = await through(new Request(`${PUBLIC}/oauth/authorize?client_id=x`), consent);
+  const ok = await through(new Request(`${PUBLIC}/oauth/machine/launch?launch=x`), consent);
   assert.equal(ok.response.status, 303);
   assert.equal(ok.response.headers.get("Location"), `${PUBLIC}/oauth/consent?request=pbe_x`);
   assert.deepEqual(ok.response.headers.getSetCookie(), ["__Host-a=1; Path=/; Secure; HttpOnly", "__Host-b=2; Path=/; Secure; HttpOnly"]);
-  assert.equal((await through(new Request(`${PUBLIC}/oauth/authorize`), () => new Response(null, { status: 303, headers: { Location: "/oauth/consent?request=pbe_y" } }))).response.status, 303);
+  assert.equal((await through(new Request(`${PUBLIC}/oauth/machine/launch`), () => new Response(null, { status: 303, headers: { Location: "/oauth/consent?request=pbe_y" } }))).response.status, 303);
 
   for (const location of ["https://native-123.convex.example/oauth/consent?request=x", "https://evil.example/oauth/consent", `${PUBLIC}/oauth/token`, "//evil.example/oauth/consent", "/elsewhere"]) {
-    const refused = await through(new Request(`${PUBLIC}/oauth/authorize`), () => new Response(null, { status: 302, headers: { Location: location } }));
+    const refused = await through(new Request(`${PUBLIC}/oauth/machine/launch`), () => new Response(null, { status: 302, headers: { Location: location } }));
     assert.equal(refused.response.status, 502, location);
     assert.equal(refused.response.headers.get("Location"), null);
   }
@@ -78,4 +78,22 @@ test("never echoes the proof back and reports an unreachable upstream plainly", 
   const real = globalThis.fetch;
   globalThis.fetch = (async () => { throw new Error("down"); }) as typeof fetch;
   try { assert.equal((await worker.fetch(new Request(`${PUBLIC}/mcp`, { method: "POST" }), env)).status, 502); } finally { globalThis.fetch = real; }
+});
+
+test("limits sign-in starts per caller address before forwarding, and refuses them without a limiter", async () => {
+  const keys: string[] = [];
+  let allow = true;
+  const limited: Env = { ...env, SIGNIN_LIMITER: { limit: async ({ key }) => { keys.push(key); return { success: allow }; } } };
+  const start = () => new Request(`${PUBLIC}/oauth/machine/start`, { method: "POST", headers: { "CF-Connecting-IP": "203.0.113.9", "X-Forwarded-For": "198.51.100.1" }, body: "x" });
+  assert.equal((await through(start(), undefined, limited)).response.status, 200);
+  assert.deepEqual(keys, ["203.0.113.9"]);
+  allow = false;
+  const refused = await through(start(), undefined, limited);
+  assert.equal(refused.response.status, 429);
+  assert.equal(refused.seen.length, 0);
+  // Other routes aren't limited here.
+  assert.equal((await through(new Request(`${PUBLIC}/mcp`, { method: "POST" }), undefined, limited)).response.status, 200);
+  const unlimited = await through(start());
+  assert.equal(unlimited.response.status, 503);
+  assert.equal(unlimited.seen.length, 0);
 });

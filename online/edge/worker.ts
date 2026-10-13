@@ -14,7 +14,14 @@ export interface Env {
   PUBLIC_HOST: string;
   /** Shared secret; the backend holds only its SHA-256 as PLANBAN_EDGE_PROOF_SHA256. */
   EDGE_PROOF: string;
+  /** Workers rate-limiting binding for sign-in starts, per caller address. */
+  SIGNIN_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
+
+// The backend's sign-in quota is shared by every caller, and it can't see a
+// trustworthy caller address. Cloudflare sets CF-Connecting-IP itself, so
+// limit each caller here before one can use up everyone's quota.
+const LIMITED = new Set(["POST /oauth/machine/start", "POST /oauth/register", "GET /oauth/authorize"]);
 
 export const EDGE_PROOF_HEADER = "Planban-Edge-Proof";
 /** Larger than any accepted Spec or Plan write, below the backend's own request limit. */
@@ -89,6 +96,11 @@ export default {
     const route = routed(url.pathname, request.method);
     if (route === "none") return refuse(404, "not_found");
     if (route === "method") return refuse(405, "method_not_allowed");
+    if (LIMITED.has(`${request.method} ${url.pathname}`)) {
+      const caller = request.headers.get("CF-Connecting-IP");
+      if (!env.SIGNIN_LIMITER || !caller) return refuse(503, "temporarily_unavailable");
+      if (!(await env.SIGNIN_LIMITER.limit({ key: caller })).success) return refuse(429, "rate_limited");
+    }
     const length = request.headers.get("Content-Length");
     if (length !== null && !(/^\d+$/.test(length) && Number(length) <= MAX_BODY_BYTES)) return refuse(413, "payload_too_large");
 

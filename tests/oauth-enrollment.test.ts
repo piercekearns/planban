@@ -31,6 +31,7 @@ function fixture() {
       };
       const query: any = { withIndex(_index: string, build: any) { const index: any = {
         eq(key: string, value: unknown) { filters.push((row) => row[key] === value); return index; },
+        gt(key: string, value: any) { filters.push((row) => row[key] !== undefined && row[key] > value); return index; },
         lt(key: string, value: any) { filters.push((row) => row[key] < value); return index; },
         lte(key: string, value: any) { filters.push((row) => row[key] <= value); return index; },
       }; build?.(index); return query; }, unique: async () => matches()[0] ?? null, collect: async () => matches(), take: async (count: number) => matches().slice(0, count), order(direction: "asc" | "desc") { sort = direction; return query; }, first: async () => matches()[0] ?? null };

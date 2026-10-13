@@ -1,7 +1,8 @@
 // Convex fetch does not expose connection-time DNS pinning. Client metadata
 // therefore comes only from these reviewed publisher URLs, trusting their
 // DNS/TLS rather than accepting arbitrary caller-selected network targets.
-// Dynamic registration is disabled. Other clients need a reviewed policy.
+// Dynamic registration is open to claude.ai only (owner decision 22): see
+// parseClaudeRegistration. Other clients need a reviewed policy.
 export const CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata";
 const METADATA_CLIENTS = new Set([
   "https://chatgpt.com/oauth/codex/client.json",
@@ -100,4 +101,35 @@ export async function loadOAuthClient(clientId: string, fetcher: typeof fetch = 
     return parseClientMetadata(clientId, JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
   } catch { return null; }
   finally { clearTimeout(timer); controller.abort(); if (reader) await reader.cancel().catch(() => {}); }
+}
+
+/** Claude's published connector callbacks; claude.com is its newer address. */
+export const CLAUDE_REDIRECTS: readonly string[] = Object.freeze([
+  "https://claude.ai/api/mcp/auth_callback",
+  "https://claude.com/api/mcp/auth_callback",
+]);
+export const REGISTERED_CLIENT_NAME = "Claude (claude.ai)";
+const REGISTERED_ID = /^pbc_[A-Za-z0-9_-]{43}$/;
+export function registeredClientId(clientId: string): boolean { return REGISTERED_ID.test(clientId); }
+
+/**
+ * An RFC 7591 registration request from claude.ai, or the error code to
+ * return. Only Claude's exact callbacks, a public client and the
+ * authorization-code flow are accepted; anything else is refused rather
+ * than narrowed, so a different client can't register as Claude.
+ */
+export function parseClaudeRegistration(input: unknown): { redirectUris: string[] } | { error: "invalid_redirect_uri" | "invalid_client_metadata" } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { error: "invalid_client_metadata" };
+  const doc = input as Record<string, unknown>;
+  const redirects = doc.redirect_uris;
+  if (!Array.isArray(redirects) || !redirects.length || redirects.length > CLAUDE_REDIRECTS.length
+    || redirects.some((value) => typeof value !== "string" || !CLAUDE_REDIRECTS.includes(value))) return { error: "invalid_redirect_uri" };
+  const method = doc.token_endpoint_auth_method;
+  if (method !== undefined && method !== "none") return { error: "invalid_client_metadata" };
+  const grants = doc.grant_types ?? ["authorization_code"];
+  if (!Array.isArray(grants) || !grants.length || grants.some((grant) => grant !== "authorization_code" && grant !== "refresh_token") || !grants.includes("authorization_code")) return { error: "invalid_client_metadata" };
+  const responses = doc.response_types ?? ["code"];
+  if (!Array.isArray(responses) || responses.length !== 1 || responses[0] !== "code") return { error: "invalid_client_metadata" };
+  if (doc.jwks !== undefined || doc.jwks_uri !== undefined || doc.client_secret !== undefined) return { error: "invalid_client_metadata" };
+  return { redirectUris: [...new Set(redirects as string[])] };
 }
