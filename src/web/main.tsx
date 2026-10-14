@@ -542,7 +542,7 @@ function hasPendingCodexThread(item: RoadmapItem) {
 function buildFeedbackPrompt(state: PlanbanState, feedback: string) {
   const boardUrl = `${window.location.origin}/boards/${encodeURIComponent(state.manifest.repoId)}`;
   return [
-    "Use the installed Planban Feedback skill (`planban-feedback`) to investigate and package this for piercekearns/planban.",
+    "Use the installed Planban Feedback skill (`planban-feedback`) to investigate and package this for planban-ai/planban.",
     "",
     "Draft only. Do not file or post publicly without my explicit approval of the exact destination and text.",
     "Treat this note and available conversation/workspace context as my initial account; do not ask me to repeat facts you can infer or safely inspect.",

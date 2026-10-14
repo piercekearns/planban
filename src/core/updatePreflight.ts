@@ -8,7 +8,7 @@ import { platformInvocation } from "../../scripts/platform-invocation.mjs";
 const execFileAsync = promisify(execFile);
 
 const PLANBAN_MARKETPLACE_NAME = "planban";
-const PLANBAN_PUBLIC_SOURCE_PATTERN = /(?:github\.com[:/])?piercekearns\/planban(?:\.git)?$/iu;
+const PLANBAN_PUBLIC_SOURCE_PATTERN = /(?:github\.com[:/])?(?:planban-ai|piercekearns)\/planban(?:\.git)?$/iu;
 const GENERATED_SAFE_DIRTY_FILES = new Set([
   ".codex-marketplace-install.json",
   "package-lock.json",

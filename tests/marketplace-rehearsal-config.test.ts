@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { retargetMarketplace } from "../scripts/marketplace-rehearsal-config.mjs";
 
-const upstream = "https://github.com/piercekearns/planban.git";
+const upstream = "https://github.com/planban-ai/planban.git";
 const fork = "https://github.com/contributor/planban.git";
 const config = `[marketplaces.other]\nsource = "untouched"\nref = "main"\n\n[marketplaces.planban]\nsource_type = "git"\nsource = "${upstream}"\nref = "v1.1.4"\n\n[other]\nref = "unchanged"\n`;
 

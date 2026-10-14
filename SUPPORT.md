@@ -12,7 +12,7 @@ Planban's local core is open source and currently supported on a best-effort bas
 - Security or private concerns: follow `SECURITY.md`.
 
 The issue chooser lists every template:
-https://github.com/piercekearns/planban/issues/new/choose
+https://github.com/planban-ai/planban/issues/new/choose
 
 If you have Planban installed, you can also ask your agent to draft a GitHub-ready
 issue: use `/planban-feedback` in Codex, `/planban:planban-feedback` in Claude Code,

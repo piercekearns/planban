@@ -5,8 +5,8 @@
   "author": {
     "name": "Planban"
   },
-  "homepage": "https://github.com/piercekearns/planban",
-  "repository": "https://github.com/piercekearns/planban",
+  "homepage": "https://github.com/planban-ai/planban",
+  "repository": "https://github.com/planban-ai/planban",
   "license": "MIT",
   "keywords": [
     "planning",

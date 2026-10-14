@@ -13,7 +13,7 @@ function parseArgs(argv) {
     fromVersion: "1.1.6",
     fromRef: null,
     expectedVersion: null,
-    sourceUrl: "https://github.com/piercekearns/planban.git",
+    sourceUrl: "https://github.com/planban-ai/planban.git",
     targetRef: "main",
     targetSourceUrl: null,
     expectedCommit: null,
