@@ -56,6 +56,10 @@ const ROUTES: readonly Route[] = [
   { path: "/.well-known/oauth-protected-resource", methods: ["GET"] },
   { path: "/.well-known/oauth-protected-resource/mcp", methods: ["GET"] },
   { path: "/.well-known/jwks.json", methods: ["GET"] },
+  { path: "/favicon.svg", methods: ["GET"] },
+  { path: "/favicon.ico", methods: ["GET"] },
+  { path: "/brand/icon-light.png", methods: ["GET"] },
+  { path: "/brand/icon-dark.png", methods: ["GET"] },
 ];
 
 /** The only redirect the backend issues: authorization and machine launch hand over to consent. */

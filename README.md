@@ -1,4 +1,9 @@
-# Planban
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="src/web/public/assets/planban-logo-wordmark-white.svg">
+    <img src="src/web/public/assets/planban-logo-wordmark-black.svg" alt="Planban" height="40">
+  </picture>
+</h1>
 
 Planban is a local-first, agent-native Kanban board that installs as a plugin in Codex and Claude Code, so your agents keep the plan current and you see the whole project at a glance.
 

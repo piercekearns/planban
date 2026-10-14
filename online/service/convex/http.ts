@@ -1,4 +1,5 @@
 import { renderInviteEmail } from "./model/inviteEmail";
+import { BRAND_FILES, brandResponse, FAVICON_DATA_URI, WORDMARK_BLACK_DATA_URI } from "./model/brandAssets";
 // HTTP entry points: the REST API that local Planban installs use for an
 // Online Board, and development sign-in on local backends.
 import { httpRouter } from "convex/server";
@@ -374,12 +375,12 @@ const invitePageResponse: RouteHandler = async (ctx, request) => {
   const token = inviteToken(new URL(request.url).pathname);
   const invite = token ? await ctx.runQuery(internal.invites.preview, { tokenHash: await sha256Hex(token) }) : null;
   const page = (title: string, body: string) => new Response(
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title>`
-    + `<body style="font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#111"><h1 style="font-size:22px">${escapeHtml(title)}</h1>${body}</body>`,
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title><link rel="icon" href="${FAVICON_DATA_URI}">`
+    + `<body style="font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#111"><img src="${WORDMARK_BLACK_DATA_URI}" alt="Planban" height="24" style="display:block;height:24px;width:auto;margin-bottom:28px"><h1 style="font-size:22px">${escapeHtml(title)}</h1>${body}</body>`,
     { status: invite ? 200 : 404, headers: {
       "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex",
       // A static page: no scripts, no framing, nothing loaded from elsewhere.
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
     } },
   );
@@ -458,4 +459,7 @@ http.route({
   method: "GET",
   handler: httpAction(async () => liveTokensConfigured() ? json(publicJwks(), 200, { "Cache-Control": "public, max-age=300" }) : json({ keys: [] })),
 });
+// Brand files: favicons for app.planban.ai, and filled icons that AI apps show beside the connector.
+for (const file of BRAND_FILES) http.route({ path: file.path, method: "GET", handler: httpAction(async () => brandResponse(file)) });
+
 export default http;

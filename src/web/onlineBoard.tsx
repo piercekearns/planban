@@ -170,7 +170,7 @@ function Modal({ eyebrow, title, onClose, children, footer }: { eyebrow: string;
           <button aria-label="Close" className="toolbar-icon-button" onClick={onClose}><X size={14} /></button>
         </header>
         {children}
-        {footer ? <footer className="feedback-actions">{footer}</footer> : <div style={{ height: 6 }} />}
+        {footer ? <footer className="feedback-actions">{footer}</footer> : null}
       </section>
     </div>,
     document.body,

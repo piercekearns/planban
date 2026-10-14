@@ -25,7 +25,12 @@ const SERVER_INFO = {
   title: "Planban",
   version: "0.2.0",
   websiteUrl: "https://planban.ai",
-  icons: [{ src: "https://planban.ai/assets/planban-logo-512.png", mimeType: "image/png", sizes: ["512x512"] }],
+  // Filled squares, because apps draw their own tile behind the icon: black on white for light
+  // interfaces, white on black for dark ones (MCP icon "theme" names the background it suits).
+  icons: [
+    { src: "https://app.planban.ai/brand/icon-light.png", mimeType: "image/png", sizes: ["512x512"], theme: "light" },
+    { src: "https://app.planban.ai/brand/icon-dark.png", mimeType: "image/png", sizes: ["512x512"], theme: "dark" },
+  ],
 };
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";

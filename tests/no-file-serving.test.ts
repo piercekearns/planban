@@ -18,6 +18,9 @@ test("the online service answers only with Planban's own content types, never as
     const types = [...source.matchAll(/"Content-Type":\s*"([^"]+)"/g)].map((match) => match[1]!.split(";")[0]!.trim());
     for (const type of types) assert.ok(["application/json", "text/html"].includes(type), `${name}: unexpected content type ${type}`);
   }
+  // Images are only Planban's own brand files, built into the service, never anything stored.
+  assert.equal([...http.matchAll(/brandResponse\(/g)].length, 1);
+  assert.match(http, /for \(const file of BRAND_FILES\) http\.route\(\{ path: file\.path, method: "GET", handler: httpAction\(async \(\) => brandResponse\(file\)\) \}\);/);
   // HTML is only the invite page, which Planban writes itself and escapes.
   assert.equal([...http.matchAll(/text\/html/g)].length, 1);
   assert.match(http, /const invitePageResponse: RouteHandler = async/);

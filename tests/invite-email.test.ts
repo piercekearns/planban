@@ -1,3 +1,4 @@
+import { pngPixels } from "./png-pixels";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderInviteEmail } from "../online/service/convex/model/inviteEmail";
@@ -20,15 +21,22 @@ test("HTML and plaintext preserve exact invitation destination and role-aware ge
     }
     assert.match(mail.html, /View invitation/);
     assert.match(mail.html, /role="presentation"/);
-    assert.match(mail.html, /alt=""/);
+    assert.match(mail.html, /alt="Planban"/);
+    assert.match(mail.html, /<meta name="color-scheme" content="light only">/);
     assert.ok(!/<script|<iframe|<form|https?:.*(?:\.png|\.woff)/i.test(mail.html));
     const image = mail.attachments[0]!;
-    assert.equal(image.content_id, "planban-card-stack");
+    // The real wordmark on its own white chip, at twice its 132x32 display size.
+    assert.equal(image.content_id, "planban-wordmark");
     assert.equal(image.content_type, "image/png");
     const bytes = Buffer.from(image.content, "base64");
     assert.deepEqual([...bytes.subarray(0, 8)], [137,80,78,71,13,10,26,10]);
-    assert.equal(bytes.readUInt32BE(16), 240);
-    assert.equal(bytes.readUInt32BE(20), 199);
+    const chip = pngPixels(bytes);
+    assert.deepEqual([chip.width, chip.height], [264, 64]);
+    // A solid white chip behind black artwork, so a mail app that forces a dark background can't hide it.
+    for (const [x, y] of [[132, 1], [132, 62], [2, 32], [261, 32]]) assert.deepEqual(chip.at(x, y), [255, 255, 255, 255], `chip edge ${x},${y}`);
+    const middle = Array.from({ length: 264 }, (_, x) => chip.at(x, 32));
+    assert.ok(middle.some(([r, g, b, a]) => r < 40 && g < 40 && b < 40 && a === 255), "the wordmark is drawn in black");
+    assert.match(mail.html, /<img src="cid:planban-wordmark" width="132" height="32" alt="Planban"/);
     assert.ok(bytes.length < 10000);
   }
   const viewer = renderInviteEmail("viewer", link, origin);
@@ -62,7 +70,7 @@ test("mail transport stays opt-in, includes both parts and one CID image, and re
     assert.equal(requests, 1);
     assert.ok(captured.html.includes(link) && captured.text.includes(link));
     assert.equal(captured.attachments.length, 1);
-    assert.equal(captured.attachments[0].content_id, "planban-card-stack");
+    assert.equal(captured.attachments[0].content_id, "planban-wordmark");
     assert.deepEqual(captured.to, ["fixture@example.invalid"]);
   } finally {
     for (const [name, value] of [["RESEND_API_KEY", previous.key], ["PLANBAN_INVITE_FROM", previous.from], ["PLANBAN_PUBLIC_URL", previous.origin]] as const) if (value === undefined) delete process.env[name]; else process.env[name] = value;

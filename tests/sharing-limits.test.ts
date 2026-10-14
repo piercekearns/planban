@@ -164,5 +164,8 @@ test("the MCP server introduces itself as Planban, with its icon and website", a
   const info = (await response.json()).result.serverInfo;
   assert.equal(info.title, "Planban");
   assert.equal(info.websiteUrl, "https://planban.ai");
-  assert.deepEqual(info.icons, [{ src: "https://planban.ai/assets/planban-logo-512.png", mimeType: "image/png", sizes: ["512x512"] }]);
+  assert.deepEqual(info.icons, [
+    { src: "https://app.planban.ai/brand/icon-light.png", mimeType: "image/png", sizes: ["512x512"], theme: "light" },
+    { src: "https://app.planban.ai/brand/icon-dark.png", mimeType: "image/png", sizes: ["512x512"], theme: "dark" },
+  ]);
 });
