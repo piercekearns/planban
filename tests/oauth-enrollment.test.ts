@@ -240,7 +240,7 @@ test("metadata budget is atomic, bounds failed fetch attempts and respects creat
   t.mock.timers.tick(oauth.REQUEST_MS);
   assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId }), true);
   const current = f.rows.find((row) => row.table === "oauthUsage" && row.bucket !== usage.bucket);
-  await f.db.patch(current._id, { requests: 100 });
+  await f.db.patch(current._id, { requests: oauth.AUTHORIZE_REQUESTS_PER_WINDOW });
   assert.equal(await handler(oauth.reserveMetadataFetch, f.ctx, { clientId }), false, "exhausted creation quota also prevents outbound work");
   t.mock.timers.tick(oauth.REQUEST_MS + oauth.CODE_MS);
   await f.runDueCleanup();

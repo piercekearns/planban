@@ -79,3 +79,28 @@ test("a page that opens while offline starts with Allow unavailable", async () =
   assert.equal(page.element("allow").disabled, true);
   assert.match(page.element("status").textContent, /You’re offline/);
 });
+
+test("reconnecting while an older check is still running starts a fresh one", async () => {
+  const page = browser();
+  createContext(page.context);
+  runInContext(script, page.context);
+  await page.fire("load");
+  const allow = page.element("allow");
+  assert.equal(allow.disabled, false);
+  // The next check hangs until released, like a slow network.
+  let release!: () => void;
+  const realFetch = page.context.fetch;
+  page.context.fetch = (path: string) => new Promise((resolve) => { release = () => resolve(realFetch(path)); });
+  await page.fire("focus");
+  assert.equal(allow.disabled, true, "a check is under way");
+  page.context.navigator.onLine = false;
+  await page.fire("offline");
+  page.context.fetch = realFetch;
+  page.context.navigator.onLine = true;
+  const checks = page.validityCalls.length;
+  await page.fire("online");
+  release();
+  for (let n = 0; n < 5; n++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(page.validityCalls.length > checks, "a fresh check ran after reconnecting");
+  assert.equal(allow.disabled, false, "and Allow came back without waiting for the next timed check");
+});

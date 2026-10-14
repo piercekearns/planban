@@ -196,6 +196,9 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   const [signInLink, setSignInLink] = useState<string | null>(null);
   // When an action stopped because this computer's sign-in had ended: its service, and the action to finish afterwards.
   const [resume, setResume] = useState<{ url: string; run: () => Promise<unknown> } | null>(null);
+  // Bumped by Cancel, closing and unmounting, so a sign-in finishing later never acts on its own.
+  const signInTicket = useRef(0);
+  useEffect(() => () => { signInTicket.current++; }, []);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
   const others = (status.people ?? []).filter((person) => !person.you);
   const [conversion, setConversion] = useState<{ clean: boolean; machine: string; files: number; pictures: number; howToTidy: string; boardProblems: string[]; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string; where: string }>; problems: string[] }> } | null>(null);
@@ -250,7 +253,9 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   });
   const stop = () => act(() => request(`${base}/stop`, {}));
   const signIn = () => act(async () => {
+    const ticket = signInTicket.current;
     await browserSignIn(resume?.url, setSignInLink);
+    if (ticket !== signInTicket.current) return;
     const next = resume;
     setResume(null);
     if (!next) return setView("confirm-online");
@@ -264,7 +269,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   if (view === "sign-in") {
     return (
       <Modal eyebrow="Board settings" title="Sign in to Planban" onClose={onClose}
-        footer={<><button onClick={() => { setResume(null); setView("settings"); }}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button></>}>
+        footer={<><button onClick={() => { signInTicket.current++; setResume(null); setView("settings"); }}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button></>}>
         <div className="online-board-body">
           <p>{resume ? "This computer's Planban sign-in has ended. Sign in again to carry on." : "Taking a board online needs your Planban account."} Sign in opens in a new browser tab, with an email code or GitHub.</p>
           {signInLink ? <p>Your browser blocked the sign-in tab. <a href={signInLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>.</p> : null}

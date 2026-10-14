@@ -108,7 +108,7 @@ export const reserveMetadataFetch = internalMutation({
     if (!metadataClientAllowed(clientId)) return false;
     const bucket = Math.floor(Date.now() / REQUEST_MS);
     const usage = await ctx.db.query("oauthUsage").withIndex("by_client_bucket", (q) => q.eq("clientId", clientId).eq("bucket", bucket)).unique();
-    if ((usage?.requests ?? 0) >= 100 || (usage?.fetches ?? 0) >= 100) return false;
+    if ((usage?.requests ?? 0) >= AUTHORIZE_REQUESTS_PER_WINDOW || (usage?.fetches ?? 0) >= 100) return false;
     if (usage) await ctx.db.patch(usage._id, { fetches: (usage.fetches ?? 0) + 1 });
     else await ctx.db.insert("oauthUsage", { clientId, bucket, requests: 0, fetches: 1 });
     await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);

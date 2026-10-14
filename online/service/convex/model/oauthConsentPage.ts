@@ -17,7 +17,7 @@ export function consentPage(page: ConsentPage): string {
     const auth=document.getElementById('auth'),review=document.getElementById('review'),ended=document.getElementById('ended');
     const cancelAuth=document.getElementById('cancel-auth');
     const account=document.getElementById('account-choice'),progress=document.getElementById('progress');
-    let mounted=null,deciding=false,requestEnded=${literal(!!page.ended)},mode='signin',valid=false,validUntil=Infinity,generation=0,inflight=null,offline=false;
+    let mounted=null,deciding=false,requestEnded=${literal(!!page.ended)},mode='signin',valid=false,validUntil=Infinity,generation=0,inflight=null,inflightGeneration=-1,offline=false;
     const OFFLINE='You\u2019re offline. Allow comes back when you reconnect.';
     const clock=()=>performance.now();
     const appearance={variables:{colorPrimary:'#0d0d0d',colorText:'#0d0d0d',colorTextSecondary:'#5d5d5d',colorBackground:'#fff',borderRadius:'6px',fontFamily:'-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif'},elements:{rootBox:{width:'100%'},cardBox:{width:'100%',boxShadow:'none',border:'1px solid #e9e9e9',borderRadius:'10px'},card:{padding:'28px'},headerTitle:{fontSize:'25px',letterSpacing:'-.7px'},formButtonPrimary:{boxShadow:'none'},footerActionLink:{color:'#0169cc'}}};
@@ -41,8 +41,10 @@ export function consentPage(page: ConsentPage): string {
     async function refreshValidity(){
       if(requestEnded||document.hidden)return false;
       if(offline){valid=false;status.textContent=OFFLINE;render();return false;}
-      valid=false;render();if(inflight)return inflight;
-      const current=generation,started=clock();
+      valid=false;render();
+      // A check started before the page was invalidated can't count: wait for it, then check again.
+      if(inflight)return inflightGeneration===generation?inflight:inflight.then(()=>refreshValidity());
+      const current=generation,started=clock();inflightGeneration=current;
       inflight=(async()=>{
         try{
           const response=await fetch('/oauth/validity',{method:'POST',redirect:'error',signal:AbortSignal.timeout(5000),headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({request:${literal(secret)},csrf:${literal(csrf)}})});
