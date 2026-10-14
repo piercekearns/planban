@@ -113,15 +113,16 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
    * decides: signed out, revoked or removed ends watching; anything else is
    * temporary, so the page keeps checking and the live connection starts again.
    */
-  async function confirm(error: Error) {
-    if (closed) return;
+  async function confirm(error: Error, stillCurrent: () => boolean) {
+    if (!stillCurrent()) return;
     try {
       seen(await options.revision(options.boardId));
     } catch (refusal) {
       if (endsWatching(refusal)) return lost(refusal as Error);
     }
     if (endsWatching(error)) return lost(error);
-    retryLater();
+    // A newer connection may have started meanwhile; this answer is only about the old one.
+    if (stillCurrent()) retryLater();
   }
 
   /** The live connection is unavailable for now: check occasionally, and try it again with backoff. */
@@ -168,7 +169,6 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
     if (connected) {
       socketDown = false;
       fallbackDelay = FALLBACK_EVERY_MS;
-      startDelay = FALLBACK_EVERY_MS;
       if (fallbackTimer !== null) timers.clearTimeout(fallbackTimer);
       fallbackTimer = null;
       return;
@@ -241,9 +241,12 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
       if (current()) socketState(state.isWebSocketConnected);
     }));
     connectionCleanups.push(live.watchRevision(options.boardId, (value) => {
-      if (current()) seen(value.revision);
+      if (!current()) return;
+      // An answer from the subscription proves the connection works; restarts begin again at the short pause.
+      startDelay = FALLBACK_EVERY_MS;
+      seen(value.revision);
     }, (error) => {
-      if (current()) void confirm(error);
+      if (current()) void confirm(error, current);
     }));
   }
 

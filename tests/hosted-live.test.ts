@@ -78,9 +78,9 @@ function fakeConvex(service: ReturnType<typeof memoryService>) {
   let token: string | null = null;
   const watchers = new Set<{ boardId: string; onValue: (value: { revision: number }) => void; onError: (error: Error) => void }>();
   const states = new Set<(state: { isWebSocketConnected: boolean }) => void>();
-  const fake = { closed: false, urls: [] as string[] };
+  const fake = { closed: false, closes: 0, urls: [] as string[] };
   const subject = (jwt: string) => JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString()).sub as string;
-  const connection: LiveConnection = {
+  const makeConnection = (): LiveConnection => ({
     watchRevision(boardId, onValue, onError) {
       const entry = { boardId, onValue, onError };
       watchers.add(entry);
@@ -96,14 +96,20 @@ function fakeConvex(service: ReturnType<typeof memoryService>) {
     },
     async close() {
       fake.closed = true;
+      fake.closes += 1;
       watchers.clear();
     },
-  };
+  });
   return {
     fake,
     connect: async (url: string) => {
       fake.urls.push(url);
-      return connection;
+      fake.closed = false;
+      return makeConnection();
+    },
+    /** Convex refused the token it was given. */
+    reject() {
+      onAuthChange!(false);
     },
     /** The socket opened or dropped. */
     socket(connected: boolean) {
@@ -409,5 +415,59 @@ test("a subscription error while the service still lets the person in starts the
     failQuery = false;
     await clock.advance(FALLBACK_EVERY_MS);
     assert.equal(convex.fake.urls.length, 2);
+  }));
+});
+
+test("a slow check about an old connection never closes the connection that replaced it", async () => {
+  await withServiceEnv(() => withLiveTokens(async () => {
+    const { service, boardId, adapter } = await ownerWithBoard();
+    const convex = fakeConvex(service);
+    const clock = manualTimers();
+    let hold: ((value: number) => void) | null = null;
+    const { lost } = watch(adapter, boardId, convex, {
+      timers: clock.timers, visibility: manualVisibility().visibility,
+      revision: (id) => hold === null && checksHeld ? new Promise<number>((resolve) => { hold = resolve; }) : adapter.revision(id),
+    });
+    let checksHeld = false;
+    await settle();
+    convex.socket(true);
+    await convex.push();
+    // The subscription fails; the check that follows is slow.
+    checksHeld = true;
+    const realRevision = service.liveRevision;
+    service.liveRevision = async () => { throw new Error("subscription failed"); };
+    await convex.push();
+    service.liveRevision = realRevision;
+    checksHeld = false;
+    // Meanwhile the token is refused, and a new connection starts and works.
+    convex.reject();
+    await clock.advance(FALLBACK_EVERY_MS);
+    assert.equal(convex.fake.urls.length, 2);
+    convex.socket(true);
+    const closesBefore = convex.fake.closes;
+    hold!(1);
+    await settle();
+    assert.equal(convex.fake.closes, closesBefore, "the new connection stays open");
+    assert.deepEqual(lost, []);
+  }));
+});
+
+test("tokens refused again and again back off instead of retrying every 15 seconds", async () => {
+  await withServiceEnv(() => withLiveTokens(async () => {
+    const { service, boardId, adapter } = await ownerWithBoard();
+    const convex = fakeConvex(service);
+    const clock = manualTimers();
+    watch(adapter, boardId, convex, { timers: clock.timers, visibility: manualVisibility().visibility });
+    await settle();
+    const delays: number[] = [];
+    for (let round = 0; round < 4; round += 1) {
+      convex.socket(true);
+      convex.reject();
+      await settle();
+      const starts = clock.pendingDelays().filter((delay) => delay !== FALLBACK_AFTER_MS);
+      delays.push(Math.max(...starts, ...clock.pendingDelays()));
+      await clock.advance(Math.max(...clock.pendingDelays()));
+    }
+    assert.deepEqual(delays, [FALLBACK_EVERY_MS, FALLBACK_EVERY_MS * 2, FALLBACK_EVERY_MS * 4, FALLBACK_EVERY_MS * 8]);
   }));
 });
