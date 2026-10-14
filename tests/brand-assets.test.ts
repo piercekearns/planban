@@ -2,21 +2,44 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { BRAND_PATHS, FAVICON_DATA_URI, FAVICON_ICO_BASE64, FAVICON_SVG, ICON_DARK_PNG_BASE64, ICON_LIGHT_PNG_BASE64, WORDMARK_BLACK_DATA_URI } from "../online/service/convex/model/brandAssets";
+import { BRAND_FILES, BRAND_PATHS, brandResponse, FAVICON_DATA_URI, FAVICON_ICO_BASE64, FAVICON_SVG, ICON_DARK_PNG_BASE64, ICON_LIGHT_PNG_BASE64, WORDMARK_BLACK_DATA_URI } from "../online/service/convex/model/brandAssets";
 import { consentPage } from "../online/service/convex/model/oauthConsentPage";
+import { pngPixels } from "./png-pixels";
 
 const bytes = (base64: string) => Buffer.from(base64, "base64");
 const pngSize = (png: Buffer) => [png.readUInt32BE(16), png.readUInt32BE(20)];
 const PNG = "89504e470d0a1a0a";
 
-test("the icons are filled 512-pixel squares, one for light interfaces and one for dark", () => {
-  for (const [name, base64, corner] of [["light", ICON_LIGHT_PNG_BASE64, "white"], ["dark", ICON_DARK_PNG_BASE64, "black"]] as const) {
+test("the icons are filled 512-pixel squares: black on white for light interfaces, white on black for dark", () => {
+  for (const [name, base64, tile, mark] of [["light", ICON_LIGHT_PNG_BASE64, 255, 0], ["dark", ICON_DARK_PNG_BASE64, 0, 255]] as const) {
     const png = bytes(base64);
     assert.equal(png.subarray(0, 8).toString("hex"), PNG, name);
-    assert.deepEqual(pngSize(png), [512, 512], name);
-    assert.ok(png.length > 2000 && png.length < 100_000, `${name} is a real image of sensible size (${corner} tile)`);
+    const image = pngPixels(png);
+    assert.deepEqual([image.width, image.height], [512, 512], name);
+    // Every corner is the solid tile colour: the square is filled, not transparent.
+    for (const [x, y] of [[0, 0], [511, 0], [0, 511], [511, 511]]) assert.deepEqual(image.at(x, y), [tile, tile, tile, 255], `${name} corner ${x},${y}`);
+    // Across the middle, the mark shows in the opposite colour.
+    const row = Array.from({ length: 512 }, (_, x) => image.at(x, 256));
+    assert.ok(row.some(([r, g, b, a]) => r === mark && g === mark && b === mark && a === 255), `${name}: the mark is drawn`);
   }
-  assert.notEqual(ICON_LIGHT_PNG_BASE64, ICON_DARK_PNG_BASE64);
+});
+
+test("each brand path answers with its own fixed file and strict headers", async () => {
+  assert.deepEqual(BRAND_FILES.map((file) => [file.path, file.type]), [
+    ["/favicon.svg", "image/svg+xml"], ["/favicon.ico", "image/x-icon"], ["/brand/icon-light.png", "image/png"], ["/brand/icon-dark.png", "image/png"],
+  ]);
+  const expected = [Buffer.from(FAVICON_SVG), bytes(FAVICON_ICO_BASE64), bytes(ICON_LIGHT_PNG_BASE64), bytes(ICON_DARK_PNG_BASE64)];
+  for (const [index, file] of BRAND_FILES.entries()) {
+    const response = brandResponse(file);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), file.type);
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=86400");
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(response.headers.get("Cross-Origin-Resource-Policy"), "cross-origin");
+    assert.equal(response.headers.get("Content-Security-Policy"), "default-src 'none'; style-src 'unsafe-inline'");
+    assert.equal(response.headers.get("Content-Disposition"), null);
+    assert.ok(Buffer.from(await response.arrayBuffer()).equals(expected[index]!), file.path);
+  }
 });
 
 test("the favicon follows the browser's light or dark setting and carries no script", () => {
@@ -67,6 +90,9 @@ test("dialogs draw no line above their buttons or under their last section", asy
     assert.doesNotMatch(rule(selector), /border-top/, `${selector} has no line above it`);
   }
   assert.match(css, /\.online-board-section:not\(:has\(~ \.online-board-section\)\) \{ border-bottom: 0; \}/);
+  // With the spacer gone, dialogs that end without buttons keep their space at the bottom.
+  assert.match(css, /\.online-board-modal > \.online-board-section:last-child \{ padding-bottom: 20px; \}/);
+  assert.match(css, /\.online-board-modal > \.online-board-body:last-child \{ padding-bottom: 6px; \}/);
   const modal = await readFile("src/web/onlineBoard.tsx", "utf8");
   assert.doesNotMatch(modal, /<div style=\{\{ height: 6 \}\} \/>/, "no spacer pushes the last section off the end");
 });

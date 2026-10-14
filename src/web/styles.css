@@ -5908,6 +5908,7 @@ button.content-edit-action:hover {
 /* No line under the last section, whether a button row follows or the dialog ends there. */
 .online-board-section:not(:has(~ .online-board-section)) { border-bottom: 0; }
 .online-board-modal > .online-board-section:last-child { padding-bottom: 20px; }
+.online-board-modal > .online-board-body:last-child { padding-bottom: 6px; }
 .online-board-section h3 { margin: 0 0 10px; color: var(--text-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
 .online-board-row { display: flex; align-items: center; gap: 12px; }
 .online-board-row + .online-board-row { margin-top: 12px; }

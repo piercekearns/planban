@@ -1,5 +1,5 @@
 import { renderInviteEmail } from "./model/inviteEmail";
-import { BRAND_PATHS, FAVICON_DATA_URI, FAVICON_ICO_BASE64, FAVICON_SVG, ICON_DARK_PNG_BASE64, ICON_LIGHT_PNG_BASE64, WORDMARK_BLACK_DATA_URI } from "./model/brandAssets";
+import { BRAND_FILES, brandResponse, FAVICON_DATA_URI, WORDMARK_BLACK_DATA_URI } from "./model/brandAssets";
 // HTTP entry points: the REST API that local Planban installs use for an
 // Online Board, and development sign-in on local backends.
 import { httpRouter } from "convex/server";
@@ -460,15 +460,6 @@ http.route({
   handler: httpAction(async () => liveTokensConfigured() ? json(publicJwks(), 200, { "Cache-Control": "public, max-age=300" }) : json({ keys: [] })),
 });
 // Brand files: favicons for app.planban.ai, and filled icons that AI apps show beside the connector.
-const decode = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-export const brandFile = (body: string | Uint8Array, type: string) => httpAction(async () => new Response(body, {
-  headers: { "Content-Type": type, "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "cross-origin",
-    // The favicon is an SVG: opened on its own it may style itself, and nothing more.
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" },
-}));
-http.route({ path: BRAND_PATHS.faviconSvg, method: "GET", handler: brandFile(FAVICON_SVG, "image/svg+xml") });
-http.route({ path: BRAND_PATHS.faviconIco, method: "GET", handler: brandFile(decode(FAVICON_ICO_BASE64), "image/x-icon") });
-http.route({ path: BRAND_PATHS.iconLight, method: "GET", handler: brandFile(decode(ICON_LIGHT_PNG_BASE64), "image/png") });
-http.route({ path: BRAND_PATHS.iconDark, method: "GET", handler: brandFile(decode(ICON_DARK_PNG_BASE64), "image/png") });
+for (const file of BRAND_FILES) http.route({ path: file.path, method: "GET", handler: httpAction(async () => brandResponse(file)) });
 
 export default http;
