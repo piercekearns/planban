@@ -6282,7 +6282,13 @@ function App() {
   }, [loadSelectedBoard, selectedRepoId]);
 
   if (signedOut && selectedRepoId) {
-    return <SignedOutScreen signedOut={signedOut} onSignedIn={() => { setSignedOut(null); void loadSelectedBoard(selectedRepoId); }} />;
+    const repoId = selectedRepoId;
+    // Keyed by board, so a sign-in started on another board's screen can't finish on this one.
+    return <SignedOutScreen key={repoId} signedOut={signedOut} onSignedIn={() => {
+      if (selectedRepoIdRef.current !== repoId) return;
+      setSignedOut(null);
+      void loadSelectedBoard(repoId);
+    }} />;
   }
   if (error) {
     return (
