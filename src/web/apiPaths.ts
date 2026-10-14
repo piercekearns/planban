@@ -28,3 +28,8 @@ export function linkedCardOnBoard(hash: string, cardIds: Iterable<string>): stri
   for (const id of cardIds) if (id === cardId) return cardId;
   return null;
 }
+
+/** An online board's own address on the web page, for "Open on the web" in the installed app. */
+export function boardWebAddress(serviceUrl: string, boardId: string): string {
+  return `${serviceUrl.replace(/\/+$/u, "")}/boards/${encodeURIComponent(boardId)}`;
+}

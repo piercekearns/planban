@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { boardPath, cardIdFromHash, cardPath, linkedCardOnBoard } from "./apiPaths";
+import { boardPath, boardWebAddress, cardIdFromHash, cardPath, linkedCardOnBoard } from "./apiPaths";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -1882,6 +1882,7 @@ function BoardPicker({
 function BoardMoreMenu({
   onOpenSettings,
   onOpenConnections,
+  webAddress,
   onOpenHistory,
   onOpenTutorial,
   onOpenFeedback,
@@ -1891,6 +1892,8 @@ function BoardMoreMenu({
 }: {
   onOpenSettings?: () => void;
   onOpenConnections?: () => void;
+  /** An online board's address on the web page, for the installed app's "Open on the web". */
+  webAddress?: string | undefined;
   onOpenHistory?: () => void;
   onOpenTutorial?: () => void;
   onOpenFeedback: () => void;
@@ -1919,6 +1922,7 @@ function BoardMoreMenu({
         <div className="board-more-popover" role="menu">
           {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
           {onOpenConnections ? <button role="menuitem" onClick={() => choose(onOpenConnections)}><Link2 size={14} /><span>Your connections</span></button> : null}
+          {webAddress ? <button role="menuitem" onClick={() => choose(() => { window.open(webAddress, "_blank", "noopener,noreferrer"); })}><ExternalLink size={14} /><span>Open on the web</span></button> : null}
           {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
           {onOpenTutorial ? <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button> : null}
           <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
@@ -5723,6 +5727,7 @@ function BoardView({
             <BoardMoreMenu
               {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
               {...(!isDemoBoard && online.status?.signedIn.length ? { onOpenConnections: () => setOnlineScreen("connections") } : {})}
+              {...(!capabilities.hosted && online.status?.location === "online" && online.status.url && online.status.boardId ? { webAddress: boardWebAddress(online.status.url, online.status.boardId) } : {})}
               {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
               {...(capabilities.tutorial ? { onOpenTutorial: () => openTutorial("first-run", isDemoBoard ? null : boardId) } : {})}
               onOpenFeedback={() => setFeedbackOpen(true)}

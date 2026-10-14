@@ -297,3 +297,15 @@ test("which card a link opens: one on the board, never anything else, on opening
   assert.match(web, /addEventListener\("hashchange", onHashChange\)/u);
   assert.match(web, /next === selectedRepoIdRef\.current && cardIdFromHash\(window\.location\.hash\)\) return;/u);
 });
+
+test("the installed app offers Open on the web for online boards only", async () => {
+  const { boardWebAddress } = await import("../src/web/apiPaths");
+  const { readFile } = await import("node:fs/promises");
+  assert.equal(boardWebAddress("https://app.planban.ai/", "deadleg"), "https://app.planban.ai/boards/deadleg");
+  assert.equal(boardWebAddress("https://app.planban.ai", "a b"), "https://app.planban.ai/boards/a%20b");
+  const web = await readFile(new URL("../src/web/main.tsx", import.meta.url), "utf8");
+  assert.match(web, /!capabilities\.hosted && online\.status\?\.location === "online" && online\.status\.url && online\.status\.boardId \? \{ webAddress: boardWebAddress/u);
+  assert.match(web, /<span>Open on the web<\/span>/u);
+  const settings = await readFile(new URL("../src/web/onlineBoard.tsx", import.meta.url), "utf8");
+  assert.match(settings, /target="_blank" rel="noopener noreferrer">Open on the web<\/a>/u);
+});
