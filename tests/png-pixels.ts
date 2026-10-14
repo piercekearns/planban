@@ -3,11 +3,13 @@ import { inflateSync } from "node:zlib";
 
 export function pngPixels(png: Buffer) {
   const width = png.readUInt32BE(16), height = png.readUInt32BE(20), depth = png[24], type = png[25];
-  if (depth !== 8 || (type !== 2 && type !== 6)) throw new Error(`unsupported PNG: depth ${depth}, colour type ${type}`);
+  if (depth !== 8 || (type !== 2 && type !== 6) || png[28] !== 0) throw new Error(`unsupported PNG: depth ${depth}, colour type ${type}, interlace ${png[28]}`);
   const channels = type === 6 ? 4 : 3, stride = width * channels;
   const parts: Buffer[] = [];
   for (let at = 8; at < png.length;) {
     const length = png.readUInt32BE(at), kind = png.toString("ascii", at + 4, at + 8);
+    // Transparency declared outside the pixels would be missed, so refuse it rather than report solid colour.
+    if (kind === "tRNS") throw new Error("unsupported PNG: separate transparency chunk");
     if (kind === "IDAT") parts.push(png.subarray(at + 8, at + 8 + length));
     at += 12 + length;
   }
