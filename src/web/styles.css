@@ -5972,7 +5972,8 @@ button.content-edit-action:hover {
   .detail:has(.editor-pane) .detail-item-actions { display: none; }
   .detail .editor-pane { padding-bottom: 72px; }
   .detail .editor-pane .editor-actions { position: fixed; left: 0; right: 0; bottom: var(--keyboard-inset, 0px); z-index: 41; margin: 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); }
-  .detail .editor-pane .editor-actions button { flex: 1; justify-content: center; min-height: 40px; }
+  .detail .editor-pane .editor-actions { flex-wrap: wrap; }
+  .detail .editor-pane .editor-actions button { flex: 1 1 auto; justify-content: center; min-height: 40px; white-space: normal; }
   .detail .editor-pane textarea { font-size: 16px; }
 }
 .doc-conflict-note { margin: 0 0 10px; border: 1px solid color-mix(in oklab, var(--accent) 26%, var(--border)); border-radius: 9px; background: color-mix(in oklab, var(--accent) 5%, var(--surface)); padding: 10px 12px; font-size: 13px; line-height: 19px; color: var(--text); }

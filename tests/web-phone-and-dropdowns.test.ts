@@ -15,7 +15,7 @@ test("the page uses the one Planban dropdown, never the browser's own, except as
   assert.match(dropdown, /aria-selected=\{option\.value === value\}/u);
   for (const key of ["ArrowDown", "ArrowUp", "Home", "End", "Escape", "Enter"]) assert.match(dropdown, new RegExp(`"${key}"`, "u"), key);
   assert.match(dropdown, /event\.key === "Tab"\) \{\s*setOpen\(false\);\s*triggerRef\.current\?\.focus\(\);/u, "Tab carries on from the dropdown's button");
-  assert.match(dropdown, /scrollIntoView\(\{ block: "nearest" \}\)/u, "the active choice stays in view");
+  assert.match(dropdown, /if \(open && place\) document\.getElementById\(`\$\{id\}-option-\$\{active\}`\)\?\.scrollIntoView\(\{ block: "nearest" \}\)/u, "the active choice stays in view, from the first opening");
   assert.match(dropdown, /listRef\.current\?\.contains\(event\.target as Node\)\) return;/u, "scrolling the menu doesn't close it");
   const styles = await read("styles.css");
   assert.match(styles, /\.pb-dropdown-trigger\s*\{[^}]*gap:\s*6px;/su, "the arrow sits 6 px after the text");
@@ -24,7 +24,9 @@ test("the page uses the one Planban dropdown, never the browser's own, except as
 
 test("phones scroll one list, move cards without dragging, and keep Save above the keyboard", async () => {
   const web = await read("main.tsx");
-  assert.match(web, /useSensors\(\.\.\.\(phone \|\| viewOnly \? \[\] : \[pointerSensor\]\)\)/u);
+  // One stable argument: a changing argument count leaves React holding the old sensors.
+  assert.match(web, /useSensors\(phone \|\| viewOnly \? undefined : pointerSensor\)/u);
+  assert.doesNotMatch(web, /useSensors\(\.\.\./u);
   assert.match(web, /function PhoneStatusTabs/u);
   assert.match(web, /useKeyboardInset\(\)/u);
   const styles = await read("styles.css");

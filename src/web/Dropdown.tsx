@@ -110,8 +110,9 @@ function MenuDropdown<T extends string>({ value, options, onChange, label, disab
 
   // The active choice stays in view in a long menu.
   useEffect(() => {
-    if (open) document.getElementById(`${id}-option-${active}`)?.scrollIntoView({ block: "nearest" });
-  }, [open, active, id]);
+    // Waits for the menu to be placed on screen, so a long menu opens scrolled to the current choice.
+    if (open && place) document.getElementById(`${id}-option-${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [open, place, active, id]);
 
   // Keyboard focus moves into the menu once it is on screen.
   useEffect(() => {

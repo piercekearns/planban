@@ -3746,7 +3746,7 @@ function DetailView({
   const phone = usePhoneLayout();
   const groupPointer = useSensor(PointerSensor, { activationConstraint: { distance: 3 } });
   // No dragging for viewers, or on a phone, where a swipe scrolls.
-  const groupSensors = useSensors(...(phone || state.hosted?.role === "viewer" ? [] : [groupPointer]));
+  const groupSensors = useSensors(phone || state.hosted?.role === "viewer" ? undefined : groupPointer);
   const groupDropIntentRef = useRef<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
   const groupColumnDropPreviewRef = useRef<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
   const groupDropRectsRef = useRef(new Map<string, HierarchyDropRect>());
@@ -4838,7 +4838,8 @@ function BoardView({
   const viewOnly = state.hosted?.role === "viewer";
   const pointerSensor = useSensor(PointerSensor, { activationConstraint: { distance: 3 } });
   // Phones move cards with Status and Move to, not by dragging, so a swipe always scrolls.
-  const sensors = useSensors(...(phone || viewOnly ? [] : [pointerSensor]));
+  // Always one argument, so switching to phone width really turns dragging off.
+  const sensors = useSensors(phone || viewOnly ? undefined : pointerSensor);
   const displayState = preview?.state ?? state;
   const previewVersion = preview?.version ?? null;
   const isPreviewing = preview !== null;
