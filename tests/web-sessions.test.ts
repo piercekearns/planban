@@ -9,7 +9,7 @@ import { EDGE_PROOF_HEADER, planbanTokenVerifier } from "../online/service/conve
 import { apiParts, CLERK_RECHECK_MS, webCookie, webCookieName, webCookieToken, webRequestTrusted, webRouteAllowed, WEB_SESSION_MS } from "../online/service/convex/model/webSession";
 import { authenticateApiRequest, authenticateWeb, webSessionResponse, webSignOutResponse } from "../online/service/convex/model/webAuth";
 import * as webSessions from "../online/service/convex/webSessions";
-import { resolveToken, revoke, revokeAllOthers } from "../online/service/convex/connections";
+import { createKey, resolveToken, revoke, revokeAllOthers } from "../online/service/convex/connections";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const PUBLIC = "https://app.planban.example";
@@ -318,5 +318,19 @@ test("POST /web/signout ends the session, asks Clerk to end it, and clears the c
     assert.match(response.headers.get("Set-Cookie") ?? "", /^__Host-planban_web=; .*Max-Age=0$/);
     assert.ok(rows.find((row) => row._id === connectionId).revokedAt);
     assert.ok(jobs.some((job) => job.name === "webSessions:revokeClerkSession" && job.ran));
+  }));
+});
+
+test("a browser session creates an access key for one board, which then works as a bearer through the public address", async () => {
+  await withEnv(() => withClock(START, async () => {
+    const { ctx } = store();
+    const { connectionId } = await enrolled(ctx);
+    await ctx.db.insert("boards", { boardId: "deadleg", title: "Deadleg", ownerId: "user_alice", authority: "online", revision: 1, generation: 1, historyVersion: 0 });
+    await ctx.db.insert("members", { boardId: "deadleg", userId: "user_alice", role: "owner" });
+    const key = `pbk_${"k".repeat(43)}`;
+    const created = await createKey._handler(ctx, { connectionId, tokenHash: digest(key), name: "Cloud agent", boardId: "deadleg", level: "plan" } as any);
+    assert.deepEqual(created.boardId, "deadleg");
+    const resolved = await resolveToken._handler(ctx, { tokenHash: digest(key) } as any);
+    assert.equal(resolved.serviceOrigin, PUBLIC);
   }));
 });
