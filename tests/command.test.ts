@@ -31,8 +31,9 @@ test("the command helper, which the board page also bundles, imports nothing Nod
 
 test("on Windows a path a shell would expand gets a description, never a wrong command", () => {
   assert.equal(commandFor("C:\\Tools\\Planban\\bin\\planban.mjs", { windows: true, onPath: false }), 'node "C:\\Tools\\Planban\\bin\\planban.mjs"');
-  for (const path of ["C:\\Tools\\%USERNAME%\\bin\\planban.mjs", "C:\\$env\\bin\\planban.mjs", "C:\\a`b\\bin\\planban.mjs", "C:\\Hi!\\bin\\planban.mjs"]) {
+  for (const path of ["C:\\Tools\\%USERNAME%\\bin\\planban.mjs", "C:\\$env\\bin\\planban.mjs", "C:\\a`b\\bin\\planban.mjs", "C:\\Hi!\\bin\\planban.mjs", "C:\\Tools\\\u201cPlanban\u201d\\bin\\planban.mjs", "C:\\a\u201eb\\bin\\planban.mjs", "C:\\a&b\\bin\\planban.mjs", "C:\\a'b\\bin\\planban.mjs"]) {
     assert.equal(commandFor(path, { windows: true, onPath: false }), 'node "<Planban install folder>\\bin\\planban.mjs"', path);
   }
+  assert.equal(commandFor("C:\\Program Files (x86)\\Planban-2.0\\bin\\planban.mjs", { windows: true, onPath: false }), 'node "C:\\Program Files (x86)\\Planban-2.0\\bin\\planban.mjs"');
   assert.equal(commandFor("/anything", { windows: false, onPath: true }), "planban");
 });
