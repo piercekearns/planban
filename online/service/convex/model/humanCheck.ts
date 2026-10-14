@@ -52,6 +52,27 @@ export async function verifyTurnstile(secret: string, token: string, remoteIp: s
   } catch { return null; }
 }
 
+/** The body as text, or null once it passes `limit` bytes; stops reading there. */
+async function boundedText(request: Request, limit: number): Promise<string | null> {
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) { await reader.cancel().catch(() => {}); return null; }
+      chunks.push(value);
+    }
+  } catch { return null; }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
 /**
  * The sign-in start. Without Turnstile settings it is unchanged. With them, a
  * visit shows the person-check page, and only its proof, posted back to the
@@ -64,8 +85,8 @@ export async function authorizeEntry(ctx: ActionCtx, request: Request, verify: t
   if (request.method !== "POST" || request.headers.get("Origin") !== publicOrigin()) return failed("Go back to your app and connect to Planban again.", 403);
   const length = Number(request.headers.get("Content-Length") ?? "0");
   if (!/^application\/x-www-form-urlencoded(\s*;|$)/i.test(request.headers.get("Content-Type") ?? "") || length > MAX_FORM_BYTES) return failed("Go back to your app and connect to Planban again.", 400);
-  const text = await request.text();
-  if (text.length > MAX_FORM_BYTES) return failed("Go back to your app and connect to Planban again.", 400);
+  const text = await boundedText(request, MAX_FORM_BYTES);
+  if (text === null) return failed("Go back to your app and connect to Planban again.", 400);
   const token = new URLSearchParams(text).get("cf-turnstile-response") ?? "";
   if (!token || token.length > 2048) return failed("The check didn't finish. Go back to your app and connect to Planban again.", 403);
   const human = await verify(config.secret, token, request.headers.get("CF-Connecting-IP"));

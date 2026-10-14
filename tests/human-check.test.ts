@@ -65,6 +65,8 @@ test("only a passing, same-origin proof reaches the sign-in start", async () => 
     [post("cf-turnstile-response=t", { Origin: "https://attacker.example" }), true, 403],
     [post("other=1"), true, 403],
     [post("cf-turnstile-response=t", { "Content-Type": "text/plain" }), true, 400],
+    // A streamed body with no length stops being read once it passes 4 KB.
+    [new Request(url, { method: "POST", body: new ReadableStream({ pull(c) { c.enqueue(new Uint8Array(1024).fill(97)); } }), duplex: "half", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: origin } } as RequestInit), true, 400],
     [post("cf-turnstile-response=t"), false, 403],
     [post("cf-turnstile-response=t"), null, 503],
   ];
