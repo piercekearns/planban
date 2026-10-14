@@ -17,7 +17,8 @@ export function consentPage(page: ConsentPage): string {
     const auth=document.getElementById('auth'),review=document.getElementById('review'),ended=document.getElementById('ended');
     const cancelAuth=document.getElementById('cancel-auth');
     const account=document.getElementById('account-choice'),progress=document.getElementById('progress');
-    let mounted=null,deciding=false,requestEnded=${literal(!!page.ended)},mode='signin',valid=false,validUntil=Infinity,generation=0,inflight=null;
+    let mounted=null,deciding=false,requestEnded=${literal(!!page.ended)},mode='signin',valid=false,validUntil=Infinity,generation=0,inflight=null,offline=false;
+    const OFFLINE='You\u2019re offline. Allow comes back when you reconnect.';
     const clock=()=>performance.now();
     const appearance={variables:{colorPrimary:'#0d0d0d',colorText:'#0d0d0d',colorTextSecondary:'#5d5d5d',colorBackground:'#fff',borderRadius:'6px',fontFamily:'-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif'},elements:{rootBox:{width:'100%'},cardBox:{width:'100%',boxShadow:'none',border:'1px solid #e9e9e9',borderRadius:'10px'},card:{padding:'28px'},headerTitle:{fontSize:'25px',letterSpacing:'-.7px'},formButtonPrimary:{boxShadow:'none'},footerActionLink:{color:'#0169cc'}}};
     function unmount(){if(mounted==='signin')Clerk.unmountSignIn(signin);if(mounted==='signup')Clerk.unmountSignUp(signin);mounted=null;}
@@ -26,7 +27,7 @@ export function consentPage(page: ConsentPage): string {
       identity.hidden=!active;
       if(active)email.textContent=Clerk.user?.primaryEmailAddress?.emailAddress||'Your account';
       auth.hidden=!!active||requestEnded;review.hidden=!active||requestEnded;ended.hidden=!requestEnded;
-      allow.disabled=!active||deciding||requestEnded||!valid;deny.disabled=deciding||requestEnded||!valid;cancelAuth.disabled=deny.disabled;
+      allow.disabled=!active||deciding||requestEnded||!valid||offline;deny.disabled=deciding||requestEnded||!valid||offline;cancelAuth.disabled=deny.disabled;
       progress.textContent=requestEnded?'Connection request ended':active?'2 · Review access':'1 · Your account';
       if(requestEnded||active){unmount();return;}
       if(mounted!==mode){unmount();const props={routing:'hash',forceRedirectUrl:${literal(returnTo)},appearance};
@@ -39,6 +40,7 @@ export function consentPage(page: ConsentPage): string {
     function endRequest(){generation++;valid=false;requestEnded=true;status.textContent='This request can no longer complete the connection. Return to your app to start a fresh request.';render();}
     async function refreshValidity(){
       if(requestEnded||document.hidden)return false;
+      if(offline){valid=false;status.textContent=OFFLINE;render();return false;}
       valid=false;render();if(inflight)return inflight;
       const current=generation,started=clock();
       inflight=(async()=>{
@@ -53,15 +55,18 @@ export function consentPage(page: ConsentPage): string {
           validUntil=Math.min(validUntil,clock()+Math.max(0,remaining));
           if(clock()>=validUntil){endRequest();return false;}
           valid=true;status.textContent='';render();return true;
-        }catch{if(current===generation&&!requestEnded){valid=false;status.textContent='Could not verify this request. Access approval is unavailable until verification succeeds.';render();}return false;}
+        }catch{if(current===generation&&!requestEnded){valid=false;status.textContent=offline?OFFLINE:'Could not verify this request. Access approval is unavailable until verification succeeds.';render();}return false;}
         finally{inflight=null;}
       })();return inflight;
     }
     function invalidate(){generation++;valid=false;render();}
     function restored(){invalidate();void refreshValidity();}
+    // Going offline takes Allow away at once; reconnecting brings it back only after a fresh check.
+    function wentOffline(){offline=true;invalidate();status.textContent=OFFLINE;render();}
+    function cameOnline(){if(!offline)return;offline=false;status.textContent='';restored();}
     async function decide(decision){
       if(deciding||requestEnded)return;
-      if(!await refreshValidity()||deciding||requestEnded)return;
+      if(offline||!await refreshValidity()||deciding||requestEnded)return;
       deciding=true;const decisionGeneration=generation;render();
       try{
         const headers={'Content-Type':'application/x-www-form-urlencoded'};
@@ -76,6 +81,8 @@ export function consentPage(page: ConsentPage): string {
     window.addEventListener('load',async()=>{
       try{await Clerk.load({nonce:${literal(nonce)},ui:{ClerkUI:window.__internal_ClerkUICtor}});Clerk.addListener(render);render();
         document.addEventListener('visibilitychange',()=>{if(document.hidden)invalidate();else restored();});
+        window.addEventListener('offline',wentOffline);window.addEventListener('online',cameOnline);
+        if(navigator.onLine===false)wentOffline();
         window.addEventListener('focus',restored);window.addEventListener('pageshow',restored);
         const tick=()=>{if(!requestEnded){if(clock()>=validUntil)endRequest();else if(!document.hidden&&!inflight&&!deciding)void refreshValidity();setTimeout(tick,15000);}};
         setInterval(()=>{if(!requestEnded&&clock()>=validUntil)endRequest();},1000);
