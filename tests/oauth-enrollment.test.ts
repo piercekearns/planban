@@ -355,7 +355,8 @@ test("scheduled cleanup follows later bucket requests and late-approved deadline
   await f.runDueCleanup();
   assert.equal((await f.db.get(grant)).revokedAt, undefined, "the code is still valid at the first scheduled job");
   assert.ok(f.jobs.some((job) => job.at > Date.now() && getFunctionName(job.fn as any) === "oauth:cleanupRequests"));
-  t.mock.timers.tick(60_000);
+  // An approved request is kept until its sign-in note would have expired, so the note can't be approved twice.
+  t.mock.timers.tick(60_000 + oauth.CODE_MS);
   await f.runDueCleanup();
   assert.equal(f.rows.filter((row) => row.table === "oauthRequests").length, 0);
   assert.ok((await f.db.get(grant)).revokedAt);

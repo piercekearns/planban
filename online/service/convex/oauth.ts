@@ -298,7 +298,8 @@ export const approve = internalMutation({
       ...(row!.purpose === "oauth" ? { expiresAt: new Date(Date.now() + GRANT_MS).toISOString() } : {}),
     });
     const codeExpiresAt = row!.purpose === "machine" ? Math.min(Date.now() + CODE_MS, row!.expiresAt) : Date.now() + CODE_MS;
-    await ctx.db.patch(row!._id, { status: "approved", connectionId, codeHash: args.codeHash, codeExpiresAt, expiresAt: row!.purpose === "machine" ? row!.expiresAt : codeExpiresAt, ...(args.approverConnectionId ? { approverConnectionId: args.approverConnectionId } : {}) });
+    await ctx.db.patch(row!._id, { status: "approved", connectionId, codeHash: args.codeHash, codeExpiresAt, // Kept until the note itself expires, so clean-up never makes an approved note usable again.
+      expiresAt: row!.purpose === "machine" ? row!.expiresAt : Math.max(row!.expiresAt, codeExpiresAt), ...(args.approverConnectionId ? { approverConnectionId: args.approverConnectionId } : {}) });
     return { denied: false, redirectUri: row!.redirectUri, state: row!.state };
   },
 });

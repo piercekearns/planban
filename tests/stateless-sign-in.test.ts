@@ -188,3 +188,17 @@ test("a note has exactly one spelling: the other encodings of its last character
   const { actionCtx } = service();
   for (const alias of aliases) assert.equal((await approvalResponse(actionCtx, approveRequest(alias), person())).status, 403);
 }));
+
+test("clean-up keeps an approved note's record until the note expires, so it can't be approved again", async (t) => configured(async () => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-01T00:00:00Z") });
+  const { ctx, actionCtx } = service();
+  const note = await consentNote();
+  assert.equal((await approvalResponse(actionCtx, approveRequest(note), person())).status, 200);
+  t.mock.timers.tick(2 * 60_000);
+  const state = ctx.db.query("oauthCleanup").withIndex("by_name", (q: any) => q.eq("name", "requests"));
+  await oauth.cleanupRequests._handler(ctx, { ticket: (await state.unique())?.ticket } as any);
+  assert.equal((await approvalResponse(actionCtx, approveRequest(note), person())).status, 403, "still refused while the note is valid");
+  t.mock.timers.tick(oauth.REQUEST_MS);
+  await oauth.cleanupRequests._handler(ctx, { ticket: (await state.unique())?.ticket } as any);
+  assert.equal((await approvalResponse(actionCtx, approveRequest(note), person())).status, 403, "and the expired note itself is refused");
+}));
