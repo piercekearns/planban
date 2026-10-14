@@ -8,7 +8,7 @@ test("messages name a Planban command that runs on this computer", () => {
   const command = planbanCommand();
   if (command === "planban") return;
   // Not installed as a command: the installed script, quoted, which exists.
-  const match = /^node (['"])(.+\/bin\/planban\.mjs)\1$/.exec(command);
+  const match = /^node (['"])(.+[\\/]bin[\\/]planban\.mjs)\1$/.exec(command);
   assert.ok(match, command);
   assert.ok(existsSync(match[2]!));
 });
