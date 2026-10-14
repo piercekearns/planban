@@ -5,7 +5,7 @@ import { z } from "zod";
 import { normalizeRoadmap, PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { listHistory } from "../history";
 import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoardCwd, historyCarriedDocsPath, historyDocPath, historyIndexPath, historyRoadmapPath, isPathInsideRoot, manifestPath, resolveInsideRoot, slugify } from "../paths";
-import { atomicWriteFile, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
+import { atomicWriteFile, isAtomicWriteTemp, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
 import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
@@ -930,7 +930,7 @@ export async function keepSeparateBoard(cwdInput: string, options: { title?: str
         recursive: true, errorOnExist: true,
         // Also skip another writer's half-finished atomic write (".<name>.<pid>.<time>.<id>.tmp"),
         // which can vanish mid-copy: the stale-copy check writes its marker without this lock.
-        filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json", "KEEP-SEPARATE.json"].includes(basename(source)) && !/^\..+\.tmp$/.test(basename(source)),
+        filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json", "KEEP-SEPARATE.json"].includes(basename(source)) && !isAtomicWriteTemp(basename(source)),
       });
     });
     await mkdir(dirname(manifestPath(newCwd)), { recursive: true });

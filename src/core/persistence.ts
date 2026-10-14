@@ -53,6 +53,11 @@ async function fsyncDirectory(path: string) {
   }
 }
 
+/** True for a temporary file atomicWriteFile is writing: ".<name>.<pid>.<time>.<uuid>.tmp". */
+export function isAtomicWriteTemp(name: string): boolean {
+  return /^\..+\.\d+\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/.test(name);
+}
+
 export async function atomicWriteFile(path: string, contents: string | Uint8Array) {
   const directory = dirname(path);
   await mkdir(directory, { recursive: true });
