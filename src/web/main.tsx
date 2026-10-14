@@ -120,6 +120,12 @@ import { liveRefreshDecision } from "./liveSync";
 import { capabilities } from "./capabilities";
 import { Dropdown } from "./Dropdown";
 import { useKeyboardInset, usePhoneLayout } from "./phoneLayout";
+import { AccountMenu, ApprovePage, HostedDashboard, InvitePage, JoinedNote, SignInPage, webScreen } from "./hostedScreens";
+import { captureAddressSecrets } from "./webAccount";
+
+// On the web, an invitation's token or a sign-in request in the address is
+// moved out of it before anything else runs.
+if (capabilities.hosted) captureAddressSecrets();
 import { newIdempotencyKey } from "./hostedAdapter";
 import { watchHostedBoard } from "./hostedLive";
 import { hostedAdapter, pageFetch } from "./transport";
@@ -5692,9 +5698,11 @@ function BoardView({
               showArchived={showArchived}
               onToggleArchived={() => setShowArchived((value) => !value)}
             />
+            {capabilities.hosted ? <AccountMenu /> : null}
           </div>
         </div>
       </header>
+      {capabilities.hosted ? <JoinedNote /> : null}
       {capabilities.olderCopyCheck ? <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} /> : null}
 
       {isActivityLab ? (
@@ -6256,6 +6264,8 @@ function App() {
   }, []);
 
   const load = useCallback(async (preserveCurrentOnError = false) => {
+    // The web's own screens (sign-in, invitations, approvals) load what they need themselves.
+    if (capabilities.hosted && webScreen()) return;
     const requestId = ++appLoadRequestRef.current;
     try {
       const [status, boardsPayload] = await Promise.all([
@@ -6411,6 +6421,10 @@ function App() {
     void loadSelectedBoard(selectedRepoId);
   }, [loadSelectedBoard, selectedRepoId]);
 
+  const screen = capabilities.hosted ? webScreen() : null;
+  if (screen === "sign-in") return <SignInPage />;
+  if (screen === "invite") return <InvitePage onOpenBoard={(boardId) => window.location.assign(`/boards/${encodeURIComponent(boardId)}`)} />;
+  if (screen === "approve") return <ApprovePage />;
   if (signedOut && !selectedRepoId && capabilities.hosted) {
     // Signed out on the web away from a board, such as on the board list.
     return <SignedOutScreen signedOut={signedOut} onSignedIn={() => void load()} />;
@@ -6444,6 +6458,10 @@ function App() {
     );
   }
   if (capabilities.tutorial && isTutorialPath()) return <TutorialPage onSelectBoard={selectBoard} />;
+  if (capabilities.hosted && !selectedRepoId) {
+    if (initialized === null) return <main className="loading-screen">Loading Planban...</main>;
+    return <HostedDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
+  }
   if (!selectedRepoId && boards.length > 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
   if (initialized === false && boards.length === 0) {
     return (

@@ -4,7 +4,7 @@
 // ever ask the local Planban server, which answers from files on this machine.
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bot, Check, Cloud, Copy, Info, KeyRound, Laptop, Link, Loader2, Mail, Users, X } from "lucide-react";
+import { Bot, Check, Cloud, Copy, Globe, Info, KeyRound, Laptop, Link, Loader2, Mail, Users, X } from "lucide-react";
 import { capabilities } from "./capabilities";
 import { pageFetch } from "./transport";
 import { Dropdown } from "./Dropdown";
@@ -834,7 +834,7 @@ export function InviteModal({ repoId, boardTitle, onClose }: { repoId: string; b
 
 interface Connection {
   id: string;
-  kind: "dev" | "machine" | "oauth" | "key";
+  kind: "dev" | "machine" | "oauth" | "key" | "web";
   name: string;
   clientName: string;
   boards: "all" | string[];
@@ -875,6 +875,7 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
   const agents = live.filter((connection) => connection.kind === "oauth" || (connection.kind === "dev" && connection.boards !== "all"));
   const machines = live.filter((connection) => connection.kind === "machine" || (connection.kind === "dev" && connection.boards === "all"));
   const keys = live.filter((connection) => connection.kind === "key");
+  const browsers = live.filter((connection) => connection.kind === "web");
   const where = (connection: Connection) => connection.boards === "all" ? "All your boards" : connection.boards.join(", ");
   const row = (connection: Connection, icon: React.ReactNode, levelEditable: boolean) => (
     <div className="people-row" key={connection.id}>
@@ -884,7 +885,7 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
         {levelEditable ? (
           <Dropdown value={connection.level} options={levelOptions(["read", "plan", "complete"])} disabled={busy} label="What it may do"
             onChange={(level) => void act(() => request(`/api/online/connections/${encodeURIComponent(connection.id)}/access`, { level }))} />
-        ) : <span className="muted">{connection.kind === "machine" ? "Everything you can do" : LEVEL_LABEL[connection.level]}</span>}
+        ) : <span className="muted">{connection.kind === "machine" || connection.kind === "web" ? "Everything you can do" : LEVEL_LABEL[connection.level]}</span>}
       </div>
       {connection.current ? <span className="remove-col" /> : (
         <button className="online-board-button" disabled={busy} onClick={() => void act(() => request(`/api/online/connections/${encodeURIComponent(connection.id)}/revoke`, {}))}>Cut off</button>
@@ -907,7 +908,7 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
       ) : (
         <>
           <div className="online-board-section"><h3>Agents</h3>{agents.length ? agents.map((connection) => row(connection, <Bot size={16} />, connection.kind === "oauth")) : <p className="muted">No AI apps are connected.</p>}</div>
-          <div className="online-board-section"><h3>Machines</h3>{machines.map((connection) => row(connection, <Laptop size={16} />, false))}</div>
+          <div className="online-board-section"><h3>Machines</h3>{machines.length ? machines.map((connection) => row(connection, <Laptop size={16} />, false)) : <p className="muted">No computers are signed in.</p>}</div>
           {data.registrations?.length ? (
             <div className="online-board-section"><h3>Claude registrations</h3>
               {data.registrations.map((registration) => (
@@ -920,7 +921,10 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
               ))}
             </div>
           ) : null}
-          <div className="online-board-section"><h3>Personal access keys</h3>{keys.length ? keys.map((connection) => row(connection, <KeyRound size={16} />, false)) : <p className="muted">No keys. Create one from the command line with <code>{data?.command ?? "planban"} online keys create</code>.</p>}</div>
+          {browsers.length ? <div className="online-board-section"><h3>Browsers</h3>{browsers.map((connection) => row(connection, <Globe size={16} />, false))}</div> : null}
+          <div className="online-board-section"><h3>Personal access keys</h3>{keys.length ? keys.map((connection) => row(connection, <KeyRound size={16} />, false)) : capabilities.hosted ? <p className="muted">No keys yet.</p> : <p className="muted">No keys. Create one from the command line with <code>{data?.command ?? "planban"} online keys create</code>.</p>}
+            {capabilities.hosted ? <CreateAccessKey onCreated={() => void load()} /> : null}
+          </div>
         </>
       )}
       {error ? <div className="online-board-section"><p className="online-board-error" role="alert">{error}</p></div> : null}
@@ -956,5 +960,76 @@ export function NewBoardModal({ onCreated, onClose }: { onCreated: (repoId: stri
         {error ? <p className="online-board-error" role="alert">{error}</p> : null}
       </div>
     </Modal>
+  );
+}
+
+const EXPIRY_OPTIONS = [
+  { value: "30", label: "In 30 days" },
+  { value: "90", label: "In 90 days" },
+  { value: "365", label: "In a year" },
+  { value: "never", label: "Never" },
+] as const;
+
+/** Create access key (Spec point 15): one board, what it may do, when it ends. The key is shown once. */
+function CreateAccessKey({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [boards, setBoards] = useState<Array<{ value: string; label: string }>>([]);
+  const [name, setName] = useState("");
+  const [boardId, setBoardId] = useState("");
+  const [level, setLevel] = useState<"read" | "plan" | "complete">("plan");
+  const [expiry, setExpiry] = useState<(typeof EXPIRY_OPTIONS)[number]["value"]>("90");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [made, setMade] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    void request<{ boards: Array<{ repoId: string; title: string; online?: { authority: string } }> }>("/api/boards").then((listed) => {
+      const options = listed.boards.filter((board) => board.online?.authority === "online").map((board) => ({ value: board.repoId, label: board.title }));
+      setBoards(options);
+      setBoardId((current) => current || options[0]?.value || "");
+    }, (failure) => setError(failure instanceof Error ? failure.message : String(failure)));
+  }, [open]);
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await request<{ key: string }>("/api/online/keys", { name: name.trim(), boardId, level, ...(expiry === "never" ? {} : { expiresInDays: Number(expiry) }) });
+      setMade(result.key);
+      onCreated();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (made) {
+    return (
+      <div className="access-key-made" role="status">
+        <p><b>Copy this key now.</b> Planban won't show it again. Give it to the agent that needs it.</p>
+        <div className="online-board-row">
+          <input className="online-board-input" readOnly value={made} aria-label="New access key" onFocus={(event) => event.target.select()} />
+          <button className="online-board-button" onClick={() => void navigator.clipboard?.writeText(made).then(() => setCopied(true))}>{copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}</button>
+        </div>
+        <button className="online-board-button" style={{ marginTop: 10 }} onClick={() => { setMade(null); setOpen(false); setName(""); setCopied(false); }}>Done</button>
+      </div>
+    );
+  }
+  if (!open) return <button className="online-board-button" style={{ marginTop: 10 }} onClick={() => setOpen(true)}><KeyRound size={13} /> Create access key</button>;
+  return (
+    <div className="access-key-form">
+      <label className="online-board-label" htmlFor="access-key-name">Name</label>
+      <input id="access-key-name" className="online-board-input" value={name} maxLength={80} placeholder="For example, Cloud agent" onChange={(event) => setName(event.target.value)} />
+      <div className="access-key-choices">
+        <span><span className="online-board-label">Board</span>{boards.length ? <Dropdown value={boardId} options={boards} onChange={setBoardId} label="Board" /> : <span className="muted">No online boards yet.</span>}</span>
+        <span><span className="online-board-label">What it may do</span><Dropdown value={level} options={levelOptions(["read", "plan", "complete"])} onChange={setLevel} label="What it may do" /></span>
+        <span><span className="online-board-label">Ends</span><Dropdown value={expiry} options={EXPIRY_OPTIONS} onChange={setExpiry} label="When the key ends" /></span>
+      </div>
+      {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+      <div className="online-board-row" style={{ marginTop: 12 }}>
+        <button className="online-board-button" onClick={() => setOpen(false)}>Cancel</button>
+        <button className="online-board-button primary-accent" disabled={busy || !name.trim() || !boardId} onClick={() => void create()}>{busy ? <Loader2 size={13} className="spin" /> : <KeyRound size={13} />} Create key</button>
+      </div>
+    </div>
   );
 }

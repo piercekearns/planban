@@ -5,12 +5,15 @@
 //
 //   ~/mac-mini-setup/dev24 node --import tsx/esm online/scripts/web-preview.ts [port]
 //
-// Then open http://127.0.0.1:<port>/dev/as?user=owner (or editor, viewer).
+// Then open http://127.0.0.1:<port>/dev/as?user=owner (or editor, viewer, newcomer).
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createVite } from "vite";
 import { memoryService } from "../../tests/hosted-harness";
-import { apiResponse } from "../service/convex/http";
+import { apiResponse, atServiceOnly, invitePreviewResponse } from "../service/convex/http";
+import { webSignOutResponse } from "../service/convex/model/webAuth";
+import { webConfigResponse } from "../service/convex/model/oauthConsent";
+import { deviceAuthorizationResponse } from "../service/convex/model/deviceFlow";
 import { EDGE_PROOF_HEADER } from "../service/convex/model/auth";
 import { webCookie } from "../service/convex/model/webSession";
 
@@ -28,7 +31,20 @@ const PEOPLE = {
   owner: { userId: "user_sam", name: "Sam Reid" },
   editor: { userId: "user_maya", name: "Maya Okafor" },
   viewer: { userId: "user_jo", name: "Jo Lin" },
+  newcomer: { userId: "user_nia", name: "Nia Patel" },
 } as const;
+const emailOf = (userId: string) => `${userId.replace(/^user_/, "")}@example.com`;
+
+// Clerk's user lookup (each person's verified addresses), answered here.
+const realFetch = globalThis.fetch;
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = String(input instanceof Request ? input.url : input);
+  const match = /^https:\/\/api\.clerk\.com\/v1\/users\/([^/]+)$/.exec(url);
+  if (!match) return realFetch(input, init);
+  return new Response(JSON.stringify({ email_addresses: [{ email_address: emailOf(match[1]!), verification: { status: "verified" } }] }), { status: 200 });
+}) as typeof fetch;
+process.env.CLERK_SECRET_KEY = "sk_test_preview_only";
+process.env.PLANBAN_SIGNIN_NOTE_KEY = randomBytes(32).toString("base64url");
 type Who = keyof typeof PEOPLE;
 
 /** A request as the edge forwards it: at the native address, with the proof. */
@@ -69,6 +85,17 @@ async function seed() {
     await service.signIn(PEOPLE[role].userId, PEOPLE[role].name);
     await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/members`, { userId: PEOPLE[role].userId, role });
   }
+  // Nia has no boards yet, and an email invitation waiting.
+  await service.signIn(PEOPLE.newcomer.userId, PEOPLE.newcomer.name);
+  await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { email: emailOf(PEOPLE.newcomer.userId), role: "editor" });
+  const link = await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { role: "viewer" });
+  process.stdout.write(`A viewer invitation link: ${String(link.link).replace(/^https?:\/\/[^/]+/, PUBLIC)}\n`);
+  // An agent asking to sign in, as `planban online login --device` does.
+  const asked = await (await deviceAuthorizationResponse(service.actionCtx, new Request(`${PUBLIC}/oauth/device`, {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: "planban-cli", scope: "planban:machine", resource: PUBLIC }),
+  }))).json() as { verification_uri_complete?: string; user_code?: string };
+  process.stdout.write(`A sign-in approval link (code ${asked.user_code}): ${asked.verification_uri_complete}\n`);
   return boardId as string;
 }
 
@@ -101,20 +128,36 @@ createServer(async (request, response) => {
       await send(response, await apiResponse(service.actionCtx, forwarded(`${url.pathname}${url.search}`, { method, headers, ...(body ? { body } : {}) })));
       return;
     }
+    // The web page's own service routes, as the edge forwards them. Sign-in itself needs Clerk, so /dev/as stands in.
+    const webRoutes: Record<string, (request: Request) => Promise<Response>> = {
+      "POST /web/invite": (forwardedRequest) => atServiceOnly(invitePreviewResponse)(service.actionCtx, forwardedRequest),
+      "POST /web/signout": (forwardedRequest) => atServiceOnly(webSignOutResponse)(service.actionCtx, forwardedRequest),
+      "GET /web/config": async () => webConfigResponse(),
+    };
+    const webRoute = webRoutes[`${request.method} ${url.pathname}`];
+    if (webRoute) {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) if (typeof value === "string") headers.set(name, value);
+      const body = request.method === "POST" ? await readBody(request) : undefined;
+      await send(response, await webRoute(forwarded(url.pathname, { method: request.method ?? "GET", headers, ...(body ? { body } : {}) })));
+      return;
+    }
     if (url.pathname === "/dev/as") {
       // Stands in for the sign-in page (phase 4): a browser session for one of the sample people.
       const who = (url.searchParams.get("user") ?? "owner") as Who;
       const person = PEOPLE[who] ?? PEOPLE.owner;
       const { token } = await service.signIn(person.userId, person.name);
-      const next = url.searchParams.get("next") ?? `/boards/${boardId}`;
-      response.writeHead(302, { Location: next.startsWith("/") ? next : "/", "Set-Cookie": webCookie(token, 7 * 24 * 60 * 60) });
-      response.end();
+      const next = url.searchParams.get("next") ?? (who === "newcomer" ? "/" : `/boards/${boardId}`);
+      // As the real sign-in does: the page remembers who signed in, for showing only.
+      const account = JSON.stringify({ email: emailOf(person.userId), name: person.name });
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Set-Cookie": webCookie(token, 7 * 24 * 60 * 60) });
+      response.end(`<!doctype html><script>localStorage.setItem("planban.web.account", ${JSON.stringify(account)});location.replace(${JSON.stringify(next.startsWith("/") ? next : "/")});</script>`);
       return;
     }
     if (url.pathname === "/sign-in") {
       const next = encodeURIComponent(url.searchParams.get("next") ?? "/");
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      response.end(`<!doctype html><title>Preview sign-in</title><p>Preview only: sign in as <a href="/dev/as?user=owner&next=${next}">Sam (owner)</a>, <a href="/dev/as?user=editor&next=${next}">Maya (editor)</a> or <a href="/dev/as?user=viewer&next=${next}">Jo (viewer)</a>.</p>`);
+      response.end(`<!doctype html><title>Preview sign-in</title><p>Preview only: sign in as <a href="/dev/as?user=owner&next=${next}">Sam (owner)</a>, <a href="/dev/as?user=editor&next=${next}">Maya (editor)</a>, <a href="/dev/as?user=viewer&next=${next}">Jo (viewer)</a> or <a href="/dev/as?user=newcomer&next=${next}">Nia (no boards yet)</a>.</p>`);
       return;
     }
     vite.middlewares(request, response);

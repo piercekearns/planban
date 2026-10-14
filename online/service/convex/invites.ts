@@ -183,6 +183,12 @@ export const acceptById = internalMutation({
   },
 });
 
+/** "sam@example.com" becomes "s•••@example.com". */
+export function maskedEmail(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at <= 0 ? "•••" : `${email[0]}•••${email.slice(at)}`;
+}
+
 async function join(ctx: MutationCtx, connectionId: Doc<"connections">["_id"], invite: Doc<"invites"> | null, verifiedEmails: string[] | undefined) {
   const connection = await liveConnection(ctx, connectionId);
   if (!connection.canAdminister) fail("forbidden", "Join a board from your own sign-in, not from an agent or key.");
@@ -191,11 +197,16 @@ async function join(ctx: MutationCtx, connectionId: Doc<"connections">["_id"], i
   // Someone already on the board is told so, whatever state the invitation is in.
   const existing = board ? await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", board.boardId).eq("userId", connection.userId)).unique() : null;
   if (existing && board!.authority === "online") return { boardId: board!.boardId, title: board!.title, role: existing.role, alreadyMember: true };
-  if (!usable(invite!)) fail("not_found", "This invite has expired or was cancelled. Ask the board owner for a new one.");
-  if (!board || board.authority !== "online" || board.localTransfer) fail("conflict", "This board is not online at the moment. Ask the board owner.");
+  if (!usable(invite!)) {
+    const expired = Date.parse(invite!.expiresAt) <= Date.now();
+    fail("not_found", "This invite has expired or was cancelled. Ask the board owner for a new one.", { reason: expired ? "expired" : "cancelled" });
+  }
+  if (!board || board.authority !== "online" || board.localTransfer) fail("conflict", "This board is not online at the moment. Ask the board owner.", { reason: "unavailable" });
   // An email invite needs the account's current, verified addresses, read from Clerk just now.
   if (invite!.email && !(verifiedEmails ?? []).map((email) => email.toLowerCase()).includes(invite!.email)) {
-    fail("forbidden", `This invite is for ${invite!.email}. Sign in with an account whose verified email is that address to join.`);
+    // Whoever opened the link sees only enough of the address to recognise it.
+    const sentTo = maskedEmail(invite!.email);
+    fail("forbidden", `This invite is for ${sentTo}. Sign in with an account whose verified email is that address to join.`, { reason: "wrong_email", sentTo });
   }
   const members = await ctx.db.query("members").withIndex("by_board", (q) => q.eq("boardId", board!.boardId)).take(MAX_MEMBERS);
   if (members.length >= MAX_MEMBERS) fail("rate_limited", `This board already has ${MAX_MEMBERS} people. Ask the board owner.`);

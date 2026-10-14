@@ -49,3 +49,14 @@ test("a conflicting save keeps the person's text, and a viewer gets no edit cont
   assert.match(web, /const viewOnly = state\.hosted\?\.role === "viewer";/u);
   assert.match(web, /readOnly=\{isPreviewing \|\| viewOnly\}/u);
 });
+
+test("the page's stylesheet opens and closes every block, so no later rule is silently lost", async () => {
+  const styles = (await read("styles.css")).replace(/\/\*[\s\S]*?\*\//gu, "").replace(/"(?:[^"\\]|\\.)*"/gu, "\"\"");
+  let depth = 0;
+  for (const char of styles) {
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    assert.ok(depth >= 0, "a block closes before it opens");
+  }
+  assert.equal(depth, 0, "every block is closed");
+});

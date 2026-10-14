@@ -13,7 +13,7 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
-import { authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
+import { webConfigResponse, authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
 import { authenticateApiRequest, webSessionResponse, webSignOutResponse } from "./model/webAuth";
 import { deviceAuthorizationResponse, deviceDecision, devicePreview } from "./model/deviceFlow";
@@ -403,7 +403,7 @@ const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": 
  * address, so it stays out of logs; nothing is shown for an invitation that
  * can't be used beyond its state.
  */
-const invitePreviewResponse: RouteHandler = async (ctx, request) => {
+export const invitePreviewResponse: RouteHandler = async (ctx, request) => {
   const input = await body(request).catch(() => ({} as Record<string, unknown>));
   const token = inviteToken(String(input.token ?? ""));
   const preview = token ? await ctx.runQuery(internal.invites.previewState, { tokenHash: await sha256Hex(token) }) : { state: "unknown" as const };
@@ -482,6 +482,7 @@ http.route({ path: "/dev/token", method: "POST", handler: httpAction(atServiceOn
 // The web page's browser session: started from a Clerk sign-in, ended by signing out.
 http.route({ path: "/web/session", method: "POST", handler: httpAction(atServiceOnly((ctx, request) => webSessionResponse(ctx, request))) });
 http.route({ path: "/web/signout", method: "POST", handler: httpAction(atServiceOnly(webSignOutResponse)) });
+http.route({ path: "/web/config", method: "GET", handler: httpAction(atServiceOnly(async () => webConfigResponse())) });
 http.route({ path: "/web/invite", method: "POST", handler: httpAction(atServiceOnly(invitePreviewResponse)) });
 http.route({ path: "/oauth/device", method: "POST", handler: httpAction(atServiceOnly(deviceAuthorizationResponse)) });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });

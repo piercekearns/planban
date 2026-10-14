@@ -58,6 +58,7 @@ const ROUTES: readonly Route[] = [
   { path: "/web/session", methods: ["POST"] },
   { path: "/web/signout", methods: ["POST"] },
   { path: "/web/invite", methods: ["POST"] },
+  { path: "/web/config", methods: ["GET"] },
   { path: "/oauth/device", methods: ["POST"] },
   { path: "/invite/", prefix: true, methods: ["GET"] },
   { path: "/.well-known/planban.json", methods: ["GET"] },

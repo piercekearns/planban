@@ -28,6 +28,16 @@ function configuration() {
 
 export function enrollmentConfigured(): boolean { return configuration() !== null; }
 
+/**
+ * GET /web/config: what the web page needs to show Clerk's sign-in. Both
+ * values are public (they are in every Clerk page). Null when sign-in isn't
+ * set up here, so the page can say so instead of failing.
+ */
+export function webConfigResponse(): Response {
+  const config = configuration();
+  return json({ signIn: config ? { publishableKey: config.key, frontendApi: config.frontend } : null });
+}
+
 function cookieNames(secure: boolean) {
   const prefix = secure ? "__Host-" : "";
   return { browser: `${prefix}planban_browser`, csrf: `${prefix}planban_csrf` };

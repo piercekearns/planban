@@ -155,6 +155,9 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
     const body: Record<string, unknown> = { error: message };
     if (typeof data.code === "string") body.code = data.code;
     if (typeof data.currentRevision === "number") body.currentRevision = data.currentRevision;
+    // Invitations say why they can't be used, so the page can show the matching screen.
+    if (typeof data.reason === "string") body.reason = data.reason;
+    if (typeof data.sentTo === "string") body.sentTo = data.sentTo;
     if (response.status === 401) {
       body.signInNeeded = origin;
       body.signedOut = "missing";
@@ -373,6 +376,32 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
         if (action !== "role" && action !== "remove") return refuse(404, WEB_ONLY_MESSAGE);
         return passPost(serviceBoard(board!, `/members/${encodeURIComponent(user!)}/${action}`), action === "role" ? { role: request.body.role } : {}, request);
       },
+    },
+
+    // The signed-in person, invitations waiting for them, and joining.
+    { method: "GET", pattern: ["online", "me"], handle: async (_params, request) => passGet("/api/v1/me", request) },
+    { method: "GET", pattern: ["online", "invites"], handle: async (_params, request) => passGet("/api/v1/invites", request) },
+    {
+      method: "POST", pattern: ["online", "invites", "accept"], handle: async (_params, request) =>
+        passPost("/api/v1/invites/accept", { token: typeof request.body.token === "string" ? request.body.token : "" }, request),
+    },
+    { method: "POST", pattern: ["online", "invites", ":invite", "accept"], handle: async ({ invite }, request) => passPost(`/api/v1/invites/${encodeURIComponent(invite!)}/accept`, {}, request) },
+
+    // One-tap approval of an agent's sign-in, from the link it showed.
+    {
+      method: "POST", pattern: ["online", "device", ":action"], handle: async ({ action }, request) => {
+        if (action !== "preview" && action !== "decide") return refuse(404, WEB_ONLY_MESSAGE);
+        const note = typeof request.body.request === "string" ? request.body.request : "";
+        return passPost(`/api/v1/device/${action}`, action === "decide" ? { request: note, decision: request.body.decision } : { request: note }, request);
+      },
+    },
+
+    // Access keys for cloud and headless agents, shown once.
+    {
+      method: "POST", pattern: ["online", "keys"], handle: async (_params, request) => passPost("/api/v1/keys", {
+        name: request.body.name, boardId: request.body.boardId, level: request.body.level,
+        ...(request.body.expiresInDays === undefined ? {} : { expiresInDays: request.body.expiresInDays }),
+      }, request),
     },
 
     // Connections, under the person's account.

@@ -91,7 +91,7 @@ test("joining by id works only for an email invitation, with the address verifie
   const forBob = await invite({ email: "bob@example.com" });
   const link = await invite({});
   await assert.rejects(run(acceptById, ctx, { connectionId: bob, inviteId: link, verifiedEmails: ["bob@example.com"] }), /invitation link/);
-  await assert.rejects(run(acceptById, ctx, { connectionId: bob, inviteId: forBob, verifiedEmails: ["other@example.com"] }), /This invite is for bob@example.com/);
+  await assert.rejects(run(acceptById, ctx, { connectionId: bob, inviteId: forBob, verifiedEmails: ["other@example.com"] }), /This invite is for b•••@example.com/);
   await assert.rejects(run(acceptById, ctx, { connectionId: bob, inviteId: "invites-999", verifiedEmails: ["bob@example.com"] }), /expired or was cancelled/);
   const joined = await run(acceptById, ctx, { connectionId: bob, inviteId: forBob, verifiedEmails: ["bob@example.com"] });
   assert.deepEqual(joined, { boardId: "northfold", title: "Northfold", role: "editor", alreadyMember: false });

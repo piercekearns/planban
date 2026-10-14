@@ -14,6 +14,7 @@ import * as connections from "../online/service/convex/connections";
 import * as invites from "../online/service/convex/invites";
 import * as live from "../online/service/convex/live";
 import * as members from "../online/service/convex/members";
+import * as oauth from "../online/service/convex/oauth";
 import * as people from "../online/service/convex/people";
 import * as transfers from "../online/service/convex/transfers";
 import * as webSessions from "../online/service/convex/webSessions";
@@ -136,7 +137,7 @@ export function memoryService() {
   };
   const scheduler = { runAfter: async (_delay: number, ref: any, args: any) => { jobs.push({ name: getFunctionName(ref), args }); } };
   const ctx: any = { db, scheduler };
-  const modules: Record<string, Record<string, any>> = { boards, connections, invites, live, members, people, transfers, webSessions };
+  const modules: Record<string, Record<string, any>> = { boards, connections, invites, live, members, oauth, people, transfers, webSessions };
   const byName = new Map<string, any>();
   for (const [module, exports] of Object.entries(modules)) {
     for (const [name, fn] of Object.entries(exports)) if (fn && (typeof fn === "object" || typeof fn === "function") && "_handler" in fn) byName.set(`${module}:${name}`, fn);

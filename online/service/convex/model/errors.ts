@@ -8,6 +8,10 @@ export type ServiceErrorData = {
   code: ErrorCode;
   message: string;
   currentRevision?: number;
+  /** Invitations: why one can't be used, so the web page can show the matching screen. */
+  reason?: "wrong_email" | "expired" | "cancelled" | "unavailable";
+  /** Invitations sent to another address: that address, masked ("s•••@example.com"). */
+  sentTo?: string;
 };
 
 export function fail(code: ErrorCode, message: string, extra: Partial<ServiceErrorData> = {}): never {
