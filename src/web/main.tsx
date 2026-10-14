@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { boardPath, cardPath } from "./apiPaths";
+import { boardPath, cardIdFromHash, cardPath } from "./apiPaths";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -4955,7 +4955,11 @@ function BoardView({
     const params = new URLSearchParams(window.location.search);
     const queryProjection = params.get("projection");
     const isGroupProjection = queryProjection === "group" || queryProjection === "programme";
-    setSelectedId(isGroupProjection ? params.get("groupId") ?? params.get("programmeId") : null);
+    // A link to a card (from ChatGPT, Claude or a copied address) opens it once, then leaves the address as the board's.
+    const linkedCard = cardIdFromHash(window.location.hash);
+    if (linkedCard) window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+    const opensCard = linkedCard && state.roadmap.roadmapItems.some((item) => item.id === linkedCard) ? linkedCard : null;
+    setSelectedId(isGroupProjection ? params.get("groupId") ?? params.get("programmeId") : opensCard);
     setGroupId(null);
     setProjection(queryProjection === "flattened" ? "flattened" : "main");
     setActivityChangedCardTitle(null);

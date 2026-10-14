@@ -256,3 +256,27 @@ test("the already-on-this-board check reads only, and tells nothing to someone w
     assert.equal((await page(service.adapterFor("pbw_" + "M".repeat(43)), "/api/online/invites/membership", { token })).status, 401);
   });
 });
+
+test("a card link from ChatGPT or Claude opens the board for a member and the signed-out screen for anyone else", async () => {
+  const { cardIdFromHash } = await import("../src/web/apiPaths");
+  const { cardUrl } = await import("../online/service/convex/model/mcp");
+  await withServiceEnv(async () => {
+    const { service, adapter, boardId } = await ownerWithBoard();
+    const card = (await page(adapter, boardPath(boardId, "/cards"), { title: "Linked card", baseRevision: 1 })).body.createdCard.id as string;
+    const url = new URL(cardUrl(PUBLIC, boardId, card));
+    assert.equal(url.origin, PUBLIC);
+    assert.equal(url.pathname, `/boards/${boardId}`, "the page's own board address");
+    assert.equal(cardIdFromHash(url.hash), card, "which the page opens");
+    // The page loads that board: a member sees it; anyone else gets the signed-out screen, or nothing about the board.
+    assert.equal((await page(adapter, boardPath(boardId, "/state"))).status, 200);
+    const signedOut = await page(service.adapterFor("pbw_" + "L".repeat(43)), boardPath(boardId, "/state"));
+    assert.equal(signedOut.status, 401);
+    assert.equal(signedOut.body.signInNeeded, PUBLIC);
+    const outsider = await page(service.adapterFor((await service.signIn("user_out", "Out")).token), boardPath(boardId, "/state"));
+    assert.equal(outsider.status, 404);
+  });
+  assert.equal(cardIdFromHash("#card=a%2Fb"), null);
+  assert.equal(cardIdFromHash("#other=x"), null);
+  assert.equal(safeNext("/boards/b#card=c"), "/boards/b#card=c", "the card survives signing in");
+  assert.equal(safeNext("/boards/b#request=secret"), "/boards/b", "nothing else in the address does");
+});

@@ -28,7 +28,7 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
 const statusOf = (error: unknown) => (error as { status?: number } | null)?.status;
 const reasonOf = (error: unknown) => (error as { body?: Json } | null)?.body?.reason as string | undefined;
 
-export function signInPath(next = `${window.location.pathname}${window.location.search}`) {
+export function signInPath(next = `${window.location.pathname}${window.location.search}${window.location.hash}`) {
   return `/sign-in?next=${encodeURIComponent(next)}`;
 }
 

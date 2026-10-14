@@ -52,7 +52,8 @@ export function safeNext(value: string | null | undefined, fallback = "/"): stri
   if (!value || !value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return fallback;
   try {
     const url = new URL(value, "https://planban.invalid");
-    return url.origin === "https://planban.invalid" ? `${url.pathname}${url.search}` : fallback;
+    // A card link's "#card=..." survives signing in; nothing else in the address does more than a path.
+    return url.origin === "https://planban.invalid" ? `${url.pathname}${url.search}${url.hash.startsWith("#card=") ? url.hash : ""}` : fallback;
   } catch {
     return fallback;
   }

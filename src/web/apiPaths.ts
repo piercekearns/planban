@@ -9,3 +9,14 @@ export function cardPath(repoId: string, cardId: string, path = "", version?: nu
   const history = version === undefined ? "" : `/history/${encodeURIComponent(String(version))}`;
   return boardPath(repoId, `${history}/cards/${encodeURIComponent(cardId)}${path}`);
 }
+
+/** The card a board address opens ("/boards/<id>#card=<card>", as ChatGPT and Claude link to it), if any. */
+export function cardIdFromHash(hash: string): string | null {
+  if (!hash.startsWith("#card=")) return null;
+  try {
+    const id = decodeURIComponent(hash.slice("#card=".length));
+    return id && id !== "." && id !== ".." && !id.includes("/") ? id : null;
+  } catch {
+    return null;
+  }
+}

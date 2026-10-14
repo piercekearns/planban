@@ -352,6 +352,11 @@ function operationInput(args: Record<string, unknown>) {
   return { ...input, actor: "agent" };
 }
 
+/** A card on the web page: the board's address, opening the card. */
+export function cardUrl(origin: string, boardId: string, cardId: string): string {
+  return `${origin}/boards/${encodeURIComponent(boardId)}#card=${encodeURIComponent(cardId)}`;
+}
+
 async function callTool(service: McpService, origin: string, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "planban_list_boards":
@@ -403,15 +408,15 @@ async function callTool(service: McpService, origin: string, name: string, args:
     }
     case "search": {
       const query = stringArg(args, "query");
-      // No url until the hosted web page exists: ChatGPT keeps results without one, uncited,
-      // and a link to a page that isn't there would be worse.
-      const results: Array<{ id: string; title: string }> = [];
+      // Each result links to its card on the web page, which opens it for a signed-in member
+      // and shows the signed-out screen to anyone else.
+      const results: Array<{ id: string; title: string; url: string }> = [];
       // Bounded work per call: the first boards listed, and a capped result count.
       for (const board of (await service.listBoards()).slice(0, SEARCH_MAX_BOARDS)) {
         const roadmap = await service.getBoard(board.boardId);
         const matches = queryWorkItems(roadmap.roadmapItems, { search: query, projection: "flattened" }).matches.slice(0, 10);
         for (const { item } of matches) {
-          results.push({ id: `${board.boardId}/${item.id}`, title: `${item.title} (${board.title})` });
+          results.push({ id: `${board.boardId}/${item.id}`, title: `${item.title} (${board.title})`, url: cardUrl(origin, board.boardId, item.id) });
         }
         if (results.length >= SEARCH_MAX_RESULTS) break;
       }
@@ -432,7 +437,7 @@ async function callTool(service: McpService, origin: string, name: string, args:
         "",
         spec.markdown,
       ].filter((line) => line !== null).join("\n");
-      return { id: `${id}/${cardId}`, title: card.title, text, metadata: { boardId: id, status: card.status } };
+      return { id: `${id}/${cardId}`, title: card.title, text, url: cardUrl(origin, id, cardId), metadata: { boardId: id, status: card.status } };
     }
     default:
       throw new ToolError(`Unknown tool: ${name}`);

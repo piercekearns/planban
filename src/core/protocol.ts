@@ -21,7 +21,8 @@ Every edit must state the board revision it was based on (\`baseRevision\`, from
 Planban is an index, not storage: the board holds text only (cards, Specs, Plans and history). Never put files, images or encoded data in it; refer to them where they live instead: a GitHub link, a web address, or a local path labelled with its machine, such as "Mac mini: ~/Projects/app/renders/front.png". Edits that embed files are refused.
 People on the board are owners, editors or viewers, and each chooses what their own agents may do (read, plan, or plan and complete); a "forbidden" refusal means this agent's level doesn't allow it, so tell the person.
 Move a card to Complete only when a person on the board asks, confirms after review, or waives review. Never take the board local, invite people, change roles or agent levels, revoke connections or create keys unless the person explicitly asks.
-Sign in on this machine with \`planban online login ${input.online.url}\` (if \`planban\` isn't a command here, Planban's messages print the full form).` : `Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
+People open the board in any browser, phone included, at ${input.online.url}/boards/${encodeURIComponent(input.online.boardId)}.
+Sign in on this machine with \`planban online login ${input.online.url}\` (if \`planban\` isn't a command here, Planban's messages print the full form); where no browser can open here, add \`--no-browser\` and give the person the printed approval link and code.` : `Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
 
 - ${input.roadmapPath}`}
 

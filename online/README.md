@@ -187,7 +187,7 @@ session can be ended at once by revoking web connections.
 `POST /oauth/register` accepts RFC 7591 registrations only for Claude's own
 connector callbacks, as public clients using the authorization-code flow
 with PKCE. An unused registration expires after a day. The first person to
-approve one owns it; it appears on their connections page as Claude
+approve one owns it; it appears in their Connections (on the web page's account menu, or the board's menu on a computer) as Claude
 (claude.ai), and revoking it there ends the registration and every grant
 made through it. Other clients still register by published metadata
 documents from the reviewed list.

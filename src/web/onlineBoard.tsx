@@ -95,7 +95,7 @@ export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOu
 }
 
 /** The address of the web sign-in page, which comes back to this page afterwards. */
-export function webSignInPath(returnTo = `${window.location.pathname}${window.location.search}`) {
+export function webSignInPath(returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`) {
   return `/sign-in?next=${encodeURIComponent(returnTo)}`;
 }
 

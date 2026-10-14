@@ -16,14 +16,14 @@ const call = async (name: string, args: Record<string, unknown>) => {
   return (await response.json()).result;
 };
 
-test("search and fetch cite no link while there is no board page to link to", async () => {
+test("search and fetch cite each card's address on the web page", async () => {
+  const link = "https://app.planban.example/boards/deadleg#card=vest";
   const search = await call("search", { query: "vest" });
   assert.equal(search.isError, false);
-  assert.deepEqual(search.structuredContent.results, [{ id: "deadleg/vest", title: "Choose the vest supplier (Deadleg)" }]);
+  assert.deepEqual(search.structuredContent.results, [{ id: "deadleg/vest", title: "Choose the vest supplier (Deadleg)", url: link }]);
   const fetched = await call("fetch", { id: "deadleg/vest" });
   assert.equal(fetched.isError, false);
-  assert.equal("url" in fetched.structuredContent, false);
+  assert.equal(fetched.structuredContent.url, link);
   assert.equal(fetched.structuredContent.title, "Choose the vest supplier");
   assert.match(fetched.structuredContent.text, /One supplier for 300 units/);
-  assert.doesNotMatch(JSON.stringify([search, fetched]), /\/boards\//, "no link to a page that doesn't exist");
 });

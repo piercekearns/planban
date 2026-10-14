@@ -96,3 +96,37 @@ test("a denial, a malformed reply or a non-machine token saves nothing", async (
   await withHome(async () => { await assert.rejects(onlineLogin(forged.url(), { printOnly: true, pollIntervalMs: 10 }), /valid sign-in link/); });
   await forged.close();
 });
+
+test("the command line's --no-browser prints the link and code, never opens a browser, and finishes signing in", { skip: process.platform === "win32" ? "uses a POSIX stand-in for the browser opener" : false }, async () => {
+  const { spawn } = await import("node:child_process");
+  const { chmod, mkdir, readFile, writeFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const fake = await service([{ access_token: ACCESS, token_type: "Bearer", scope: "planban:machine", user_id: "user_alice", expires_in: 1 }]);
+  const home = await mkdtemp(join(tmpdir(), "planban-device-cli-"));
+  try {
+    // Stand-ins for the system's browser openers, which record any attempt instead of opening anything.
+    const bin = join(home, "bin");
+    await mkdir(bin);
+    for (const name of ["open", "xdg-open"]) {
+      await writeFile(join(bin, name), `#!/bin/sh\necho "$@" >> "${join(home, "opened.txt")}"\n`);
+      await chmod(join(bin, name), 0o755);
+    }
+    const repo = fileURLToPath(new URL("..", import.meta.url));
+    const run = spawn(process.execPath, ["--import", "tsx/esm", "src/cli.ts", "online", "login", fake.url(), "--no-browser"], {
+      cwd: repo, env: { ...process.env, PLANBAN_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+    });
+    let stdout = "", stderr = "";
+    run.stdout.on("data", (chunk) => { stdout += chunk; });
+    run.stderr.on("data", (chunk) => { stderr += chunk; });
+    const code = await new Promise<number | null>((resolve) => run.on("exit", resolve));
+    assert.equal(code, 0, stderr);
+    assert.match(stderr, /check the code is WDJB-MJHT/);
+    assert.ok(stderr.includes(`${fake.url()}/approve#request=pbn_note`), "the approval link is printed");
+    assert.equal(await readFile(join(home, "opened.txt"), "utf8").catch(() => ""), "", "no browser was opened");
+    assert.equal(fake.polls.length, 1);
+    assert.match(stdout, /signedIn|true/);
+  } finally {
+    await fake.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});

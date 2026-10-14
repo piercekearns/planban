@@ -61,6 +61,8 @@ Then list common actions:
 - send Planban feedback
 - take this board online to share it, or bring it back to this computer
 - invite someone to an online board, or see who is on it
+- open an online board in any browser or on a phone at app.planban.ai/boards/<board>
+- sign this computer in without a browser here: approve a link on your phone instead
 - check whether Planban has updates
 - archive/delete boards once available
 
@@ -76,6 +78,8 @@ Use specific Planban wording so the agent does not have to guess:
 - `Create Planban roadmap items from these notes: <notes>.`
 - `Send Planban feedback: <feedback>.`
 - `Take this Planban board online so Sam can work on it too.`
+- `Give me the web address of this online board.`
+- `Sign in to Planban Online with a link I can approve on my phone.`
 - `Check whether Planban has updates.`
 
 For update checks, inspect Planban's local update status endpoint or the board's update UI when available, and compare the installed version with the published latest metadata.

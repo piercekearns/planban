@@ -116,11 +116,18 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   from ChatGPT or claude.ai. Explain what changes, and let them decide; never take a
   board online, take it local, invite people, change roles or agent levels, revoke
   connections or create keys unless the person explicitly asks.
+- **The web page.** Each online board has an address, `https://app.planban.ai/boards/<board>`,
+  where people read and edit it in any browser, phone included. Offer it to people who
+  use only ChatGPT or Claude, or want the board on another device. Card links from
+  ChatGPT and claude.ai open the cited card there.
 - **Taking it online.** Board settings, Take online, or
   `planban online login https://app.planban.ai` once per computer, then
   `planban online take-online https://app.planban.ai --cwd <project>`. The service
-  address is required. On a remote machine, add `--no-browser` to `login` and give the
-  person the printed link. A board goes online only when it is clean: Planban lists
+  address is required. Where no browser can open here (a remote, cloud or headless
+  machine), add `--no-browser` to `login`: Planban prints a short code and an approval
+  link. Give the person both; they open the link on any device where they're signed in
+  (a phone works), check the code and tap Allow, and the login finishes by itself.
+  `--device` does the same but also opens the link here when it can. A board goes online only when it is clean: Planban lists
   files and pictures to tidy before the transfer.
 - **The project note.** Taking a board online leaves `.planban/online-board.json` in
   the project folder, for the owner to commit. On any machine where that note exists,

@@ -267,7 +267,11 @@ planban online login https://app.planban.ai          # once per computer; opens 
 planban online take-online https://app.planban.ai --cwd /path/to/project
 ```
 
+On a computer without a browser you can use (a remote or cloud machine, or an agent working headless), add `--no-browser` or `--device` to `login`. Planban shows a short code and an approval link instead; open the link on any device where you're signed in, your phone included, check the code matches, and tap Allow. `--device` also opens the link in this computer's browser when it can.
+
 A board goes online only when it holds no files (see [Local Storage](#local-storage)). Taking it online leaves `.planban/online-board.json` in the project folder: commit it, so other computers and agents know the board lives online. This computer keeps a backup copy. You can bring the board back any time with Board settings, Take local (or `planban online take-local`), and its history comes with it.
+
+**Use it in a browser.** Every online board has its own address, `https://app.planban.ai/boards/<board>`, where you and the people you invite can read and edit it on any computer or phone, with nothing to install. Log in with GitHub or an email code. The same page has Your boards, New board, Connections (including access keys for agents that can't sign in themselves) and Sign out. Links from ChatGPT and claude.ai open the card they cite there.
 
 **Invite people.** Board settings, People, Invite people, or `planban online invite --email <address> --role editor` (the role is viewer unless you say otherwise). Each person has a role:
 
@@ -275,7 +279,7 @@ A board goes online only when it holds no files (see [Local Storage](#local-stor
 - **Editor** can change cards, Specs and Plans, and mark work complete.
 - **Viewer** can read the board and its history.
 
-Each person also chooses what their own agents may do: read, plan, or plan and complete (`planban online my-agents <level>`). An agent can never do more than its person. People join from the invitation link with `planban online join <link>`.
+Each person also chooses what their own agents may do: read, plan, or plan and complete (`planban online my-agents <level>`). An agent can never do more than its person. People join by opening the invitation link in a browser (it leads through sign-in straight to the board), or with `planban online join <link>`.
 
 **Connect AI apps.** Codex and Claude Code with the Planban plugin already work with online boards once this computer is signed in. Other apps connect to `https://app.planban.ai/mcp` and ask you to sign in and click Allow:
 
@@ -283,7 +287,7 @@ Each person also chooses what their own agents may do: read, plan, or plan and c
 - Claude Code without the plugin: `claude mcp add --transport http planban https://app.planban.ai/mcp`, then sign in with `/mcp`.
 - Codex without the plugin: `codex mcp add planban --url https://app.planban.ai/mcp`, then `codex mcp login planban`.
 
-See and cut off any of these from Board settings, Connections, or `planban online connections https://app.planban.ai`.
+See and cut off any of these from Connections on the web page or in the board's menu, or with `planban online connections https://app.planban.ai`.
 
 **Limits.** An online board holds up to 256 MB, each account can make up to 5,000 changes and write up to 64 MB of text a day, and Planban stays an index, not file storage.
 
