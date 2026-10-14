@@ -5933,7 +5933,10 @@ function BoardDashboard({
     <main className="board-dashboard">
       <header className="app-header">
         <div>
-          <p className="eyebrow">Planban</p>
+          <picture className="dashboard-wordmark">
+            <source srcSet="/assets/planban-logo-wordmark-white.svg" media="(prefers-color-scheme: dark)" />
+            <img src="/assets/planban-logo-wordmark-black.svg" alt="Planban" />
+          </picture>
           <h1>Boards</h1>
         </div>
         {archivedBoards.length > 0 ? (

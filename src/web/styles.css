@@ -263,6 +263,13 @@ button {
   padding-bottom: 13px;
 }
 
+.dashboard-wordmark img {
+  display: block;
+  height: 16px;
+  width: auto;
+  margin: 0 0 7px;
+}
+
 .eyebrow {
   margin: 0 0 5px;
   text-transform: uppercase;
@@ -1333,7 +1340,6 @@ h1 {
 }
 
 .tutorial-footer {
-  border-top: 1px solid var(--border);
   border-bottom: 0;
 }
 
@@ -4496,7 +4502,6 @@ button.content-edit-action:hover {
   display: flex;
   justify-content: flex-end;
   gap: 14px;
-  border-top: 1px solid var(--border);
   color: var(--text-muted);
   padding: 7px 10px;
   font-size: 10px;
@@ -4760,7 +4765,6 @@ button.content-edit-action:hover {
 
 .group-placement-actions {
   margin-top: 16px;
-  border-top: 1px solid var(--border);
 }
 
 .group-placement-actions button:active:not(:disabled) { background: var(--surface-subtle); }
@@ -5901,7 +5905,9 @@ button.content-edit-action:hover {
 .board-location-pill svg { opacity: .85; }
 .board-location-pill.busy { color: var(--text); }
 .online-board-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
-.online-board-section:last-of-type { border-bottom: 0; }
+/* No line under the last section, whether a button row follows or the dialog ends there. */
+.online-board-section:not(:has(~ .online-board-section)) { border-bottom: 0; }
+.online-board-modal > .online-board-section:last-child { padding-bottom: 20px; }
 .online-board-section h3 { margin: 0 0 10px; color: var(--text-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
 .online-board-row { display: flex; align-items: center; gap: 12px; }
 .online-board-row + .online-board-row { margin-top: 12px; }

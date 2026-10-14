@@ -20,15 +20,18 @@ test("HTML and plaintext preserve exact invitation destination and role-aware ge
     }
     assert.match(mail.html, /View invitation/);
     assert.match(mail.html, /role="presentation"/);
-    assert.match(mail.html, /alt=""/);
+    assert.match(mail.html, /alt="Planban"/);
+    assert.match(mail.html, /<meta name="color-scheme" content="light only">/);
     assert.ok(!/<script|<iframe|<form|https?:.*(?:\.png|\.woff)/i.test(mail.html));
     const image = mail.attachments[0]!;
-    assert.equal(image.content_id, "planban-card-stack");
+    // The real wordmark, transparent, at twice its 122x22 display size.
+    assert.equal(image.content_id, "planban-wordmark");
     assert.equal(image.content_type, "image/png");
     const bytes = Buffer.from(image.content, "base64");
     assert.deepEqual([...bytes.subarray(0, 8)], [137,80,78,71,13,10,26,10]);
-    assert.equal(bytes.readUInt32BE(16), 240);
-    assert.equal(bytes.readUInt32BE(20), 199);
+    assert.equal(bytes.readUInt32BE(16), 245);
+    assert.equal(bytes.readUInt32BE(20), 44);
+    assert.equal(bytes[25], 6, "colour type 6: RGB with alpha, so no white box in dark mail apps");
     assert.ok(bytes.length < 10000);
   }
   const viewer = renderInviteEmail("viewer", link, origin);
@@ -62,7 +65,7 @@ test("mail transport stays opt-in, includes both parts and one CID image, and re
     assert.equal(requests, 1);
     assert.ok(captured.html.includes(link) && captured.text.includes(link));
     assert.equal(captured.attachments.length, 1);
-    assert.equal(captured.attachments[0].content_id, "planban-card-stack");
+    assert.equal(captured.attachments[0].content_id, "planban-wordmark");
     assert.deepEqual(captured.to, ["fixture@example.invalid"]);
   } finally {
     for (const [name, value] of [["RESEND_API_KEY", previous.key], ["PLANBAN_INVITE_FROM", previous.from], ["PLANBAN_PUBLIC_URL", previous.origin]] as const) if (value === undefined) delete process.env[name]; else process.env[name] = value;

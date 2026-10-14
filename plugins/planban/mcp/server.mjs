@@ -38,6 +38,11 @@ const { moveFilesOut } = moveFilesOutModule;
 const INDEX_RULE = `Planban is an index, not file storage: a card holds only text (its fields, Spec, Plan and history), never files, and nothing is ever saved into a card's folder. ${HOW_TO_REFER}`;
 
 const SERVER_NAME = "Planban MCP";
+// The same filled icons as the hosted server: black on white for light interfaces, white on black for dark.
+const SERVER_ICONS = [
+  { src: "https://app.planban.ai/brand/icon-light.png", mimeType: "image/png", sizes: ["512x512"], theme: "light" },
+  { src: "https://app.planban.ai/brand/icon-dark.png", mimeType: "image/png", sizes: ["512x512"], theme: "dark" },
+];
 const PLANBAN_MCP_INSTRUCTIONS = [
   "Prefer these tools for all Planban reads and writes.",
   "Pass cwd as the absolute repository path, or repoId for a registered board.",
@@ -1106,7 +1111,7 @@ async function handleRequest(message) {
     sendResult(id, {
       protocolVersion: params?.protocolVersion ?? "2025-11-25",
       capabilities: { tools: {} },
-      serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+      serverInfo: { name: SERVER_NAME, title: "Planban", version: SERVER_VERSION, websiteUrl: "https://planban.ai", icons: SERVER_ICONS },
       instructions: PLANBAN_MCP_INSTRUCTIONS,
     });
     return;
