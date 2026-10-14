@@ -25,6 +25,12 @@ async function withLiveTokens<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Waits (boundedly) for something the watcher does after an awaited step, such as signing a live token. */
+async function until(condition: () => boolean, what: string) {
+  for (let i = 0; i < 400 && !condition(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(condition(), `timed out waiting: ${what}`);
+}
+
 const settle = async () => {
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
 };
@@ -173,7 +179,7 @@ test("a committed change arrives as the board's new revision, once, over the ser
     const { service, owner, boardId, adapter } = await ownerWithBoard();
     const convex = fakeConvex(service);
     const { watcher, revisions, lost } = watch(adapter, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     assert.deepEqual(convex.fake.urls, [CLOUD], "straight to Convex, not through the Worker");
     convex.socket(true);
     await convex.push();
@@ -197,7 +203,7 @@ test("removed from the board: the subscription ends, and reloading shows the boa
     const editor = service.adapterFor((await service.signIn("user_editor")).token);
     const convex = fakeConvex(service);
     const { lost } = watch(editor, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     convex.socket(true);
     await convex.push();
     assert.deepEqual(lost, []);
@@ -218,7 +224,7 @@ test("a revoked browser session ends the subscription, and the board shows signe
     const laptop = service.adapterFor((await service.signIn("user_owner")).token);
     const convex = fakeConvex(service);
     const { lost } = watch(laptop, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     convex.socket(true);
     await convex.push();
     // Sign out other devices, from the first browser.
@@ -238,7 +244,7 @@ test("token expiry: a new token comes only while the browser session lasts", asy
     const { service, owner, boardId, adapter } = await ownerWithBoard();
     const convex = fakeConvex(service);
     const { revisions, lost } = watch(adapter, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     convex.socket(true);
     await convex.push();
     // Convex asks again before each 5-minute token expires; the session is still good.
@@ -268,7 +274,7 @@ test("fallback checks start only after the socket stays down, back off, pause in
       timers: clock.timers, visibility: tab.visibility,
       revision: (id) => { checks += 1; return adapter.revision(id); },
     });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     // Never connected yet: nothing for the first 15 seconds.
     await clock.advance(FALLBACK_AFTER_MS - 1);
     assert.equal(checks, 0);
@@ -406,7 +412,7 @@ test("a subscription error while the service still lets the person in starts the
       return realRevision(...args);
     };
     const { lost } = watch(adapter, boardId, convex, { timers: clock.timers, visibility: manualVisibility().visibility });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     convex.socket(true);
     failQuery = true;
     await convex.push();
@@ -429,7 +435,7 @@ test("a slow check about an old connection never closes the connection that repl
       revision: (id) => hold === null && checksHeld ? new Promise<number>((resolve) => { hold = resolve; }) : adapter.revision(id),
     });
     let checksHeld = false;
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     convex.socket(true);
     await convex.push();
     // The subscription fails; the check that follows is slow.
@@ -458,7 +464,7 @@ test("tokens refused again and again back off instead of retrying every 15 secon
     const convex = fakeConvex(service);
     const clock = manualTimers();
     watch(adapter, boardId, convex, { timers: clock.timers, visibility: manualVisibility().visibility });
-    await settle();
+    await until(() => convex.fake.urls.length >= 1, "the live connection");
     const delays: number[] = [];
     for (let round = 0; round < 4; round += 1) {
       convex.socket(true);
