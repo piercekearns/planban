@@ -118,7 +118,12 @@ test("the command line's --no-browser prints the link and code, never opens a br
     let stdout = "", stderr = "";
     run.stdout.on("data", (chunk) => { stdout += chunk; });
     run.stderr.on("data", (chunk) => { stderr += chunk; });
-    const code = await new Promise<number | null>((resolve) => run.on("exit", resolve));
+    // "close" follows the end of both output streams; a stuck sign-in is stopped after 30 seconds.
+    const timer = setTimeout(() => run.kill("SIGKILL"), 30_000);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      run.on("error", reject);
+      run.on("close", resolve);
+    }).finally(() => clearTimeout(timer));
     assert.equal(code, 0, stderr);
     assert.match(stderr, /check the code is WDJB-MJHT/);
     assert.ok(stderr.includes(`${fake.url()}/approve#request=pbn_note`), "the approval link is printed");

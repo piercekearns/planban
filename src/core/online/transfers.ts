@@ -8,7 +8,7 @@ import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoar
 import { atomicWriteFile, isAtomicWriteTemp, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
-import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
+import { loadState, pathExists, readDoc, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
@@ -109,6 +109,8 @@ async function publishManifest(cwd: string, manifest: PlanbanProjectManifest, st
     repoId: manifest.repoId, planningRoot: state.planningRoot, roadmapPath: state.roadmapPath, manifestPath: state.manifestPath,
     online: manifest.storage?.kind === "online" ? manifest.storage : undefined,
   }));
+  // Older projects carry the 1.x wording ("live state lives on this device"); bring it up to date.
+  await refreshAgentsBlock(cwd);
   await registerBoardFromState(state);
 }
 

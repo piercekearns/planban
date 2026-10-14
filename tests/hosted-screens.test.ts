@@ -280,3 +280,20 @@ test("a card link from ChatGPT or Claude opens the board for a member and the si
   assert.equal(safeNext("/boards/b#card=c"), "/boards/b#card=c", "the card survives signing in");
   assert.equal(safeNext("/boards/b#request=secret"), "/boards/b", "nothing else in the address does");
 });
+
+test("which card a link opens: one on the board, never anything else, on opening and while open", async () => {
+  const { linkedCardOnBoard } = await import("../src/web/apiPaths");
+  const { readFile } = await import("node:fs/promises");
+  const ids = ["vest", "zips", "weird id"];
+  assert.equal(linkedCardOnBoard("#card=vest", ids), "vest");
+  assert.equal(linkedCardOnBoard("#card=weird%20id", ids), "weird id", "escaped ids from cardUrl");
+  assert.equal(linkedCardOnBoard("#card=gone", ids), null, "a card not on this board (or not visible) opens nothing");
+  assert.equal(linkedCardOnBoard("", ids), null);
+  assert.equal(linkedCardOnBoard("#projection=group", ids), null);
+  const web = await readFile(new URL("../src/web/main.tsx", import.meta.url), "utf8");
+  // On opening a board: the linked card, unless the address asks for a Group view.
+  assert.match(web, /setSelectedId\(isGroupProjection \? params\.get\("groupId"\) \?\? params\.get\("programmeId"\) : opensCard\)/u);
+  // While open: a second link opens its card without reloading the board.
+  assert.match(web, /addEventListener\("hashchange", onHashChange\)/u);
+  assert.match(web, /next === selectedRepoIdRef\.current && cardIdFromHash\(window\.location\.hash\)\) return;/u);
+});

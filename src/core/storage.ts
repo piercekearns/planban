@@ -286,13 +286,29 @@ If Planban tools (names ending in \`planban_<operation>\`) are unavailable in th
 ${AGENTS_BLOCK_END}`;
 }
 
+/**
+ * Brings an existing Planban block in AGENTS.md up to date, keeping everything
+ * around it; called when a board moves between local and online. A project
+ * without the block (never initialised with it, or opted out) is left alone.
+ */
+export async function refreshAgentsBlock(cwd: string): Promise<boolean> {
+  const agentsPath = join(cwd, "AGENTS.md");
+  if (!(await pathExists(agentsPath))) return false;
+  const existing = await readFile(agentsPath, "utf8");
+  if (!existing.includes(AGENTS_BLOCK_START) || !existing.includes(AGENTS_BLOCK_END)) return false;
+  const next = upsertManagedBlock(existing, buildAgentsBlock());
+  if (next === existing) return false;
+  await atomicWriteFile(agentsPath, next);
+  return true;
+}
+
 function upsertManagedBlock(existing: string, block: string): string {
   const start = existing.indexOf(AGENTS_BLOCK_START);
   const end = existing.indexOf(AGENTS_BLOCK_END);
   if (start >= 0 && end >= start) {
     const suffix = end + AGENTS_BLOCK_END.length;
     const before = existing.slice(0, start).trimEnd();
-    const after = existing.slice(suffix).trimStart();
+    const after = existing.slice(suffix).trim();
     return [before, block, after].filter(Boolean).join("\n\n") + "\n";
   }
   return existing.trimEnd().length > 0 ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`;

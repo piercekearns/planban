@@ -20,3 +20,11 @@ export function cardIdFromHash(hash: string): string | null {
     return null;
   }
 }
+
+/** The card a link should open on this board: one that's on it, or none. */
+export function linkedCardOnBoard(hash: string, cardIds: Iterable<string>): string | null {
+  const cardId = cardIdFromHash(hash);
+  if (!cardId) return null;
+  for (const id of cardIds) if (id === cardId) return cardId;
+  return null;
+}

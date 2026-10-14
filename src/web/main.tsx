@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { boardPath, cardIdFromHash, cardPath } from "./apiPaths";
+import { boardPath, cardIdFromHash, cardPath, linkedCardOnBoard } from "./apiPaths";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -4790,6 +4790,19 @@ function BoardView({
     const params = new URLSearchParams(window.location.search);
     return ["group", "programme"].includes(params.get("projection") ?? "") ? params.get("groupId") ?? params.get("programmeId") : null;
   });
+  // A second card link while this board is already open only changes the address's "#card=".
+  const boardItemsRef = useRef(state.roadmap.roadmapItems);
+  boardItemsRef.current = state.roadmap.roadmapItems;
+  useEffect(() => {
+    const onHashChange = () => {
+      if (!cardIdFromHash(window.location.hash)) return;
+      const cardId = linkedCardOnBoard(window.location.hash, boardItemsRef.current.map((item) => item.id));
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+      if (cardId) setSelectedId(cardId);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [showArchived, setShowArchived] = useState(() => normalizeBoardViewPreferences(readBoardViewPreferences(state.manifest.repoId)).showArchived);
   const [search, setSearch] = useState(() => initialBoardQueryState(state.manifest.repoId).search);
   const [queryError, setQueryError] = useState<string | null>(() => initialBoardQueryState(state.manifest.repoId).error);
@@ -4956,9 +4969,8 @@ function BoardView({
     const queryProjection = params.get("projection");
     const isGroupProjection = queryProjection === "group" || queryProjection === "programme";
     // A link to a card (from ChatGPT, Claude or a copied address) opens it once, then leaves the address as the board's.
-    const linkedCard = cardIdFromHash(window.location.hash);
-    if (linkedCard) window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
-    const opensCard = linkedCard && state.roadmap.roadmapItems.some((item) => item.id === linkedCard) ? linkedCard : null;
+    const opensCard = linkedCardOnBoard(window.location.hash, state.roadmap.roadmapItems.map((item) => item.id));
+    if (cardIdFromHash(window.location.hash)) window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
     setSelectedId(isGroupProjection ? params.get("groupId") ?? params.get("programmeId") : opensCard);
     setGroupId(null);
     setProjection(queryProjection === "flattened" ? "flattened" : "main");
@@ -6411,6 +6423,8 @@ function App() {
   useEffect(() => {
     const onPopState = () => {
       const next = repoIdFromPath();
+      // Only the "#card=" part changed (a card link on the open board): the board itself stays.
+      if (next !== null && next === selectedRepoIdRef.current && cardIdFromHash(window.location.hash)) return;
       setSelectedRepoId(next);
       setState(null);
     };
