@@ -120,6 +120,7 @@ import { liveRefreshDecision } from "./liveSync";
 import { capabilities } from "./capabilities";
 import { Dropdown } from "./Dropdown";
 import { useKeyboardInset, usePhoneLayout } from "./phoneLayout";
+import { latestRequestGate } from "./latestRequest";
 import { AccountMenu, ApprovePage, HostedDashboard, InvitePage, JoinedNote, SignInPage, webScreen } from "./hostedScreens";
 import { captureAddressSecrets } from "./webAccount";
 
@@ -4058,11 +4059,12 @@ function DetailView({
   const docIdentity = `${boardId}\n${item.id}\n${previewVersion ?? "current"}`;
   const docIdentityRef = useRef(docIdentity);
   docIdentityRef.current = docIdentity;
+  const [docRequests] = useState(() => latestRequestGate<DocKind>());
   useEffect(() => setDocErrors({}), [docIdentity]);
   const loadDoc = useCallback(
     async (kind: DocKind) => {
-      const asked = `${boardId}\n${item.id}\n${previewVersion ?? "current"}`;
-      const current = () => docIdentityRef.current === asked;
+      // Only the newest request for this kind, for the document still on screen, may land.
+      const current = docRequests.begin(kind, `${boardId}\n${item.id}\n${previewVersion ?? "current"}`, () => docIdentityRef.current);
       setDocErrors((errors) => ({ ...errors, [kind]: undefined }));
       try {
         const payload = await api<DocPayload>(
@@ -4079,20 +4081,12 @@ function DetailView({
         throw error;
       }
     },
-    [boardId, item.id, previewVersion],
+    [boardId, item.id, previewVersion, docRequests],
   );
 
   useEffect(() => {
-    let cancelled = false;
-    for (const kind of availableDocKinds) {
-      void loadDoc(kind).then((payload) => {
-        if (cancelled) return;
-        setDocsByKind((current) => ({ ...current, [kind]: payload }));
-      }, () => undefined);
-    }
-    return () => {
-      cancelled = true;
-    };
+    // loadDoc itself shows the answer, if it is still the newest for the document on screen.
+    for (const kind of availableDocKinds) void loadDoc(kind).catch(() => undefined);
   }, [availableDocKinds, loadDoc]);
 
   useEffect(() => {

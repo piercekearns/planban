@@ -69,10 +69,30 @@ test("touch screens always show the edit buttons, and a document that won't load
   assert.match(web, /onClick=\{\(\) => void loadDoc\(activeTab\)\.catch\(\(\) => undefined\)\}>Try again/u);
 });
 
-test("a document's answer only lands on the card and version it was asked for", async () => {
+test("a document's answer only lands if it is the newest request for the document on screen", async () => {
+  const { latestRequestGate } = await import("../src/web/latestRequest");
+  let onScreen = "A";
+  const gate = latestRequestGate<"spec" | "plan">();
+  // Sol's sequence: open A, switch to B, back to A; that load fails, Try again succeeds, then the first A request answers late.
+  const firstA = gate.begin("spec", "A", () => onScreen);
+  onScreen = "B";
+  const forB = gate.begin("spec", "B", () => onScreen);
+  assert.equal(firstA(), false, "A's answer can't land on B");
+  onScreen = "A";
+  const secondA = gate.begin("spec", "A", () => onScreen);
+  const retryA = gate.begin("spec", "A", () => onScreen);
+  assert.equal(secondA(), false, "the failed load is superseded by Try again");
+  assert.equal(retryA(), true, "Try again's answer lands");
+  assert.equal(firstA(), false, "the first, late answer for A never overwrites it");
+  assert.equal(forB(), false);
+  // Kinds are independent: a Plan request doesn't supersede the Spec's.
+  const plan = gate.begin("plan", "A", () => onScreen);
+  assert.equal(plan(), true);
+  assert.equal(retryA(), true);
   const web = await read("main.tsx");
-  const load = web.slice(web.indexOf("const loadDoc = useCallback("), web.indexOf("[boardId, item.id, previewVersion],", web.indexOf("const loadDoc = useCallback(")));
+  const load = web.slice(web.indexOf("const loadDoc = useCallback("), web.indexOf("[boardId, item.id, previewVersion, docRequests],"));
+  assert.match(load, /docRequests\.begin\(kind,/u);
   assert.match(load, /if \(current\(\)\) setDocsByKind/u);
   assert.match(load, /if \(current\(\)\) setDocErrors/u);
-  assert.match(web, /useEffect\(\(\) => setDocErrors\(\{\}\), \[docIdentity\]\);/u);
+  assert.doesNotMatch(web, /void loadDoc\(kind\)\.then\(/u, "nothing updates documents outside the gate");
 });
