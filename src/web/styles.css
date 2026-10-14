@@ -3835,8 +3835,6 @@ h1 {
 }
 
 .workflow-status-summary { width: max-content; }
-.workflow-status-summary .planban-select-menu,
-.workflow-status-summary .planban-select-trigger { width: max-content; min-width: 112px; }
 
 .detail-item-actions {
   display: inline-flex;
@@ -4674,11 +4672,6 @@ button.content-edit-action:hover {
 .group-creation-fields textarea { resize: vertical; line-height: 1.45; }
 .group-objective-field { grid-column: 1 / -1; }
 
-.planban-select-menu {
-  width: 100%;
-  min-width: 0;
-}
-
 .planban-select-field {
   position: relative;
   display: grid;
@@ -4688,24 +4681,6 @@ button.content-edit-action:hover {
 
 .planban-select-field-label {
   padding-inline: 9px;
-}
-
-.planban-select-trigger {
-  width: 100%;
-  min-width: 0;
-}
-
-.group-placement-modal .version-change-trigger.label-outside {
-  width: 100%;
-}
-
-.planban-select-trigger:disabled {
-  cursor: default;
-  opacity: 0.62;
-}
-
-.planban-select-field.has-disabled-reason .planban-select-trigger:disabled {
-  cursor: not-allowed;
 }
 
 .disabled-control-tooltip {
@@ -4739,26 +4714,10 @@ button.content-edit-action:hover {
   .disabled-control-tooltip { transition: none; }
 }
 
-.planban-select-trigger span,
-.planban-select-trigger b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.planban-select-trigger:focus-visible,
 .group-placement-header > button:focus-visible,
 .group-placement-actions button:focus-visible {
   outline: 2px solid color-mix(in oklab, var(--accent) 28%, transparent);
   outline-offset: 2px;
-}
-
-.planban-select-popover {
-  right: auto;
-  left: 0;
-  width: 100%;
-  min-width: 180px;
-  max-height: min(260px, calc(100vh - 180px));
 }
 
 .group-placement-outcome { color: var(--text); }
@@ -5962,3 +5921,76 @@ button.content-edit-action:hover {
 .people-colhead .col { padding-left: 7px; }
 .people-colhead::after { content: ""; width: 64px; flex: 0 0 auto; }
 .conversion-list { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow: auto; font-size: 12px; line-height: 17px; }
+
+/* One Planban dropdown (Planban 2.0, approved mockup section 11): as wide as its value, the arrow 6 px after the text, the height of the buttons beside it. */
+.pb-dropdown { position: relative; display: inline-flex; max-width: 100%; vertical-align: middle; }
+.pb-dropdown-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; max-width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); padding: 4px 8px 4px 10px; font: 500 12.5px/16px var(--font-sans); white-space: nowrap; cursor: pointer; }
+.pb-dropdown-trigger > span { overflow: hidden; text-overflow: ellipsis; }
+.pb-dropdown-trigger svg { flex: 0 0 auto; color: var(--text-muted); }
+.pb-dropdown-trigger:focus-visible, .pb-dropdown:has(.pb-dropdown-native:focus-visible) .pb-dropdown-trigger { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pb-dropdown.disabled .pb-dropdown-trigger, .pb-dropdown-trigger:disabled { opacity: .55; cursor: default; }
+.pb-dropdown-native { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; font-size: 16px; cursor: pointer; }
+.pb-dropdown-menu { position: fixed; z-index: 2000; box-sizing: border-box; margin: 0; padding: 5px; list-style: none; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, .08); color: var(--text); font: 12.5px/16px var(--font-sans); outline: none; }
+.pb-dropdown-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.pb-dropdown-option.active { background: var(--surface-subtle); }
+.pb-dropdown-tick-space { width: 13px; }
+.pb-dropdown-prefix { color: var(--text-muted); font-weight: 500; }
+.pb-dropdown-option.disabled { opacity: .5; cursor: default; }
+.planban-select-field .pb-dropdown { justify-self: start; }
+
+/* Phones (Planban 2.0, approved mockup section 8): the board is one scrolling list grouped by column. */
+.phone-status-tabs { display: none; }
+@media (max-width: 640px) {
+  .board-screen { height: auto; min-height: 100dvh; overflow: visible; }
+  .board-screen > .app-header { padding: 10px 12px 8px; gap: 2px 8px; }
+  .board-screen .board-header-tool { display: none; }
+  .phone-status-tabs { position: sticky; top: 0; z-index: 29; display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); scrollbar-width: none; }
+  .phone-status-tabs::-webkit-scrollbar { display: none; }
+  .phone-status-tabs button { flex: 0 0 auto; min-height: 30px; border-radius: 999px; background: var(--surface-subtle); color: var(--text); padding: 4px 11px; font: 500 12px/16px var(--font-sans); cursor: pointer; }
+  .phone-status-tabs button span { color: var(--text-muted); margin-left: 3px; }
+  .board-screen .board-grid { display: block; overflow: visible; padding: 0 0 32px; grid-template-columns: none !important; }
+  .board-screen .board-grid .column { scroll-margin-top: 48px; }
+  .board-screen .board-grid .column-header { margin: 0; padding: 14px 12px 4px; border-radius: 0; background: transparent; }
+  .board-screen .board-grid .column-header .icon-button.right { display: none; }
+  .board-screen .board-grid .column-drop-zone { margin: 0; padding: 4px 12px 6px; }
+  .board-screen .board-grid .card-stack { overflow: visible; }
+  .board-screen .board-grid .empty-drop:not(.hidden-cards-state) { display: none; }
+  .board-screen .board-grid .hidden-cards-state { min-height: 0; padding: 4px 0 8px; border: 0; }
+  /* Card actions live on the card's own page on a phone. */
+  .board-screen .board-grid .card { padding-bottom: 12px; min-height: 0; }
+  .board-screen .board-grid .card .card-actions { display: none; }
+}
+
+/* Phones: dialogs are full-height sheets; the card page keeps its actions and Save at the bottom. */
+@media (max-width: 640px) {
+  .modal-backdrop { place-items: end stretch; padding: 0; padding-top: max(24px, env(safe-area-inset-top)); }
+  .modal-backdrop > [role="dialog"] { width: 100%; max-width: none; max-height: none; height: 100%; margin: 0; border-radius: 16px 16px 0 0; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom); }
+  .modal-backdrop > [role="dialog"]::before { content: ""; display: block; width: 36px; height: 4px; margin: 8px auto 0; border-radius: 4px; background: var(--border-strong); }
+  .detail .detail-item-actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; justify-content: space-around; gap: 0; min-height: 52px; padding: 4px 12px calc(4px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); opacity: 1; }
+  .detail .detail-item-actions > button, .detail .detail-item-actions .tooltip-trigger > button { min-width: 44px; min-height: 44px; }
+  .detail { padding-bottom: 64px; }
+  .detail:has(.editor-pane) .detail-item-actions { display: none; }
+  .detail .editor-pane { padding-bottom: 72px; }
+  .detail .editor-pane .editor-actions { position: fixed; left: 0; right: 0; bottom: var(--keyboard-inset, 0px); z-index: 41; margin: 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); }
+  .detail .editor-pane .editor-actions button { flex: 1; justify-content: center; min-height: 40px; }
+  .detail .editor-pane textarea { font-size: 16px; }
+}
+.doc-conflict-note { margin: 0 0 10px; border: 1px solid color-mix(in oklab, var(--accent) 26%, var(--border)); border-radius: 9px; background: color-mix(in oklab, var(--accent) 5%, var(--surface)); padding: 10px 12px; font-size: 13px; line-height: 19px; color: var(--text); }
+.doc-conflict-note b { font-weight: 600; }
+.doc-conflict-theirs { margin: 0 0 10px; border: 1px dashed var(--border-strong); border-radius: 9px; padding: 10px 12px; max-height: 40vh; overflow: auto; }
+.online-board-label { display: block; margin: 0 0 5px; color: var(--text); font-size: 12px; font-weight: 500; }
+.modal-backdrop > [role="dialog"]:focus { outline: none; }
+
+/* Phones: People and Connections rows stack their details under the name (approved mockup section 8, People). */
+@media (max-width: 640px) {
+  .online-board-modal .people-colhead { display: none; }
+  .online-board-modal .people-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; grid-template-areas: "face who role" "face agents remove"; column-gap: 10px; row-gap: 4px; align-items: center; }
+  .online-board-modal .people-row > :first-child { grid-area: face; align-self: start; }
+  .online-board-modal .people-row .who { grid-area: who; min-width: 0; }
+  .online-board-modal .people-row .col:not(.wide) { grid-area: role; justify-self: end; }
+  .online-board-modal .people-row .col.wide { grid-area: agents; display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--text-muted); font-size: 12px; }
+  .online-board-modal .people-row .col { width: auto; }
+  .online-board-modal .people-row:has(.person-face) .col.wide::before { content: "Agents may:"; }
+  .online-board-modal .people-row .col .muted { padding-left: 0; }
+  .online-board-modal .people-row > button, .online-board-modal .people-row > .remove-col { grid-area: remove; justify-self: end; }
+}

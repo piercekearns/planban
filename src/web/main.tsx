@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { boardPath, cardPath } from "./apiPaths";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -99,7 +99,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
-import { BoardPeopleContext, BoardSettingsModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, SignedOutScreen, useBoardPeople, useOnlineStatus, type SignedOut } from "./onlineBoard";
+import { BoardPeopleContext, BoardSettingsModal, NewBoardModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, SignedOutScreen, useBoardPeople, useOnlineStatus, type SignedOut } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -118,6 +118,8 @@ import {
 } from "../core/activity";
 import { liveRefreshDecision } from "./liveSync";
 import { capabilities } from "./capabilities";
+import { Dropdown } from "./Dropdown";
+import { useKeyboardInset, usePhoneLayout } from "./phoneLayout";
 import { newIdempotencyKey } from "./hostedAdapter";
 import { watchHostedBoard } from "./hostedLive";
 import { hostedAdapter, pageFetch } from "./transport";
@@ -175,6 +177,8 @@ interface RoadmapItem {
 
 interface PlanbanState {
   staleness?: { cards: Record<string, StalenessSignal[]> };
+  /** On the web: the person's role on this board. */
+  hosted?: { boardId: string; role: "owner" | "editor" | "viewer" | null; authority: string | null };
   cwd: string;
   manifest: { repoId: string };
   manifestPath: string;
@@ -3389,6 +3393,7 @@ interface PlanbanSelectOption<T extends string> {
   disabled?: boolean;
 }
 
+/** The board page's dropdowns: the one Planban dropdown, with an optional label above it. */
 function PlanbanSelectMenu<T extends string>({
   label,
   value,
@@ -3408,58 +3413,26 @@ function PlanbanSelectMenu<T extends string>({
   initialFocus?: boolean;
   onChange: (value: T) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const disabledReasonId = useId();
-  const { containerRef, onKeyDown } = useListboxPopover(open, setOpen, disabled);
-  const selected = options.find((option) => option.value === value) ?? options[0];
-
-  const menu = (
-    <div ref={containerRef} className="version-change-menu planban-select-menu" onKeyDown={onKeyDown}>
-      <button
-        type="button"
-        className={`version-change-trigger planban-select-trigger ${labelPlacement === "outside" ? "label-outside" : ""}`}
-        aria-label={`${label}: ${selected?.label ?? value}`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-describedby={disabled && disabledReason ? disabledReasonId : undefined}
-        disabled={disabled}
-        data-dialog-initial-focus={initialFocus ? true : undefined}
-        onClick={() => setOpen((current) => !current)}
-      >
-        {labelPlacement === "inside" ? <span>{label}</span> : null}
-        <b>{selected?.label ?? value}</b>
-        <ChevronDown size={14} />
-      </button>
-      {open ? (
-        <div className="version-change-popover planban-select-popover" role="listbox" aria-label={label}>
-          {options.map((option) => (
-            <button
-              type="button"
-              key={option.value}
-              className={option.value === value ? "active" : ""}
-              role="option"
-              aria-selected={option.value === value}
-              disabled={disabled || option.disabled}
-              onClick={() => {
-                setOpen(false);
-                onChange(option.value);
-              }}
-            >
-              <span><b>{option.label}</b></span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
+  const dropdown = (
+    <Dropdown
+      label={label}
+      value={value}
+      options={options}
+      disabled={disabled}
+      initialFocus={initialFocus}
+      prefix={labelPlacement === "inside" ? label : undefined}
+      describedBy={disabled && disabledReason ? disabledReasonId : undefined}
+      onChange={onChange}
+    />
   );
-
   return labelPlacement === "outside" ? (
     <div className={`planban-select-field ${disabled && disabledReason ? "has-disabled-reason" : ""}`}>
       <span className="planban-select-field-label">{label}</span>
-      {menu}
+      {dropdown}
       {disabled && disabledReason ? <span className="disabled-control-tooltip" id={disabledReasonId} role="tooltip">{disabledReason}</span> : null}
     </div>
-  ) : menu;
+  ) : dropdown;
 }
 
 function WorkflowStatusMenu({
@@ -3746,6 +3719,9 @@ function DetailView({
   const [docsByKind, setDocsByKind] = useState<Partial<Record<DocKind, DocPayload>>>({});
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  /** A save refused because the document changed meanwhile: the newer version, and who made it. */
+  const [conflict, setConflict] = useState<{ theirs: DocPayload; who: string | null; showing: boolean } | null>(null);
+  const boardPeople = useContext(BoardPeopleContext);
   const [objectiveEditing, setObjectiveEditing] = useState(false);
   const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
   const [busy, setBusy] = useState(false);
@@ -3764,12 +3740,18 @@ function DetailView({
   const [groupDropIntent, setGroupDropIntent] = useState<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
   const [groupColumnDropPreview, setGroupColumnDropPreview] = useState<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
   const [groupOptimisticItems, setGroupOptimisticItems] = useState<RoadmapItem[] | null>(null);
-  const groupSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
+  const phone = usePhoneLayout();
+  const groupPointer = useSensor(PointerSensor, { activationConstraint: { distance: 3 } });
+  // No dragging for viewers, or on a phone, where a swipe scrolls.
+  const groupSensors = useSensors(...(phone || state.hosted?.role === "viewer" ? [] : [groupPointer]));
   const groupDropIntentRef = useRef<{ targetId: string; operation: HierarchyDropOperation } | null>(null);
   const groupColumnDropPreviewRef = useRef<{ status: Status; targetId: string | null; operation: "after" | "empty" } | null>(null);
   const groupDropRectsRef = useRef(new Map<string, HierarchyDropRect>());
   const doc = docsByKind[activeTab] ?? null;
   const isPreviewing = previewVersion !== null;
+  // A viewer on the web reads the card, its Spec, Plan and History, and changes nothing.
+  const viewOnly = state.hosted?.role === "viewer";
+  const locked = isPreviewing || viewOnly;
   const currentVersion = history?.currentVersion ?? null;
   const cardHistoryEntries = useMemo(
     () => (history?.entries ?? []).filter((entry) => isCardDetailsHistory(entry, item.id)),
@@ -4090,23 +4072,45 @@ function DetailView({
   useEffect(() => {
     setEditing(false);
     setDraft(doc?.markdown ?? "");
+    setConflict(null);
   }, [activeTab, doc]);
+
+  /** Who last changed this document, for the conflict note: "Maya", "Maya's agent", or null. */
+  async function latestDocAuthor(): Promise<string | null> {
+    const latest = await api<HistoryPayload>(boardPath(boardId, "/history")).catch(() => null);
+    const entry = latest?.entries.filter((candidate) => isDocHistory(candidate, item.id, activeTab)).sort((a, b) => b.version - a.version)[0];
+    if (!entry?.attribution) return null;
+    const name = boardPeople?.people.find((person) => person.userId === entry.attribution!.userId)?.name;
+    if (!name) return null;
+    const first = name.split(/\s+/)[0] ?? name;
+    return entry.attribution.actor === "agent" ? `${first}'s agent` : first;
+  }
 
   async function saveDoc() {
     setBusy(true);
+    // After a conflict, the person has been shown that the document changed; save over that version.
+    const base = conflict?.theirs ?? doc;
     try {
       const payload = await api<DocPayload>(cardPath(boardId, item.id, `/docs/${activeTab}`), {
         method: "PUT",
-        body: JSON.stringify({ markdown: draft, expectedMtimeMs: doc?.mtimeMs ?? null }),
+        body: JSON.stringify({ markdown: draft, expectedMtimeMs: base?.mtimeMs ?? null }),
       });
+      setConflict(null);
       setDocsByKind((current) => ({ ...current, [activeTab]: payload }));
       setDraft(payload.markdown);
       setEditing(false);
       onStateRefresh();
     } catch (error) {
+      if ((error as { status?: number } | null)?.status === 409) {
+        // Someone else saved first. Their version is fetched to look at; the person's text stays in the editor.
+        const theirs = await api<DocPayload>(cardPath(boardId, item.id, `/docs/${activeTab}`)).catch(() => null);
+        if (theirs) {
+          setConflict({ theirs, who: await latestDocAuthor(), showing: false });
+          return;
+        }
+      }
+      // Nothing is thrown away: the text stays in the editor to try again.
       window.alert(error instanceof Error ? error.message : "Document save failed");
-      const payload = await loadDoc(activeTab);
-      setDraft(payload.markdown);
     } finally {
       setBusy(false);
     }
@@ -4149,9 +4153,11 @@ function DetailView({
           <div className="detail-history-actions">
             <span>Viewing v{previewVersion}</span>
             <button onClick={onReturnToCurrent}>Return to current</button>
-            <button className="primary" onClick={() => onRestoreCard?.(item.id)}>
-              Restore card details
-            </button>
+            {!viewOnly ? (
+              <button className="primary" onClick={() => onRestoreCard?.(item.id)}>
+                Restore card details
+              </button>
+            ) : null}
           </div>
         ) : null}
         </div>
@@ -4329,7 +4335,7 @@ function DetailView({
             </div>
           ) : item.summary ? (
             <div className="group-objective-body editable-content-region">
-              {!isPreviewing ? (
+              {!locked ? (
                 <TooltipButton
                   label="Edit Group objective"
                   className="content-edit-action"
@@ -4340,7 +4346,7 @@ function DetailView({
               ) : null}
               <p>{item.summary}</p>
             </div>
-          ) : isPreviewing ? (
+          ) : locked ? (
             <div className="group-objective-empty"><p>No objective recorded.</p></div>
           ) : (
             <div className="group-objective-empty">
@@ -4354,7 +4360,7 @@ function DetailView({
       <section className={`overview-panel ${item.isGroup ? "after-group-objective" : ""}`}>
         <div className="meta-grid">
           <div className="workflow-status-summary">
-            {isPreviewing ? <><span>Status</span><b>{labels[item.status]}</b></> : (
+            {locked ? <><span>Status</span><b>{labels[item.status]}</b></> : (
               <WorkflowStatusMenu status={item.status} busy={busy} onChange={(status) => void changeWorkflowStatus(status)} />
             )}
           </div>
@@ -4371,17 +4377,17 @@ function DetailView({
                   showReferenceCopied();
                 })}
               ><CopyConfirmationIcon confirmed={referenceCopied} /></TooltipButton>
-              {!item.isGroup ? (
+              {!item.isGroup && !viewOnly ? (
                 <TooltipButton label="Move Item" aria-expanded={placementOpen} onClick={() => setPlacementOpen(true)}>
                   <ArrowRightLeft size={14} />
                 </TooltipButton>
               ) : null}
-              {item.status !== "complete" && item.status !== "archived" ? (
+              {item.status !== "complete" && item.status !== "archived" && !viewOnly ? (
                 <TooltipButton label="Mark complete" disabled={busy} onClick={() => void changeWorkflowStatus("complete")}>
                   <CheckCircle2 size={14} />
                 </TooltipButton>
               ) : null}
-              {item.status !== "archived" ? (
+              {item.status !== "archived" && !viewOnly ? (
                 <TooltipButton label="Archive" disabled={busy} onClick={() => void changeWorkflowStatus("archived")}>
                   <Archive size={14} />
                 </TooltipButton>
@@ -4537,13 +4543,30 @@ function DetailView({
         {doc ? (
           editing ? (
             <div className="editor-pane">
+              {conflict ? (
+                <div className="doc-conflict-note" role="alert">
+                  <b>{conflict.who ? `${conflict.who} changed this ${docKindLabel(activeTab)} while you were editing.` : `This ${docKindLabel(activeTab)} changed while you were editing.`}</b>{" "}
+                  Your text is kept. Look at {conflict.who ? `${conflict.who}'s` : "the new"} version, then save again.
+                </div>
+              ) : null}
+              {conflict?.showing ? (
+                <article className="markdown-body doc-conflict-theirs" aria-label={`${conflict.who ? `${conflict.who}'s` : "The new"} version`}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(conflict.theirs.markdown)}</ReactMarkdown>
+                </article>
+              ) : null}
               <AutoSizingTextarea value={draft} onChange={(event) => setDraft(event.target.value)} />
               <div className="editor-actions">
                 <button disabled={busy} onClick={() => {
                   setDraft(doc.markdown);
+                  setConflict(null);
                   setEditing(false);
                 }}>Cancel</button>
-                <button className="primary" onClick={saveDoc} disabled={busy || draft === doc.markdown}>
+                {conflict ? (
+                  <button disabled={busy} aria-pressed={conflict.showing} onClick={() => setConflict({ ...conflict, showing: !conflict.showing })}>
+                    {conflict.showing ? "Hide" : "See"} {conflict.who ? `${conflict.who}'s` : "the new"} version
+                  </button>
+                ) : null}
+                <button className="primary" onClick={saveDoc} disabled={busy || draft === (conflict?.theirs.markdown ?? doc.markdown)}>
                   {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
                   Save {activeTab}
                 </button>
@@ -4551,7 +4574,7 @@ function DetailView({
             </div>
           ) : doc.exists ? (
             <article className="markdown-body">
-              {canRestoreActiveDoc ? (
+              {canRestoreActiveDoc && !viewOnly ? (
                 <div className="doc-preview-row">
                   <span>Historical {docKindLabel(activeTab).toLowerCase()}</span>
                   <button className="primary" onClick={() => onRestoreDoc?.(item.id, activeTab)}>
@@ -4560,7 +4583,7 @@ function DetailView({
                 </div>
               ) : null}
               <div className="markdown-content-region">
-                {!isPreviewing ? (
+                {!locked ? (
                   <TooltipButton
                     label={`Edit ${docKindLabel(activeTab)}`}
                     className="content-edit-action doc-content-edit-action"
@@ -4575,6 +4598,10 @@ function DetailView({
           ) : isPreviewing ? (
             <div className="missing-doc">
               <p>No {activeTab} document snapshot exists for this card in v{previewVersion}.</p>
+            </div>
+          ) : viewOnly ? (
+            <div className="missing-doc">
+              <p>No {activeTab} document exists for this card yet.</p>
             </div>
           ) : (
             <div className="missing-doc">
@@ -4715,6 +4742,19 @@ function WorkItemSearchModal({
   );
 }
 
+/** On a phone: one chip per column, each jumping to its group in the list. */
+function PhoneStatusTabs({ statuses: shown, counts }: { statuses: readonly Status[]; counts: Record<string, number> }) {
+  return (
+    <nav className="phone-status-tabs" aria-label="Columns">
+      {shown.map((status) => (
+        <button key={status} type="button" onClick={() => document.querySelector(`.board-grid [data-status="${status}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" })}>
+          {labels[status]} <span>{counts[status] ?? 0}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function BoardView({
   state,
   boards,
@@ -4787,7 +4827,12 @@ function BoardView({
   const [activityDetailEditSerial, setActivityDetailEditSerial] = useState(0);
   const activityEditCursorRef = useRef(0);
   const activityEditSerialRef = useRef(0);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
+  const phone = usePhoneLayout();
+  // A viewer on the web reads everything and changes nothing.
+  const viewOnly = state.hosted?.role === "viewer";
+  const pointerSensor = useSensor(PointerSensor, { activationConstraint: { distance: 3 } });
+  // Phones move cards with Status and Move to, not by dragging, so a swipe always scrolls.
+  const sensors = useSensors(...(phone || viewOnly ? [] : [pointerSensor]));
   const displayState = preview?.state ?? state;
   const previewVersion = preview?.version ?? null;
   const isPreviewing = preview !== null;
@@ -5726,9 +5771,11 @@ function BoardView({
             </span>
           </div>
           <button onClick={returnToCurrent}>Close preview</button>
-          <button className="primary" onClick={restoreBoardFromPreview}>
-            Restore board state
-          </button>
+          {!viewOnly ? (
+            <button className="primary" onClick={restoreBoardFromPreview}>
+              Restore board state
+            </button>
+          ) : null}
         </section>
       ) : null}
 
@@ -5748,7 +5795,9 @@ function BoardView({
             {queryResult.matches.length === 0 ? <div className="query-empty">No Work Items match this query.</div> : null}
           </div>
         </section>
-      ) : <DndContext
+      ) : <>
+      {phone ? <PhoneStatusTabs statuses={visibleStatuses} counts={Object.fromEntries(visibleStatuses.map((status) => [status, grouped[status].length]))} /> : null}
+      <DndContext
         sensors={sensors}
         collisionDetection={isFlattenedRoot ? boardCollisionDetection : hierarchyCollisionDetection}
         onDragStart={onDragStart}
@@ -5767,7 +5816,7 @@ function BoardView({
               key={status}
               status={status}
               items={grouped[status]}
-              collapsed={collapsed[status] === true}
+              collapsed={!phone && collapsed[status] === true}
               cardsHidden={hiddenCards[status] === true}
               highlighted={dragOver === status}
               onToggleCollapsed={() => setCollapsed((value) => ({ ...value, [status]: !value[status] }))}
@@ -5776,7 +5825,7 @@ function BoardView({
               onCopyReference={(item) => copyWorkItemReference(state, item)}
               onMove={moveItem}
               onDelete={deleteItem}
-              readOnly={isPreviewing}
+              readOnly={isPreviewing || viewOnly}
               groupRollups={isFlattenedRoot ? new Map() : groupRollups}
               onOpenGroup={openGroup}
               expandedGroupIds={isFlattenedRoot ? new Set() : expandedGroupIds}
@@ -5812,7 +5861,8 @@ function BoardView({
             </div>
           ) : null}
         </DragOverlay>
-      </DndContext>}
+      </DndContext>
+      </>}
     </main>
     </BoardPeopleContext.Provider>
     </StalenessContext.Provider>
@@ -5832,6 +5882,7 @@ function BoardDashboard({
   const [pendingAction, setPendingAction] = useState<{ kind: "archive" | "delete"; board: BoardRecord } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [busyAction, setBusyAction] = useState<"archive" | "delete" | "restore" | null>(null);
+  const [newBoardOpen, setNewBoardOpen] = useState(false);
   const [toast, setToast] = useState<{ tone: "success" | "error"; message: string; detail?: string } | null>(null);
   const boardActionDialogRef = useDialogFocus<HTMLElement>(Boolean(pendingAction));
   const activeBoards = boards.filter((board) => !board.archivedAt);
@@ -5956,7 +6007,16 @@ function BoardDashboard({
             </span>
           </button>
         ) : null}
+        {capabilities.hosted ? (
+          <button className="primary" onClick={() => setNewBoardOpen(true)}><Plus size={14} /> New board</button>
+        ) : null}
       </header>
+      {newBoardOpen ? (
+        <NewBoardModal onClose={() => setNewBoardOpen(false)} onCreated={(repoId) => {
+          setNewBoardOpen(false);
+          void onBoardsChanged().then(() => onSelectBoard(repoId));
+        }} />
+      ) : null}
       <section className="board-list">
         {visibleBoards.length > 0 ? (
           visibleBoards.map((board) => (
@@ -6283,6 +6343,7 @@ function App() {
 
   // On the web: the board's revision arrives over the service's live
   // connection, and the board reloads only when it differs from what's shown.
+  useKeyboardInset();
   const shownRevisionRef = useRef<number | null>(null);
   shownRevisionRef.current = state?.roadmap.revision ?? null;
   const [liveEpoch, setLiveEpoch] = useState(0);

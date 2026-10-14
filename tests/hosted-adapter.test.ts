@@ -418,3 +418,23 @@ test("the page is hosted everywhere but the local server's loopback address, and
   for (const [name, value] of Object.entries(web)) if (name !== "hosted") assert.equal(value, false, name);
   for (const [name, value] of Object.entries(capabilitiesFor(false))) assert.equal(value, name !== "hosted", name);
 });
+
+test("New board on the web creates an empty online board owned by the person, within the daily limit", async () => {
+  await withServiceEnv(async () => {
+    const { DAILY_NEW_BOARDS } = await import("../online/service/convex/model/limits");
+    const service = memoryService();
+    const person = await service.signIn("user_new", "Nia New");
+    const adapter = service.adapterFor(person.token);
+    const created = await page(adapter, "/api/boards", { method: "POST", body: { title: "Deadleg launch" } });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.deepEqual(created.body, { board: { repoId: "deadleg-launch", title: "Deadleg launch" } });
+    const state = await page(adapter, boardPath("deadleg-launch", "/state"));
+    assert.equal(state.body.hosted.role, "owner");
+    assert.equal(state.body.roadmap.roadmapItems.length, 0);
+    assert.equal((await page(adapter, "/api/boards", { method: "POST", body: { title: "   " } })).status, 422, "a board needs a name");
+    for (let i = 1; i < DAILY_NEW_BOARDS; i += 1) assert.equal((await page(adapter, "/api/boards", { method: "POST", body: { title: `Board ${i}` } })).status, 200);
+    const limited = await page(adapter, "/api/boards", { method: "POST", body: { title: "One too many" } });
+    assert.equal(limited.status, 429);
+    assert.match(limited.body.error, /today's limit/);
+  });
+});

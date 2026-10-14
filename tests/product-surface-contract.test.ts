@@ -31,7 +31,9 @@ test("the accepted board and detail simplification remains visible in the produc
   assert.match(styles, /\.board-screen > \.app-header\s*\{[^}]*padding-left:\s*16px;/su);
   assert.match(styles, /button\.content-edit-action\s*\{[^}]*width:\s*28px;[^}]*height:\s*28px;/su);
   assert.doesNotMatch(styles, /button\.content-edit-action:hover\s*\{[^}]*border-color:/su);
-  assert.match(styles, /\.group-placement-modal \.version-change-trigger\.label-outside\s*\{[^}]*width:\s*100%;/su);
+  // One Planban dropdown everywhere (Planban 2.0, approved mockup section 11).
+  assert.match(web, /function PlanbanSelectMenu[\s\S]*?<Dropdown/u);
+  assert.doesNotMatch(web, /<select\b/u);
   assert.match(web, /className="empty-drop hidden-cards-state"/u);
   assert.match(styles, /\.hidden-cards-state > span\s*\{[^}]*border-radius:\s*999px;/su);
   assert.match(styles, /\.update-available-button\s*\{[^}]*border-radius:\s*999px;[^}]*background:\s*var\(--accent\);[^}]*color:\s*#fff;/su);

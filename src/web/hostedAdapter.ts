@@ -235,6 +235,16 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
       },
     },
 
+    // New board: an empty online board owned by the person (within their board limits).
+    {
+      method: "POST", pattern: ["boards"], handle: async (_params, request) => {
+        const created = await read<{ boardId: string; title: string; revision: number }>(await call("POST", "/api/v1/boards", { title: typeof request.body.title === "string" ? request.body.title : "" }, request.signal ? { signal: request.signal } : {}));
+        if (!created.ok) return created.reply;
+        roles.set(created.value.boardId, { role: "owner", authority: "online" });
+        return reply({ board: { repoId: created.value.boardId, title: created.value.title } });
+      },
+    },
+
     // Live updates come from the service's own subscription (hostedLive.ts), never this poll.
     { method: "GET", pattern: ["live"], handle: async () => reply({ liveVersion: 0, stateVersion: 0, boardsVersion: 0, activityVersion: 0, activities: [] }) },
 

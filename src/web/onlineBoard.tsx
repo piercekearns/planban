@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { Bot, Check, Cloud, Copy, Info, KeyRound, Laptop, Link, Loader2, Mail, Users, X } from "lucide-react";
 import { capabilities } from "./capabilities";
 import { pageFetch } from "./transport";
+import { Dropdown } from "./Dropdown";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -653,6 +654,8 @@ export function HistoryAuthor({ attribution, actor }: { attribution?: { userId: 
 
 const LEVEL_LABEL = { read: "Read", plan: "Plan", complete: "Plan and complete" } as const;
 const ROLE_LABEL = { owner: "Owner", editor: "Editor", viewer: "Viewer" } as const;
+const ROLE_OPTIONS = [{ value: "editor", label: "Editor" }, { value: "viewer", label: "Viewer" }] as const;
+const levelOptions = (levels: ReadonlyArray<keyof typeof LEVEL_LABEL>) => levels.map((level) => ({ value: level, label: LEVEL_LABEL[level] }));
 
 /** An invitation nobody has used up yet, as the owner's invite list returns it. */
 export interface WaitingInvite {
@@ -739,18 +742,14 @@ export function PeopleModal({ repoId, boardTitle, onInvite, onClose }: { repoId:
             <div className="who"><b>{person.name}{person.you ? <span className="muted"> (you)</span> : null}</b><small>{person.you ? "You" : ROLE_LABEL[person.role]}</small></div>
             <div className="col">
               {iOwn && person.role !== "owner" ? (
-                <select className="online-board-select" value={person.role} disabled={busy} aria-label={`${person.name}'s role`}
-                  onChange={(event) => void act(() => request(`${base}/members/${encodeURIComponent(person.userId)}/role`, { role: event.target.value }))}>
-                  <option value="editor">Editor</option><option value="viewer">Viewer</option>
-                </select>
+                <Dropdown value={person.role as "editor" | "viewer"} options={ROLE_OPTIONS} disabled={busy} label={`${person.name}'s role`}
+                  onChange={(role) => void act(() => request(`${base}/members/${encodeURIComponent(person.userId)}/role`, { role }))} />
               ) : <span className="muted">{ROLE_LABEL[person.role]}</span>}
             </div>
             <div className="col wide">
               {person.you ? (
-                <select className="online-board-select" value={person.agentLevel} disabled={busy} aria-label="What your agents may do"
-                  onChange={(event) => void act(() => request(`${base}/people/me/agents`, { level: event.target.value }))}>
-                  {myLevels.map((level) => <option key={level} value={level}>{LEVEL_LABEL[level]}</option>)}
-                </select>
+                <Dropdown value={person.agentLevel} options={levelOptions(myLevels)} disabled={busy} label="What your agents may do"
+                  onChange={(level) => void act(() => request(`${base}/people/me/agents`, { level }))} />
               ) : <span className="muted">{LEVEL_LABEL[person.agentLevel]}</span>}
             </div>
             {iOwn && person.role !== "owner" ? (
@@ -808,14 +807,14 @@ export function InviteModal({ repoId, boardTitle, onClose }: { repoId: string; b
       <div className="online-board-section"><h3>By email</h3>
         <div className="online-board-row">
           <input className="online-board-input" type="email" placeholder="name@example.com" value={email} onChange={(event) => setEmail(event.target.value)} aria-label="Email address" />
-          <select className="online-board-select" value={emailRole} onChange={(event) => setEmailRole(event.target.value as "editor" | "viewer")} aria-label="Role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select>
+          <Dropdown value={emailRole} options={ROLE_OPTIONS} onChange={setEmailRole} label="Role" />
           <button className="online-board-button primary-accent" disabled={busy || !email.trim()} onClick={() => void invite({ email, role: emailRole })}><Mail size={13} /> Send invite</button>
         </div>
       </div>
       <div className="online-board-section"><h3>By link</h3>
         <div className="online-board-row">
           <div className="grow"><b><Link size={14} /> Anyone with the link can join as</b><small>The link works for 7 days. Each person still signs in with their own account.</small></div>
-          <select className="online-board-select" value={linkRole} onChange={(event) => setLinkRole(event.target.value as "editor" | "viewer")} aria-label="Role for the link"><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
+          <Dropdown value={linkRole} options={[ROLE_OPTIONS[1], ROLE_OPTIONS[0]]} onChange={setLinkRole} label="Role for the link" />
           <button className="online-board-button" disabled={busy} onClick={() => void invite({ role: linkRole })}><Copy size={13} /> Copy link</button>
         </div>
         {made ? <input className="online-board-input" style={{ marginTop: 10 }} readOnly value={made} onFocus={(event) => event.target.select()} aria-label="Invite link" /> : null}
@@ -883,10 +882,8 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
       <div className="who"><b>{connection.kind === "oauth" ? connection.clientName : connection.name}{connection.current ? <span className="muted"> ({capabilities.hosted ? "this browser" : "this Mac"})</span> : null}</b><small>{where(connection)} · last used {timeAgo(connection.lastUsedAt)}</small></div>
       <div className="col wide">
         {levelEditable ? (
-          <select className="online-board-select" value={connection.level} disabled={busy} aria-label="What it may do"
-            onChange={(event) => void act(() => request(`/api/online/connections/${encodeURIComponent(connection.id)}/access`, { level: event.target.value }))}>
-            {(["read", "plan", "complete"] as const).map((level) => <option key={level} value={level}>{LEVEL_LABEL[level]}</option>)}
-          </select>
+          <Dropdown value={connection.level} options={levelOptions(["read", "plan", "complete"])} disabled={busy} label="What it may do"
+            onChange={(level) => void act(() => request(`/api/online/connections/${encodeURIComponent(connection.id)}/access`, { level }))} />
         ) : <span className="muted">{connection.kind === "machine" ? "Everything you can do" : LEVEL_LABEL[connection.level]}</span>}
       </div>
       {connection.current ? <span className="remove-col" /> : (
@@ -927,6 +924,37 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
         </>
       )}
       {error ? <div className="online-board-section"><p className="online-board-error" role="alert">{error}</p></div> : null}
+    </Modal>
+  );
+}
+
+/** New board on the web: an empty online board with the usual columns (approved mockup section 8, "A new board"). */
+export function NewBoardModal({ onCreated, onClose }: { onCreated: (repoId: string) => void; onClose: () => void }) {
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { board } = await request<{ board: { repoId: string; title: string } }>("/api/boards", { title: title.trim() });
+      onCreated(board.repoId);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal eyebrow="Your boards" title="New board" onClose={onClose}
+      footer={<><button onClick={onClose}>Cancel</button><button className="primary update-now-action" disabled={busy || !title.trim()} onClick={() => void create()}>{busy ? <Loader2 size={14} className="spin" /> : null} Create board</button></>}>
+      <div className="online-board-body">
+        <label className="online-board-label" htmlFor="new-board-name">Name</label>
+        <input id="new-board-name" className="online-board-input" value={title} maxLength={120} autoFocus
+          onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && title.trim() && !busy) void create(); }} />
+        <p className="muted" style={{ marginTop: 8 }}>An empty online board with the usual columns. Only you can see it until you invite people.</p>
+        {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+      </div>
     </Modal>
   );
 }
