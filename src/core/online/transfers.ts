@@ -928,7 +928,9 @@ export async function keepSeparateBoard(cwdInput: string, options: { title?: str
     await withBoardWriteLock(planningRoot, async () => {
       await cp(planningRoot, newRoot, {
         recursive: true, errorOnExist: true,
-        filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json", "KEEP-SEPARATE.json"].includes(basename(source)),
+        // Also skip another writer's half-finished atomic write (".<name>.<pid>.<time>.<id>.tmp"),
+        // which can vanish mid-copy: the stale-copy check writes its marker without this lock.
+        filter: (source) => ![LOCK_DIR, QUEUE_DIR, "online-transfer.json", "KEEP-SEPARATE.json"].includes(basename(source)) && !/^\..+\.tmp$/.test(basename(source)),
       });
     });
     await mkdir(dirname(manifestPath(newCwd)), { recursive: true });
