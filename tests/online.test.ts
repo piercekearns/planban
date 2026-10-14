@@ -110,7 +110,9 @@ async function fakeService() {
       if (path === "/oauth/machine/start") {
         auth = new URL(url + "/authorize?" + new URLSearchParams(body));
         const launch = "pbl_" + "l".repeat(43);
-        return json(200, { launch, launchUrl: url + "/oauth/machine/launch?launch=" + launch, serverNow: Date.now(), expiresAt: Date.now() + leaseMs });
+        // One clock reading, so the lease is exactly leaseMs long (two readings could make it a millisecond too long).
+        const serverNow = Date.now();
+        return json(200, { launch, launchUrl: url + "/oauth/machine/launch?launch=" + launch, serverNow, expiresAt: serverNow + leaseMs });
       }
       if (path === "/oauth/machine/cancel") return json(200, { ended: true });
       if (path === "/oauth/machine/launch" && req.method === "GET") {
