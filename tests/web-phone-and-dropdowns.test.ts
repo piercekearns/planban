@@ -60,3 +60,11 @@ test("the page's stylesheet opens and closes every block, so no later rule is si
   }
   assert.equal(depth, 0, "every block is closed");
 });
+
+test("touch screens always show the edit buttons, and a document that won't load says so with Try again", async () => {
+  const styles = await read("styles.css");
+  assert.match(styles, /@media \(hover: none\), \(pointer: coarse\) \{\s*button\.content-edit-action \{\s*opacity: 1;\s*pointer-events: auto;/su, "as specific as the rule that hides them");
+  const web = await read("main.tsx");
+  assert.match(web, /Couldn't load this \{docKindLabel\(activeTab\)\.toLowerCase\(\)\}/u);
+  assert.match(web, /onClick=\{\(\) => void loadDoc\(activeTab\)\.catch\(\(\) => undefined\)\}>Try again/u);
+});

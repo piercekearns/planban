@@ -4254,8 +4254,9 @@ button.content-edit-action:hover {
   font-size: 11px;
 }
 
-@media (hover: none) {
-  .content-edit-action {
+/* Touch screens have no hover, so the edit buttons are always shown (as specific as the rule that hides them). */
+@media (hover: none), (pointer: coarse) {
+  button.content-edit-action {
     opacity: 1;
     pointer-events: auto;
   }

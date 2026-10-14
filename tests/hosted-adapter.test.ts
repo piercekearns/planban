@@ -438,3 +438,32 @@ test("New board on the web creates an empty online board owned by the person, wi
     assert.match(limited.body.error, /today's limit/);
   });
 });
+
+test("a read that stalls is given up after its time limit and tried once more, never left pending", async () => {
+  await withServiceEnv(async () => {
+    const { service, owner, boardId } = await ownerWithBoard();
+    const real = service.browserSend(owner.token);
+    let stalls = 1;
+    let attempts = 0;
+    const { createHostedAdapter } = await import("../src/web/hostedAdapter");
+    const adapter = createHostedAdapter({
+      origin: PUBLIC, retryDelayMs: 0, attemptTimeoutMs: 50,
+      send: async (path, init) => {
+        attempts += 1;
+        if (stalls > 0) {
+          stalls -= 1;
+          // Never answers, until the attempt's own time limit gives up on it.
+          return new Promise<Response>((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(init.signal!.reason)));
+        }
+        return real(path, init);
+      },
+    });
+    const state = await page(adapter, boardPath(boardId, "/state"));
+    assert.equal(state.status, 200);
+    assert.equal(attempts, 2);
+    stalls = 2;
+    attempts = 0;
+    await assert.rejects(adapter.fetch(boardPath(boardId, "/state")), "two stalls in a row: the page hears it failed");
+    assert.equal(attempts, 2);
+  });
+});

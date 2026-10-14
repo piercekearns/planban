@@ -4052,15 +4052,25 @@ function DetailView({
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [busy, item.status, placementOpen]);
 
+  /** A Spec or Plan that couldn't be read: said plainly, with Try again, never "Loading" for ever. */
+  const [docErrors, setDocErrors] = useState<Partial<Record<DocKind, string>>>({});
   const loadDoc = useCallback(
     async (kind: DocKind) => {
-      const payload = await api<DocPayload>(
-        previewVersion
-          ? cardPath(boardId, item.id, `/docs/${kind}`, previewVersion)
-          : cardPath(boardId, item.id, `/docs/${kind}`),
-      );
-      setDocsByKind((current) => ({ ...current, [kind]: payload }));
-      return payload;
+      setDocErrors((current) => ({ ...current, [kind]: undefined }));
+      try {
+        const payload = await api<DocPayload>(
+          previewVersion
+            ? cardPath(boardId, item.id, `/docs/${kind}`, previewVersion)
+            : cardPath(boardId, item.id, `/docs/${kind}`),
+          undefined,
+          30_000,
+        );
+        setDocsByKind((current) => ({ ...current, [kind]: payload }));
+        return payload;
+      } catch (error) {
+        setDocErrors((current) => ({ ...current, [kind]: error instanceof Error ? error.message : "This document couldn't be loaded." }));
+        throw error;
+      }
     },
     [boardId, item.id, previewVersion],
   );
@@ -4071,7 +4081,7 @@ function DetailView({
       void loadDoc(kind).then((payload) => {
         if (cancelled) return;
         setDocsByKind((current) => ({ ...current, [kind]: payload }));
-      });
+      }, () => undefined);
     }
     return () => {
       cancelled = true;
@@ -4621,6 +4631,11 @@ function DetailView({
               <button onClick={() => setEditing(true)}>Create {activeTab}</button>
             </div>
           )
+        ) : docErrors[activeTab] ? (
+          <div className="missing-doc" role="alert">
+            <p>Couldn't load this {docKindLabel(activeTab).toLowerCase()}. {docErrors[activeTab]}</p>
+            <button onClick={() => void loadDoc(activeTab).catch(() => undefined)}>Try again</button>
+          </div>
         ) : (
           <div className="loading">Loading document...</div>
         )}

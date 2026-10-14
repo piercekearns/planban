@@ -30,6 +30,8 @@ export interface HostedAdapterOptions {
   send?: ServiceSend;
   /** The pause before resending an edit whose response was lost. */
   retryDelayMs?: number;
+  /** How long one attempt may take before it counts as lost (20 seconds unless set). */
+  attemptTimeoutMs?: number;
 }
 
 export type BoardRole = "owner" | "editor" | "viewer";
@@ -113,6 +115,7 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
     redirect: "error",
   }));
   const retryDelayMs = options.retryDelayMs ?? 500;
+  const attemptTimeoutMs = options.attemptTimeoutMs ?? 20_000;
   /** The person's role on each board, from the last time the service said. */
   const roles = new Map<string, { role: BoardRole | null; authority: string | null }>();
 
@@ -130,8 +133,11 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
     };
     // The whole answer is read inside each attempt: a connection that drops
     // while the body arrives is a lost response too, and is resent the same way.
+    // Each attempt has its own time limit: a request that stalls (one was seen on staging) is lost, not pending forever.
     const attempt = async () => {
-      const response = await send(path, { method, headers, ...(text === undefined ? {} : { body: text }), ...(extra.signal ? { signal: extra.signal } : {}) });
+      const limit = AbortSignal.timeout(attemptTimeoutMs);
+      const signal = extra.signal ? AbortSignal.any([extra.signal, limit]) : limit;
+      const response = await send(path, { method, headers, ...(text === undefined ? {} : { body: text }), signal });
       const answer = await response.text();
       const empty = response.status === 204 || response.status === 205 || response.status === 304;
       return new Response(empty ? null : answer, { status: response.status, headers: response.headers });
