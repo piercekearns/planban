@@ -90,16 +90,13 @@ export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOu
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blockedLink, setBlockedLink] = useState<string | null>(null);
-  const shown = useRef(true);
-  useEffect(() => () => { shown.current = false; }, []);
   async function signIn() {
     setBusy(true);
     setError(null);
     setBlockedLink(null);
     try {
       await browserSignIn(signedOut.url, setBlockedLink);
-      // Left for another board meanwhile: this screen no longer decides anything.
-      if (!shown.current) return;
+      // The page decides whether this board is still the one on screen.
       onSignedIn();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
