@@ -200,3 +200,59 @@ test("an invitation token or a sign-in request leaves the address at once and wa
     (globalThis as any).sessionStorage = previous;
   }
 });
+
+test("the page's first lines stop Referers and move an invitation or sign-in request out of the address before anything loads", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const vm = await import("node:vm");
+  const html = await readFile(new URL("../src/web/index.html", import.meta.url), "utf8");
+  const head = html.slice(0, html.indexOf("</head>"));
+  const referrer = head.indexOf('<meta name="referrer" content="no-referrer" />');
+  const firstLoad = head.search(/<(script|link)\b[^>]*\b(src|href)=/u);
+  assert.ok(referrer > 0 && referrer < firstLoad, "no-referrer comes before any file is requested");
+  const inline = /<script>([\s\S]*?)<\/script>/u.exec(head);
+  assert.ok(inline && head.indexOf(inline[0]) < firstLoad, "the bootstrap runs before any file is requested");
+  const run = (pathname: string, hash = "") => {
+    const store = new Map<string, string>();
+    const replaced: string[] = [];
+    vm.runInNewContext(inline![1]!, {
+      location: { pathname, hash },
+      sessionStorage: { setItem: (key: string, value: string) => store.set(key, value) },
+      history: { replaceState: (_state: unknown, _title: string, url: string) => replaced.push(url) },
+    });
+    return { store: Object.fromEntries(store), replaced };
+  };
+  assert.deepEqual(run("/invite/pbi_secret-token"), { store: { "planban.web.invite": "pbi_secret-token" }, replaced: ["/invite/pending"] });
+  assert.deepEqual(run("/approve", "#request=pbn_signed.note"), { store: { "planban.web.approve": "pbn_signed.note" }, replaced: ["/approve"] });
+  assert.deepEqual(run("/invite/pending"), { store: {}, replaced: [] });
+  assert.deepEqual(run("/boards/northfold"), { store: {}, replaced: [] });
+  // The same keys the page reads afterwards.
+  const account = await readFile(new URL("../src/web/webAccount.ts", import.meta.url), "utf8");
+  assert.match(account, /INVITE_KEY = "planban\.web\.invite"/u);
+  assert.match(account, /APPROVE_KEY = "planban\.web\.approve"/u);
+});
+
+test("opening an invitation never joins on its own: only Join does", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const screens = await readFile(new URL("../src/web/hostedScreens.tsx", import.meta.url), "utf8");
+  const page = screens.slice(screens.indexOf("export function InvitePage"), screens.indexOf("function AppHeaderMaybe"));
+  const accepts = [...page.matchAll(/\/api\/online\/invites\/accept/gu)].length;
+  assert.equal(accepts, 1, "one place accepts");
+  assert.match(page, /const join = useCallback/u);
+  assert.match(page, /onClick=\{\(\) => void join\(\)\}/u);
+  for (const effect of page.match(/useEffect\(\(\) => \{[\s\S]*?\n  \}, \[/gu) ?? []) assert.doesNotMatch(effect, /join\(|invites\/accept/u, "no effect joins");
+});
+
+test("the already-on-this-board check reads only, and tells nothing to someone who isn't on the board", async () => {
+  await withServiceEnv(async () => {
+    const { service, adapter, boardId } = await ownerWithBoard();
+    const link = await page(adapter, boardPath(boardId, "/online/invites"), { role: "viewer" });
+    const token = tokenOf(link.body.link);
+    const omar = service.adapterFor((await service.signIn("user_omar", "Omar")).token);
+    const membersBefore = service.rows.filter((row) => row._table === "members").length;
+    assert.deepEqual((await page(omar, "/api/online/invites/membership", { token })).body, { member: false });
+    assert.equal(service.rows.filter((row) => row._table === "members").length, membersBefore, "checking never joins");
+    await page(omar, "/api/online/invites/accept", { token });
+    assert.deepEqual((await page(omar, "/api/online/invites/membership", { token })).body, { member: true, boardId, title: "Northfold" });
+    assert.equal((await page(service.adapterFor("pbw_" + "M".repeat(43)), "/api/online/invites/membership", { token })).status, 401);
+  });
+});

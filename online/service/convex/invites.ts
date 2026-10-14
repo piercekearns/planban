@@ -149,6 +149,24 @@ export const waitingFor = internalQuery({
 });
 
 /**
+ * Whether the signed-in person is already on the board an invitation is for.
+ * Reads only, so the web page can say "You're already on this board" without
+ * ever joining anyone; it reveals nothing to someone who isn't on the board.
+ */
+export const membership = internalQuery({
+  args: { connectionId: v.id("connections"), tokenHash: v.string() },
+  handler: async (ctx, { connectionId, tokenHash }) => {
+    const connection = await liveConnection(ctx, connectionId);
+    const invite = await ctx.db.query("invites").withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash)).unique();
+    if (!invite) return { member: false as const };
+    const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", invite.boardId)).unique();
+    if (!board || board.authority !== "online") return { member: false as const };
+    const member = await ctx.db.query("members").withIndex("by_board_user", (q) => q.eq("boardId", board.boardId).eq("userId", connection.userId)).unique();
+    return member ? { member: true as const, boardId: board.boardId, title: board.title } : { member: false as const };
+  },
+});
+
+/**
  * Joining from an invite, with the person's own sign-in. A link works for
  * anyone until it expires; an email invite only for the account with that
  * email. Someone already on the board keeps their role.

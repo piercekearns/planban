@@ -2,7 +2,7 @@
 // mockup sections 5, 6, 7 and 9): Log in or sign up, the board list with its
 // first-run checklist and waiting invitations, invitations, one-tap approval
 // of an agent's sign-in, and the account menu.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronRight, Copy, Loader2, Plus } from "lucide-react";
 import { ConnectionsModal, NewBoardModal } from "./onlineBoard";
 import { pageFetch } from "./transport";
@@ -59,36 +59,66 @@ function initials(account: { email: string | null; name: string | null } | null)
 export function AccountMenu() {
   const [open, setOpen] = useState(false);
   const [connections, setConnections] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const account = rememberedAccount();
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const items = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+  const close = (returnFocus: boolean) => {
+    setOpen(false);
+    if (returnFocus) triggerRef.current?.focus();
+  };
   useEffect(() => {
     if (!open) return;
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent ? event.key === "Escape" : !ref.current?.contains(event.target as Node)) setOpen(false);
+    // Focus goes into the menu, onto its first item.
+    items()[0]?.focus();
+    const onPointer = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
     };
-    document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", close);
-    return () => {
-      document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", close);
-    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
   }, [open]);
+  const onMenuKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const list = items();
+    const at = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      list[(at + (event.key === "ArrowDown" ? 1 : -1) + list.length) % list.length]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? list[0] : list.at(-1))?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+    } else if (event.key === "Tab") {
+      close(false);
+    }
+  };
   async function signOut() {
-    await signOutWeb();
-    window.location.assign("/sign-in");
+    setError(null);
+    try {
+      await signOutWeb();
+      window.location.assign("/sign-in");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
   }
   return (
     <div className="web-account" ref={ref}>
-      <button className="web-avatar" aria-label="Your account" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>{initials(account)}</button>
+      <button ref={triggerRef} className="web-avatar" aria-label="Your account" aria-haspopup="menu" aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => { if (event.key === "ArrowDown" && !open) { event.preventDefault(); setOpen(true); } }}>{initials(account)}</button>
       {open ? (
-        <div className="web-account-menu" role="menu">
+        <div className="web-account-menu" role="menu" aria-label="Your account" onKeyDown={onMenuKey}>
           {account?.email ? <p className="web-account-who">Signed in as <b>{account.email}</b></p> : null}
-          <button role="menuitem" onClick={() => { setOpen(false); setConnections(true); }}>Connections</button>
-          <button role="menuitem" onClick={() => void signOut()}>Sign out</button>
+          <button role="menuitem" tabIndex={-1} onClick={() => { close(false); setConnections(true); }}>Connections</button>
+          <button role="menuitem" tabIndex={-1} onClick={() => void signOut()}>Sign out</button>
+          {error ? <p className="web-account-note" role="alert">{error}</p> : null}
           <p className="web-account-note">To delete your account, email hello@planban.ai.</p>
         </div>
       ) : null}
-      {connections ? <ConnectionsModal onClose={() => setConnections(false)} /> : null}
+      {connections ? <ConnectionsModal onClose={() => { setConnections(false); triggerRef.current?.focus(); }} /> : null}
     </div>
   );
 }
@@ -254,14 +284,11 @@ function CopyLine({ text }: { text: string }) {
 }
 
 /** A new account's checklist (approved mockup section 6). The last two steps tick themselves off. */
-function FirstRun({ ownsOnlineBoard, appConnected, onNewBoard }: { ownsOnlineBoard: boolean; appConnected: boolean; onNewBoard: () => void }) {
+function FirstRun({ ownsOnlineBoard, appConnected, onNewBoard, agentDone, onToggleAgent, onHide }: {
+  ownsOnlineBoard: boolean; appConnected: boolean; onNewBoard: () => void; agentDone: boolean; onToggleAgent: () => void; onHide?: () => void;
+}) {
   const account = rememberedAccount();
-  const [agentDone, setAgentDone] = useState(() => localStorage.getItem("planban.web.agentStep") === "1");
-  const toggleAgent = () => {
-    const next = !agentDone;
-    localStorage.setItem("planban.web.agentStep", next ? "1" : "0");
-    setAgentDone(next);
-  };
+  const toggleAgent = onToggleAgent;
   const step = (done: boolean, title: string, body: ReactNode, manual?: () => void) => (
     <li className={`web-step ${done ? "done" : ""}`}>
       {manual ? (
@@ -282,6 +309,7 @@ function FirstRun({ ownsOnlineBoard, appConnected, onNewBoard }: { ownsOnlineBoa
         {step(appConnected, "Connect ChatGPT or Claude", <><small>Add a connector with this address, then click Allow:</small><CopyLine text={mcp} /></>)}
       </ol>
       <p className="web-foot web-center">Or <button className="web-link" onClick={onNewBoard}>start an empty board here</button> · Invited? Open the link in your email.</p>
+      {onHide ? <p className="web-foot web-center"><button className="web-link" onClick={onHide}>Hide these steps</button></p> : null}
     </section>
   );
 }
@@ -297,6 +325,22 @@ export function HostedDashboard({ boards, onSelectBoard, onBoardsChanged }: { bo
   const owned = boards.filter((board) => board.online?.role === "owner");
   const shared = boards.filter((board) => board.online && board.online.role !== "owner");
   const ownsOnlineBoard = owned.some((board) => board.online?.authority === "online");
+  const [agentDone, setAgentDone] = useState(() => localStorage.getItem("planban.web.agentStep") === "1");
+  const [stepsHidden, setStepsHidden] = useState(() => localStorage.getItem("planban.web.stepsHidden") === "1");
+  const toggleAgent = () => {
+    localStorage.setItem("planban.web.agentStep", agentDone ? "0" : "1");
+    setAgentDone(!agentDone);
+  };
+  const hideSteps = () => {
+    localStorage.setItem("planban.web.stepsHidden", "1");
+    setStepsHidden(true);
+  };
+  // The checklist stays until every step is done (so the last ones are seen ticking off), or until hidden.
+  const allDone = agentDone && ownsOnlineBoard && appConnected;
+  const firstRun = (withHide: boolean) => (
+    <FirstRun ownsOnlineBoard={ownsOnlineBoard} appConnected={appConnected} onNewBoard={() => setNewBoard(true)}
+      agentDone={agentDone} onToggleAgent={toggleAgent} {...(withHide ? { onHide: hideSteps } : {})} />
+  );
 
   const recheck = useCallback(async () => {
     const [waiting, connections] = await Promise.all([
@@ -363,11 +407,10 @@ export function HostedDashboard({ boards, onSelectBoard, onBoardsChanged }: { bo
                 <div className="web-panel">{shared.map((board) => <BoardRow key={board.repoId} board={board} onOpen={() => onSelectBoard(board.repoId)} />)}</div>
               </>
             ) : null}
-            {!owned.length ? <FirstRun ownsOnlineBoard={ownsOnlineBoard} appConnected={appConnected} onNewBoard={() => setNewBoard(true)} /> : (
-              <p className="web-foot">Boards on your computer stay there. To add one here, open it in the Planban app and choose Take online.</p>
-            )}
+            {owned.length ? <p className="web-foot">Boards on your computer stay there. To add one here, open it in the Planban app and choose Take online.</p> : null}
+            {!allDone && !stepsHidden ? <div className="web-first-run-below">{firstRun(true)}</div> : null}
           </>
-        ) : <FirstRun ownsOnlineBoard={ownsOnlineBoard} appConnected={appConnected} onNewBoard={() => setNewBoard(true)} />}
+        ) : firstRun(false)}
       </div>
       {newBoard ? <NewBoardModal onClose={() => setNewBoard(false)} onCreated={(repoId) => {
         setNewBoard(false);
@@ -411,7 +454,8 @@ export function InvitePage({ onOpenBoard }: { onOpenBoard: (boardId: string) => 
   const [busy, setBusy] = useState(false);
   const account = rememberedAccount();
 
-  const tryJoin = useCallback(async (quiet: boolean) => {
+  /** Joins: only ever from the person's own tap on Join. */
+  const join = useCallback(async () => {
     if (!token) return;
     setBusy(true);
     try {
@@ -425,7 +469,7 @@ export function InvitePage({ onOpenBoard }: { onOpenBoard: (boardId: string) => 
       onOpenBoard(joined.boardId);
     } catch (error) {
       if (statusOf(error) === 401) return setSignedIn(false);
-      if (!quiet) setOutcome({ kind: "refused", reason: reasonOf(error), sentTo: (error as { body?: Json }).body?.sentTo as string | undefined, message: error instanceof Error ? error.message : String(error) });
+      setOutcome({ kind: "refused", reason: reasonOf(error), sentTo: (error as { body?: Json }).body?.sentTo as string | undefined, message: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(false);
     }
@@ -438,16 +482,23 @@ export function InvitePage({ onOpenBoard }: { onOpenBoard: (boardId: string) => 
         previewInvite(token).catch(() => ({ state: "unknown" as const })),
         call("/api/online/me").then(() => true, (error) => (statusOf(error) === 401 ? false : null)),
       ]);
+      // Someone already on the board sees "You're already on this board", whatever state the invitation is in. Reads only.
+      if (me) {
+        const member = await call<{ member: boolean; boardId?: string; title?: string }>("/api/online/invites/membership", { token }).catch(() => null);
+        if (member?.member && member.boardId) setOutcome({ kind: "member", boardId: member.boardId, title: member.title ?? "This board" });
+      }
       setPreview(shown);
       setSignedIn(me);
-      // Someone already on the board sees "You're already on this board", whatever state the invitation is in.
-      if (me && shown.state !== "valid") void tryJoin(true);
     })();
-  }, [token, tryJoin]);
+  }, [token]);
 
   async function switchAccount() {
-    await signOutWeb();
-    window.location.assign(signInPath("/invite/pending"));
+    try {
+      await signOutWeb();
+      window.location.assign(signInPath("/invite/pending"));
+    } catch (failure) {
+      window.alert(failure instanceof Error ? failure.message : String(failure));
+    }
   }
 
   const card = (title: string, body: ReactNode, actions?: ReactNode) => (
@@ -489,7 +540,7 @@ export function InvitePage({ onOpenBoard }: { onOpenBoard: (boardId: string) => 
   }
   return card(`${preview.inviterName} invited you to ${preview.boardTitle}`,
     <>{body}{account?.email ? <p className="web-muted">Signed in as {account.email}</p> : null}</>,
-    <button className="web-button dark" disabled={busy} onClick={() => void tryJoin(false)}>{busy ? <Loader2 size={13} className="spin" /> : null}Join {preview.boardTitle}</button>);
+    <button className="web-button dark" disabled={busy} onClick={() => void join()}>{busy ? <Loader2 size={13} className="spin" /> : null}Join {preview.boardTitle}</button>);
 }
 
 function AppHeaderMaybe({ signedIn }: { signedIn: boolean }) {

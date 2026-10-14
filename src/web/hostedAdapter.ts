@@ -385,6 +385,11 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
       method: "POST", pattern: ["online", "invites", "accept"], handle: async (_params, request) =>
         passPost("/api/v1/invites/accept", { token: typeof request.body.token === "string" ? request.body.token : "" }, request),
     },
+    {
+      // Reads only: whether the person is already on the invitation's board. Never joins.
+      method: "POST", pattern: ["online", "invites", "membership"], handle: async (_params, request) =>
+        passPost("/api/v1/invites/membership", { token: typeof request.body.token === "string" ? request.body.token : "" }, request),
+    },
     { method: "POST", pattern: ["online", "invites", ":invite", "accept"], handle: async ({ invite }, request) => passPost(`/api/v1/invites/${encodeURIComponent(invite!)}/accept`, {}, request) },
 
     // One-tap approval of an agent's sign-in, from the link it showed.

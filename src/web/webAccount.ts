@@ -29,9 +29,11 @@ export async function startWebSession(clerkToken: string): Promise<void> {
   }
 }
 
-/** Ends this browser's session here and at Clerk. */
+/** Ends this browser's session here and at Clerk. Throws if the service didn't confirm it, so the page never claims a sign-out that didn't happen. */
 export async function signOutWeb(): Promise<void> {
-  await fetch("/web/signout", { method: "POST", headers: HEADERS, credentials: "same-origin", body: "{}" }).catch(() => undefined);
+  const response = await fetch("/web/signout", { method: "POST", headers: HEADERS, credentials: "same-origin", body: "{}" })
+    .catch(() => { throw new Error("Couldn't reach Planban to sign out. Check your connection and try again."); });
+  if (!response.ok) throw new Error("Planban couldn't sign you out just now. Try again.");
   forgetAccount();
 }
 

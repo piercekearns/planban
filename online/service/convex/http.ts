@@ -150,6 +150,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     const verifiedEmails = await verifiedEmailsOf((await ctx.runQuery(internal.boards.me, { connectionId })).userId);
     return json(await ctx.runMutation(internal.invites.acceptById, { connectionId, inviteId: parts[1]!, verifiedEmails }));
   }
+  if (parts[0] === "invites" && parts[1] === "membership" && parts.length === 2 && method === "POST") {
+    const input = await body(request);
+    return json(await ctx.runQuery(internal.invites.membership, { connectionId, tokenHash: await sha256Hex(inviteToken(String(input.token ?? ""))) }));
+  }
   if (parts[0] === "invites" && parts[1] === "accept" && parts.length === 2 && method === "POST") {
     const input = await body(request);
     const tokenHash = await sha256Hex(inviteToken(String(input.token ?? "")));
