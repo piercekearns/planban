@@ -81,6 +81,8 @@ export interface SignedOut {
   reason: "missing" | "expired";
 }
 
+const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url; } };
+
 /** Shown instead of an Online Board when this computer isn't signed in to its service. */
 export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOut; onSignedIn: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -103,7 +105,7 @@ export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOu
     <main className="error-screen">
       <div className="load-error-card signed-out-card">
         <h1>{signedOut.reason === "expired" ? "Your Planban sign-in on this computer has ended." : "You're signed out of Planban on this computer."}</h1>
-        <p>This board is online. Sign in to open it here. Sign-in opens in a new browser tab, with an email code or GitHub.</p>
+        <p>This board is online at {hostOf(signedOut.url)}. Sign in to open it here. Sign-in opens in a new browser tab, with an email code or GitHub.</p>
         <button className="primary" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button>
         {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
         {blockedLink ? <p>Your browser blocked the sign-in tab. <a href={blockedLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
@@ -190,6 +192,8 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   const [error, setError] = useState<string | null>(null);
   const [losing, setLosing] = useState<Array<{ userId: string; role: string }>>([]);
   const [signInLink, setSignInLink] = useState<string | null>(null);
+  // When an action stopped because this computer's sign-in had ended: its service, and the action to finish afterwards.
+  const [resume, setResume] = useState<{ url: string; run: () => Promise<unknown> } | null>(null);
   const base = `/api/boards/${encodeURIComponent(repoId)}/online`;
   const others = (status.people ?? []).filter((person) => !person.you);
   const [conversion, setConversion] = useState<{ clean: boolean; machine: string; files: number; pictures: number; howToTidy: string; boardProblems: string[]; cards: Array<{ cardId: string; title: string; files: string[]; pictures: Array<{ kind: string; alt: string; where: string }>; problems: string[] }> } | null>(null);
@@ -218,6 +222,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
       await run();
     } catch (failure) {
       if (failure instanceof RequestError && typeof failure.body.signInNeeded === "string") {
+        setResume({ url: failure.body.signInNeeded, run });
         setView("sign-in");
       } else if (failure instanceof RequestError && failure.body.confirmationNeeded) {
         setLosing(((failure.body.confirmationNeeded as { removes?: Array<{ userId: string; role: string }> }).removes) ?? []);
@@ -243,8 +248,13 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   });
   const stop = () => act(() => request(`${base}/stop`, {}));
   const signIn = () => act(async () => {
-    await browserSignIn(undefined, setSignInLink);
-    setView("confirm-online");
+    await browserSignIn(resume?.url, setSignInLink);
+    const next = resume;
+    setResume(null);
+    if (!next) return setView("confirm-online");
+    // Finish what was interrupted, such as Take local, now that this computer is signed in again.
+    setView("settings");
+    await next.run();
   });
 
   const errorLine = error ? <p className="online-board-error" role="alert">{error}</p> : null;
@@ -252,9 +262,9 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   if (view === "sign-in") {
     return (
       <Modal eyebrow="Board settings" title="Sign in to Planban" onClose={onClose}
-        footer={<><button onClick={() => setView("settings")}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button></>}>
+        footer={<><button onClick={() => { setResume(null); setView("settings"); }}>Cancel</button><button className="primary update-now-action" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button></>}>
         <div className="online-board-body">
-          <p>Taking a board online needs your Planban account. Sign in opens in a new browser tab, with an email code or GitHub.</p>
+          <p>{resume ? "This computer's Planban sign-in has ended. Sign in again to carry on." : "Taking a board online needs your Planban account."} Sign in opens in a new browser tab, with an email code or GitHub.</p>
           {signInLink ? <p>Your browser blocked the sign-in tab. <a href={signInLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>.</p> : null}
           {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
           {errorLine}

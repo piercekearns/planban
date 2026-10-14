@@ -734,6 +734,10 @@ test("an Online Board without a sign-in tells the page which service to sign in 
     assert.deepEqual([missingBody.signInNeeded, missingBody.signedOut], [serviceUrl(fake.url), "missing"]);
     // Agents and terminals still get the command in the message.
     assert.match(missingBody.error, /planban online login/);
+    // The page can only start sign-in for a service this computer already trusts, never one a board's files name.
+    const untrusted = await fetch(`${server.url}/api/online/sign-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: "https://planban-login.example" }) });
+    assert.equal(untrusted.status, 422);
+    assert.match((await untrusted.json()).error, /planban-login\.example, which this computer hasn't signed in to before/);
   } finally { await server.close(); }
 });
 

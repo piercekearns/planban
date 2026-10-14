@@ -6172,8 +6172,8 @@ function App() {
     } catch (loadError) {
       if (requestId === boardLoadRequestRef.current && !preserveCurrentOnError) {
         const needed = (loadError as { signedOut?: SignedOut } | null)?.signedOut;
-        if (needed) setSignedOut(needed);
-        else setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
+        setSignedOut(needed ?? null);
+        if (!needed) setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
       }
       return null;
     }
@@ -6274,6 +6274,8 @@ function App() {
   }, [loadSelectedBoard]);
 
   useEffect(() => {
+    // A signed-out screen belongs to the board that showed it.
+    setSignedOut(null);
     if (!selectedRepoId) return;
     void loadSelectedBoard(selectedRepoId);
   }, [loadSelectedBoard, selectedRepoId]);

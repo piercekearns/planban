@@ -391,7 +391,14 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
    */
   app.post("/api/online/sign-in", async (req, res, next) => {
     try {
-      const url = serviceUrl(typeof req.body?.url === "string" && req.body.url ? req.body.url : await defaultService());
+      const requested = typeof req.body?.url === "string" && req.body.url ? serviceUrl(req.body.url) : null;
+      // A board's own files name its service, so a page may only start sign-in for a service
+      // this computer already trusts: Planban's, the configured one, or one it is signed in to.
+      const trusted = new Set([serviceUrl(DEFAULT_SERVICE), await defaultService(), ...Object.keys((await readCredentials()).services)]);
+      if (requested && !trusted.has(requested)) {
+        throw new PlanbanValidationError(`This board is on ${new URL(requested).host}, which this computer hasn't signed in to before. If you trust it, sign in from a terminal: planban online login ${requested}`);
+      }
+      const url = requested ?? await defaultService();
       const id = randomUUID();
       const entry = { link: null as string | null, done: false, error: null as string | null };
       signIns.set(id, entry);

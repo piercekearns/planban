@@ -10,6 +10,7 @@ const render = (reason: "missing" | "expired") =>
 test("a signed-out Online Board offers Sign in, with the command only as a hint", () => {
   const html = render("missing");
   assert.match(html, /You&#x27;re signed out of Planban on this computer\./);
+  assert.match(html, /This board is online at app\.planban\.example\./);
   assert.match(html, /<button class="primary"[^>]*> Sign in<\/button>/);
   assert.match(html, /For agents and terminals: <code>planban online login https:\/\/app\.planban\.example<\/code>/);
   assert.doesNotMatch(html, /Try again/);
