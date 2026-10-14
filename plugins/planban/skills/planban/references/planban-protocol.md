@@ -33,6 +33,11 @@ The repo-local files are discovery files. The canonical live roadmap state for t
 device is listed in `.planban/agent-context.md`, usually under
 `~/.planban/repos/<repo-id>/roadmap.json`.
 
+If `.planban/agent-context.md` says the board is online (or `.planban/online-board.json`
+exists), the board lives at its online service, not in files on this machine. Read
+and write it only through the Planban MCP tools or the CLI; local roadmap and Spec
+files for an online board are a cache or backup, never the board.
+
 ## Owner-Facing Authoring
 
 Before creating or materially editing a Title, Summary, Next action, Group objective,
@@ -65,6 +70,8 @@ Planban deliberately separates repo discovery from live local state:
 - Repo-local discovery: `.planban/project.json` and `.planban/agent-context.md`
 - Device-local roadmap: `~/.planban/repos/<repo-id>/roadmap.json`
 - Device-local card docs: `~/.planban/repos/<repo-id>/items/<card-id>/spec.md` and `plan.md`
+
+These paths hold local boards only. An online board's state lives at its service.
 
 Do not create or prefer `ROADMAP.md`.
 
@@ -101,7 +108,43 @@ it now lives.
 
 ### Online authority
 
-A board goes online only when it is clean: Planban lists files and pictures to tidy before the transfer. Taking a board online leaves `.planban/online-board.json` in the project folder, for the owner to commit. On any machine where that note exists, the local copy becomes read-only: Planban refuses changes and says where the board lives. Do not retry or work around it; ask the owner to sign in and choose "Use the online board", or to keep the copy as a separate board.
+Planban is free on a computer with no account. A board goes online only when its
+owner chooses, with a free Planban account at https://app.planban.ai.
+
+- **When to suggest it.** Suggest taking a board online only when the person wants
+  to share it with someone, use it from another computer or a phone, or reach it
+  from ChatGPT or claude.ai. Explain what changes, and let them decide; never take a
+  board online, take it local, invite people, change roles or agent levels, revoke
+  connections or create keys unless the person explicitly asks.
+- **Taking it online.** Board settings, Take online, or
+  `planban online login https://app.planban.ai` once per computer, then
+  `planban online take-online https://app.planban.ai --cwd <project>`. The service
+  address is required. On a remote machine, add `--no-browser` to `login` and give the
+  person the printed link. A board goes online only when it is clean: Planban lists
+  files and pictures to tidy before the transfer.
+- **The project note.** Taking a board online leaves `.planban/online-board.json` in
+  the project folder, for the owner to commit. On any machine where that note exists,
+  the local copy becomes read-only: Planban refuses changes and says where the board
+  lives. Do not retry or work around it; ask the owner to sign in and choose "Use the
+  online board", or to keep the copy as a separate board.
+- **Roles and agent levels.** Each person is an owner, editor or viewer, and chooses
+  what their own agents may do: read, plan, or plan and complete. An agent never does
+  more than its person. A "forbidden" refusal means this agent's level doesn't allow
+  the action: tell the person; they can change it in People or with
+  `planban online my-agents <level>`.
+- **Edits.** Every edit on an online board passes the roadmap revision you last read
+  (`baseRevision`, or `--base-revision`), and every Spec or Plan write passes the
+  `mtimeMs` from reading it (`expectedMtimeMs`, or `--expected-mtime`). On a conflict,
+  read again and retry. Serialize writes.
+- **Limits.** A board holds up to 256 MB with its history, and each account can make
+  up to 5,000 changes a day. Planban stays an index, not storage.
+- **Signed out.** If Planban says this computer's sign-in is missing or has ended,
+  ask the person to sign in again (the board page offers Sign in, or the printed
+  `online login` command). Do not use local files instead.
+
+The `planban` command: Planban's messages print the exact command for this computer.
+If `planban` isn't installed as a command, it is
+`node "<Planban install folder>/bin/planban.mjs"`.
 
 ## Work Item Model
 
@@ -286,8 +329,9 @@ Follow this protocol exactly:
 - When agent-side implementation and verification are done, keep the card In Progress.
 - At that point, update the summary and next action to say the work is ready for user
   review/testing.
-- Move a card to Complete only when the user explicitly asks, manually confirms
-  completion after testing/review, or clearly waives user-side verification.
+- Move a card to Complete only when the user (on a shared board, a person on the
+  board) explicitly asks, manually confirms completion after testing/review, or
+  clearly waives user-side verification.
 - Agent-side tests are evidence for readiness to review. They are not permission to
   self-complete the card.
 - A landing is a card event: whoever merges a PR, pushes to a release branch or
@@ -333,12 +377,16 @@ document reads/writes. Use shell commands or direct file edits only as a fallbac
 the tools are unavailable or insufficient for the task.
 
 Prefer the Planban CLI or API when available. Example CLI operations from the Planban
-repo:
+repo (elsewhere, replace `npm run planban --` with the `planban` command described
+under Online authority):
 
 When an agent creates a Group, provide a concise Group objective by default. Omit it
 only when the owner explicitly asks for no objective or when the larger outcome is
 genuinely unresolved; do not invent a specific objective from weak context. The UI
 may leave the objective blank and add or edit it later.
+
+On an online board, add `--base-revision <revision>` to each edit (the `revision`
+from `status` or `get-card`) and `--expected-mtime <mtimeMs>` to `write-doc`.
 
 ```bash
 npm run planban -- status --cwd /path/to/repo -o json
@@ -354,7 +402,7 @@ npm run planban -- demo -o json
 
 ## Planban references
 
-Copy Reference in the Board puts one line on the clipboard: `\u201C<title>\u201D \u00B7 planban:<board>/<item>`. The `planban:` token is the identity; the quoted title is display context.
+Copy Reference in the Board puts one line on the clipboard: `“<title>” · planban:<board>/<item>`. The `planban:` token is the identity; the quoted title is display context.
 
 Reading a reference:
 

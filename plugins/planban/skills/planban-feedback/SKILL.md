@@ -42,7 +42,9 @@ before a write, a consequential reproduction, or access to sensitive material.
 
 Do not inspect secrets, unrelated machine state, private board contents, or project
 documents merely to enrich a report. Never publish board names, repo ids, local URLs,
-paths, logs, screenshots, or project details without the user's approval. Tell the
+paths, logs, screenshots, or project details without the user's approval, and never
+publish invitation links, sign-in links, personal access keys, connection ids or
+online board ids at all. Tell the
 user what categories of local information you inspected.
 
 After understanding the problem, search open and closed issues, pull requests,

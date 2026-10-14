@@ -29,7 +29,7 @@ Do not lead with `$planban:*` unless the user specifically asks about `$` skill 
 
 Then include this short framing before the getting-started steps:
 
-Planban is a local, agent-native Kanban planning board for keeping human and agent planning in sync. Use each board as a project second brain: plans, ideas, rough notes, future features, priorities, and what to work on next. You can shape the roadmap in the board, your agent can read and update it while working, and both sides stay aligned around the same cards, specs, status, and next actions.
+Planban is an agent-native Kanban planning board for keeping human and agent planning in sync. It is free on your computer with no account; take a board online only when you want to share it, use it from another computer, or reach it from ChatGPT or claude.ai. Use each board as a project second brain: plans, ideas, rough notes, future features, priorities, and what to work on next. You can shape the roadmap in the board, your agent can read and update it while working, and both sides stay aligned around the same cards, specs, status, and next actions.
 
 Then include a short getting-started guide:
 
@@ -59,6 +59,8 @@ Then list common actions:
 - start work from a named Planban roadmap item or card id
 - create Planban roadmap items from these notes
 - send Planban feedback
+- take this board online to share it, or bring it back to this computer
+- invite someone to an online board, or see who is on it
 - check whether Planban has updates
 - archive/delete boards once available
 
@@ -73,6 +75,7 @@ Use specific Planban wording so the agent does not have to guess:
 - Paste a copied reference such as `“Title” · planban:<board>/<item>` and say what to do with it; the `planban:` token identifies the Item exactly.
 - `Create Planban roadmap items from these notes: <notes>.`
 - `Send Planban feedback: <feedback>.`
+- `Take this Planban board online so Sam can work on it too.`
 - `Check whether Planban has updates.`
 
 For update checks, inspect Planban's local update status endpoint or the board's update UI when available, and compare the installed version with the published latest metadata.

@@ -277,8 +277,8 @@ function buildAgentsBlock(): string {
 
 This repo uses Planban.
 
-Canonical live planning state for this device is not branch-local.
-Read \`.planban/project.json\` and \`.planban/agent-context.md\` before making roadmap or plan updates.
+Canonical live planning state is not branch-local: it lives on this device for a local board, or at its online service for an online board.
+Read \`.planban/project.json\` and \`.planban/agent-context.md\` before making roadmap or plan updates; the agent context says which applies.
 If the user asks to update the roadmap, follow the Planban protocol described there.
 If an agent starts implementation work on a roadmap item, move it to In Progress if needed; leave completed agent work In Progress with a review/testing next action until the user explicitly asks to mark it Complete or confirms completion.
 If Planban tools (names ending in \`planban_<operation>\`) are unavailable in the current host, tell the user once that Planban is not installed for this host, link ${PLANBAN_INSTALL_URL}, then continue.

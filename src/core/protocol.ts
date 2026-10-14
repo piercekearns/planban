@@ -19,7 +19,9 @@ ${input.online ? `The planning authority is the Online Board at ${input.online.u
 Use Planban tools or the CLI for every read and edit. Local files are recovery evidence, not editable planning state.
 Every edit must state the board revision it was based on (\`baseRevision\`, from the latest read); document edits state the document version (\`expectedMtimeMs\`; on the CLI, \`--expected-mtime <mtimeMs>\` or \`--expected-mtime new\`). A refused edit returns the current revision: reread, then retry.
 Planban is an index, not storage: the board holds text only (cards, Specs, Plans and history). Never put files, images or encoded data in it; refer to them where they live instead: a GitHub link, a web address, or a local path labelled with its machine, such as "Mac mini: ~/Projects/app/renders/front.png". Edits that embed files are refused.
-Sign in on this machine with \`planban online login ${input.online.url}\`.` : `Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
+People on the board are owners, editors or viewers, and each chooses what their own agents may do (read, plan, or plan and complete); a "forbidden" refusal means this agent's level doesn't allow it, so tell the person.
+Move a card to Complete only when a person on the board asks, confirms after review, or waives review. Never take the board local, invite people, change roles or agent levels, revoke connections or create keys unless the person explicitly asks.
+Sign in on this machine with \`planban online login ${input.online.url}\` (if \`planban\` isn't a command here, Planban's messages print the full form).` : `Canonical live planning state for this device is not branch-local. Read and write the live roadmap at:
 
 - ${input.roadmapPath}`}
 

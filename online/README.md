@@ -58,18 +58,23 @@ Client metadata is fetched only from the reviewed exact publisher documents:
 - `https://chatgpt.com/oauth/codex/client.json`
 - `https://chatgpt.com/oauth/client.json`
 - `https://claude.ai/oauth/claude-code-client-metadata`
+- `https://claude.ai/oauth/mcp-oauth-client-metadata` (claude.ai's custom
+  connectors; only Claude's own connector callback, named Claude (claude.ai))
 
 The service trusts these publishers' DNS/TLS, follows no redirects, bounds
-response size/time and fetches no secondary URLs. Dynamic registration and
-arbitrary metadata publishers are disabled. Native callback ports may vary only
+response size/time and fetches no secondary URLs. A validated document is kept
+for an hour, so sign-in starts don't each fetch it. Arbitrary metadata
+publishers are disabled; dynamic registration is open only to claude.ai (see
+"claude.ai self-registration" below). Native callback ports may vary only
 on a registered literal loopback IP and exact path. Only the exact Claude Code
 publisher also permits a canonical port from 1 through 65535 on its registered
 HTTP localhost callback, keeping host and raw path unchanged; other publishers'
 localhost callbacks retain exact matching. This relies on the computer's
 localhost resolution and PKCE, and does not authenticate the installed program.
 Claude Code's reviewed native document omits `application_type`; that omission
-is recognized only for this exact publisher. The separate hosted
-Claude connector identity and acceptance remain unverified.
+is recognized only for this exact publisher. claude.ai's hosted connector was
+accepted end to end on production on 14 October 2026, through its published
+document; self-registration remains its fallback.
 
 MCP discovery reflects the credential's current board permissions. Read grants
 receive read tools; planning grants receive permitted writes without completion;

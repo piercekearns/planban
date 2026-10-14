@@ -110,13 +110,14 @@ async function readStdin(): Promise<string> {
 }
 
 const program = new Command();
-program.name("planban").description("Local, agent-native planning board for Codex and Claude Code").version(PLANBAN_VERSION);
+program.name("planban").description("Agent-native planning board for Codex and Claude Code: local by default, online when you share a board").version(PLANBAN_VERSION);
 
 const online = program.command("online").description("Sign in and move boards between local and online authority");
-online.command("login <url>")
-  .addOption(new Option("--access <scope>", "with --dev-user: connection access").choices(["all", "board"]).default("all"))
-  .option("--boards <id>", "with --dev-user: the one board the connection reaches")
-  .option("--dev-user <id>", "development sign-in on a local Online Board backend")
+online.command("login <url>").description("sign this computer in to Planban Online, for example: login https://app.planban.ai")
+  // Development-only sign-in on a local backend; hidden from help.
+  .addOption(new Option("--access <scope>", "with --dev-user: connection access").choices(["all", "board"]).default("all").hideHelp())
+  .addOption(new Option("--boards <id>", "with --dev-user: the one board the connection reaches").hideHelp())
+  .addOption(new Option("--dev-user <id>", "development sign-in on a local Online Board backend").hideHelp())
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
   .option("--no-browser", "print the sign-in link instead of opening a browser (for remote machines)")
   .action(async (url, options) => print(await onlineLogin(url, {
@@ -139,8 +140,8 @@ keys.command("create <url>").requiredOption("--board <id>", "the one board the k
     process.stderr.write("Copy this key now. Planban keeps only a fingerprint of it and cannot show it again.\n");
     print(created, {});
   });
-online.command("status").action(async () => print(await onlineStatus(), {}));
-online.command("take-online <url>").option("--cwd <path>", "project directory")
+online.command("status").description("which Planban Online services this computer is signed in to").action(async () => print(await onlineStatus(), {}));
+online.command("take-online <url>").description("take this project's board online, for example to https://app.planban.ai; it must hold no files").option("--cwd <path>", "project directory")
   .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
 online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")
   .action(async (options) => print(await stopTakeOnline(cwdOption(options.cwd)), {}));
@@ -149,18 +150,18 @@ const onlineBoardOf = async (cwd: string) => {
   if (!manifest?.enabled || manifest.storage?.kind !== "online") throw new Error("This project does not point to an Online Board.");
   return manifest.storage;
 };
-online.command("export").option("--cwd <path>", "project directory").requiredOption("--out <file>", "bundle destination")
+online.command("export").description("save a copy of this project's online board, with its history, to a file").option("--cwd <path>", "project directory").requiredOption("--out <file>", "bundle destination")
   .action(async (options) => {
     await exportOnline(cwdOption(options.cwd), options.out);
     print({ exported: resolve(options.out) }, {});
   });
-online.command("take-local").option("--cwd <path>", "project directory")
+online.command("take-local").description("bring this project's online board back to this computer, with its history").option("--cwd <path>", "project directory")
   .option("--remove-others", "on a shared board: confirm that everyone else and their agents lose access")
   .action(async (options) => print(await takeLocal(cwdOption(options.cwd), { removeOthers: !!options.removeOthers }), {}));
-online.command("attach <url> <boardId>").requiredOption("--cwd <path>", "project directory")
+online.command("attach <url> <boardId>").description("use an online board in this project folder on this computer").requiredOption("--cwd <path>", "project directory")
   .option("--replace-stale-copy", "set aside this project's out-of-date local copy of the board")
   .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd), { replaceStaleCopy: !!options.replaceStaleCopy }), {}));
-online.command("restore-backup").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
+online.command("restore-backup").description("make a new local board from a backup this computer kept of an online board").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
   .requiredOption("--cwd <path>", "empty project directory").requiredOption("--repo-id <id>", "id for the restored local board")
   .action(async (options) => print(await restoreBackup(options.from, cwdOption(options.cwd), options.repoId), {}));
 online.command("invite").description("invite someone to this project's online board; the link works for 7 days")
