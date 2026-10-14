@@ -52,6 +52,68 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   return json as T;
 }
 
+/**
+ * Signs this computer in to Planban in a new browser tab, as Take online does,
+ * and resolves once the sign-in has finished. The tab is opened before any
+ * await, while the click still counts, so the browser does not block it; if it
+ * is blocked anyway, onBlocked receives the link to show instead.
+ */
+export async function browserSignIn(url: string | undefined, onBlocked: (link: string) => void): Promise<void> {
+  const tab = window.open("", "_blank");
+  if (tab) tab.opener = null;
+  const started = await request<{ id: string; link: string }>("/api/online/sign-in", url ? { url } : {}).catch((error) => {
+    tab?.close();
+    throw error;
+  });
+  if (tab) tab.location.href = started.link;
+  else onBlocked(started.link);
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const state = await request<{ done: boolean; error: string | null }>(`/api/online/sign-in/${started.id}`);
+    if (state.error) throw new Error(state.error);
+    if (state.done) return;
+  }
+}
+
+/** Why an Online Board can't open: this computer was never signed in, or its sign-in ended. */
+export interface SignedOut {
+  url: string;
+  reason: "missing" | "expired";
+}
+
+/** Shown instead of an Online Board when this computer isn't signed in to its service. */
+export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOut; onSignedIn: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [blockedLink, setBlockedLink] = useState<string | null>(null);
+  async function signIn() {
+    setBusy(true);
+    setError(null);
+    setBlockedLink(null);
+    try {
+      await browserSignIn(signedOut.url, setBlockedLink);
+      onSignedIn();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <main className="error-screen">
+      <div className="load-error-card signed-out-card">
+        <h1>{signedOut.reason === "expired" ? "Your Planban sign-in on this computer has ended." : "You're signed out of Planban on this computer."}</h1>
+        <p>This board is online. Sign in to open it here. Sign-in opens in a new browser tab, with an email code or GitHub.</p>
+        <button className="primary" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} Sign in</button>
+        {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
+        {blockedLink ? <p>Your browser blocked the sign-in tab. <a href={blockedLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
+        {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+        <p className="muted signed-out-hint">For agents and terminals: <code>planban online login {signedOut.url}</code></p>
+      </div>
+    </main>
+  );
+}
+
 /** The board's location and move status; refreshes when the board changes and while a move runs. */
 export function useOnlineStatus(repoId: string | null, refreshKey: unknown) {
   const [status, setStatus] = useState<OnlineStatus | null>(null);
@@ -181,21 +243,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   });
   const stop = () => act(() => request(`${base}/stop`, {}));
   const signIn = () => act(async () => {
-    // Opened now, while the click still counts, so the browser does not block it; pointed at the sign-in page once known.
-    const tab = window.open("", "_blank");
-    if (tab) tab.opener = null;
-    const started = await request<{ id: string; link: string }>("/api/online/sign-in", {}).catch((error) => {
-      tab?.close();
-      throw error;
-    });
-    if (tab) tab.location.href = started.link;
-    else setSignInLink(started.link);
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      const state = await request<{ done: boolean; error: string | null }>(`/api/online/sign-in/${started.id}`);
-      if (state.error) throw new Error(state.error);
-      if (state.done) break;
-    }
+    await browserSignIn(undefined, setSignInLink);
     setView("confirm-online");
   });
 
@@ -390,20 +438,7 @@ function OlderCopyChoice({ repoId, boardTitle, since, choice, reload, onClose }:
         await use().catch(async (failure) => {
           // Not signed in yet (the project's note told this Mac the board is online): sign in, then switch.
           if (!(failure instanceof RequestError) || typeof failure.body.signInNeeded !== "string") throw failure;
-          const tab = window.open("", "_blank");
-          if (tab) tab.opener = null;
-          const started = await request<{ id: string; link: string }>("/api/online/sign-in", { url: failure.body.signInNeeded }).catch((error) => {
-            tab?.close();
-            throw error;
-          });
-          if (tab) tab.location.href = started.link;
-          else setSignInLink(started.link);
-          for (;;) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            const state = await request<{ done: boolean; error: string | null }>(`/api/online/sign-in/${started.id}`);
-            if (state.error) throw new Error(state.error);
-            if (state.done) break;
-          }
+          await browserSignIn(failure.body.signInNeeded, setSignInLink);
           await use();
         });
         onClose();

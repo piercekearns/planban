@@ -99,7 +99,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
-import { BoardPeopleContext, BoardSettingsModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, useBoardPeople, useOnlineStatus } from "./onlineBoard";
+import { BoardPeopleContext, BoardSettingsModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, SignedOutScreen, useBoardPeople, useOnlineStatus, type SignedOut } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -881,6 +881,11 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
         : `Request failed: ${response.status}`;
     const error = new Error(errorMessage);
     Object.assign(error, { status: response.status });
+    // A missing or ended Online Board sign-in names the service, so the page can offer Sign in.
+    if (payload && typeof payload === "object" && "signInNeeded" in payload && typeof payload.signInNeeded === "string") {
+      const reason = "signedOut" in payload && payload.signedOut === "expired" ? "expired" : "missing";
+      Object.assign(error, { signedOut: { url: payload.signInNeeded, reason } satisfies SignedOut });
+    }
     throw error;
   }
   if (payload === null) throw new Error(`Empty response from ${path}`);
@@ -6134,6 +6139,7 @@ function App() {
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [signedOut, setSignedOut] = useState<SignedOut | null>(null);
   const [activities, setActivities] = useState<PlanbanActivitySnapshot[]>([]);
   const appLoadRequestRef = useRef(0);
   const boardLoadRequestRef = useRef(0);
@@ -6161,10 +6167,13 @@ function App() {
       if (routeRepoId !== repoId && selectedRepoIdRef.current !== repoId) return null;
       setState(nextState);
       setError(null);
+      setSignedOut(null);
       return nextState;
     } catch (loadError) {
       if (requestId === boardLoadRequestRef.current && !preserveCurrentOnError) {
-        setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
+        const needed = (loadError as { signedOut?: SignedOut } | null)?.signedOut;
+        if (needed) setSignedOut(needed);
+        else setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
       }
       return null;
     }
@@ -6269,6 +6278,9 @@ function App() {
     void loadSelectedBoard(selectedRepoId);
   }, [loadSelectedBoard, selectedRepoId]);
 
+  if (signedOut && selectedRepoId) {
+    return <SignedOutScreen signedOut={signedOut} onSignedIn={() => { setSignedOut(null); void loadSelectedBoard(selectedRepoId); }} />;
+  }
   if (error) {
     return (
       <main className="error-screen">

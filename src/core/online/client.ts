@@ -2,19 +2,24 @@ import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } fr
 import { readCredentials, serviceUrl, type OnlineCredentials } from "./credentials";
 
 export class OnlineAuthenticationError extends Error {
-  constructor(message: string, public readonly statusCode = 401) {
+  constructor(
+    message: string,
+    public readonly statusCode = 401,
+    /** For a missing or ended sign-in: the service to sign in to, and which of the two it was. */
+    public readonly signIn?: { url: string; reason: "missing" | "expired" },
+  ) {
     super(message);
     this.name = "OnlineAuthenticationError";
   }
 }
 
-function loginRequired(url: string) {
-  return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run planban online login ${url}.`);
+function loginRequired(url: string, reason: "missing" | "expired") {
+  return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run planban online login ${url}.`, 401, { url, reason });
 }
 
 export async function requireCredentials(url: string): Promise<OnlineCredentials> {
   const credentials = (await readCredentials()).services[serviceUrl(url)];
-  if (!credentials) throw loginRequired(url);
+  if (!credentials) throw loginRequired(url, "missing");
   return credentials;
 }
 
@@ -92,7 +97,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     }
     if (response.status === 400) throw new PlanbanValidationError(message);
     if (response.status === 404) throw new PlanbanNotFoundError(message);
-    if (response.status === 401) throw loginRequired(url);
+    if (response.status === 401) throw loginRequired(url, "expired");
     if (response.status === 403) throw new OnlineAuthenticationError(`${message} Ask the board owner for access.`, 403);
     // A daily limit (owner decision 18): kept as 429 so the board page and agents see a limit, not a failure.
     if (response.status === 429) throw Object.assign(new Error(message), { name: "OnlineLimitError", statusCode: 429 });

@@ -711,6 +711,32 @@ test("Board HTTP API reads and edits online state and signals changes from anoth
   } finally { await server.close(); }
 });
 
+test("an Online Board without a sign-in tells the page which service to sign in to, signed out or expired", async () => {
+  await takeOnline(fake.url, cwd);
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  try {
+    const state = () => fetch(`${server.url}/api/boards/demo/state`);
+    // The sign-in has ended: the service refuses this computer's credentials.
+    fake.rejectAccess();
+    const expired = await state();
+    assert.equal(expired.status, 401);
+    const expiredBody = await expired.json();
+    assert.deepEqual([expiredBody.signInNeeded, expiredBody.signedOut], [serviceUrl(fake.url), "expired"]);
+    // Signed out: no credentials on this computer at all.
+    await onlineLogout(fake.url);
+    const missing = await state();
+    assert.equal(missing.status, 401);
+    const missingBody = await missing.json();
+    assert.deepEqual([missingBody.signInNeeded, missingBody.signedOut], [serviceUrl(fake.url), "missing"]);
+    // Agents and terminals still get the command in the message.
+    assert.match(missingBody.error, /planban online login/);
+  } finally { await server.close(); }
+});
+
 test("local stdio MCP dispatches online reads and mutations", async () => {
   await takeOnline(fake.url, cwd);
   const child = spawn(process.execPath, ["plugins/planban/scripts/start-planban-mcp.mjs"], {
