@@ -14,6 +14,9 @@ test("the page uses the one Planban dropdown, never the browser's own, except as
   assert.match(dropdown, /aria-activedescendant/u);
   assert.match(dropdown, /aria-selected=\{option\.value === value\}/u);
   for (const key of ["ArrowDown", "ArrowUp", "Home", "End", "Escape", "Enter"]) assert.match(dropdown, new RegExp(`"${key}"`, "u"), key);
+  assert.match(dropdown, /event\.key === "Tab"\) \{\s*setOpen\(false\);\s*triggerRef\.current\?\.focus\(\);/u, "Tab carries on from the dropdown's button");
+  assert.match(dropdown, /scrollIntoView\(\{ block: "nearest" \}\)/u, "the active choice stays in view");
+  assert.match(dropdown, /listRef\.current\?\.contains\(event\.target as Node\)\) return;/u, "scrolling the menu doesn't close it");
   const styles = await read("styles.css");
   assert.match(styles, /\.pb-dropdown-trigger\s*\{[^}]*gap:\s*6px;/su, "the arrow sits 6 px after the text");
   assert.match(styles, /\.pb-dropdown-trigger\s*\{[^}]*min-height:\s*30px;/su, "as tall as the buttons beside it");
@@ -35,6 +38,12 @@ test("a conflicting save keeps the person's text, and a viewer gets no edit cont
   assert.match(save, /status === 409/u);
   assert.doesNotMatch(save, /setDraft\(payload\.markdown\);\s*\}\s*finally/u, "a failed save never replaces the draft");
   assert.match(web, /changed this \$\{docKindLabel\(activeTab\)\} while you were editing\./u);
+  // Saving over the other version is only possible once the person has opened it, and each new conflict asks again.
+  assert.match(web, /setConflict\(\{ theirs, who: await latestDocAuthor\(\), showing: false, seen: false \}\)/u);
+  assert.match(web, /\(conflict !== null && !conflict\.seen\)/u);
+  assert.match(web, /showing: !conflict\.showing, seen: true/u);
+  // Viewers get no order controls in a Group either.
+  assert.match(web, /readOnly=\{viewOnly\}/u);
   assert.match(web, /const viewOnly = state\.hosted\?\.role === "viewer";/u);
   assert.match(web, /readOnly=\{isPreviewing \|\| viewOnly\}/u);
 });

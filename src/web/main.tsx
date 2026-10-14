@@ -3484,10 +3484,13 @@ function GroupRailCard({
   dropOperation,
   reorderPreview,
   hideSourceDuringDrag,
+  readOnly = false,
 }: {
   item: RoadmapItem;
   selected: boolean;
   disabled: boolean;
+  /** A viewer on the web: no order controls at all. */
+  readOnly?: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onSelect: () => void;
@@ -3516,10 +3519,10 @@ function GroupRailCard({
         </span>
       </button>
       {dropOperation === "inside" ? <div className="hierarchy-drop-inside-label"><GroupIcon size={13} /><span>Move inside</span></div> : null}
-      <div className="group-rank-actions" aria-label={`${item.title} order controls`}>
+      {readOnly ? null : <div className="group-rank-actions" aria-label={`${item.title} order controls`}>
         <button title="Move up" aria-label={`Move ${item.title} up`} disabled={disabled || !canMoveUp} onClick={onMoveUp}><ChevronUp size={13} /></button>
         <button title="Move down" aria-label={`Move ${item.title} down`} disabled={disabled || !canMoveDown} onClick={onMoveDown}><ChevronDown size={13} /></button>
-      </div>
+      </div>}
     </article>
   );
 }
@@ -3720,7 +3723,7 @@ function DetailView({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   /** A save refused because the document changed meanwhile: the newer version, and who made it. */
-  const [conflict, setConflict] = useState<{ theirs: DocPayload; who: string | null; showing: boolean } | null>(null);
+  const [conflict, setConflict] = useState<{ theirs: DocPayload; who: string | null; showing: boolean; seen: boolean } | null>(null);
   const boardPeople = useContext(BoardPeopleContext);
   const [objectiveEditing, setObjectiveEditing] = useState(false);
   const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
@@ -3974,7 +3977,7 @@ function DetailView({
 
   async function reorderWorkspaceItem(targetId: string, direction: "up" | "down") {
     const target = byId.get(targetId);
-    if (!target) return;
+    if (!target || viewOnly) return;
     const siblings = workspaceGroups[target.status];
     const index = siblings.findIndex((entry) => entry.id === target.id);
     if (index < 0 || (direction === "up" && index === 0) || (direction === "down" && index === siblings.length - 1)) return;
@@ -4105,7 +4108,8 @@ function DetailView({
         // Someone else saved first. Their version is fetched to look at; the person's text stays in the editor.
         const theirs = await api<DocPayload>(cardPath(boardId, item.id, `/docs/${activeTab}`)).catch(() => null);
         if (theirs) {
-          setConflict({ theirs, who: await latestDocAuthor(), showing: false });
+          // A fresh conflict must be looked at again before saving over it.
+          setConflict({ theirs, who: await latestDocAuthor(), showing: false, seen: false });
           return;
         }
       }
@@ -4271,7 +4275,8 @@ function DetailView({
                                 <GroupRailCard
                                   item={entry}
                                   selected={item.id === entry.id}
-                                  disabled={isPreviewing || busy}
+                                  disabled={isPreviewing || busy || viewOnly}
+                                  readOnly={viewOnly}
                                   canMoveUp={index > 0}
                                   canMoveDown={index < group.length - 1}
                                   onSelect={() => onSelectWorkItem?.(entry.id)}
@@ -4562,11 +4567,12 @@ function DetailView({
                   setEditing(false);
                 }}>Cancel</button>
                 {conflict ? (
-                  <button disabled={busy} aria-pressed={conflict.showing} onClick={() => setConflict({ ...conflict, showing: !conflict.showing })}>
+                  <button disabled={busy} aria-pressed={conflict.showing} onClick={() => setConflict({ ...conflict, showing: !conflict.showing, seen: true })}>
                     {conflict.showing ? "Hide" : "See"} {conflict.who ? `${conflict.who}'s` : "the new"} version
                   </button>
                 ) : null}
-                <button className="primary" onClick={saveDoc} disabled={busy || draft === (conflict?.theirs.markdown ?? doc.markdown)}>
+                <button className="primary" onClick={saveDoc} disabled={busy || draft === (conflict?.theirs.markdown ?? doc.markdown) || (conflict !== null && !conflict.seen)}
+                  title={conflict && !conflict.seen ? `Look at ${conflict.who ? `${conflict.who}'s` : "the new"} version first` : undefined}>
                   {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
                   Save {activeTab}
                 </button>

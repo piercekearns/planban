@@ -108,6 +108,11 @@ function MenuDropdown<T extends string>({ value, options, onChange, label, disab
     setPlace({ left: Math.min(rect.left, window.innerWidth - 178), top, minWidth: Math.max(170, rect.width) });
   }, [open, options.length]);
 
+  // The active choice stays in view in a long menu.
+  useEffect(() => {
+    if (open) document.getElementById(`${id}-option-${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [open, active, id]);
+
   // Keyboard focus moves into the menu once it is on screen.
   useEffect(() => {
     if (open && place) listRef.current?.focus();
@@ -119,7 +124,11 @@ function MenuDropdown<T extends string>({ value, options, onChange, label, disab
       const target = event.target as Node;
       if (!listRef.current?.contains(target) && !triggerRef.current?.contains(target)) close(false);
     };
-    const onMove = () => close(false);
+    // Scrolling the page moves the trigger away, so the menu closes; scrolling the menu itself doesn't.
+    const onMove = (event: Event) => {
+      if (event.type === "scroll" && listRef.current?.contains(event.target as Node)) return;
+      close(false);
+    };
     document.addEventListener("pointerdown", onPointer, true);
     window.addEventListener("resize", onMove);
     window.addEventListener("scroll", onMove, true);
@@ -166,7 +175,12 @@ function MenuDropdown<T extends string>({ value, options, onChange, label, disab
       event.stopPropagation();
       return close(true);
     }
-    if (event.key === "Tab") return close(false);
+    // Tab carries on from the dropdown's own button, so focus never jumps out of a dialog.
+    if (event.key === "Tab") {
+      setOpen(false);
+      triggerRef.current?.focus();
+      return;
+    }
     // Type the start of a choice to jump to it.
     if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
       const now = Date.now();

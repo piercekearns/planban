@@ -5994,3 +5994,9 @@ button.content-edit-action:hover {
   .online-board-modal .people-row .col .muted { padding-left: 0; }
   .online-board-modal .people-row > button, .online-board-modal .people-row > .remove-col { grid-area: remove; justify-self: end; }
 }
+@media (max-width: 640px) {
+  /* Invite: the address takes the full width; its role and Send invite wrap underneath. */
+  .online-board-modal .online-board-row { flex-wrap: wrap; }
+  .online-board-modal .online-board-row .online-board-input,
+  .online-board-modal .online-board-row .grow { flex: 1 1 100%; min-width: 0; }
+}
