@@ -96,3 +96,11 @@ test("a document's answer only lands if it is the newest request for the documen
   assert.match(load, /if \(current\(\)\) setDocErrors/u);
   assert.doesNotMatch(web, /void loadDoc\(kind\)\.then\(/u, "nothing updates documents outside the gate");
 });
+
+test("on a phone the board header's menus open above the sticky column chips", async () => {
+  const styles = await read("styles.css");
+  const header = /\.board-screen > \.app-header \{ position: relative; z-index: (\d+);/u.exec(styles);
+  const chips = /\.phone-status-tabs \{ position: sticky; top: 0; z-index: (\d+);/u.exec(styles);
+  assert.ok(header && chips, "both rules exist");
+  assert.ok(Number(header![1]) > Number(chips![1]));
+});

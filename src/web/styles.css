@@ -5943,7 +5943,8 @@ button.content-edit-action:hover {
 .phone-status-tabs { display: none; }
 @media (max-width: 640px) {
   .board-screen { height: auto; min-height: 100dvh; overflow: visible; }
-  .board-screen > .app-header { padding: 10px 12px 8px; gap: 2px 8px; }
+  /* Above the sticky column chips, so the header's menus open over them. */
+  .board-screen > .app-header { position: relative; z-index: 31; padding: 10px 12px 8px; gap: 2px 8px; }
   .board-screen .board-header-tool { display: none; }
   .phone-status-tabs { position: sticky; top: 0; z-index: 29; display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg); scrollbar-width: none; }
   .phone-status-tabs::-webkit-scrollbar { display: none; }
