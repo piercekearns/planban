@@ -3,7 +3,7 @@ import { makeFunctionReference } from "convex/server";
 import { internalAction, internalMutation, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server";
 import { USAGE_POLICY, USAGE_CLOUD, collectionFailure, usageEnabled, mailEnabled, parseUsage, emptyMonitor, observeUsage, expiryNoticeDue, expiryNoticePayload, claimExpiryNotice, finishUsage, canSend, monitorStale, type MonitorState, type Reading, type Batch } from "./model/providerUsage";
 
-import { emptyWorkerUsage, noteWorkerWarning, observeWorkerUsage, parseWorkerRequests, utcDay, workerUsageConfigured, workerUsageRequest, workerWarningPayload, type WorkerUsageState } from "./model/workerUsage";
+import { emptyWorkerUsage, noteWorkerWarning, observeWorkerUsage, parseWorkerRequests, workerUsageConfigured, workerUsageRequest, type WorkerUsageState } from "./model/workerUsage";
 
 const observeRef = makeFunctionReference<"mutation">("providerUsage:observe");
 const observeWorkerRef = makeFunctionReference<"mutation">("providerUsage:observeWorker");
@@ -13,13 +13,13 @@ const WORKER_POLICY = `${USAGE_POLICY}/worker`;
 
 export const observeWorker = internalMutation({
   args: { requests: v.union(v.number(), v.null()), status: v.string(), now: v.number() },
-  handler: async (ctx, { requests, status, now }): Promise<70 | 90 | null> => {
+  handler: async (ctx, { requests, status, now }): Promise<{ day: string; level: 70 | 90; payload: string } | null> => {
     if (!workerUsageConfigured(process.env)) return null;
     const row = await ctx.db.query("providerUsageMonitors").withIndex("by_policy", q => q.eq("policy", WORKER_POLICY)).unique();
     const state: WorkerUsageState = row?.state ?? emptyWorkerUsage();
-    const level = observeWorkerUsage(state, requests, status, now);
+    const warning = observeWorkerUsage(state, requests, status, now);
     if (row) await ctx.db.patch(row._id, { state }); else await ctx.db.insert("providerUsageMonitors", { policy: WORKER_POLICY, state });
-    return level;
+    return warning;
   },
 });
 export const noteWorker = internalMutation({
@@ -46,12 +46,13 @@ export async function runWorkerUsagePoll(ctx: Pick<ActionCtx, "runMutation">, no
     if (error instanceof Error && error.message.startsWith("worker_usage_")) status = error.message;
     else if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) status = "timeout";
   }
-  const level = await ctx.runMutation(observeWorkerRef, { requests, status, now }) as 70 | 90 | null;
-  if (level === null || requests === null || !mailEnabled(process.env)) return status;
-  const day = utcDay(now);
+  // The warning's body was stored before this send, so a retry repeats it exactly under the same key.
+  const warning = await ctx.runMutation(observeWorkerRef, { requests, status, now }) as { day: string; level: 70 | 90; payload: string } | null;
+  if (warning === null || !mailEnabled(process.env)) return status;
+  const { day, level } = warning;
   const response = await fetch("https://api.resend.com/emails", { method: "POST", redirect: "error",
     headers: { Authorization: `Bearer ${process.env.PLANBAN_USAGE_EMAIL_KEY}`, "Content-Type": "application/json", "Idempotency-Key": `planban-worker-requests-${day}-${level}` },
-    body: workerWarningPayload(requests, level, now), signal: AbortSignal.timeout(10000) }).catch(() => null);
+    body: warning.payload, signal: AbortSignal.timeout(10000) }).catch(() => null);
   if (!response?.ok) { await response?.body?.cancel(); return "retry"; }
   await ctx.runMutation(noteWorkerRef, { day, level });
   return "sent";

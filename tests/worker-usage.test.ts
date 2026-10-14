@@ -29,6 +29,11 @@ test("the request asks for this Worker's requests over today's UTC day", () => {
   const body = JSON.parse(workerUsageRequest(ACCOUNT, NOON));
   assert.deepEqual(body.variables, { account: ACCOUNT, script: WORKER_SCRIPT, start: "2026-10-14T00:00:00Z", end: "2026-10-15T00:00:00Z" });
   assert.match(body.query, /workersInvocationsAdaptive/u);
+  // Cloudflare's analytics schema names its scalar types in lowercase (string, not String or Time).
+  const declared = /^query \(([^)]*)\)/u.exec(body.query)![1]!;
+  assert.deepEqual(declared.split(",").map((part: string) => part.trim()), ["$account: string!", "$script: string!", "$start: string!", "$end: string!"]);
+  assert.match(body.query, /accounts\(filter: \{ accountTag: \$account \}\)/u);
+  assert.match(body.query, /filter: \{ scriptName: \$script, datetime_geq: \$start, datetime_lt: \$end \}/u);
 });
 
 test("an answer is summed, and anything unexpected is an error, never zero", () => {
@@ -41,23 +46,35 @@ test("an answer is summed, and anything unexpected is an error, never zero", () 
 
 test("warns at 70% and again at 90%, once each per UTC day", () => {
   const state = emptyWorkerUsage();
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED * 0.69, "complete", NOON), null);
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED * 0.7, "complete", NOON), 70);
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED * 0.75, "complete", NOON), 70, "until the email is accepted it is tried again");
+  const level = (requests: number | null, now = NOON) => observeWorkerUsage(state, requests, "complete", now)?.level ?? null;
+  assert.equal(level(WORKER_DAILY_INCLUDED * 0.69), null);
+  assert.equal(level(WORKER_DAILY_INCLUDED * 0.7), 70);
+  assert.equal(level(WORKER_DAILY_INCLUDED * 0.75), 70, "until the email is accepted it is tried again");
   noteWorkerWarning(state, "2026-10-14", 70);
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED * 0.8, "complete", NOON), null);
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED * 0.95, "complete", NOON), 90);
+  assert.equal(level(WORKER_DAILY_INCLUDED * 0.8), null);
+  assert.equal(level(WORKER_DAILY_INCLUDED * 0.95), 90);
   noteWorkerWarning(state, "2026-10-14", 90);
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED, "complete", NOON), null);
+  assert.equal(level(WORKER_DAILY_INCLUDED), null);
   const tomorrow = NOON + 86_400_000;
-  assert.equal(observeWorkerUsage(state, WORKER_DAILY_INCLUDED * 0.7, "complete", tomorrow), 70, "a new day warns again");
+  assert.equal(level(WORKER_DAILY_INCLUDED * 0.7, tomorrow), 70, "a new day warns again");
   observeWorkerUsage(state, 0, "complete", tomorrow + 2 * 86_400_000);
   assert.deepEqual(Object.keys(state.warned), [], "old days are forgotten");
-  assert.equal(observeWorkerUsage(state, null, "timeout", NOON), null);
-  assert.equal(state.status, "timeout");
+  assert.equal(state.pending, undefined, "a warning from an earlier day is dropped");
   const fresh = emptyWorkerUsage();
   noteWorkerWarning(fresh, "2026-10-14", 90);
   assert.equal(observeWorkerUsage(fresh, WORKER_DAILY_INCLUDED * 0.72, "complete", NOON), null, "90 covers 70");
+});
+
+test("a warning not yet accepted is resent byte for byte, even as the count grows", () => {
+  const state = emptyWorkerUsage();
+  const first = observeWorkerUsage(state, 72_000, "complete", NOON)!;
+  const again = observeWorkerUsage(state, 78_000, "complete", NOON + 3_600_000)!;
+  assert.equal(again.payload, first.payload, "same key, same body");
+  assert.equal(observeWorkerUsage(state, null, "timeout", NOON + 7_200_000)!.payload, first.payload, "a failed reading still retries the stored warning");
+  const higher = observeWorkerUsage(state, 92_000, "complete", NOON + 10_800_000)!;
+  assert.equal(higher.level, 90, "a higher level replaces the pending one, with its own body");
+  noteWorkerWarning(state, "2026-10-14", 90);
+  assert.equal(observeWorkerUsage(state, 93_000, "complete", NOON + 14_400_000), null);
 });
 
 test("the warning names the count, the level and the free daily amount", () => {
@@ -89,14 +106,29 @@ test("the hourly check reads Cloudflare, warns once, and stays quiet afterwards"
     const { ctx } = memoryService();
     const byName: Record<string, any> = { "providerUsage:observeWorker": providerUsage.observeWorker, "providerUsage:noteWorker": providerUsage.noteWorker };
     const actionCtx = { runMutation: async (ref: any, args: any) => byName[getFunctionName(ref)]._handler(ctx, args) };
-    assert.equal(await providerUsage.runWorkerUsagePoll(actionCtx as any, NOON), "sent");
-    const mails = sent.filter((entry) => entry.url.includes("resend"));
-    assert.equal(mails.length, 1);
-    assert.equal(mails[0]!.key, "planban-worker-requests-2026-10-14-70");
+    // The first send's acknowledgement is lost; the next hour resends the same bytes under the same key.
+    let loseAck = true;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (loseAck && String(input).includes("resend")) { loseAck = false; await realFetch(input, init); throw new TypeError("connection reset"); }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    assert.equal(await providerUsage.runWorkerUsagePoll(actionCtx as any, NOON), "retry");
+    requests = 75_000;
+    assert.equal(await providerUsage.runWorkerUsagePoll(actionCtx as any, NOON + 1_800_000), "sent");
+    const resent = sent.filter((entry) => entry.url.includes("resend"));
+    assert.equal(resent.length, 2);
+    assert.equal(resent[0]!.body, resent[1]!.body, "byte-identical retry");
+    assert.equal(resent[0]!.key, resent[1]!.key);
+    sent.length = 0;
+    globalThis.fetch = realFetch;
+    requests = 72_000;
     assert.equal(await providerUsage.runWorkerUsagePoll(actionCtx as any, NOON + 3_600_000), "complete", "already warned today");
     requests = 91_000;
     assert.equal(await providerUsage.runWorkerUsagePoll(actionCtx as any, NOON + 7_200_000), "sent");
-    assert.equal(sent.filter((entry) => entry.url.includes("resend")).length, 2);
+    const mails = sent.filter((entry) => entry.url.includes("resend"));
+    assert.equal(mails.length, 1, "only the 90% warning since");
+    assert.equal(mails[0]!.key, "planban-worker-requests-2026-10-14-90");
     process.env.PLANBAN_WORKER_USAGE_TOKEN = "";
     assert.equal(await providerUsage.runWorkerUsagePoll(actionCtx as any, NOON), "disabled");
   } finally {

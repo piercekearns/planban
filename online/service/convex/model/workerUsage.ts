@@ -15,6 +15,11 @@ export interface WorkerUsageState {
   /** The UTC day ("2026-10-14") each level was warned about. */
   warned: Record<string, Array<70 | 90>>;
   lastReading?: { day: string; requests: number; at: number };
+  /**
+   * The warning being sent: kept byte for byte until the email is accepted,
+   * because a retry under the same idempotency key must send the same body.
+   */
+  pending?: { day: string; level: 70 | 90; payload: string };
   status?: string;
 }
 
@@ -33,7 +38,7 @@ export function workerUsageConfigured(env: Settings): boolean {
 export function workerUsageRequest(account: string, now: number): string {
   const day = utcDay(now);
   return JSON.stringify({
-    query: "query ($account: String!, $script: String!, $start: Time!, $end: Time!) { viewer { accounts(filter: { accountTag: $account }) { workersInvocationsAdaptive(limit: 10000, filter: { scriptName: $script, datetime_geq: $start, datetime_lt: $end }) { sum { requests } } } } }",
+    query: "query ($account: string!, $script: string!, $start: string!, $end: string!) { viewer { accounts(filter: { accountTag: $account }) { workersInvocationsAdaptive(limit: 10000, filter: { scriptName: $script, datetime_geq: $start, datetime_lt: $end }) { sum { requests } } } } }",
     variables: { account, script: WORKER_SCRIPT, start: `${day}T00:00:00Z`, end: new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().replace(/\.\d{3}Z$/, "Z") },
   });
 }
@@ -56,21 +61,24 @@ export function parseWorkerRequests(body: unknown): number {
 }
 
 /**
- * Records a reading and returns the level to warn about now, if any: the
- * highest level crossed today that hasn't been warned about. Only today's
- * and yesterday's warnings are kept.
+ * Records a reading and returns the warning to send now, if any: the highest
+ * level crossed today that hasn't been warned about. A warning not yet
+ * accepted is sent again with exactly the same body. Only today's and
+ * yesterday's warnings are kept.
  */
-export function observeWorkerUsage(state: WorkerUsageState, requests: number | null, status: string, now: number): 70 | 90 | null {
+export function observeWorkerUsage(state: WorkerUsageState, requests: number | null, status: string, now: number): { day: string; level: 70 | 90; payload: string } | null {
   state.status = status;
   const day = utcDay(now);
   for (const key of Object.keys(state.warned)) if (key < utcDay(now - 86_400_000)) delete state.warned[key];
-  if (requests === null) return null;
-  state.lastReading = { day, requests, at: now };
-  const level = requests >= WORKER_DAILY_INCLUDED * 0.9 ? 90 : requests >= WORKER_DAILY_INCLUDED * 0.7 ? 70 : null;
-  if (level === null) return null;
+  if (state.pending && (state.pending.day !== day || (state.warned[day] ?? []).includes(state.pending.level))) delete state.pending;
+  if (requests !== null) state.lastReading = { day, requests, at: now };
+  const level = requests === null ? null : requests >= WORKER_DAILY_INCLUDED * 0.9 ? 90 : requests >= WORKER_DAILY_INCLUDED * 0.7 ? 70 : null;
   const warned = state.warned[day] ?? [];
-  if (warned.includes(level)) return null;
-  return level;
+  // A higher level crossed meanwhile replaces a pending lower one (its own key, its own body).
+  if (level !== null && !warned.includes(level) && (!state.pending || level > state.pending.level)) {
+    state.pending = { day, level, payload: workerWarningPayload(requests!, level, now) };
+  }
+  return state.pending ? { ...state.pending } : null;
 }
 
 /** Marks a level warned once its email is accepted (crossing 90 also covers 70). */
@@ -79,6 +87,7 @@ export function noteWorkerWarning(state: WorkerUsageState, day: string, level: 7
   warned.add(level);
   if (level === 90) warned.add(70);
   state.warned[day] = [...warned].sort() as Array<70 | 90>;
+  if (state.pending && state.pending.day === day && warned.has(state.pending.level)) delete state.pending;
 }
 
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
