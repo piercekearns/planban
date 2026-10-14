@@ -68,3 +68,11 @@ test("touch screens always show the edit buttons, and a document that won't load
   assert.match(web, /Couldn't load this \{docKindLabel\(activeTab\)\.toLowerCase\(\)\}/u);
   assert.match(web, /onClick=\{\(\) => void loadDoc\(activeTab\)\.catch\(\(\) => undefined\)\}>Try again/u);
 });
+
+test("a document's answer only lands on the card and version it was asked for", async () => {
+  const web = await read("main.tsx");
+  const load = web.slice(web.indexOf("const loadDoc = useCallback("), web.indexOf("[boardId, item.id, previewVersion],", web.indexOf("const loadDoc = useCallback(")));
+  assert.match(load, /if \(current\(\)\) setDocsByKind/u);
+  assert.match(load, /if \(current\(\)\) setDocErrors/u);
+  assert.match(web, /useEffect\(\(\) => setDocErrors\(\{\}\), \[docIdentity\]\);/u);
+});

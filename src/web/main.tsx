@@ -4054,9 +4054,16 @@ function DetailView({
 
   /** A Spec or Plan that couldn't be read: said plainly, with Try again, never "Loading" for ever. */
   const [docErrors, setDocErrors] = useState<Partial<Record<DocKind, string>>>({});
+  // Which document is on screen now: an answer for an earlier card or version must not land on this one.
+  const docIdentity = `${boardId}\n${item.id}\n${previewVersion ?? "current"}`;
+  const docIdentityRef = useRef(docIdentity);
+  docIdentityRef.current = docIdentity;
+  useEffect(() => setDocErrors({}), [docIdentity]);
   const loadDoc = useCallback(
     async (kind: DocKind) => {
-      setDocErrors((current) => ({ ...current, [kind]: undefined }));
+      const asked = `${boardId}\n${item.id}\n${previewVersion ?? "current"}`;
+      const current = () => docIdentityRef.current === asked;
+      setDocErrors((errors) => ({ ...errors, [kind]: undefined }));
       try {
         const payload = await api<DocPayload>(
           previewVersion
@@ -4065,10 +4072,10 @@ function DetailView({
           undefined,
           30_000,
         );
-        setDocsByKind((current) => ({ ...current, [kind]: payload }));
+        if (current()) setDocsByKind((docs) => ({ ...docs, [kind]: payload }));
         return payload;
       } catch (error) {
-        setDocErrors((current) => ({ ...current, [kind]: error instanceof Error ? error.message : "This document couldn't be loaded." }));
+        if (current()) setDocErrors((errors) => ({ ...errors, [kind]: error instanceof Error ? error.message : "This document couldn't be loaded." }));
         throw error;
       }
     },
