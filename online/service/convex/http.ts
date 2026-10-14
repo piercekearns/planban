@@ -130,6 +130,15 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     // The key is shown once; only its hash is stored.
     return json({ ...created, key: token }, 201);
   }
+  if (parts[0] === "invites" && parts.length === 1 && method === "GET") {
+    // Email invitations waiting for this person's verified addresses (the dashboard's banner).
+    const verifiedEmails = await verifiedEmailsOf((await ctx.runQuery(internal.boards.me, { connectionId })).userId);
+    return json(await ctx.runQuery(internal.invites.waitingFor, { connectionId, verifiedEmails }));
+  }
+  if (parts[0] === "invites" && parts.length === 3 && parts[2] === "accept" && method === "POST") {
+    const verifiedEmails = await verifiedEmailsOf((await ctx.runQuery(internal.boards.me, { connectionId })).userId);
+    return json(await ctx.runMutation(internal.invites.acceptById, { connectionId, inviteId: parts[1]!, verifiedEmails }));
+  }
   if (parts[0] === "invites" && parts[1] === "accept" && parts.length === 2 && method === "POST") {
     const input = await body(request);
     const tokenHash = await sha256Hex(inviteToken(String(input.token ?? "")));
@@ -375,6 +384,18 @@ async function verifiedEmailsOf(userId: string): Promise<string[]> {
 
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
+/**
+ * The web page's invitation preview. The token comes in the body, never the
+ * address, so it stays out of logs; nothing is shown for an invitation that
+ * can't be used beyond its state.
+ */
+const invitePreviewResponse: RouteHandler = async (ctx, request) => {
+  const input = await body(request).catch(() => ({} as Record<string, unknown>));
+  const token = inviteToken(String(input.token ?? ""));
+  const preview = token ? await ctx.runQuery(internal.invites.previewState, { tokenHash: await sha256Hex(token) }) : { state: "unknown" as const };
+  return json(preview);
+};
+
 /** The page an invite link opens: what it is for, and how to join. */
 const invitePageResponse: RouteHandler = async (ctx, request) => {
   const token = inviteToken(new URL(request.url).pathname);
@@ -392,7 +413,7 @@ const invitePageResponse: RouteHandler = async (ctx, request) => {
   if (!invite) return page("This invite has expired", "<p>Invite links work for 7 days. Ask the board owner for a new one.</p>");
   const link = `${publicOrigin()}/invite/${token}`;
   return page(`Join ${invite.boardTitle} on Planban`,
-    `<p>You've been invited as ${invite.role === "editor" ? "an editor: you can change cards, specs and plans, and mark work complete" : "a viewer: you can read the board and its history"}.${invite.forEmail ? " This invite is for one email address; sign in with it." : ""}</p>`
+    `<p>${escapeHtml(invite.inviterName)} invited you as ${invite.role === "editor" ? "an editor: you can change cards, specs and plans, and mark work complete" : "a viewer: you can read the board and its history"}.${invite.forEmail ? " This invite is for one email address; sign in with it." : ""}</p>`
     + `<p>To join, run this in a terminal on your computer. Planban opens your browser to sign in with your own account:</p>`
     + `<pre style="background:#f4f4f5;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-all">planban online join ${escapeHtml(link)}</pre>`
     + `<p style="color:#666">The link works until ${escapeHtml(new Date(invite.expiresAt).toUTCString())}.</p>`);
@@ -445,6 +466,7 @@ http.route({ path: "/dev/token", method: "POST", handler: httpAction(atServiceOn
 // The web page's browser session: started from a Clerk sign-in, ended by signing out.
 http.route({ path: "/web/session", method: "POST", handler: httpAction(atServiceOnly((ctx, request) => webSessionResponse(ctx, request))) });
 http.route({ path: "/web/signout", method: "POST", handler: httpAction(atServiceOnly(webSignOutResponse)) });
+http.route({ path: "/web/invite", method: "POST", handler: httpAction(atServiceOnly(invitePreviewResponse)) });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });
