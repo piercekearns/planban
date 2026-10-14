@@ -117,6 +117,10 @@ import {
   type PlanbanActivitySnapshot,
 } from "../core/activity";
 import { liveRefreshDecision } from "./liveSync";
+import { capabilities } from "./capabilities";
+import { newIdempotencyKey } from "./hostedAdapter";
+import { watchHostedBoard } from "./hostedLive";
+import { hostedAdapter, pageFetch } from "./transport";
 import { stalenessChipLabel, type StalenessSignal } from "../core/staleness";
 import {
   canPlaceItemInside,
@@ -837,7 +841,8 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
     ...(init?.headers ?? {}),
   } as Record<string, string>;
   if (method !== "GET" && method !== "HEAD" && !headers["Idempotency-Key"]) {
-    headers["Idempotency-Key"] = `web:${Date.now()}:${crypto.randomUUID()}`;
+    // One key per logical edit, in the form the online service accepts too.
+    headers["Idempotency-Key"] = newIdempotencyKey();
   }
   const timeoutController = timeoutMs ? new AbortController() : null;
   const timeout = timeoutController
@@ -851,9 +856,7 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
       headers,
       ...(signals.length > 0 ? { signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0]! } : {}),
     };
-    response = await fetch(path, {
-      ...requestInit,
-    });
+    response = await pageFetch(path, requestInit);
   } catch (error) {
     if (timeoutController?.signal.aborted) {
       throw new Error("Planban took too long to respond. Try loading the Board again.");
@@ -1855,7 +1858,7 @@ function BoardPicker({
             >
               <span>
                 <b>{board.title}</b>
-                <small>{board.cwd}</small>
+                {capabilities.projectFolders ? <small>{board.cwd}</small> : null}
               </span>
             </button>
           ))}
@@ -1878,7 +1881,7 @@ function BoardMoreMenu({
   onOpenSettings?: () => void;
   onOpenConnections?: () => void;
   onOpenHistory?: () => void;
-  onOpenTutorial: () => void;
+  onOpenTutorial?: () => void;
   onOpenFeedback: () => void;
   hasArchivedCards: boolean;
   showArchived: boolean;
@@ -1906,7 +1909,7 @@ function BoardMoreMenu({
           {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
           {onOpenConnections ? <button role="menuitem" onClick={() => choose(onOpenConnections)}><Link2 size={14} /><span>Your connections</span></button> : null}
           {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
-          <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button>
+          {onOpenTutorial ? <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button> : null}
           <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
           {hasArchivedCards ? (
             <button
@@ -2054,10 +2057,12 @@ function FeedbackModal({
             {busy === "copy" ? <Loader2 size={14} className="spin" /> : <Copy size={14} />}
             Copy prompt
           </button>
-          <button onClick={openInCodex} disabled={!canSubmit}>
-            {busy === "open" ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-            Open in Codex
-          </button>
+          {capabilities.localAgents ? (
+            <button onClick={openInCodex} disabled={!canSubmit}>
+              {busy === "open" ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+              Open in Codex
+            </button>
+          ) : null}
         </footer>
       </section>
     </div>,
@@ -4942,7 +4947,7 @@ function BoardView({
   useEffect(() => {
     setPreview(null);
     void loadHistory().catch(() => setHistory(null));
-    void loadUpdateStatus().catch(() => undefined);
+    if (capabilities.updates) void loadUpdateStatus().catch(() => undefined);
   }, [boardId, loadHistory, loadUpdateStatus]);
 
   useEffect(() => {
@@ -5134,7 +5139,7 @@ function BoardView({
   }
 
   useEffect(() => {
-    if (isPreviewing) return undefined;
+    if (isPreviewing || !capabilities.localAgents) return undefined;
     const pendingItems = state.roadmap.roadmapItems.filter(hasPendingCodexThread);
     if (pendingItems.length === 0) return undefined;
     let cancelled = false;
@@ -5629,7 +5634,7 @@ function BoardView({
               {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
               {...(!isDemoBoard && online.status?.signedIn.length ? { onOpenConnections: () => setOnlineScreen("connections") } : {})}
               {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
-              onOpenTutorial={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
+              {...(capabilities.tutorial ? { onOpenTutorial: () => openTutorial("first-run", isDemoBoard ? null : boardId) } : {})}
               onOpenFeedback={() => setFeedbackOpen(true)}
               hasArchivedCards={hasArchivedCards}
               showArchived={showArchived}
@@ -5638,7 +5643,7 @@ function BoardView({
           </div>
         </div>
       </header>
-      <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} />
+      {capabilities.olderCopyCheck ? <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} /> : null}
 
       {isActivityLab ? (
         <ActivityLabPanel
@@ -5963,11 +5968,11 @@ function BoardDashboard({
                     {board.kind === "demo" ? <small className="board-kind-pill">Demo</small> : null}
                     {board.archivedAt ? <small className="board-kind-pill">Archived</small> : null}
                   </span>
-                  <small>{board.cwd}</small>
+                  {capabilities.projectFolders ? <small>{board.cwd}</small> : null}
                 </span>
                 <small>{board.repoId}</small>
               </button>
-              <span className="board-list-actions">
+              {capabilities.projectFolders ? <span className="board-list-actions">
                 {board.archivedAt ? (
                   <TooltipButton
                     label={`Restore ${board.title}`}
@@ -5995,7 +6000,7 @@ function BoardDashboard({
                 >
                   <Trash2 size={14} />
                 </TooltipButton>
-              </span>
+              </span> : null}
             </article>
           ))
         ) : (
@@ -6193,7 +6198,7 @@ function App() {
       if (requestId !== appLoadRequestRef.current) return;
       setInitialized(status.initialized);
       setBoards(boardsPayload.boards);
-      if (isTutorialPath()) {
+      if (capabilities.tutorial && isTutorialPath()) {
         selectedRepoIdRef.current = null;
         setSelectedRepoId(null);
         setState(null);
@@ -6232,7 +6237,8 @@ function App() {
   }, [load]);
 
   useEffect(() => {
-    if (!state) return;
+    // On the web, live updates come from the service instead (below).
+    if (!state || capabilities.hosted) return;
     let stopped = false;
     let pollTimer: number | null = null;
     const poll = async () => {
@@ -6266,6 +6272,51 @@ function App() {
       if (pollTimer !== null) window.clearTimeout(pollTimer);
     };
   }, [load, loadSelectedBoard, Boolean(state)]);
+
+  // On the web: the board's revision arrives over the service's live
+  // connection, and the board reloads only when it differs from what's shown.
+  const shownRevisionRef = useRef<number | null>(null);
+  shownRevisionRef.current = state?.roadmap.revision ?? null;
+  const [liveEpoch, setLiveEpoch] = useState(0);
+  const watchedBoard = hostedAdapter && state ? state.manifest.repoId : null;
+  useEffect(() => {
+    const adapter = hostedAdapter;
+    if (!adapter || !watchedBoard) return;
+    const boardId = watchedBoard;
+    const known = shownRevisionRef.current;
+    const watch = watchHostedBoard({
+      boardId,
+      ...(known === null ? {} : { knownRevision: known }),
+      liveToken: () => adapter.liveToken(),
+      revision: (id) => adapter.revision(id),
+      onRevision: (revision) => {
+        if (selectedRepoIdRef.current !== boardId || revision === shownRevisionRef.current) return;
+        void loadSelectedBoard(boardId, true);
+      },
+      onLost: () => {
+        if (selectedRepoIdRef.current !== boardId) return;
+        // Reloading shows why (signed out, or no longer on this board); a board that still loads is watched again.
+        void loadSelectedBoard(boardId).then((next) => {
+          if (next) setLiveEpoch((epoch) => epoch + 1);
+        });
+      },
+    });
+    return () => watch.close();
+  }, [watchedBoard, liveEpoch, loadSelectedBoard]);
+
+  // On the web, the board list is rechecked when the page regains focus.
+  useEffect(() => {
+    if (!capabilities.hosted) return;
+    const recheck = () => {
+      if (!document.hidden) void load(true);
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [load]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -6312,7 +6363,7 @@ function App() {
       </main>
     );
   }
-  if (isTutorialPath()) return <TutorialPage onSelectBoard={selectBoard} />;
+  if (capabilities.tutorial && isTutorialPath()) return <TutorialPage onSelectBoard={selectBoard} />;
   if (!selectedRepoId && boards.length > 0) return <BoardDashboard boards={boards} onSelectBoard={selectBoard} onBoardsChanged={load} />;
   if (initialized === false && boards.length === 0) {
     return (

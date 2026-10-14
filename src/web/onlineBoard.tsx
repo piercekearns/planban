@@ -5,6 +5,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Bot, Check, Cloud, Copy, Info, KeyRound, Laptop, Link, Loader2, Mail, Users, X } from "lucide-react";
+import { capabilities } from "./capabilities";
+import { pageFetch } from "./transport";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -42,7 +44,7 @@ class RequestError extends Error {
 }
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await pageFetch(path, {
     method: body === undefined ? "GET" : "POST",
     headers: { "Content-Type": "application/json", "X-Planban-Client": "web" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -87,6 +89,29 @@ const hostOf = (url: string) => { try { return new URL(url).host; } catch { retu
 
 /** Shown instead of an Online Board when this computer isn't signed in to its service. */
 export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOut; onSignedIn: () => void }) {
+  if (capabilities.hosted) return <WebSignedOutScreen signedOut={signedOut} />;
+  return <ComputerSignedOutScreen signedOut={signedOut} onSignedIn={onSignedIn} />;
+}
+
+/** The address of the web sign-in page, which comes back to this page afterwards. */
+export function webSignInPath(returnTo = `${window.location.pathname}${window.location.search}`) {
+  return `/sign-in?next=${encodeURIComponent(returnTo)}`;
+}
+
+/** On the web: no error and no command, just Log in, which returns to this board. */
+function WebSignedOutScreen({ signedOut }: { signedOut: SignedOut }) {
+  return (
+    <main className="error-screen">
+      <div className="load-error-card signed-out-card">
+        <h1>{signedOut.reason === "expired" ? "Your Planban sign-in has ended." : "You're signed out of Planban."}</h1>
+        <p>Log in to open this board.</p>
+        <button className="primary" onClick={() => window.location.assign(webSignInPath())}>Log in</button>
+      </div>
+    </main>
+  );
+}
+
+function ComputerSignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOut; onSignedIn: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blockedLink, setBlockedLink] = useState<string | null>(null);
@@ -366,7 +391,9 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
     );
   }
 
-  const where = status.location === "online"
+  const where = capabilities.hosted
+    ? <div className="online-board-row"><div className="grow"><b><Cloud size={14} /> Online</b><small>Stored in your Planban account, so you can open it from any device and invite people.</small></div></div>
+    : status.location === "online"
     ? <div className="online-board-row"><div className="grow"><b><Cloud size={14} /> Online</b><small>Stored in your Planban account, so you can open it from any device and invite people. This Mac keeps an automatic backup copy.</small></div><button className="online-board-button" disabled={busy} onClick={() => setView("confirm-local")}><Laptop size={13} /> Take local…</button></div>
     : status.location === "moving"
       ? <div className="online-board-row"><div className="grow"><b><Loader2 size={14} className="spin" /> Moving online…</b><small>{job?.progress?.message ?? "Starting…"}</small></div><button className="online-board-button" onClick={() => setView("progress")}>Show progress</button></div>
@@ -853,7 +880,7 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
   const row = (connection: Connection, icon: React.ReactNode, levelEditable: boolean) => (
     <div className="people-row" key={connection.id}>
       <span className="face-col connection-icon">{icon}</span>
-      <div className="who"><b>{connection.kind === "oauth" ? connection.clientName : connection.name}{connection.current ? <span className="muted"> (this Mac)</span> : null}</b><small>{where(connection)} · last used {timeAgo(connection.lastUsedAt)}</small></div>
+      <div className="who"><b>{connection.kind === "oauth" ? connection.clientName : connection.name}{connection.current ? <span className="muted"> ({capabilities.hosted ? "this browser" : "this Mac"})</span> : null}</b><small>{where(connection)} · last used {timeAgo(connection.lastUsedAt)}</small></div>
       <div className="col wide">
         {levelEditable ? (
           <select className="online-board-select" value={connection.level} disabled={busy} aria-label="What it may do"
@@ -868,7 +895,7 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
     </div>
   );
   const cutOffEverything = () => {
-    if (!window.confirm("Cut off every other agent, key, machine and Claude registration on your account? This Mac stays signed in.")) return;
+    if (!window.confirm(`Cut off every other agent, key, machine and Claude registration on your account? ${capabilities.hosted ? "This browser" : "This Mac"} stays signed in.`)) return;
     // The service revokes the complete set, not just what this list shows.
     void act(async () => {
       const result = await request<{ complete: boolean }>("/api/online/connections/revoke-others", {});

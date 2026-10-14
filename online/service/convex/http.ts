@@ -278,7 +278,8 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
   return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
 }
 
-const api = httpAction(async (ctx, request) => {
+/** Every /api/v1 request: a bearer credential or the browser's session, then the route. */
+export async function apiResponse(ctx: ActionCtx, request: Request): Promise<Response> {
   try {
     const auth = await authenticateApiRequest(ctx, request);
     if (!auth) return unauthorized();
@@ -286,7 +287,9 @@ const api = httpAction(async (ctx, request) => {
   } catch (error) {
     return errorResponse(error);
   }
-});
+}
+
+const api = httpAction(apiResponse);
 
 /** Development sign-in for local backends only: returns a bearer token for a named test person. */
 export const devTokenResponse: RouteHandler = async (ctx, request) => {

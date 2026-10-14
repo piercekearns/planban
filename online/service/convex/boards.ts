@@ -224,9 +224,10 @@ async function readableBoard(ctx: Parameters<typeof boardAccess>[0], connectionI
 export const getBoard = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string(), since: v.optional(v.number()) },
   handler: async (ctx, { connectionId, boardId, since }) => {
-    const { board } = await readableBoard(ctx, connectionId, boardId);
+    const { board, role } = await readableBoard(ctx, connectionId, boardId);
     if (since !== undefined && since === board.revision) return { unchanged: true as const, revision: board.revision, authority: board.authority };
-    return { roadmap: await currentRoadmap(ctx, live(board)), authority: board.authority };
+    // The role lets the web page show a viewer a board they can read but not change.
+    return { roadmap: await currentRoadmap(ctx, live(board)), authority: board.authority, role };
   },
 });
 
