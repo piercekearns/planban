@@ -6226,9 +6226,17 @@ function App() {
         setState(null);
       }
     } catch (loadError) {
-      if (!preserveCurrentOnError) {
-        setError(loadError instanceof Error ? loadError.message : "Failed to load");
+      if (preserveCurrentOnError) return;
+      // Signed out on the web: the board address stays, and the signed-out screen offers Log in.
+      const needed = (loadError as { signedOut?: SignedOut } | null)?.signedOut;
+      if (needed && capabilities.hosted) {
+        const routeRepoId = repoIdFromPath();
+        selectedRepoIdRef.current = routeRepoId;
+        setSelectedRepoId(routeRepoId);
+        setSignedOut(needed);
+        return;
       }
+      setError(loadError instanceof Error ? loadError.message : "Failed to load");
     }
   }, []);
 
@@ -6335,6 +6343,10 @@ function App() {
     void loadSelectedBoard(selectedRepoId);
   }, [loadSelectedBoard, selectedRepoId]);
 
+  if (signedOut && !selectedRepoId && capabilities.hosted) {
+    // Signed out on the web away from a board, such as on the board list.
+    return <SignedOutScreen signedOut={signedOut} onSignedIn={() => void load()} />;
+  }
   if (signedOut && selectedRepoId) {
     const repoId = selectedRepoId;
     // Keyed by board, so a sign-in started on another board's screen can't finish on this one.

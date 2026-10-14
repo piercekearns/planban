@@ -64,7 +64,9 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
   const timers = options.timers ?? { setTimeout: (run: () => void, ms: number) => setTimeout(run, ms), clearTimeout: (handle: unknown) => clearTimeout(handle as number) };
   const visibility = options.visibility ?? browserVisibility;
   let closed = false;
+  /** The live connection, and what to undo when it is dropped. */
   let connection: LiveConnection | null = null;
+  const connectionCleanups: Array<() => void> = [];
   const cleanups: Array<() => void> = [];
   let lastRevision: number | null = options.knownRevision ?? null;
   /** True while there is no working socket: never connected, or disconnected. */
@@ -72,6 +74,9 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
   let fallbackTimer: unknown = null;
   let fallbackDelay = FALLBACK_EVERY_MS;
   let checking = false;
+  /** Retrying the live connection itself, after it could not start or stopped authenticating. */
+  let startTimer: unknown = null;
+  let startDelay = FALLBACK_EVERY_MS;
 
   const seen = (revision: number) => {
     if (closed) return false;
@@ -81,20 +86,55 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
     return changed;
   };
 
-  function stop() {
-    closed = true;
-    if (fallbackTimer !== null) timers.clearTimeout(fallbackTimer);
-    fallbackTimer = null;
-    for (const cleanup of cleanups.splice(0)) cleanup();
+  function dropConnection() {
+    for (const cleanup of connectionCleanups.splice(0)) cleanup();
     const ending = connection;
     connection = null;
     void ending?.close().catch(() => undefined);
+  }
+
+  function stop() {
+    closed = true;
+    for (const timer of [fallbackTimer, startTimer]) if (timer !== null) timers.clearTimeout(timer);
+    fallbackTimer = null;
+    startTimer = null;
+    dropConnection();
+    for (const cleanup of cleanups.splice(0)) cleanup();
   }
 
   function lost(error: Error) {
     if (closed) return;
     stop();
     options.onLost(error);
+  }
+
+  /**
+   * Something went wrong that only the service can judge. Its own answer
+   * decides: signed out, revoked or removed ends watching; anything else is
+   * temporary, so the page keeps checking and the live connection starts again.
+   */
+  async function confirm(error: Error) {
+    if (closed) return;
+    try {
+      seen(await options.revision(options.boardId));
+    } catch (refusal) {
+      if (endsWatching(refusal)) return lost(refusal as Error);
+    }
+    if (endsWatching(error)) return lost(error);
+    retryLater();
+  }
+
+  /** The live connection is unavailable for now: check occasionally, and try it again with backoff. */
+  function retryLater() {
+    if (closed) return;
+    dropConnection();
+    socketState(false);
+    if (startTimer !== null) return;
+    startTimer = timers.setTimeout(() => {
+      startTimer = null;
+      void start();
+    }, startDelay);
+    startDelay = Math.min(startDelay * 2, FALLBACK_MAX_MS);
   }
 
   function schedule(ms: number) {
@@ -128,6 +168,7 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
     if (connected) {
       socketDown = false;
       fallbackDelay = FALLBACK_EVERY_MS;
+      startDelay = FALLBACK_EVERY_MS;
       if (fallbackTimer !== null) timers.clearTimeout(fallbackTimer);
       fallbackTimer = null;
       return;
@@ -146,13 +187,14 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
   }));
 
   async function start() {
+    if (closed) return;
     let first: LiveToken | null;
     try {
       first = await options.liveToken();
     } catch (error) {
       if (endsWatching(error)) return lost(error as Error);
-      // The service is unreachable for now: check occasionally until it answers.
-      return socketState(false);
+      // The service is unreachable for now.
+      return retryLater();
     }
     if (closed) return;
     if (!first) {
@@ -165,13 +207,14 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
     try {
       live = await (options.connect ?? convexConnection)(first.convexUrl);
     } catch {
-      return socketState(false);
+      return retryLater();
     }
     if (closed) {
       void live.close().catch(() => undefined);
       return;
     }
     connection = live;
+    const current = () => !closed && connection === live;
     let pending: string | null = first.token;
     live.setAuth(async () => {
       if (pending) {
@@ -183,18 +226,25 @@ export function watchHostedBoard(options: HostedLiveOptions): { close(): void } 
       try {
         return (await options.liveToken())?.token ?? null;
       } catch (error) {
-        if (endsWatching(error)) lost(error as Error);
+        if (endsWatching(error) && current()) lost(error as Error);
         return null;
       }
     }, (authenticated) => {
-      if (!authenticated) lost(new Error("Your Planban sign-in has ended."));
+      if (!current()) return;
+      if (authenticated) startDelay = FALLBACK_EVERY_MS;
+      // No token now: a failed renewal ends watching above; anything else starts again.
+      else retryLater();
     });
     // Counted as down until the socket says it's connected, so one that never connects still gets checks.
     socketState(false);
-    cleanups.push(live.subscribeToConnectionState((state) => socketState(state.isWebSocketConnected)));
-    cleanups.push(live.watchRevision(options.boardId, (value) => {
-      seen(value.revision);
-    }, (error) => lost(error)));
+    connectionCleanups.push(live.subscribeToConnectionState((state) => {
+      if (current()) socketState(state.isWebSocketConnected);
+    }));
+    connectionCleanups.push(live.watchRevision(options.boardId, (value) => {
+      if (current()) seen(value.revision);
+    }, (error) => {
+      if (current()) void confirm(error);
+    }));
   }
 
   void start();

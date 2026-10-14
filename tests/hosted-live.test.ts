@@ -198,6 +198,7 @@ test("removed from the board: the subscription ends, and reloading shows the boa
     const removed = await adapter.fetch(boardPath(boardId, "/online/members/user_editor/remove"), { method: "POST", body: "{}" });
     assert.equal(removed.status, 200);
     await convex.push();
+    await settle();
     assert.equal(lost.length, 1);
     assert.equal(convex.fake.closed, true, "the watcher stops for good");
     const reload = await editor.fetch(boardPath(boardId, "/state"));
@@ -218,6 +219,7 @@ test("a revoked browser session ends the subscription, and the board shows signe
     const revoked = await adapter.fetch("/api/online/connections/revoke-others", { method: "POST", body: "{}" });
     assert.deepEqual(await revoked.json(), { revoked: 1, complete: true });
     await convex.push();
+    await settle();
     assert.equal(lost.length, 1);
     const reload = await laptop.fetch(boardPath(boardId, "/state"));
     assert.equal(reload.status, 401);
@@ -324,4 +326,88 @@ test("without live updates configured, the page checks every 15 seconds; a remov
     assert.deepEqual(clock.pendingDelays(), [], "no more checks");
     assert.equal((await viewer.fetch(cardPath(boardId, "x", "/docs/spec"))).status, 404);
   });
+});
+
+test("a first live connection that fails for a moment is tried again, and checks run meanwhile", async () => {
+  await withServiceEnv(() => withLiveTokens(async () => {
+    const { service, boardId, adapter } = await ownerWithBoard();
+    const convex = fakeConvex(service);
+    const clock = manualTimers();
+    let tokenRequests = 0;
+    let offline = true;
+    let checks = 0;
+    const { lost } = watch(adapter, boardId, convex, {
+      timers: clock.timers, visibility: manualVisibility().visibility,
+      liveToken: async () => {
+        tokenRequests += 1;
+        if (offline) throw new TypeError("Failed to fetch");
+        return adapter.liveToken();
+      },
+      revision: (id) => { checks += 1; return adapter.revision(id); },
+    });
+    await settle();
+    assert.equal(tokenRequests, 1);
+    assert.deepEqual(convex.fake.urls, []);
+    offline = false;
+    await clock.advance(FALLBACK_EVERY_MS);
+    assert.ok(checks >= 1, "checks run while there is no socket");
+    assert.equal(tokenRequests, 2, "the live connection is tried again");
+    assert.deepEqual(convex.fake.urls, [CLOUD]);
+    convex.socket(true);
+    assert.deepEqual(lost, []);
+  }));
+});
+
+test("a token renewal that fails for a moment is not taken as signing out; watching carries on", async () => {
+  await withServiceEnv(() => withLiveTokens(async () => {
+    const { service, boardId, adapter } = await ownerWithBoard();
+    const convex = fakeConvex(service);
+    const clock = manualTimers();
+    let offline = false;
+    const { revisions, lost } = watch(adapter, boardId, convex, {
+      timers: clock.timers, visibility: manualVisibility().visibility,
+      liveToken: async () => {
+        if (offline) throw new TypeError("Failed to fetch");
+        return adapter.liveToken();
+      },
+    });
+    await settle();
+    convex.socket(true);
+    await convex.push();
+    offline = true;
+    assert.equal(await convex.refreshAuth(), null);
+    await settle();
+    assert.deepEqual(lost, [], "a network blip is not a signed-out browser");
+    assert.equal(convex.fake.closed, true, "the old connection is dropped");
+    offline = false;
+    const revision = await edit(adapter, boardId, "Seen after the blip");
+    await clock.advance(FALLBACK_MAX_MS);
+    assert.ok(revisions.includes(revision), "checks or the new connection pick the change up");
+    assert.equal(convex.fake.urls.length, 2, "and the live connection starts again");
+    assert.deepEqual(lost, []);
+  }));
+});
+
+test("a subscription error while the service still lets the person in starts the connection again", async () => {
+  await withServiceEnv(() => withLiveTokens(async () => {
+    const { service, boardId, adapter } = await ownerWithBoard();
+    const convex = fakeConvex(service);
+    const clock = manualTimers();
+    let failQuery = false;
+    const realRevision = service.liveRevision;
+    service.liveRevision = async (...args: Parameters<typeof realRevision>) => {
+      if (failQuery) throw new Error("Unauthenticated: the token was not ready");
+      return realRevision(...args);
+    };
+    const { lost } = watch(adapter, boardId, convex, { timers: clock.timers, visibility: manualVisibility().visibility });
+    await settle();
+    convex.socket(true);
+    failQuery = true;
+    await convex.push();
+    await settle();
+    assert.deepEqual(lost, [], "the service says the board is still readable");
+    failQuery = false;
+    await clock.advance(FALLBACK_EVERY_MS);
+    assert.equal(convex.fake.urls.length, 2);
+  }));
 });

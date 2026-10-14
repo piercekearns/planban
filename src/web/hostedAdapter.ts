@@ -128,7 +128,14 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
       ...(text === undefined ? {} : { "Content-Type": "application/json" }),
       ...(extra.key ? { "Idempotency-Key": extra.key } : {}),
     };
-    const attempt = () => send(path, { method, headers, ...(text === undefined ? {} : { body: text }), ...(extra.signal ? { signal: extra.signal } : {}) });
+    // The whole answer is read inside each attempt: a connection that drops
+    // while the body arrives is a lost response too, and is resent the same way.
+    const attempt = async () => {
+      const response = await send(path, { method, headers, ...(text === undefined ? {} : { body: text }), ...(extra.signal ? { signal: extra.signal } : {}) });
+      const answer = await response.text();
+      const empty = response.status === 204 || response.status === 205 || response.status === 304;
+      return new Response(empty ? null : answer, { status: response.status, headers: response.headers });
+    };
     try {
       return await attempt();
     } catch (error) {
@@ -181,7 +188,8 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
 
   /** Runs one board operation; the page gets the board as it is after it. */
   async function op(boardId: string, name: string, input: Record<string, unknown>, request: PageRequest) {
-    const response = await call("POST", serviceBoard(boardId, `/ops/${encodeURIComponent(name)}`), input, { key: request.key, ...(request.signal ? { signal: request.signal } : {}) });
+    // A browser session is always the person, never their agent, so the page's edits are recorded as theirs.
+    const response = await call("POST", serviceBoard(boardId, `/ops/${encodeURIComponent(name)}`), { ...input, actor: "user" }, { key: request.key, ...(request.signal ? { signal: request.signal } : {}) });
     return read<{ roadmap: PlanbanRoadmap; result: Record<string, unknown> | undefined; replayed?: boolean; originalRevision?: number }>(response);
   }
 
@@ -333,7 +341,10 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
           get<{ members: Array<{ userId: string; role: string }> }>(serviceBoard(board!, "/members"), request),
           get<{ userId: string }>("/api/v1/me", request),
         ]);
-        const people = members.ok && me.ok ? members.value.members.map((member) => ({ ...member, you: member.userId === me.value.userId })) : null;
+        // A refusal (signed out, not on this board) is the page's error, never a quiet success.
+        if (!members.ok) return members.reply;
+        if (!me.ok) return me.reply;
+        const people = members.value.members.map((member) => ({ ...member, you: member.userId === me.value.userId }));
         return reply({ location: "online", signedIn: [origin], defaultService: origin, job: null, url: origin, boardId: board, people });
       },
     },

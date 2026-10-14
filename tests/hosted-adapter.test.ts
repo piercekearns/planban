@@ -64,7 +64,9 @@ test("edits carry the revision the person saw; a stale one is a conflict that na
     const cardId = created.body.createdCard.id as string;
     assert.ok(created.body.roadmap.roadmapItems.some((item: Json) => item.id === cardId));
     // What went to the service: the person's own revision, and nothing of the page's own.
-    assert.deepEqual(JSON.parse(log.at(-1)!.body!), { title: "Ship the web page", status: "pending", baseRevision: 1 });
+    assert.deepEqual(JSON.parse(log.at(-1)!.body!), { title: "Ship the web page", status: "pending", baseRevision: 1, actor: "user" });
+    const history = await page(adapter, boardPath(boardId, "/history"));
+    assert.equal(history.body.entries.find((entry: Json) => entry.version === history.body.currentVersion).actor, "user", "the person's own edit, not their agent's");
 
     const moved = await page(adapter, cardPath(boardId, cardId, "/move"), { method: "POST", body: { status: "in-progress", baseRevision: 2 } });
     assert.equal(moved.status, 200, JSON.stringify(moved.body));
@@ -279,6 +281,47 @@ test("a lost response is resent with the same key and bytes, and the service app
     assert.match(sent[0]!.headers["Idempotency-Key"]!, /^[A-Za-z0-9_-]{8,100}$/);
     // The page's own keys have that form too.
     assert.match(newIdempotencyKey(), /^[A-Za-z0-9_-]{8,100}$/);
+  });
+});
+
+test("a connection that drops while the answer arrives is a lost response too, resent with the same key and bytes", async () => {
+  await withServiceEnv(async () => {
+    const { service, owner, boardId } = await ownerWithBoard();
+    const real = service.browserSend(owner.token);
+    const sent: Array<{ key?: string; body?: string }> = [];
+    let truncateNext = false;
+    const adapter = service.adapterFor(owner.token, {
+      send: async (path, init) => {
+        sent.push({ ...(init.headers["Idempotency-Key"] ? { key: init.headers["Idempotency-Key"] } : {}), ...(init.body === undefined ? {} : { body: init.body }) });
+        const response = await real(path, init);
+        if (truncateNext && path.includes("/ops/")) {
+          truncateNext = false;
+          // The edit committed; the body never finishes arriving.
+          return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("network connection lost")); } }), { status: 200, headers: response.headers });
+        }
+        return response;
+      },
+    });
+    truncateNext = true;
+    const created = await page(adapter, boardPath(boardId, "/cards"), { method: "POST", body: { title: "Arrives once", baseRevision: 1 } });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.equal(created.body.onlineReplay?.replayed, true);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0]!.key, sent[1]!.key);
+    assert.equal(sent[0]!.body, sent[1]!.body);
+    const state = await page(adapter, boardPath(boardId, "/state"));
+    assert.deepEqual(state.body.roadmap.roadmapItems.map((item: Json) => item.title), ["Arrives once"]);
+  });
+});
+
+test("Board settings passes on a refusal instead of claiming the person is signed in", async () => {
+  await withServiceEnv(async () => {
+    const { service, boardId } = await ownerWithBoard();
+    const signedOut = await page(service.adapterFor("pbw_" + "Q".repeat(43)), boardPath(boardId, "/online"));
+    assert.equal(signedOut.status, 401);
+    assert.equal(signedOut.body.signInNeeded, PUBLIC);
+    const outsider = await page(service.adapterFor((await service.signIn("user_outsider")).token), boardPath(boardId, "/online"));
+    assert.equal(outsider.status, 404);
   });
 });
 
