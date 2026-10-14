@@ -229,6 +229,14 @@ export default defineSchema({
     scopes: v.array(v.string()), expiresAt: v.number(), usedAt: v.optional(v.number()),
   }).index("by_tokenHash", ["tokenHash"]),
 
+  /**
+   * A reviewed client's metadata document, already validated, kept for an
+   * hour so sign-in starts don't each fetch it. One row per allowed client.
+   */
+  oauthClientCache: defineTable({
+    clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), native: v.boolean(), fetchedAt: v.number(),
+  }).index("by_clientId", ["clientId"]),
+
   /** Bounded authorization request creation per client and time bucket. */
   oauthUsage: defineTable({ clientId: v.string(), bucket: v.number(), requests: v.number(), fetches: v.optional(v.number()) })
     .index("by_client_bucket", ["clientId", "bucket"]).index("by_bucket", ["bucket"]),

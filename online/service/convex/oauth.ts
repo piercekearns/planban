@@ -19,6 +19,16 @@ export const GRANT_MS = 365 * 24 * 60 * 60_000;
 /** An unused claude.ai registration lasts this long. */
 export const REGISTRATION_MS = 24 * 60 * 60_000;
 const REGISTRATION_METER = "registration:claude.ai";
+/**
+ * Sign-in starts per client in each ten-minute window. Every person using a
+ * client shares its budget, so it is a cost ceiling, not a per-caller limit;
+ * the edge Worker limits each caller address (6 a minute).
+ */
+export const AUTHORIZE_REQUESTS_PER_WINDOW = 1000;
+/** claude.ai self-registrations in each window, which create rows without a signed-in person. */
+const REGISTRATIONS_PER_WINDOW = 100;
+/** How long a fetched client metadata document is reused. */
+export const CLIENT_CACHE_MS = 60 * 60_000;
 const invalid = () => ({ error: "invalid_grant" as const });
 const hash = v.string();
 const SCOPES = new Set(["planban:read", "planban:plan", "planban:complete", "offline_access"]);
@@ -31,10 +41,10 @@ async function requestRow(ctx: MutationCtx, requestHash: string) {
   return ctx.db.query("oauthRequests").withIndex("by_requestHash", (q) => q.eq("requestHash", requestHash)).unique();
 }
 
-async function meterRequest(ctx: MutationCtx, clientId: string) {
+async function meterRequest(ctx: MutationCtx, clientId: string, limit = AUTHORIZE_REQUESTS_PER_WINDOW) {
   const bucket = Math.floor(Date.now() / REQUEST_MS);
   const usage = await ctx.db.query("oauthUsage").withIndex("by_client_bucket", (q) => q.eq("clientId", clientId).eq("bucket", bucket)).unique();
-  if ((usage?.requests ?? 0) >= 100) fail("rate_limited", "Too many authorization requests. Try again later.");
+  if ((usage?.requests ?? 0) >= limit) fail("rate_limited", "Too many authorization requests. Try again later.");
   if (usage) await ctx.db.patch(usage._id, { requests: usage.requests + 1 });
   else await ctx.db.insert("oauthUsage", { clientId, bucket, requests: 1 });
 }
@@ -106,12 +116,35 @@ export const reserveMetadataFetch = internalMutation({
   },
 });
 
+/** A reviewed client's validated metadata fetched within the last hour, or null. */
+export const cachedMetadataClient = internalQuery({
+  args: { clientId: v.string() },
+  handler: async (ctx, { clientId }): Promise<OAuthClient | null> => {
+    if (!metadataClientAllowed(clientId)) return null;
+    const row = await ctx.db.query("oauthClientCache").withIndex("by_clientId", (q) => q.eq("clientId", clientId)).unique();
+    if (!row || Date.now() - row.fetchedAt >= CLIENT_CACHE_MS) return null;
+    return { clientId, name: row.name, redirectUris: row.redirectUris, native: row.native };
+  },
+});
+
+/** Keeps a freshly fetched and validated metadata document for reuse. */
+export const cacheMetadataClient = internalMutation({
+  args: { clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), native: v.boolean() },
+  handler: async (ctx, args) => {
+    if (!metadataClientAllowed(args.clientId) || !args.name || args.name.length > 200 || !args.redirectUris.length || args.redirectUris.length > 20) return;
+    const row = await ctx.db.query("oauthClientCache").withIndex("by_clientId", (q) => q.eq("clientId", args.clientId)).unique();
+    const value = { ...args, fetchedAt: Date.now() };
+    if (row) await ctx.db.patch(row._id, value);
+    else await ctx.db.insert("oauthClientCache", value);
+  },
+});
+
 /** Records a validated claude.ai registration. The HTTP layer validates its metadata. */
 export const register = internalMutation({
   args: { clientId: v.string(), redirectUris: v.array(v.string()) },
   handler: async (ctx, args) => {
     if (!registeredClientId(args.clientId)) fail("validation", "Invalid registration.");
-    await meterRequest(ctx, REGISTRATION_METER);
+    await meterRequest(ctx, REGISTRATION_METER, REGISTRATIONS_PER_WINDOW);
     const now = Date.now();
     await ctx.db.insert("oauthRegistrations", { clientId: args.clientId, redirectUris: args.redirectUris, createdAt: now, expiresAt: now + REGISTRATION_MS });
     await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);

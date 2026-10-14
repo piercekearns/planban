@@ -78,17 +78,29 @@ export async function authorizationResponse(ctx: ActionCtx, request: Request, lo
   const challenge = input.get("code_challenge") ?? "";
   if (input.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) return rejected("invalid_request");
   const registered = registeredClientId(clientId);
+  // A reviewed client's document fetched within the hour is reused, so only real fetches spend the fetch budget.
+  let cached: OAuthClient | null = null;
   if (!machine && !registered) {
     if (!metadataClientAllowed(clientId)) return rejected("invalid_client");
-    try {
-      if (!await ctx.runMutation(internal.oauth.reserveMetadataFetch, { clientId })) return rejected("temporarily_unavailable", 429);
-    } catch { return rejected("temporarily_unavailable", 503); }
+    try { cached = await ctx.runQuery(internal.oauth.cachedMetadataClient, { clientId }); } catch { cached = null; }
+    if (!cached) {
+      try {
+        if (!await ctx.runMutation(internal.oauth.reserveMetadataFetch, { clientId })) return rejected("temporarily_unavailable", 429);
+      } catch { return rejected("temporarily_unavailable", 503); }
+    }
   }
   let client: OAuthClient | null;
   if (machine) client = { clientId, name: "Planban CLI", redirectUris: CLI_REDIRECT_PORTS.map((port) => `http://127.0.0.1:${port}/callback`), native: true };
   else if (registered) {
     try { client = await ctx.runQuery(internal.oauth.registeredClient, { clientId }); } catch { return rejected("temporarily_unavailable", 503); }
-  } else client = await loader(clientId);
+  } else if (cached) client = cached;
+  else {
+    client = await loader(clientId);
+    if (client) {
+      const fetched = client;
+      await ctx.runMutation(internal.oauth.cacheMetadataClient, { clientId, name: fetched.name, redirectUris: [...fetched.redirectUris], native: fetched.native }).catch(() => {});
+    }
+  }
   if (!client || !(machine ? client.redirectUris.includes(redirectUri) : clientRedirectAllowed(client, redirectUri))) return rejected("invalid_client");
   const cookies = browserCookies(request, config.secure) ?? { browser: randomSecret("pbb_"), csrf: randomSecret("pbs_") };
   const requestSecret = randomSecret("pbe_");

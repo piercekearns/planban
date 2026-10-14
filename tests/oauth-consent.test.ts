@@ -91,6 +91,7 @@ test("Claude localhost port flexibility freezes the original callback and preser
   const stored: any[] = [];
   const ctx: any = { runMutation: async (fn: any, args: any) => {
     if (getFunctionName(fn) === "oauth:reserveMetadataFetch") return true;
+    if (getFunctionName(fn) === "oauth:cacheMetadataClient") return;
     stored.push(args);
   } };
   const values = { ...fields, client_id: CLAUDE_CODE_CLIENT_ID, redirect_uri: "http://localhost:54114/callback", scope: "planban:read planban:plan planban:complete offline_access" };
