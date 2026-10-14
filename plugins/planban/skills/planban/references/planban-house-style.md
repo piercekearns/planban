@@ -1,6 +1,6 @@
 # Planban house style
 
-Policy version: **Owner-approved draft v2, approved on 2026-08-30.**
+Policy version: **Owner-approved draft v2, approved on 2026-08-30; evidence files rule approved on 2026-10-14.**
 
 ## Name and intent
 
@@ -142,7 +142,7 @@ Do not repeat the Spec's purpose, target outcome, product decisions, or acceptan
 
 ### Tags and metadata
 
-- Use metadata for small, stable identifiers. Put evidence, ledgers, and environment state in the Plan or an evidence document.
+- Use metadata for small, stable identifiers. Put ledgers and environment state in the Plan. Evidence files (logs, screenshots, reports, recordings and similar) live outside Planban, in the repository, a shared drive or a private folder, and the card's Spec or Plan links to them where they live.
 
 ## Recommended rules
 
@@ -190,6 +190,7 @@ This policy does not require an Evidence tab, evidence-ledger feature, metadata 
 
 - decisions and their reasoning remain in the current accepted Spec or related decision documentation;
 - exact chronological proof remains in existing history, Spec or Plan reference sections, or linked authoritative sources;
+- evidence files stay outside Planban: Planban is an index, not storage, so a card holds text and links to each file where it lives (a GitHub link, a web address, or a local path labelled with its machine);
 - tags and metadata remain structured fields; and
 - agent handoff context is generated when an agent starts or resumes work.
 
