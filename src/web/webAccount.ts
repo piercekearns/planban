@@ -148,6 +148,7 @@ export async function loadClerk(settings: SignInSettings): Promise<ClerkBrowser>
   await loadScript(urls.js, { "data-clerk-publishable-key": settings.publishableKey });
   const globals = window as unknown as { Clerk?: ClerkBrowser; __internal_ClerkUICtor?: unknown };
   if (!globals.Clerk) throw new Error("Sign-in couldn't load. Try again.");
-  await globals.Clerk.load({ ui: { ClerkUI: globals.__internal_ClerkUICtor } });
+  // No telemetry: the page's security policy refuses it, and it tells nobody anything they need.
+  await globals.Clerk.load({ ui: { ClerkUI: globals.__internal_ClerkUICtor }, telemetry: { disabled: true } });
   return globals.Clerk;
 }

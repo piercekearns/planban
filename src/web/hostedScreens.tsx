@@ -140,6 +140,13 @@ export function SignInPage() {
   const [message, setMessage] = useState<string | null>(null);
   const clerkRef = useRef<ClerkBrowser | null>(null);
   const finishing = useRef(false);
+  // Clerk's own check before creating an account shows no text inside our layout; say what's happening.
+  const [checking, setChecking] = useState(() => window.location.hash.includes("protect-check"));
+  useEffect(() => {
+    const onHash = () => setChecking(window.location.hash.includes("protect-check"));
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const finish = useCallback(async (clerk: ClerkBrowser) => {
     if (finishing.current) return;
@@ -214,6 +221,7 @@ export function SignInPage() {
         <p className="web-sub">Free. Your boards stay private until you share them.</p>
         {status === "unavailable" ? <p className="web-note" role="alert">Sign-in isn't available here yet.</p> : null}
         <div ref={mountRef} className="web-clerk" hidden={status !== "ready"} />
+        {status === "ready" && checking ? <p className="web-muted" role="status"><Loader2 size={14} className="spin" /> Checking this browser before creating your account…</p> : null}
         {status === "loading" || status === "finishing" ? <p className="web-muted" role="status"><Loader2 size={14} className="spin" /> {status === "loading" ? "Loading sign-in…" : "Signing you in…"}</p> : null}
         {status === "error" ? (
           <div className="web-note" role="alert">
