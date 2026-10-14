@@ -252,6 +252,13 @@ export default defineSchema({
   }).index("by_clientId", ["clientId"]),
 
   /** Bounded authorization request creation per client and time bucket. */
+  /**
+   * Sign-in approvals per person per hour (the stateless sign-in start): a
+   * person's own limit, which no one else can use up.
+   */
+  signInApprovals: defineTable({ userId: v.string(), hour: v.number(), count: v.number() })
+    .index("by_user_hour", ["userId", "hour"]).index("by_hour", ["hour"]),
+
   oauthUsage: defineTable({ clientId: v.string(), bucket: v.number(), requests: v.number(), fetches: v.optional(v.number()) })
     .index("by_client_bucket", ["clientId", "bucket"]).index("by_bucket", ["bucket"]),
 

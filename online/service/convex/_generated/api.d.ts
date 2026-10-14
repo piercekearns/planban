@@ -41,6 +41,7 @@ import type * as model_providerUsage from "../model/providerUsage.js";
 import type * as model_retired from "../model/retired.js";
 import type * as model_rows from "../model/rows.js";
 import type * as model_sha256 from "../model/sha256.js";
+import type * as model_signInNote from "../model/signInNote.js";
 import type * as model_transfer from "../model/transfer.js";
 import type * as model_webAuth from "../model/webAuth.js";
 import type * as model_webSession from "../model/webSession.js";
@@ -91,6 +92,7 @@ declare const fullApi: ApiFromModules<{
   "model/retired": typeof model_retired;
   "model/rows": typeof model_rows;
   "model/sha256": typeof model_sha256;
+  "model/signInNote": typeof model_signInNote;
   "model/transfer": typeof model_transfer;
   "model/webAuth": typeof model_webAuth;
   "model/webSession": typeof model_webSession;

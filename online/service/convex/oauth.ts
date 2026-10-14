@@ -173,18 +173,60 @@ export const registeredClient = internalQuery({
   },
 });
 
+/** Sign-in approvals one person may make in an hour (stateless sign-in start). */
+export const APPROVALS_PER_HOUR = 20;
+const HOUR_MS = 60 * 60_000;
+
+/** Counts one approval against the person's own hourly limit. */
+async function chargeApproval(ctx: MutationCtx, userId: string) {
+  const hour = Math.floor(Date.now() / HOUR_MS);
+  const row = await ctx.db.query("signInApprovals").withIndex("by_user_hour", (q) => q.eq("userId", userId).eq("hour", hour)).unique();
+  if ((row?.count ?? 0) >= APPROVALS_PER_HOUR) fail("rate_limited", `You've approved ${APPROVALS_PER_HOUR} sign-ins in the last hour. Try again later.`);
+  if (row) await ctx.db.patch(row._id, { count: row.count + 1 });
+  else await ctx.db.insert("signInApprovals", { userId, hour, count: 1 });
+}
+
+/** Hourly approval counts older than a day are removed, a bounded batch at a time. */
+export const pruneApprovals = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const old = await ctx.db.query("signInApprovals").withIndex("by_hour", (q) => q.lt("hour", Math.floor(Date.now() / HOUR_MS) - 24)).take(500);
+    for (const row of old) await ctx.db.delete(row._id);
+    return { removed: old.length };
+  },
+});
+
+/**
+ * Creates the sign-in record from a verified note, only once a signed-in
+ * person approves (stateless sign-in start). Each note is used once, a
+ * computer's launch is approved once, and approvals count against the
+ * person's own hourly limit, never a shared one.
+ */
 export const createRequest = internalMutation({
-  args: { requestHash: hash, browserHash: hash, csrfHash: hash, clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(), scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(), purpose: v.union(v.literal("oauth"), v.literal("machine")) },
+  args: { requestHash: hash, browserHash: hash, csrfHash: hash, clientId: v.string(), clientName: v.string(), redirectUri: v.string(), resource: v.string(), scopes: v.array(v.string()), level: agentLevel, challenge: v.string(), state: v.string(), purpose: v.union(v.literal("oauth"), v.literal("machine")), userId: v.string(), sessionId: v.optional(v.string()), expiresAt: v.number(), launchHash: v.optional(hash) },
   handler: async (ctx, args) => {
     if ([args.requestHash, args.browserHash, args.csrfHash].some((value) => !/^[a-f0-9]{64}$/.test(value)) || !/^[A-Za-z0-9_-]{43}$/.test(args.challenge)) fail("validation", "Invalid authorization request.");
     if (args.clientId.length > 2048 || args.redirectUri.length > 2048 || args.resource.length > 2048 || args.state.length > 2048 || args.clientName.length > 200 || args.scopes.length > 4) fail("validation", "Authorization request is too large.");
     if (args.purpose === "machine") {
       if (args.clientId !== MACHINE_CLIENT_ID || args.scopes.length !== 1 || args.scopes[0] !== "planban:machine" || args.level !== "complete") fail("validation", "Invalid machine authorization.");
     } else if (!args.scopes.some((scope) => scope.startsWith("planban:")) || args.scopes.some((scope) => !SCOPES.has(scope)) || args.level !== scopeLevel(args.scopes)) fail("validation", "Invalid authorization scopes.");
-    await meterRequest(ctx, args.clientId);
-    await ctx.db.insert("oauthRequests", { ...args, status: "pending", expiresAt: Date.now() + REQUEST_MS });
-    await scheduleCleanup(ctx, REQUEST_MS + CODE_MS);
+    if (args.expiresAt <= Date.now() || args.expiresAt > Date.now() + REQUEST_MS) fail("unauthorized", "Start a fresh authorization request.");
+    // A note is used once; a computer's launch link is approved once.
+    if (await requestRow(ctx, args.requestHash)) fail("unauthorized", "Start a fresh authorization request.");
+    if (args.launchHash && await ctx.db.query("oauthRequests").withIndex("by_launchHash", (q) => q.eq("launchHash", args.launchHash)).first()) fail("unauthorized", "Start a fresh authorization request.");
+    await chargeApproval(ctx, args.userId);
+    await ctx.db.insert("oauthRequests", { ...args, status: "pending" });
+    await scheduleCleanup(ctx, Math.max(0, args.expiresAt - Date.now()) + CODE_MS);
     return { created: true };
+  },
+});
+
+/** Whether a sign-in note (or its computer's launch) has already been approved. A read only. */
+export const noteUsed = internalQuery({
+  args: { requestHash: hash, launchHash: v.optional(hash) },
+  handler: async (ctx, { requestHash, launchHash }) => {
+    if (await ctx.db.query("oauthRequests").withIndex("by_requestHash", (q) => q.eq("requestHash", requestHash)).first()) return true;
+    return !!launchHash && !!await ctx.db.query("oauthRequests").withIndex("by_launchHash", (q) => q.eq("launchHash", launchHash)).first();
   },
 });
 

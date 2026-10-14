@@ -210,11 +210,13 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
     const start = await within(fetch(server.start, {
       method: "POST", redirect: "error", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
       body: new URLSearchParams({ client_id: server.clientId, redirect_uri: callback.redirectUri, scope: server.scope,
-        code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: url, state }),
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: url, state,
+        // Ask for the stateless start (a signed launch note, stored nowhere); an older service ignores this.
+        stateless: "1" }),
     }));
     const lease = await within(boundedJson(start)) as { launch?: string; launchUrl?: string; serverNow?: number; expiresAt?: number };
     const remaining = Number(lease.expiresAt) - Number(lease.serverNow);
-    if (!start.ok || !Number.isSafeInteger(lease.expiresAt) || !Number.isSafeInteger(lease.serverNow) || !(remaining > 0 && remaining <= 300_000) || !/^pbl_[A-Za-z0-9_-]{43}$/.test(lease.launch ?? "") || lease.launchUrl !== `${server.issuer}/oauth/machine/launch?launch=${lease.launch}`) throw new Error("The service did not issue a valid bounded sign-in request.");
+    if (!start.ok || !Number.isSafeInteger(lease.expiresAt) || !Number.isSafeInteger(lease.serverNow) || !(remaining > 0 && remaining <= 300_000) || !(/^pbl_[A-Za-z0-9_-]{43}$/.test(lease.launch ?? "") || (/^pbn_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(lease.launch ?? "") && lease.launch!.length <= 7000)) || lease.launchUrl !== `${server.issuer}/oauth/machine/launch?launch=${lease.launch}`) throw new Error("The service did not issue a valid bounded sign-in request.");
     launch = lease.launch!;
     // The reply arrives after serverNow. Waiting its remaining duration from receipt
     // is an upper bound on service expiry, independent of the local wall clock.
