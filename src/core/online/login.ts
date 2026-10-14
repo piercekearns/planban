@@ -25,6 +25,8 @@ export interface LoginOptions {
    */
   device?: boolean | undefined;
   printOnly?: boolean | undefined;
+  /** Tests only: how long to wait between checks, instead of the service's interval (at least 5 seconds). */
+  pollIntervalMs?: number | undefined;
 }
 
 async function keyLogin(url: string, variable: string) {
@@ -283,7 +285,7 @@ async function deviceLogin(url: string, server: Awaited<ReturnType<typeof signIn
     await opening.catch(() => undefined);
   }
   const deadline = Date.now() + code.expires_in! * 1000;
-  let interval = Math.max(5, Number(code.interval) || 5) * 1000;
+  let interval = options.pollIntervalMs ?? Math.max(5, Number(code.interval) || 5) * 1000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, interval));
     const polled = await fetch(server.token, {

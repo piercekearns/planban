@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { getFunctionName } from "convex/server";
-import { EDGE_PROOF_HEADER, planbanTokenVerifier } from "../online/service/convex/model/auth";
+import { authenticate, EDGE_PROOF_HEADER, planbanTokenVerifier } from "../online/service/convex/model/auth";
+import { atServiceOnly } from "../online/service/convex/http";
 import { apiParts, CLERK_RECHECK_MS, webCookie, webCookieName, webCookieToken, webRequestTrusted, webRouteAllowed, WEB_SESSION_MS } from "../online/service/convex/model/webSession";
 import { authenticateApiRequest, authenticateWeb, webSessionResponse, webSignOutResponse } from "../online/service/convex/model/webAuth";
 import * as webSessions from "../online/service/convex/webSessions";
@@ -332,5 +333,69 @@ test("a browser session creates an access key for one board, which then works as
     assert.deepEqual(created.boardId, "deadleg");
     const resolved = await resolveToken._handler(ctx, { tokenHash: digest(key) } as any);
     assert.equal(resolved.serviceOrigin, PUBLIC);
+  }));
+});
+
+test("after seven days the same Clerk sign-in can't enroll a browser again; a fresh sign-in can", async () => {
+  await withEnv(() => withClock(START, async (clock) => {
+    const { ctx } = store();
+    await enrolled(ctx, { clerkExpiresAt: START + 30 * 24 * 60 * 60 * 1000 });
+    clock.now = START + 3 * 24 * 60 * 60 * 1000;
+    const again = await enrolled(ctx, { tokenHash: digest(OTHER), clerkExpiresAt: START + 30 * 24 * 60 * 60 * 1000 });
+    assert.equal(again.expiresAt, new Date(START + WEB_SESSION_MS).toISOString(), "still ends seven days after the first sign-in");
+    clock.now = START + WEB_SESSION_MS;
+    await assert.rejects(enrolled(ctx, { clerkExpiresAt: START + 30 * 24 * 60 * 60 * 1000 }), /ended/);
+    assert.ok((await enrolled(ctx, { clerkSessionId: "sess_new", clerkExpiresAt: START + 30 * 24 * 60 * 60 * 1000 })).connectionId);
+  }));
+});
+
+test("a barrier outlasts its Clerk session, then is removed", async () => {
+  await withEnv(() => withClock(START, async (clock) => {
+    const { ctx, rows } = store();
+    const longClerk = START + 200 * 24 * 60 * 60 * 1000;
+    const { connectionId } = await enrolled(ctx, { clerkExpiresAt: longClerk });
+    await webSessions.endByToken._handler(ctx, { tokenHash: digest(TOKEN) } as any);
+    assert.ok(rows.find((row) => row._id === connectionId).revokedAt);
+    clock.now = START + 100 * 24 * 60 * 60 * 1000;
+    await webSessions.pruneBarriers._handler(ctx, {} as any);
+    assert.ok(rows.some((row) => row._table === "webSessionBarriers"), "kept while the Clerk session could still be live");
+    clock.now = longClerk + 1;
+    await webSessions.pruneBarriers._handler(ctx, {} as any);
+    assert.ok(!rows.some((row) => row._table === "webSessionBarriers"));
+  }));
+});
+
+test("both browser routes refuse requests that didn't come through the front door", async () => {
+  await withEnv(async () => {
+    const { actionCtx } = store();
+    for (const [path, handler] of [["/web/session", (ctx: any, r: Request) => webSessionResponse(ctx, r, clerk("active"))], ["/web/signout", webSignOutResponse]] as const) {
+      const direct = apiRequest(path, { method: "POST", proof: false, headers: { Authorization: "Bearer clerk-session-jwt" } });
+      const response = await atServiceOnly(handler as any)(actionCtx, direct);
+      assert.equal(response.status, 503, path);
+      assert.equal(response.headers.get("Set-Cookie"), null, `${path} sets no cookie`);
+    }
+  });
+});
+
+test("the cookie never reaches a refused route, method or disguised path, nor /mcp", async () => {
+  await withEnv(() => withClock(START, async () => {
+    const { ctx, actionCtx } = store();
+    await enrolled(ctx);
+    const refused: Array<[string, string]> = [
+      ["POST", "/api/v1/transfers"], ["POST", "/api/v1/transfers/t1/parts"], ["POST", "/api/v1/boards/import"],
+      ["GET", "/api/v1/boards/b1/export"], ["GET", "/api/v1/boards/b1/export/meta"], ["POST", "/api/v1/boards/b1/take-local/fence"],
+      ["POST", "/api/v1/boards/b1/take-local/finish"], ["POST", "/api/v1/copy-check"], ["POST", "/api/v1/connections/c1/restore"],
+      ["HEAD", "/api/v1/boards"], ["PUT", "/api/v1/boards/b1"], ["DELETE", "/api/v1/boards/b1"], ["OPTIONS", "/api/v1/boards"],
+      ["GET", "/api/v1/boards/b1/docs/c1%2Fx/spec"], ["GET", "/api/v1/boards/%2E%2E/export"], ["GET", "/api/v1//boards"],
+      ["GET", "/api/v1/boards/b1/./export"], ["GET", "/api/v1/unknown"], ["POST", "/api/v1/keys/extra"],
+    ];
+    for (const [method, path] of refused) {
+      const request = apiRequest(path, { method: method === "HEAD" || method === "OPTIONS" ? "GET" : method });
+      const forged = new Request(request.url, { method, headers: request.headers });
+      assert.equal(await authenticateApiRequest(actionCtx, forged, clerk("active")), null, `${method} ${path}`);
+    }
+    // /mcp authenticates bearers only; the cookie is never consulted there.
+    const mcp = new Request(`${NATIVE}/mcp`, { method: "POST", headers: { [EDGE_PROOF_HEADER]: PROOF, Cookie: `${webCookieName(PUBLIC)}=${TOKEN}`, "X-Planban-Client": "web", Origin: PUBLIC, "Sec-Fetch-Site": "same-origin" } });
+    assert.equal(await authenticate(actionCtx, mcp), null);
   }));
 });

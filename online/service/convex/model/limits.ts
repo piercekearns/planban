@@ -115,7 +115,11 @@ export async function chargeNewOnlineBoard(ctx: MutationCtx, userId: string) {
   for (const member of owned) {
     if (member.role !== "owner") continue;
     const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", member.boardId)).unique();
-    if (board && (board.authority === "online" || board.authority === "importing")) online += 1;
+    if (!board) continue;
+    // A board taken local holds its place from the moment its upload back starts.
+    const returning = board.authority === "returned-local"
+      && !!await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", board.boardId).eq("state", "open")).first();
+    if (board.authority === "online" || board.authority === "importing" || returning) online += 1;
   }
   if (online >= MAX_OWNED_ONLINE_BOARDS) {
     fail("rate_limited", `This account already owns ${MAX_OWNED_ONLINE_BOARDS} online boards, the most an account can have. Take one back to your computer first.`);

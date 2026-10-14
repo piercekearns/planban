@@ -158,3 +158,15 @@ test("the board list gives the dashboard people, cards per column, and \"need yo
   assert.equal(shared.needYou, undefined, "shared boards show no \"need you\"");
   assert.equal(shared.role, "editor");
 });
+
+test("boards coming back online hold their place from the start of their upload, so two can't overfill the limit", async () => {
+  const { ctx } = store();
+  const connectionId = await person(ctx);
+  await ownedOnline(ctx, "user_alice", MAX_OWNED_ONLINE_BOARDS - 1);
+  await ownedOnline(ctx, "user_alice", 2, "returned-local");
+  await takeOnline(ctx, connectionId, "owned-returned-local-0");
+  await assert.rejects(takeOnline(ctx, connectionId, "owned-returned-local-1"), /already owns 20 online boards/);
+  await assert.rejects(run(createBoard, ctx, { connectionId, title: "Mixed" }), /already owns 20 online boards/);
+  // Retrying the same upload isn't charged again.
+  assert.equal((await takeOnline(ctx, connectionId, "owned-returned-local-0")).boardId, "owned-returned-local-0");
+});

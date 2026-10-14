@@ -32,6 +32,8 @@ const LIMITED: Record<string, keyof Pick<Env, "SIGNIN_LIMITER" | "REGISTER_LIMIT
   "POST /web/session": "SIGNIN_LIMITER",
   "POST /web/invite": "SIGNIN_LIMITER",
   "POST /oauth/device": "SIGNIN_LIMITER",
+  // New boards on the web: account quotas bound success; this stops refused requests reaching the service.
+  "POST /api/v1/boards": "SIGNIN_LIMITER",
 };
 
 export const EDGE_PROOF_HEADER = "Planban-Edge-Proof";
@@ -170,6 +172,8 @@ export default {
     // Headers pass through as separate fields, including each Set-Cookie.
     const out = new Headers(upstream.headers);
     out.delete(EDGE_PROOF_HEADER);
+    // Never cross-site: no response through the front door grants another site access.
+    for (const name of [...out.keys()]) if (name.startsWith("access-control-")) out.delete(name);
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out });
   },
 };

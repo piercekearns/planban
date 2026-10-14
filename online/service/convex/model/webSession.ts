@@ -110,6 +110,9 @@ export function apiParts(request: Request): string[] | null {
   try {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/v1/") && url.pathname !== "/api/v1") return null;
-    return url.pathname.replace(/^\/api\/v1\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+    // Exact paths only for cookies: an empty segment (a doubled or trailing slash) is refused.
+    const segments = url.pathname.replace(/^\/api\/v1\//, "").split("/");
+    if (segments.some((segment) => segment === "")) return null;
+    return segments.map(decodeURIComponent);
   } catch { return null; }
 }

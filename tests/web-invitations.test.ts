@@ -109,3 +109,12 @@ test("opening an already-used invitation as a member of that board says so inste
   const carol = await ctx.db.insert("connections", { userId: "user_carol", kind: "web", name: "Web browser", clientName: "Planban on the web", boards: "all", level: "complete", canAdminister: true, createdAt: now, lastUsedAt: now });
   await assert.rejects(run(accept, ctx, { connectionId: carol, tokenHash: "email", verifiedEmails: ["bob@example.com"] }), /expired or was cancelled/);
 });
+
+test("old invitations for an address never hide a current one from the waiting list", async () => {
+  const { ctx, bob, invite } = await fixture();
+  for (let i = 0; i < 60; i++) await invite({ email: "bob@example.com", expiresAt: new Date(Date.now() - 1).toISOString() });
+  await invite({ email: "bob@example.com", revokedAt: new Date().toISOString() });
+  await invite({ email: "bob@example.com" });
+  const { invitations } = await run(waitingFor, ctx, { connectionId: bob, verifiedEmails: ["bob@example.com"] });
+  assert.equal(invitations.length, 1);
+});

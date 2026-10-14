@@ -39,6 +39,11 @@ export const enroll = internalMutation({
       }
     }
     const sameSession = await ctx.db.query("connections").withIndex("by_clerkSession", (q) => q.eq("clerkSessionId", args.clerkSessionId)).collect();
+    // The 7 days run from this Clerk session's first browser sign-in; after
+    // that the person signs in afresh, however long Clerk's own session lasts.
+    const first = Math.min(now, ...sameSession.filter((row) => row.kind === "web").map((row) => Date.parse(row.createdAt)));
+    const cutoff = first + WEB_SESSION_MS;
+    if (cutoff <= now) fail("unauthorized", "This sign-in has ended. Sign in again.");
     for (const row of sameSession) {
       if (row.kind !== "web" || row.revokedAt) continue;
       if (row.userId === args.userId && await resolvedConnection(ctx, row._id)) {
@@ -47,7 +52,7 @@ export const enroll = internalMutation({
       }
       await ctx.db.patch(row._id, { revokedAt: nowIso });
     }
-    const expiresAt = new Date(Math.min(now + WEB_SESSION_MS, args.clerkExpiresAt ?? Infinity)).toISOString();
+    const expiresAt = new Date(Math.min(cutoff, args.clerkExpiresAt ?? Infinity)).toISOString();
     if (Date.parse(expiresAt) <= now) fail("unauthorized", "This sign-in has ended. Sign in again.");
     const connectionId = await ctx.db.insert("connections", {
       userId: args.userId,
@@ -65,6 +70,7 @@ export const enroll = internalMutation({
       serviceOrigin: publicOrigin(),
       clerkSessionId: args.clerkSessionId,
       clerkCheckedAt: nowIso,
+      ...(args.clerkExpiresAt ? { clerkExpiresAt: args.clerkExpiresAt } : {}),
     });
     await ctx.scheduler.runAfter(0, internal.people.refresh, { userId: args.userId });
     return { connectionId, expiresAt };
@@ -137,7 +143,11 @@ export async function endWebSession(ctx: MutationCtx, connection: Doc<"connectio
   if (!connection.revokedAt) await ctx.db.patch(connection._id, { revokedAt: new Date().toISOString() });
   const clerkSessionId = connection.clerkSessionId;
   if (!clerkSessionId) return;
-  if (!await barred(ctx, clerkSessionId)) await ctx.db.insert("webSessionBarriers", { clerkSessionId, createdAt: Date.now() });
+  if (!await barred(ctx, clerkSessionId)) {
+    // Kept until the Clerk session would have ended anyway, and never less than BARRIER_MS.
+    const until = Math.max(Date.now() + BARRIER_MS, connection.clerkExpiresAt ?? 0);
+    await ctx.db.insert("webSessionBarriers", { clerkSessionId, createdAt: Date.now(), until });
+  }
   if (revokeAtClerk) await ctx.scheduler.runAfter(0, internal.webSessions.revokeClerkSession, { clerkSessionId });
 }
 
@@ -163,7 +173,7 @@ export const revokeClerkSession = internalAction({
 export const pruneBarriers = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const old = await ctx.db.query("webSessionBarriers").withIndex("by_createdAt", (q) => q.lt("createdAt", Date.now() - BARRIER_MS)).take(200);
+    const old = await ctx.db.query("webSessionBarriers").withIndex("by_until", (q) => q.lt("until", Date.now())).take(200);
     for (const row of old) await ctx.db.delete(row._id);
     return { removed: old.length };
   },

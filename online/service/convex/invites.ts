@@ -15,6 +15,8 @@ export const MAX_PENDING_INVITES = 50;
 export const MAX_LINK_JOINS = 100;
 export const MAX_MEMBERS = 200;
 export const MAX_EMAILS_PER_ADDRESS_PER_DAY = 3;
+/** Invitations read per address for the waiting list; long-expired ones are removed daily, so this is never reached in practice. */
+const MAX_SCANNED_PER_ADDRESS = 2000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Invite links last 7 days (owner decision 15). */
@@ -130,7 +132,10 @@ export const waitingFor = internalQuery({
     if (!connection.canAdminister) return { invitations: [] };
     const invitations = [];
     for (const email of new Set(verifiedEmails.map((address) => address.toLowerCase()).slice(0, 10))) {
-      for (const invite of await ctx.db.query("invites").withIndex("by_email", (q) => q.eq("email", email)).take(MAX_PENDING_INVITES)) {
+      // Newest first, reading past old, used and cancelled invitations until enough usable ones are found.
+      let scanned = 0;
+      for await (const invite of ctx.db.query("invites").withIndex("by_email", (q) => q.eq("email", email)).order("desc")) {
+        if (++scanned > MAX_SCANNED_PER_ADDRESS || invitations.length >= MAX_PENDING_INVITES) break;
         if (!usable(invite)) continue;
         const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", invite.boardId)).unique();
         if (!board || board.authority !== "online") continue;

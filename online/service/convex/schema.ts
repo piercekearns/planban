@@ -212,6 +212,8 @@ export default defineSchema({
     /** A browser session (kind web): the Clerk session it was enrolled from, and when Clerk last confirmed it. */
     clerkSessionId: v.optional(v.string()),
     clerkCheckedAt: v.optional(v.string()),
+    /** When Clerk will end that session (milliseconds), so its barrier can outlast it. */
+    clerkExpiresAt: v.optional(v.number()),
   }).index("by_tokenHash", ["tokenHash"]).index("by_clerkSession", ["clerkSessionId"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"])
     // Every credential a person hasn't revoked, however much revoked history they have.
     .index("by_user_revoked", ["userId", "revokedAt"]),
@@ -223,7 +225,9 @@ export default defineSchema({
   webSessionBarriers: defineTable({
     clerkSessionId: v.string(),
     createdAt: v.number(),
-  }).index("by_clerkSession", ["clerkSessionId"]).index("by_createdAt", ["createdAt"]),
+    /** Removed after this moment (milliseconds), once the Clerk session can no longer be live. */
+    until: v.number(),
+  }).index("by_clerkSession", ["clerkSessionId"]).index("by_until", ["until"]),
 
   /** Explicit consent, frozen client/redirect/resource/PKCE and one-use code. */
   oauthRequests: defineTable({

@@ -76,7 +76,11 @@ export async function openNote(text: string, kind: SignInNote["kind"], key = not
   if (!key || !looksLikeNote(text)) return null;
   const dot = text.lastIndexOf(".");
   try {
-    const valid = await crypto.subtle.verify("HMAC", await hmacKey(key), fromBase64url(text.slice(dot + 1)), encoder.encode(text.slice(0, dot)));
+    // One spelling only: a base64url text can hide unused bits in its last
+    // character, and single use is keyed on the exact note text.
+    const signature = fromBase64url(text.slice(dot + 1)), payload = fromBase64url(text.slice(NOTE_PREFIX.length, dot));
+    if (base64url(signature) !== text.slice(dot + 1) || base64url(payload) !== text.slice(NOTE_PREFIX.length, dot)) return null;
+    const valid = await crypto.subtle.verify("HMAC", await hmacKey(key), signature, encoder.encode(text.slice(0, dot)));
     if (!valid) return null;
     const note = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64url(text.slice(NOTE_PREFIX.length, dot)))) as SignInNote;
     if (note?.v !== 1 || note.kind !== kind || !Number.isSafeInteger(note.expiresAt) || note.expiresAt <= now) return null;

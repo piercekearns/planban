@@ -174,3 +174,17 @@ test("the record itself refuses a second note with the same hash or the same com
   await assert.rejects(oauth.createRequest._handler(ctx, { ...base, requestHash: hash("note-2") } as any), /fresh authorization/, "same launch");
   await assert.rejects(oauth.createRequest._handler(ctx, { ...base, requestHash: hash("note-3"), launchHash: hash("launch-3"), expiresAt: Date.now() - 1 } as any), /fresh authorization/, "expired");
 }));
+
+test("a note has exactly one spelling: the other encodings of its last character are refused, so single use holds", async () => configured(async () => {
+  const note = await consentNote();
+  const last = note.at(-1)!;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const index = alphabet.indexOf(last);
+  // The last of 43 characters carries 4 meaningful bits; the 2 low bits are padding.
+  const aliases = [0, 1, 2, 3].map((low) => alphabet[(index & ~3) | low]!).filter((char) => char !== last).map((char) => note.slice(0, -1) + char);
+  assert.equal(aliases.length, 3);
+  for (const alias of aliases) assert.equal(await openNote(alias, "consent"), null);
+  assert.ok(await openNote(note, "consent"));
+  const { actionCtx } = service();
+  for (const alias of aliases) assert.equal((await approvalResponse(actionCtx, approveRequest(alias), person())).status, 403);
+}));
