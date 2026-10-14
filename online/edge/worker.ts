@@ -28,6 +28,7 @@ type Limiter = { limit(options: { key: string }): Promise<{ success: boolean }> 
 const LIMITED: Record<string, keyof Pick<Env, "SIGNIN_LIMITER" | "REGISTER_LIMITER">> = {
   "POST /oauth/machine/start": "SIGNIN_LIMITER",
   "GET /oauth/authorize": "SIGNIN_LIMITER",
+  "POST /oauth/authorize": "SIGNIN_LIMITER",
   "POST /oauth/register": "REGISTER_LIMITER",
 };
 
@@ -43,7 +44,7 @@ const ROUTES: readonly Route[] = [
   { path: "/oauth/token", methods: ["POST"] },
   { path: "/oauth/revoke", methods: ["POST"] },
   { path: "/oauth/register", methods: ["POST"] },
-  { path: "/oauth/authorize", methods: ["GET"] },
+  { path: "/oauth/authorize", methods: ["GET", "POST"] },
   { path: "/oauth/consent", methods: ["GET"] },
   { path: "/oauth/machine/start", methods: ["POST"] },
   { path: "/oauth/machine/launch", methods: ["GET"] },

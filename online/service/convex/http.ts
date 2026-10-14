@@ -12,7 +12,8 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
-import { authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
+import { authorizeEntry } from "./model/humanCheck";
+import { registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
@@ -441,7 +442,9 @@ http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignI
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });
 http.route({ path: "/oauth/revoke", method: "POST", handler: httpAction(atServiceOnly(revocationResponse)) });
 http.route({ path: "/oauth/register", method: "POST", handler: httpAction(atServiceOnly(registrationResponse)) });
-http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(atServiceOnly(authorizationResponse)) });
+// The sign-in start, behind a person-check when Turnstile is set up (model/humanCheck.ts).
+http.route({ path: "/oauth/authorize", method: "GET", handler: httpAction(atServiceOnly(authorizeEntry)) });
+http.route({ path: "/oauth/authorize", method: "POST", handler: httpAction(atServiceOnly(authorizeEntry)) });
 http.route({ path: "/oauth/consent", method: "GET", handler: httpAction(atServiceOnly(consentResponse)) });
 http.route({ path: "/oauth/machine/start", method: "POST", handler: httpAction(atServiceOnly(machineStartResponse)) });
 http.route({ path: "/oauth/machine/launch", method: "GET", handler: httpAction(atServiceOnly(machineLaunchResponse)) });

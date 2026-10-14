@@ -141,6 +141,12 @@ registrations and authorize requests per caller. It answers nothing until
 `UPSTREAM` is set to the backend's `https://<deployment>.convex.site` address
 and the `EDGE_PROOF` secret is set.
 
+With `PLANBAN_TURNSTILE_SITE_KEY` and `PLANBAN_TURNSTILE_SECRET` set, the
+sign-in start (`/oauth/authorize`) first shows a Cloudflare Turnstile
+person-check and starts the sign-in only after its single-use proof. Apps'
+servers never call that path; `/oauth/token`, `/oauth/register` and `/mcp`
+are unchanged. Without the settings it behaves as before.
+
 Invitation emails need two more backend settings: `RESEND_API_KEY`, a
 send-only key for the sending domain, and `PLANBAN_INVITE_FROM`, for example
 `Planban <invites@planban.ai>`. Without both, invitations work only as links
