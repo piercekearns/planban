@@ -148,7 +148,15 @@ async function ownerWithBoard() {
   const owner = await service.signIn("user_owner");
   const created = await service.browserSend(owner.token)("/api/v1/boards", { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ title: "Live board" }) });
   const { boardId } = await created.json() as { boardId: string };
-  return { service, owner, boardId, adapter: service.adapterFor(owner.token) };
+  const adapter = service.adapterFor(owner.token);
+  // A live token takes real time to arrive, as on a slow machine, so a test
+  // that expects a new connection must wait for it rather than assume it.
+  const liveToken = adapter.liveToken.bind(adapter);
+  adapter.liveToken = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return liveToken();
+  };
+  return { service, owner, boardId, adapter };
 }
 
 async function edit(adapter: HostedAdapter, boardId: string, title: string) {
@@ -364,6 +372,7 @@ test("a first live connection that fails for a moment is tried again, and checks
     await clock.advance(FALLBACK_EVERY_MS);
     assert.ok(checks >= 1, "checks run while there is no socket");
     assert.equal(tokenRequests, 2, "the live connection is tried again");
+    await until(() => convex.fake.urls.length === 1, "the live connection");
     assert.deepEqual(convex.fake.urls, [CLOUD]);
     convex.socket(true);
     assert.deepEqual(lost, []);
@@ -383,7 +392,7 @@ test("a token renewal that fails for a moment is not taken as signing out; watch
         return adapter.liveToken();
       },
     });
-    await settle();
+    await until(() => convex.fake.urls.length === 1, "the live connection");
     convex.socket(true);
     await convex.push();
     offline = true;
@@ -395,7 +404,7 @@ test("a token renewal that fails for a moment is not taken as signing out; watch
     const revision = await edit(adapter, boardId, "Seen after the blip");
     await clock.advance(FALLBACK_MAX_MS);
     assert.ok(revisions.includes(revision), "checks or the new connection pick the change up");
-    assert.equal(convex.fake.urls.length, 2, "and the live connection starts again");
+    await until(() => convex.fake.urls.length === 2, "the live connection starts again");
     assert.deepEqual(lost, []);
   }));
 });
@@ -420,7 +429,7 @@ test("a subscription error while the service still lets the person in starts the
     assert.deepEqual(lost, [], "the service says the board is still readable");
     failQuery = false;
     await clock.advance(FALLBACK_EVERY_MS);
-    assert.equal(convex.fake.urls.length, 2);
+    await until(() => convex.fake.urls.length === 2, "the live connection starts again");
   }));
 });
 
@@ -448,7 +457,7 @@ test("a slow check about an old connection never closes the connection that repl
     // Meanwhile the token is refused, and a new connection starts and works.
     convex.reject();
     await clock.advance(FALLBACK_EVERY_MS);
-    assert.equal(convex.fake.urls.length, 2);
+    await until(() => convex.fake.urls.length === 2, "the new connection");
     convex.socket(true);
     const closesBefore = convex.fake.closes;
     hold!(1);
@@ -467,13 +476,20 @@ test("tokens refused again and again back off instead of retrying every 15 secon
     await until(() => convex.fake.urls.length >= 1, "the live connection");
     const delays: number[] = [];
     for (let round = 0; round < 4; round += 1) {
+      // Each refusal goes to the connection that is current at the time; an
+      // older one's is ignored, so wait for the new one to start first.
+      await until(() => convex.fake.urls.length === round + 1, `connection ${round + 1}`);
       convex.socket(true);
       convex.reject();
       await settle();
-      const starts = clock.pendingDelays().filter((delay) => delay !== FALLBACK_AFTER_MS);
-      delays.push(Math.max(...starts, ...clock.pendingDelays()));
-      await clock.advance(Math.max(...clock.pendingDelays()));
+      // Left pending: the fallback check, which starts after 15 seconds, and the next connection's start.
+      const pending = clock.pendingDelays();
+      assert.equal(pending.length, 2, `round ${round}: ${pending}`);
+      assert.equal(pending[0], FALLBACK_AFTER_MS);
+      delays.push(pending[1]!);
+      await clock.advance(pending[1]!);
     }
+    await until(() => convex.fake.urls.length === 5, "connection 5");
     assert.deepEqual(delays, [FALLBACK_EVERY_MS, FALLBACK_EVERY_MS * 2, FALLBACK_EVERY_MS * 4, FALLBACK_EVERY_MS * 8]);
   }));
 });
