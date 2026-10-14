@@ -35,7 +35,7 @@ When a project uses Planban but Planban is not installed in the host you are wor
 Ask Codex:
 
 ```text
-Install Planban from piercekearns/planban. Follow the Install With Codex details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the Codex in-app browser, then ask whether I want to set up Planban for a local project.
+Install Planban from planban-ai/planban. Follow the Install With Codex details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the Codex in-app browser, then ask whether I want to set up Planban for a local project.
 ```
 
 #### Install With Codex details
@@ -61,7 +61,7 @@ Use this path only if you prefer to install without asking Codex to perform the 
 Recommended Git-backed marketplace install:
 
 ```bash
-codex plugin marketplace add piercekearns/planban
+codex plugin marketplace add planban-ai/planban
 PLANBAN_ROOT="$(codex plugin marketplace list | awk '$1 == "planban" { print $2 }')"
 cd "$PLANBAN_ROOT"
 npm install
@@ -84,7 +84,7 @@ keeping MCP's JSON-RPC channel clean.
 PowerShell manual install:
 
 ```powershell
-codex plugin marketplace add piercekearns/planban
+codex plugin marketplace add planban-ai/planban
 $planbanRuntime = (codex plugin marketplace list --json | ConvertFrom-Json).marketplaces | Where-Object { $_.name -eq 'planban' } | Select-Object -ExpandProperty root
 Set-Location $planbanRuntime
 npm install
@@ -102,7 +102,7 @@ On Windows, Planban uses polling for its small local planning state directory. T
 Local clone fallback:
 
 ```bash
-git clone https://github.com/piercekearns/planban.git
+git clone https://github.com/planban-ai/planban.git
 cd planban
 npm install
 node scripts/configure-local-plugin.mjs "$PWD"
@@ -116,7 +116,7 @@ node plugins/planban/scripts/launch-planban.mjs --tutorial
 Ask Claude Code:
 
 ```text
-Install Planban from piercekearns/planban. Follow the Install With Claude Code details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the browser pane, then ask whether I want to set up Planban for a local project.
+Install Planban from planban-ai/planban. Follow the Install With Claude Code details in the public GitHub README exactly, verify the plugin and MCP tools work, open the interactive tutorial in the browser pane, then ask whether I want to set up Planban for a local project.
 ```
 
 #### Install With Claude Code details
@@ -124,7 +124,7 @@ Install Planban from piercekearns/planban. Follow the Install With Claude Code d
 Planban installs as a Claude Code plugin marketplace. Node.js `>=22.12.0` and npm must be available. Then:
 
 ```bash
-claude plugin marketplace add piercekearns/planban
+claude plugin marketplace add planban-ai/planban
 PLANBAN_ROOT="$HOME/.claude/plugins/marketplaces/planban"
 cd "$PLANBAN_ROOT"
 npm install
@@ -140,7 +140,7 @@ Run `npm install` in the marketplace root before the first session. The plugin c
 Local clone fallback:
 
 ```bash
-git clone https://github.com/piercekearns/planban.git
+git clone https://github.com/planban-ai/planban.git
 cd planban
 npm install
 claude plugin marketplace add "$PWD"
@@ -190,7 +190,7 @@ For bugs, Planban Feedback normally prepares a new issue or a useful comment on 
 You can also start from a chat: use `/planban-feedback` in Codex or `/planban:planban-feedback` in Claude Code, or ask your agent:
 
 ```text
-I want to give feedback on Planban. Use the current conversation and safely discoverable Planban context so I do not have to repeat details. Investigate the report, search existing issues and fixes, then recommend and draft the best route for piercekearns/planban. Do not recommend a PR unless you verify that my agent already implemented and validated the fix. Do not include private repo paths, board contents, logs, screenshots, or personal project details unless I explicitly approve them.
+I want to give feedback on Planban. Use the current conversation and safely discoverable Planban context so I do not have to repeat details. Investigate the report, search existing issues and fixes, then recommend and draft the best route for planban-ai/planban. Do not recommend a PR unless you verify that my agent already implemented and validated the fix. Do not include private repo paths, board contents, logs, screenshots, or personal project details unless I explicitly approve them.
 
 Feedback:
 <paste your feedback here>
@@ -198,7 +198,7 @@ Feedback:
 
 Your agent can then help you review the issue draft and file it through GitHub. You can also open the issue chooser directly:
 
-https://github.com/piercekearns/planban/issues/new/choose
+https://github.com/planban-ai/planban/issues/new/choose
 
 ## Contributing
 

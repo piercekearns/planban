@@ -3,7 +3,7 @@ export const PLANBAN_PLUGIN_VERSION = "1.1.7";
 export const PLANBAN_MCP_VERSION = "1.1.7";
 export const PLANBAN_STORAGE_SCHEMA_VERSION = 2;
 export const PLANBAN_UPDATE_MANIFEST_URL =
-  "https://raw.githubusercontent.com/piercekearns/planban/main/release/latest.json";
+  "https://raw.githubusercontent.com/planban-ai/planban/main/release/latest.json";
 
 export interface PlanbanVersionInfo {
   version: string;
@@ -61,6 +61,6 @@ export function currentVersionInfo(): PlanbanVersionInfo {
     pluginVersion: PLANBAN_PLUGIN_VERSION,
     mcpVersion: PLANBAN_MCP_VERSION,
     storageSchemaVersion: PLANBAN_STORAGE_SCHEMA_VERSION,
-    sourceUrl: "https://github.com/piercekearns/planban",
+    sourceUrl: "https://github.com/planban-ai/planban",
   };
 }

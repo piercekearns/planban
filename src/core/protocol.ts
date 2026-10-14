@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 
-export const PLANBAN_INSTALL_URL = "https://github.com/piercekearns/planban#install";
+export const PLANBAN_INSTALL_URL = "https://github.com/planban-ai/planban#install";
 
 export function buildAgentContext(input: {
   planningRoot: string;

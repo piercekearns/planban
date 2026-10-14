@@ -23,7 +23,7 @@ the host is known, show only its column.
 - In Codex, type `/planban`, then choose one of the Planban actions from the `/` menu. `@planban Open my Planban board` also works as a plugin mention.
 - In Claude Code, type `/planban:` to list the Planban actions.
 - In any host, natural prompts work when they name Planban clearly.
-- Planban is installed separately in each host. Point users to https://github.com/piercekearns/planban#install for per-host install steps.
+- Planban is installed separately in each host. Point users to https://github.com/planban-ai/planban#install for per-host install steps.
 
 Do not lead with `$planban:*` unless the user specifically asks about `$` skill mentions.
 

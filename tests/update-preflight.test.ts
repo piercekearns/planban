@@ -46,7 +46,7 @@ test("allows direct update for a clean Git-backed Planban marketplace install", 
     [
       "[marketplaces.planban]",
       'source_type = "git"',
-      'source = "https://github.com/piercekearns/planban.git"',
+      'source = "https://github.com/planban-ai/planban.git"',
       "",
     ].join("\n"),
     "utf8",
@@ -60,7 +60,7 @@ test("allows direct update for a clean Git-backed Planban marketplace install", 
       "codex plugin marketplace list": successful(`planban ${marketplaceRoot}\n`),
       "git rev-parse --show-toplevel": successful(`${marketplaceRoot}\n`),
       "git symbolic-ref --quiet --short HEAD": successful("main\n"),
-      "git config --get remote.origin.url": successful("https://github.com/piercekearns/planban.git\n"),
+      "git config --get remote.origin.url": successful("https://github.com/planban-ai/planban.git\n"),
       "git rev-parse HEAD": successful("abc123\n"),
       "git status --porcelain": successful(" M plugins/planban/.mcp.json\n?? .codex-marketplace-install.json\n"),
     }),
@@ -76,7 +76,7 @@ test("allows direct update for a clean Git-backed Planban marketplace install", 
   ]);
 });
 
-test("falls back to setup prompt when required local commands are missing", async () => {
+test("still allows direct update for installs added from the previous piercekearns/planban address", async () => {
   const codexHome = join(tempRoot, "codex-home");
   const marketplaceRoot = join(codexHome, ".tmp", "marketplaces", "planban");
   await mkdir(marketplaceRoot, { recursive: true });
@@ -96,11 +96,45 @@ test("falls back to setup prompt when required local commands are missing", asyn
     codexHome,
     checkedAt: "2026-06-12T00:00:00.000Z",
     runCommand: fakeRunCommand({
-      "npm --version": failed("npm: command not found"),
       "codex plugin marketplace list": successful(`planban ${marketplaceRoot}\n`),
       "git rev-parse --show-toplevel": successful(`${marketplaceRoot}\n`),
       "git symbolic-ref --quiet --short HEAD": successful("main\n"),
       "git config --get remote.origin.url": successful("https://github.com/piercekearns/planban.git\n"),
+      "git rev-parse HEAD": successful("abc123\n"),
+      "git status --porcelain": successful(""),
+    }),
+  });
+
+  assert.equal(preflight.installShape, "git-marketplace");
+  assert.equal(preflight.directUpdateAvailable, true);
+  assert.equal(preflight.recommendedAction, "update-now");
+});
+
+test("falls back to setup prompt when required local commands are missing", async () => {
+  const codexHome = join(tempRoot, "codex-home");
+  const marketplaceRoot = join(codexHome, ".tmp", "marketplaces", "planban");
+  await mkdir(marketplaceRoot, { recursive: true });
+  await writeFile(
+    join(codexHome, "config.toml"),
+    [
+      "[marketplaces.planban]",
+      'source_type = "git"',
+      'source = "https://github.com/planban-ai/planban.git"',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const preflight = await updatePreflight({
+    runtimeRoot: marketplaceRoot,
+    codexHome,
+    checkedAt: "2026-06-12T00:00:00.000Z",
+    runCommand: fakeRunCommand({
+      "npm --version": failed("npm: command not found"),
+      "codex plugin marketplace list": successful(`planban ${marketplaceRoot}\n`),
+      "git rev-parse --show-toplevel": successful(`${marketplaceRoot}\n`),
+      "git symbolic-ref --quiet --short HEAD": successful("main\n"),
+      "git config --get remote.origin.url": successful("https://github.com/planban-ai/planban.git\n"),
       "git rev-parse HEAD": successful("abc123\n"),
       "git status --porcelain": successful(""),
     }),

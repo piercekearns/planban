@@ -38,7 +38,7 @@ body:
     attributes:
       label: Environment
       description: OS, Codex app/CLI context, install method, and Planban version if known.
-      placeholder: macOS, Codex desktop, installed from piercekearns/planban
+      placeholder: macOS, Codex desktop, installed from planban-ai/planban
   - type: dropdown
     id: area
     attributes:

@@ -19,24 +19,24 @@ const workflows = {
 
 test("selects Blacksmith only for pjk-hq GitHub remotes", () => {
   assert.equal(expectedLinuxRunner("git@github.com:pjk-hq/planban.git"), "blacksmith-2vcpu-ubuntu-2404");
-  assert.equal(expectedLinuxRunner("https://github.com/piercekearns/planban.git"), "ubuntu-24.04");
+  assert.equal(expectedLinuxRunner("https://github.com/planban-ai/planban.git"), "ubuntu-24.04");
 });
 
 test("rejects release workflows that use the wrong Linux runner for their remote owner", () => {
   assert.deepEqual(auditReleasePolicy({
-    remoteUrl: "https://github.com/piercekearns/planban.git",
+    remoteUrl: "https://github.com/planban-ai/planban.git",
     workflows: {
       ...workflows,
       ".github/workflows/ci.yml": workflows[".github/workflows/ci.yml"].replace("ubuntu-24.04", "blacksmith-2vcpu-ubuntu-2404"),
     },
     packageJson: { allowScripts: {} },
     packageLock: { packages: {} },
-  }), [".github/workflows/ci.yml must use runs-on: ubuntu-24.04 for GitHub remote owner piercekearns"]);
+  }), [".github/workflows/ci.yml must use runs-on: ubuntu-24.04 for GitHub remote owner planban-ai"]);
 });
 
 test("rejects dependency install scripts unless their exact locked versions were reviewed", () => {
   assert.deepEqual(auditReleasePolicy({
-    remoteUrl: "https://github.com/piercekearns/planban.git",
+    remoteUrl: "https://github.com/planban-ai/planban.git",
     workflows,
     packageJson: { allowScripts: { "esbuild@0.28.0": true } },
     packageLock: {
@@ -53,7 +53,7 @@ test("rejects dependency install scripts unless their exact locked versions were
 test("requires release readiness to rehearse Codex and Claude Code upgrades with pinned CLIs", () => {
   const readiness = workflows[".github/workflows/release-readiness.yml"];
   const audit = (source: string) => auditReleasePolicy({
-    remoteUrl: "https://github.com/piercekearns/planban.git",
+    remoteUrl: "https://github.com/planban-ai/planban.git",
     workflows: { ...workflows, ".github/workflows/release-readiness.yml": source },
     packageJson: { allowScripts: {} },
     packageLock: { packages: {} },
@@ -73,7 +73,7 @@ test("requires release readiness to rehearse Codex and Claude Code upgrades with
 test("does not let a disabled Claude Code rehearsal satisfy release readiness", () => {
   const readiness = workflows[".github/workflows/release-readiness.yml"];
   const audit = (source: string) => auditReleasePolicy({
-    remoteUrl: "https://github.com/piercekearns/planban.git",
+    remoteUrl: "https://github.com/planban-ai/planban.git",
     workflows: { ...workflows, ".github/workflows/release-readiness.yml": source },
     packageJson: { allowScripts: {} },
     packageLock: { packages: {} },

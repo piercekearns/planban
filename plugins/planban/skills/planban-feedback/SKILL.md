@@ -49,7 +49,7 @@ user what categories of local information you inspected.
 
 After understanding the problem, search open and closed issues, pull requests,
 recent releases, and the latest available default-branch source in
-`piercekearns/planban`. Record the source ref or freshness when it affects the
+`planban-ai/planban`. Record the source ref or freshness when it affects the
 diagnosis. Determine whether a result is a strong match, a possible match, already
 fixed upstream, or unrelated. Explain the evidence for that classification rather
 than handing raw search results to the user.
