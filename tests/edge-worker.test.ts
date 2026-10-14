@@ -24,6 +24,14 @@ test("forwards known routes to the fixed upstream with a fresh proof, never the 
   assert.equal(seen[0]!.init.cache, "no-store");
 });
 
+test("forwards the brand files AI apps and browsers fetch, and nothing else under /brand/", async () => {
+  for (const path of ["/favicon.svg", "/favicon.ico", "/brand/icon-light.png", "/brand/icon-dark.png"]) {
+    const { response, seen } = await through(new Request(`${PUBLIC}${path}`));
+    assert.equal(response.status, 200, path);
+    assert.equal(seen[0]!.url, `${env.UPSTREAM}${path}`);
+  }
+});
+
 test("refuses other hosts, unknown routes, wrong methods, odd paths and oversized bodies without forwarding", async () => {
   const cases: Array<[Request, number]> = [
     [new Request("https://native-123.eu-west-1.convex.site/mcp", { method: "POST" }), 421],
@@ -35,6 +43,9 @@ test("refuses other hosts, unknown routes, wrong methods, odd paths and oversize
     [new Request(`${PUBLIC}/invite/a%2Fb`), 404],
     [new Request(`${PUBLIC}/oauth/token`), 405],
     [new Request(`${PUBLIC}/mcp`, { method: "PUT" }), 405],
+    [new Request(`${PUBLIC}/favicon.svg`, { method: "POST" }), 405],
+    [new Request(`${PUBLIC}/brand/other.png`), 404],
+    [new Request(`${PUBLIC}/brand/`), 404],
     [new Request(`${PUBLIC}/mcp`, { method: "POST", headers: { "Content-Length": String(MAX_BODY_BYTES + 1) }, body: "x" }), 413],
   ];
   for (const [request, status] of cases) {

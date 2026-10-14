@@ -462,7 +462,9 @@ http.route({
 // Brand files: favicons for app.planban.ai, and filled icons that AI apps show beside the connector.
 const decode = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 export const brandFile = (body: string | Uint8Array, type: string) => httpAction(async () => new Response(body, {
-  headers: { "Content-Type": type, "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "cross-origin" },
+  headers: { "Content-Type": type, "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "cross-origin",
+    // The favicon is an SVG: opened on its own it may style itself, and nothing more.
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" },
 }));
 http.route({ path: BRAND_PATHS.faviconSvg, method: "GET", handler: brandFile(FAVICON_SVG, "image/svg+xml") });
 http.route({ path: BRAND_PATHS.faviconIco, method: "GET", handler: brandFile(decode(FAVICON_ICO_BASE64), "image/x-icon") });
