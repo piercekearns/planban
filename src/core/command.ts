@@ -19,8 +19,18 @@ function nodeModules(): NodeModules | null {
 
 /** Quotes one argument so a shell runs it as written, whatever the folder name holds. */
 export function shellQuote(value: string, windows = (globalThis as { process?: { platform?: string } }).process?.platform === "win32"): string {
-  // Windows paths cannot contain double quotes; POSIX single quotes keep $, `, \ and " literal.
+  // Windows paths cannot contain double quotes (callers avoid paths a Windows shell would expand);
+  // POSIX single quotes keep $, `, \ and " literal.
   return windows ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The command to print for an install at `script`. */
+export function commandFor(script: string, { windows, onPath }: { windows: boolean; onPath: boolean }): string {
+  if (onPath) return "planban";
+  // Command Prompt and PowerShell expand %…% and $… even inside double quotes, and no one
+  // quoting suits both, so such a path gets a description to follow instead of a command.
+  if (windows && /[%$`!^"]/.test(script)) return `node "<Planban install folder>\\bin\\planban.mjs"`;
+  return `node ${shellQuote(script, windows)}`;
 }
 
 let cached: string | undefined;
@@ -41,5 +51,5 @@ export function planbanCommand(): string {
     }
   });
   const script = node.path.resolve(node.path.dirname(node.url.fileURLToPath(import.meta.url)), "../../bin/planban.mjs");
-  return (cached = onPath ? "planban" : `node ${shellQuote(script, windows)}`);
+  return (cached = commandFor(script, { windows, onPath }));
 }
