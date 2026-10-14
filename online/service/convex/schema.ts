@@ -235,7 +235,9 @@ export default defineSchema({
     expiresAt: v.number(), userId: v.optional(v.string()), sessionId: v.optional(v.string()),
     approverConnectionId: v.optional(v.id("connections")),
     connectionId: v.optional(v.id("connections")), codeHash: v.optional(v.string()), codeExpiresAt: v.optional(v.number()),
-  }).index("by_requestHash", ["requestHash"]).index("by_launchHash", ["launchHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
+    /** One-tap approval: SHA-256 of the device code the waiting agent polls with. */
+    deviceHash: v.optional(v.string()),
+  }).index("by_requestHash", ["requestHash"]).index("by_deviceHash", ["deviceHash"]).index("by_launchHash", ["launchHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
 
   /** Rotating refresh family, including spent hashes for replay detection. */
   oauthRefresh: defineTable({

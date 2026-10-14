@@ -16,6 +16,7 @@ import { tokenResponse, revocationResponse } from "./model/oauthHttp";
 import { authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
 import { authenticateApiRequest, webSessionResponse, webSignOutResponse } from "./model/webAuth";
+import { deviceAuthorizationResponse, deviceDecision, devicePreview } from "./model/deviceFlow";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -129,6 +130,16 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     });
     // The key is shown once; only its hash is stored.
     return json({ ...created, key: token }, 201);
+  }
+  if (parts[0] === "device" && parts.length === 2 && method === "POST" && (parts[1] === "preview" || parts[1] === "decide")) {
+    // One-tap approval of a waiting agent, from the person's own sign-in on any device.
+    const me = await ctx.runQuery(internal.boards.me, { connectionId });
+    if (!me.canAdminister) return json({ error: { code: "forbidden", message: "Approve sign-ins from your own sign-in." } }, 403);
+    const input = await body(request);
+    const note = String(input.request ?? "");
+    if (parts[1] === "preview") return json(await devicePreview(ctx, note));
+    if (input.decision !== "allow" && input.decision !== "deny") return json({ error: { code: "validation", message: "decision must be allow or deny." } }, 400);
+    return json(await deviceDecision(ctx, connectionId, note, input.decision === "allow"));
   }
   if (parts[0] === "invites" && parts.length === 1 && method === "GET") {
     // Email invitations waiting for this person's verified addresses (the dashboard's banner).
@@ -439,9 +450,11 @@ export const authorizationServerDiscovery = httpAction(async () => enrollmentCon
   planban_machine_start_endpoint: `${publicOrigin()}/oauth/machine/start`,
   planban_machine_cancel_endpoint: `${publicOrigin()}/oauth/machine/cancel`,
   token_endpoint: `${publicOrigin()}/oauth/token`, revocation_endpoint: `${publicOrigin()}/oauth/revoke`,
+  // One-tap approval for the Planban command line on machines without a browser callback.
+  device_authorization_endpoint: `${publicOrigin()}/oauth/device`,
   // Self-registration is for claude.ai only (owner decision 22).
   registration_endpoint: `${publicOrigin()}/oauth/register`,
-  response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
+  response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
   code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
   revocation_endpoint_auth_methods_supported: ["none"], scopes_supported: [...PLANBAN_SCOPES, "planban:machine"],
   authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: true,
@@ -467,6 +480,7 @@ http.route({ path: "/dev/token", method: "POST", handler: httpAction(atServiceOn
 http.route({ path: "/web/session", method: "POST", handler: httpAction(atServiceOnly((ctx, request) => webSessionResponse(ctx, request))) });
 http.route({ path: "/web/signout", method: "POST", handler: httpAction(atServiceOnly(webSignOutResponse)) });
 http.route({ path: "/web/invite", method: "POST", handler: httpAction(atServiceOnly(invitePreviewResponse)) });
+http.route({ path: "/oauth/device", method: "POST", handler: httpAction(atServiceOnly(deviceAuthorizationResponse)) });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });

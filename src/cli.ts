@@ -119,10 +119,12 @@ online.command("login <url>").description("sign this computer in to Planban Onli
   .addOption(new Option("--boards <id>", "with --dev-user: the one board the connection reaches").hideHelp())
   .addOption(new Option("--dev-user <id>", "development sign-in on a local Online Board backend").hideHelp())
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
-  .option("--no-browser", "print the sign-in link instead of opening a browser (for remote machines)")
+  .option("--device", "sign in by approving a link on any signed-in device, computer or phone")
+  .option("--no-browser", "print the approval link instead of opening a browser (for remote or headless machines)")
   .action(async (url, options) => print(await onlineLogin(url, {
     ...options,
-    ...(options.browser === false ? { openBrowser: async (link: string) => { process.stderr.write(`Open this link to sign in to Planban:\n${link}\n`); } } : {}),
+    // Without a browser here, approve by link on any device: a loopback callback can't reach a remote machine.
+    ...(options.browser === false ? { printOnly: true } : {}),
   }), {}));
 online.command("logout <url>").description("sign out on this machine and revoke its connection")
   .action(async (url) => print(await onlineLogout(url), {}));

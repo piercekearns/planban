@@ -442,3 +442,71 @@ export const refresh = internalMutation({
     return issueOAuth(ctx, connection, args.accessHash, args.refreshHash, row.scopes);
   },
 });
+
+/**
+ * One-tap approval (Planban 2.0): a signed-in person allows or denies a
+ * waiting agent's request from any device. Nothing existed before this
+ * decision; it is recorded once per device code, and an approval counts
+ * against the person's own hourly limit.
+ */
+export const decideDevice = internalMutation({
+  args: {
+    connectionId: v.id("connections"), deviceHash: hash, allow: v.boolean(),
+    clientId: v.string(), clientName: v.string(), resource: v.string(), scopes: v.array(v.string()), level: agentLevel,
+    purpose: v.union(v.literal("oauth"), v.literal("machine")), expiresAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const approver = await liveConnection(ctx, args.connectionId);
+    if (!approver.canAdminister) fail("forbidden", "Approve sign-ins from your own sign-in.");
+    if (!/^[a-f0-9]{64}$/.test(args.deviceHash) || args.expiresAt <= Date.now() || args.expiresAt > Date.now() + REQUEST_MS) fail("unauthorized", "This request has ended. Ask for a new code.");
+    if (args.purpose !== "machine" || args.clientId !== MACHINE_CLIENT_ID || args.scopes.length !== 1 || args.scopes[0] !== "planban:machine" || args.level !== "complete") fail("validation", "Invalid sign-in request.");
+    if (await ctx.db.query("oauthRequests").withIndex("by_deviceHash", (q) => q.eq("deviceHash", args.deviceHash)).first()) fail("unauthorized", "This request was already answered.");
+    const base = {
+      requestHash: args.deviceHash, deviceHash: args.deviceHash, clientId: args.clientId, clientName: args.clientName, redirectUri: "", resource: args.resource,
+      scopes: args.scopes, level: args.level, challenge: "", state: "", purpose: args.purpose, userId: approver.userId, approverConnectionId: approver._id, expiresAt: args.expiresAt,
+    };
+    if (!args.allow) {
+      await ctx.db.insert("oauthRequests", { ...base, status: "denied" });
+      await scheduleCleanup(ctx, Math.max(0, args.expiresAt - Date.now()) + CODE_MS);
+      return { allowed: false };
+    }
+    await chargeApproval(ctx, approver.userId);
+    const now = new Date().toISOString();
+    // Like any approval: a pending connection with no credential until the agent collects it.
+    const connectionId = await ctx.db.insert("connections", {
+      userId: approver.userId, kind: args.purpose, name: args.clientName, clientName: args.clientName, boards: "all", level: "complete",
+      canAdminister: true, createdAt: now, lastUsedAt: now, oauthClientId: args.clientId, oauthResource: args.resource, authorizationVersion: 2, oauthPending: true,
+    });
+    await ctx.db.insert("oauthRequests", { ...base, status: "approved", connectionId, codeExpiresAt: args.expiresAt });
+    await scheduleCleanup(ctx, Math.max(0, args.expiresAt - Date.now()) + CODE_MS);
+    return { allowed: true };
+  },
+});
+
+/** Whether a waiting agent's request has been answered yet. A read only. */
+export const deviceAnswered = internalQuery({
+  args: { deviceHash: hash },
+  handler: async (ctx, { deviceHash }) => !!await ctx.db.query("oauthRequests").withIndex("by_deviceHash", (q) => q.eq("deviceHash", deviceHash)).first(),
+});
+
+/**
+ * The waiting agent collects its sign-in with its device code. Until someone
+ * answers, nothing is read but the index and nothing is written.
+ */
+export const redeemDevice = internalMutation({
+  args: { deviceHash: hash, clientId: v.string(), resource: v.string(), accessHash: hash },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.query("oauthRequests").withIndex("by_deviceHash", (q) => q.eq("deviceHash", args.deviceHash)).first();
+    if (!row) return { error: "authorization_pending" as const };
+    if (row.clientId !== args.clientId || row.resource !== args.resource) return { error: "invalid_grant" as const };
+    if (row.status === "denied") return { error: "access_denied" as const };
+    if (row.status !== "approved" || !row.connectionId || (row.codeExpiresAt ?? 0) <= Date.now()) return { error: "expired_token" as const };
+    const connection = await ctx.db.get(row.connectionId);
+    if (!connection || connection.revokedAt || !connection.oauthPending) return { error: "invalid_grant" as const };
+    if (!row.approverConnectionId || !connectionIsUsable(await ctx.db.get(row.approverConnectionId))) return { error: "invalid_grant" as const };
+    await ctx.db.patch(row._id, { status: "consumed" });
+    await ctx.db.patch(connection._id, { oauthPending: false, tokenHash: args.accessHash });
+    await ctx.scheduler.runAfter(0, internal.people.refresh, { userId: connection.userId });
+    return { machine: true as const, userId: connection.userId, scope: "planban:machine", expiresIn: REFRESH_IDLE_MS / 1000, refresh: false };
+  },
+});

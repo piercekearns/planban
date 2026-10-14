@@ -90,6 +90,8 @@ const WEB_ROUTES: ReadonlyArray<readonly [string, string]> = [
   ["POST", "invites/accept"],
   ["GET", "invites"],
   ["POST", "invites/*/accept"],
+  ["POST", "device/preview"],
+  ["POST", "device/decide"],
   ["POST", "keys"],
 ];
 

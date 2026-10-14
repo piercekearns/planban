@@ -18,6 +18,13 @@ export interface LoginOptions {
   devUser?: string | undefined;
   /** Sign in with a personal access key held in this environment variable. */
   keyEnv?: string | undefined;
+  /**
+   * One-tap approval: show a link (and the code to compare) that a signed-in
+   * person approves on any device. The link opens in this computer's browser
+   * unless printOnly is set.
+   */
+  device?: boolean | undefined;
+  printOnly?: boolean | undefined;
 }
 
 async function keyLogin(url: string, variable: string) {
@@ -134,6 +141,7 @@ async function signInEndpoints(url: string) {
   return {
     issuer, clientId: config.cliClientId, ports: config.redirectPorts, scope: config.scope,
     start: endpoint("planban_machine_start_endpoint")!, cancel: endpoint("planban_machine_cancel_endpoint")!, authorize: endpoint("authorization_endpoint")!, token: endpoint("token_endpoint")!, revoke: endpoint("revocation_endpoint", false),
+    device: endpoint("device_authorization_endpoint", false),
   };
 }
 
@@ -193,6 +201,7 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
   if (options.devUser) return devLogin(url, options);
   if (options.keyEnv) return keyLogin(url, options.keyEnv);
   const server = await signInEndpoints(url);
+  if (options.device || options.printOnly) return deviceLogin(url, server, options);
   const verifier = randomBytes(32).toString("base64url");
   const state = randomBytes(32).toString("base64url");
   let deadline = 0, launch = "", redeemedToken = "", saved = false;
@@ -249,4 +258,46 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
       await fetch(server.revoke, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000), body: new URLSearchParams({ client_id: server.clientId, token: redeemedToken }) }).catch(() => undefined);
     }
   }
+}
+
+/**
+ * One-tap approval (Planban 2.0): ask for a code, show the approval link and
+ * the code to compare, open the link in this computer's browser unless asked
+ * not to, and wait while the person approves on any signed-in device.
+ */
+async function deviceLogin(url: string, server: Awaited<ReturnType<typeof signInEndpoints>>, options: LoginOptions) {
+  if (!server.device) throw new PlanbanValidationError("This Online Board service can't approve sign-ins by link yet. Update it, or sign in on a computer with a browser.");
+  const asked = await fetch(server.device, {
+    method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+    body: new URLSearchParams({ client_id: server.clientId, scope: server.scope, resource: url }),
+  });
+  const code = await boundedJson(asked).catch(() => ({})) as { device_code?: string; user_code?: string; verification_uri_complete?: string; expires_in?: number; interval?: number };
+  const link = code.verification_uri_complete ?? "";
+  if (!asked.ok || !/^pbv_[A-Za-z0-9_-]{43}$/.test(code.device_code ?? "") || !/^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code.user_code ?? "")
+    || !link.startsWith(`${server.issuer}/approve#request=`) || !Number.isSafeInteger(code.expires_in) || !(code.expires_in! > 0 && code.expires_in! <= 600)) {
+    throw new Error("The service did not issue a valid sign-in link.");
+  }
+  process.stderr.write(`To sign this computer in to Planban, open this link on any device where you're signed in, check the code is ${code.user_code}, and choose Allow:\n${link}\n`);
+  if (!options.printOnly) {
+    const opening = options.openBrowser ? options.openBrowser(link) : openBrowser(link, AbortSignal.timeout(10_000));
+    await opening.catch(() => undefined);
+  }
+  const deadline = Date.now() + code.expires_in! * 1000;
+  let interval = Math.max(5, Number(code.interval) || 5) * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, interval));
+    const polled = await fetch(server.token, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: code.device_code!, client_id: server.clientId, resource: url }),
+    }).catch(() => null);
+    if (!polled) continue;
+    const tokens = await boundedJson(polled).catch(() => ({})) as { access_token?: string; token_type?: string; scope?: string; user_id?: string; error?: string };
+    if (tokens.error === "authorization_pending") continue;
+    if (tokens.error === "slow_down") { interval += 5000; continue; }
+    if (tokens.error === "access_denied") throw new Error("The sign-in was denied.");
+    if (!polled.ok || !/^pbm_[A-Za-z0-9_-]{43}$/.test(tokens.access_token ?? "") || tokens.token_type !== "Bearer" || tokens.scope !== "planban:machine") throw new Error("The sign-in link expired or failed. Run login again.");
+    await saveCredentials(url, { clientId: "machine", accessToken: tokens.access_token!, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(tokens.user_id ? { person: tokens.user_id } : {}) });
+    return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
+  }
+  throw new Error("The sign-in link expired before anyone approved it. Run login again.");
 }

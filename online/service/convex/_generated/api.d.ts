@@ -25,6 +25,7 @@ import type * as model_brandAssets from "../model/brandAssets.js";
 import type * as model_cardChanges from "../model/cardChanges.js";
 import type * as model_clerk from "../model/clerk.js";
 import type * as model_codec from "../model/codec.js";
+import type * as model_deviceFlow from "../model/deviceFlow.js";
 import type * as model_errors from "../model/errors.js";
 import type * as model_history from "../model/history.js";
 import type * as model_humanSession from "../model/humanSession.js";
@@ -76,6 +77,7 @@ declare const fullApi: ApiFromModules<{
   "model/cardChanges": typeof model_cardChanges;
   "model/clerk": typeof model_clerk;
   "model/codec": typeof model_codec;
+  "model/deviceFlow": typeof model_deviceFlow;
   "model/errors": typeof model_errors;
   "model/history": typeof model_history;
   "model/humanSession": typeof model_humanSession;

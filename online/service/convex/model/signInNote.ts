@@ -11,8 +11,11 @@ const NOTE_SHAPE = /^pbn_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/;
 
 export interface SignInNote {
   v: 1;
-  /** launch: the computer sign-in's link, before any browser; consent: bound to one browser. */
-  kind: "launch" | "consent";
+  /**
+   * launch: the computer sign-in's link, before any browser; consent: bound to
+   * one browser; device: one-tap approval from any signed-in device.
+   */
+  kind: "launch" | "consent" | "device";
   purpose: "oauth" | "machine";
   clientId: string;
   clientName: string;
@@ -28,6 +31,9 @@ export interface SignInNote {
   browserHash?: string;
   /** consent notes for the computer sign-in: SHA-256 of the launch note, so one launch is approved once. */
   launchHash?: string;
+  /** device notes: SHA-256 of the device code the waiting agent polls with, and the short code it shows. */
+  deviceHash?: string;
+  userCode?: string;
   /** Random, so two notes for the same request differ. */
   nonce: string;
 }
@@ -75,6 +81,16 @@ export async function openNote(text: string, kind: SignInNote["kind"], key = not
     const note = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64url(text.slice(NOTE_PREFIX.length, dot)))) as SignInNote;
     if (note?.v !== 1 || note.kind !== kind || !Number.isSafeInteger(note.expiresAt) || note.expiresAt <= now) return null;
     if (kind === "consent" && !/^[a-f0-9]{64}$/.test(note.browserHash ?? "")) return null;
+    if (kind === "device" && (!/^[a-f0-9]{64}$/.test(note.deviceHash ?? "") || !/^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(note.userCode ?? ""))) return null;
     return note;
   } catch { return null; }
+}
+
+const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/** The short code a waiting agent shows, derived from its device code, for the person to compare before allowing. */
+export function userCodeFor(deviceHash: string): string {
+  let code = "";
+  for (let i = 0; i < 8; i++) code += USER_CODE_ALPHABET[parseInt(deviceHash.slice(i * 2, i * 2 + 2), 16) % USER_CODE_ALPHABET.length];
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
 }
