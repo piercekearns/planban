@@ -11,4 +11,5 @@ crons.daily("cancel abandoned uploads", { hourUTC: 3, minuteUTC: 15 }, internal.
 crons.daily("forget old daily usage", { hourUTC: 4, minuteUTC: 0 }, internal.maintenance.expireUsage, {});
 crons.daily("remove long-expired invitations", { hourUTC: 4, minuteUTC: 15 }, internal.maintenance.expireInvites, {});
 crons.daily("forget used sign-in tokens", { hourUTC: 3, minuteUTC: 45 }, internal.maintenance.expireMachineExchanges, {});
+crons.daily("forget ended browser sign-ins", { hourUTC: 4, minuteUTC: 30 }, internal.webSessions.pruneBarriers, {});
 export default crons;

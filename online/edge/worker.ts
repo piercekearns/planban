@@ -29,6 +29,7 @@ const LIMITED: Record<string, keyof Pick<Env, "SIGNIN_LIMITER" | "REGISTER_LIMIT
   "POST /oauth/machine/start": "SIGNIN_LIMITER",
   "GET /oauth/authorize": "SIGNIN_LIMITER",
   "POST /oauth/register": "REGISTER_LIMITER",
+  "POST /web/session": "SIGNIN_LIMITER",
 };
 
 export const EDGE_PROOF_HEADER = "Planban-Edge-Proof";
@@ -50,6 +51,8 @@ const ROUTES: readonly Route[] = [
   { path: "/oauth/machine/cancel", methods: ["POST"] },
   { path: "/oauth/validity", methods: ["POST"] },
   { path: "/oauth/approve", methods: ["POST"] },
+  { path: "/web/session", methods: ["POST"] },
+  { path: "/web/signout", methods: ["POST"] },
   { path: "/invite/", prefix: true, methods: ["GET"] },
   { path: "/.well-known/planban.json", methods: ["GET"] },
   { path: "/.well-known/oauth-authorization-server", methods: ["GET"] },

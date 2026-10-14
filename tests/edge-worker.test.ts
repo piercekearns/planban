@@ -109,6 +109,20 @@ test("limits sign-in starts per caller address before forwarding, and refuses th
   assert.equal(unlimited.seen.length, 0);
 });
 
+test("browser sign-in is limited per address and sign-out passes; neither answers other methods", async () => {
+  let allow = true;
+  const limited: Env = { ...env, SIGNIN_LIMITER: { limit: async () => ({ success: allow }) } };
+  const session = () => new Request(`${PUBLIC}/web/session`, { method: "POST", headers: { "CF-Connecting-IP": "203.0.113.9" } });
+  assert.equal((await through(session(), undefined, limited)).response.status, 200);
+  allow = false;
+  assert.equal((await through(session(), undefined, limited)).response.status, 429);
+  const signOut = await through(new Request(`${PUBLIC}/web/signout`, { method: "POST" }), undefined, limited);
+  assert.equal(signOut.response.status, 200);
+  assert.equal(signOut.seen[0]!.url, `${env.UPSTREAM}/web/signout`);
+  assert.equal((await through(new Request(`${PUBLIC}/web/session`), undefined, limited)).response.status, 405);
+  assert.equal((await through(new Request(`${PUBLIC}/web/other`, { method: "POST" }), undefined, limited)).response.status, 404);
+});
+
 test("registrations use their own limiter, and a streamed body past the cap fails the upload", async () => {
   const used: string[] = [];
   const limiter = (name: string) => ({ limit: async () => { used.push(name); return { success: true }; } });

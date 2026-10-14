@@ -15,6 +15,7 @@ import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
 import { authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
+import { authenticateApiRequest, webSessionResponse, webSignOutResponse } from "./model/webAuth";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -255,7 +256,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
 
 const api = httpAction(async (ctx, request) => {
   try {
-    const auth = await authenticate(ctx, request);
+    const auth = await authenticateApiRequest(ctx, request);
     if (!auth) return unauthorized();
     return await handleApi(ctx, request, auth);
   } catch (error) {
@@ -437,6 +438,9 @@ export function atServiceOnly(handler: RouteHandler): RouteHandler {
 
 for (const method of ["GET", "POST", "PUT"] as const) http.route({ pathPrefix: "/api/v1/", method, handler: api });
 http.route({ path: "/dev/token", method: "POST", handler: httpAction(atServiceOnly(devTokenResponse)) });
+// The web page's browser session: started from a Clerk sign-in, ended by signing out.
+http.route({ path: "/web/session", method: "POST", handler: httpAction(atServiceOnly((ctx, request) => webSessionResponse(ctx, request))) });
+http.route({ path: "/web/signout", method: "POST", handler: httpAction(atServiceOnly(webSignOutResponse)) });
 for (const method of ["GET", "POST", "DELETE"] as const) http.route({ path: "/mcp", method, handler: mcp });
 http.route({ path: "/api/v1/auth/machine", method: "POST", handler: machineSignIn });
 http.route({ path: "/oauth/token", method: "POST", handler: httpAction(atServiceOnly(tokenResponse)) });

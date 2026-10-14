@@ -184,7 +184,7 @@ export default defineSchema({
    */
   connections: defineTable({
     userId: v.string(),
-    kind: v.union(v.literal("dev"), v.literal("machine"), v.literal("oauth"), v.literal("key")),
+    kind: v.union(v.literal("dev"), v.literal("machine"), v.literal("oauth"), v.literal("key"), v.literal("web")),
     name: v.string(),
     clientName: v.string(),
     /** SHA-256 of the bearer secret, for kinds Planban issues itself. */
@@ -207,9 +207,21 @@ export default defineSchema({
     serviceOrigin: v.optional(v.string()),
     /** Access credentials are aliases of an independently revocable grant. */
     oauthConnectionId: v.optional(v.id("connections")),
-  }).index("by_tokenHash", ["tokenHash"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"])
+    /** A browser session (kind web): the Clerk session it was enrolled from, and when Clerk last confirmed it. */
+    clerkSessionId: v.optional(v.string()),
+    clerkCheckedAt: v.optional(v.string()),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_clerkSession", ["clerkSessionId"]).index("by_user", ["userId"]).index("by_user_client", ["userId", "oauthClientId"])
     // Every credential a person hasn't revoked, however much revoked history they have.
     .index("by_user_revoked", ["userId", "revokedAt"]),
+
+  /**
+   * Clerk sessions whose browser session was signed out or revoked. Enrolling
+   * from one again is refused, so getting back in needs a fresh sign-in.
+   */
+  webSessionBarriers: defineTable({
+    clerkSessionId: v.string(),
+    createdAt: v.number(),
+  }).index("by_clerkSession", ["clerkSessionId"]).index("by_createdAt", ["createdAt"]),
 
   /** Explicit consent, frozen client/redirect/resource/PKCE and one-use code. */
   oauthRequests: defineTable({
