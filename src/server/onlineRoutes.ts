@@ -15,6 +15,7 @@ import { onlineLogin } from "../core/online/login";
 import {
   attachOnline, keepSeparateBoard, moveState, previewTakeOnline, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
 } from "../core/online/transfers";
+import { planbanCommand } from "../core/command";
 
 /** The working default address for Planban Online (owner decision 13). */
 const DEFAULT_SERVICE = "https://app.planban.ai";
@@ -188,8 +189,9 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
   /** Your connections (owner decision 15: they live under your account, not a board). */
   app.get("/api/online/connections", relay(async () => {
     const url = await defaultService();
-    if (!(await readCredentials()).services[url]) return { signedIn: false, url, connections: [] };
-    return { signedIn: true, url, ...await onlineRequest<object>(url, "/api/v1/connections") };
+    const command = planbanCommand();
+    if (!(await readCredentials()).services[url]) return { signedIn: false, url, command, connections: [] };
+    return { signedIn: true, url, command, ...await onlineRequest<object>(url, "/api/v1/connections") };
   }));
   /** Cut off every other machine, agent, key and Claude registration, in the service's batches. */
   app.post("/api/online/connections/revoke-others", relay(async () => {
@@ -396,7 +398,7 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       // this computer already trusts: Planban's, the configured one, or one it is signed in to.
       const trusted = new Set([serviceUrl(DEFAULT_SERVICE), await defaultService(), ...Object.keys((await readCredentials()).services)]);
       if (requested && !trusted.has(requested)) {
-        throw new PlanbanValidationError(`This board is on ${new URL(requested).host}, which this computer hasn't signed in to before. If you trust it, sign in from a terminal: planban online login ${requested}`);
+        throw new PlanbanValidationError(`This board is on ${new URL(requested).host}, which this computer hasn't signed in to before. If you trust it, sign in from a terminal: ${planbanCommand()} online login ${requested}`);
       }
       const url = requested ?? await defaultService();
       const id = randomUUID();

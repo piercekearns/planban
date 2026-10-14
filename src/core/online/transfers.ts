@@ -19,6 +19,7 @@ import { checkBoardIsIndex, machineName, type IndexReport } from "../indexCheck"
 import { checkIndexCard, checkIndexDocument, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, withoutEmbeddedFiles, withoutEmbeddedValue } from "../contentRules";
 import { buildAgentContext } from "../protocol";
 import { ensureBoardIdentity, writeBoardIdentity } from "../boardIdentity";
+import { planbanCommand } from "../command";
 
 const historyEntrySchema = z.object({
   version: z.number().int().positive(), roadmapRevision: z.number().int().nonnegative(),
@@ -439,7 +440,7 @@ async function abandonUpload(url: string, planningRoot: string, error: unknown):
   }
   if (outcome === "committed") return new PlanbanValidationError(`The board reached the online service before this error (${reason}). Run take-online again to finish switching this project to it.`);
   if (outcome === "other-account") return new PlanbanValidationError(otherAccountMessage(journal));
-  return new PlanbanValidationError(`Taking the board online failed: ${reason}. The board is still on this machine, unchanged. The partly copied online version could not be removed yet; run take-online again to resume, or planban online stop-take-online to cancel it.`);
+  return new PlanbanValidationError(`Taking the board online failed: ${reason}. The board is still on this machine, unchanged. The partly copied online version could not be removed yet; run take-online again to resume, or ${planbanCommand()} online stop-take-online to cancel it.`);
 }
 
 /**

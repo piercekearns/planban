@@ -23,9 +23,11 @@ import { backupRoot, refreshBackup } from "../src/core/online/backup";
 import { onlineLogout } from "../src/core/online/connections";
 import { moveFilesOut } from "../src/core/moveFilesOut";
 import { startServer } from "../src/server/server";
+import { planbanCommand } from "../src/core/command";
 import { listHistory } from "../src/core/history";
 import { checkIndexCard, checkIndexDocument, checkIndexValue } from "../src/core/contentRules";
 import type { PlanbanDocPayload, PlanbanRoadmap } from "../src/core/types";
+const CMD = planbanCommand().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const execFileAsync = promisify(execFile);
 const originalHome = process.env.PLANBAN_HOME;
@@ -733,7 +735,8 @@ test("an Online Board without a sign-in tells the page which service to sign in 
     const missingBody = await missing.json();
     assert.deepEqual([missingBody.signInNeeded, missingBody.signedOut], [serviceUrl(fake.url), "missing"]);
     // Agents and terminals still get the command in the message.
-    assert.match(missingBody.error, /planban online login/);
+    assert.match(missingBody.error, /online login/);
+    assert.equal(missingBody.signInCommand, `${planbanCommand()} online login ${serviceUrl(fake.url)}`);
     // The page can only start sign-in for a service this computer already trusts, never one a board's files name.
     const untrusted = await fetch(`${server.url}/api/online/sign-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: "https://planban-login.example" }) });
     assert.equal(untrusted.status, 422);
@@ -1067,7 +1070,7 @@ test("Take Online leaves a note in the project folder; a machine with the note k
   assert.match(result.onlineNote.commit, /git -C .* add ".planban\/online-board.json" && git -C .* commit/);
   const note = JSON.parse(await readFile(notePath, "utf8"));
   assert.equal(note.boardId, "demo");
-  assert.match(note.note, /lives online at .*planban online login/);
+  assert.match(note.note, new RegExp(`lives online at .*${CMD} online login`));
 
   // The second machine gets the note (as if pulled with the project) and has never signed in.
   await cp(notePath, join(second, ".planban", "online-board.json"));
@@ -1076,7 +1079,7 @@ test("Take Online leaves a note in the project folder; a machine with the note k
   const start = fake.requests.length;
   const refusal: any = await storage.updateCard({ cwd: second, cardId: "alpha", summary: "offline", baseRevision: await revisionOf(second) }).then(() => null, (error) => error);
   assert.ok(refusal instanceof PlanbanStaleCopyError, String(refusal));
-  assert.match(refusal.message, /now lives online.*not signed in to it yet.*planban online login/s);
+  assert.match(refusal.message, new RegExp(`now lives online.*not signed in to it yet.*${CMD} online login`, "s"));
   assert.match(refusal.message, /Agents: do not retry/);
   assert.equal(fake.requests.length, start, "no network call");
   assert.equal(await storage.pathExists(join(copyRoot, STALE_MARKER)), true);

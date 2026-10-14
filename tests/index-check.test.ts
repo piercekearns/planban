@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { checkBoardIsIndex, filesInCard, picturesInTheWay } from "../src/core/indexCheck";
 import { embeddedFileIn, INDEX_NOT_STORAGE } from "../src/core/contentRules";
+import { planbanCommand } from "../src/core/command";
+const CMD = planbanCommand().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test("every way of putting a picture in a document is found; pictures on the web are fine", () => {
   const markdown = [
@@ -84,6 +86,6 @@ test("system files and Planban's own save files never freeze a card; an empty fo
   await writeFile(join(folder, ".spec.md.123.4.0f5a1c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b.tmp"), "saving");
   assert.deepEqual((await filesInCard(root, "alpha")).files, ["renders/"]);
   const report = await checkBoardIsIndex({ planningRoot: root, cards: [{ id: "alpha", title: "Alpha" }], docs: [] });
-  assert.match(report.howToTidy, /planban move-files-out <card> --to <folder>/);
+  assert.match(report.howToTidy, new RegExp(`${CMD} move-files-out <card> --to <folder>`));
   assert.match(embeddedFileIn("x") === null ? INDEX_NOT_STORAGE : "", /^Planban boards hold text only/);
 });

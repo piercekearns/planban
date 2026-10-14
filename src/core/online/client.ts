@@ -1,5 +1,6 @@
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { readCredentials, serviceUrl, type OnlineCredentials } from "./credentials";
+import { planbanCommand } from "../command";
 
 export class OnlineAuthenticationError extends Error {
   constructor(
@@ -14,7 +15,7 @@ export class OnlineAuthenticationError extends Error {
 }
 
 function loginRequired(url: string, reason: "missing" | "expired") {
-  return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run planban online login ${url}.`, 401, { url, reason });
+  return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run ${planbanCommand()} online login ${url}.`, 401, { url, reason });
 }
 
 export async function requireCredentials(url: string): Promise<OnlineCredentials> {

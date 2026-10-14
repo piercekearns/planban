@@ -123,7 +123,7 @@ function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, acc
   if (deletes && !access.canAdminister) fail("forbidden", "Deleting a card is kept for the board owner's own connection. Ask the owner to do it.");
   if (completes && !access.canComplete) fail("forbidden", "This connection may not mark cards complete on this board. Ask someone who can, or change what your agents may do.");
   if (completes && completionConfirmed === false) {
-    fail("validation", "completionConfirmed must be true when this would move a card to complete. Only do this when the owner explicitly asks.");
+    fail("validation", "completionConfirmed must be true when this would move a card to complete. Only do this only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review.");
   }
 }
 

@@ -13,6 +13,7 @@ import { atomicWriteFile } from "../persistence";
 import { readBoardIdentity } from "../boardIdentity";
 import { onlineRequest } from "./client";
 import { readCredentials } from "./credentials";
+import { planbanCommand } from "../command";
 
 export const STALE_MARKER = "STALE-COPY.json";
 /**
@@ -60,10 +61,10 @@ export class PlanbanStaleCopyError extends PlanbanConflictError {
     const lines = [
       `Not saved. "${stale.title}" now lives online (${stale.boardId} at ${stale.url}); it was taken online on ${stale.onlineSince.slice(0, 10)}.`,
       "The copy on this machine is older and read-only. Nothing has been lost, and nothing was changed.",
-      ...(stale.signInNeeded ? [`This machine is not signed in to it yet. Sign in first: planban online login ${stale.url}`] : []),
+      ...(stale.signInNeeded ? [`This machine is not signed in to it yet. Sign in first: ${planbanCommand()} online login ${stale.url}`] : []),
       "Choose one:",
-      `  1. Use the online board (recommended): planban online attach ${stale.url} ${stale.boardId} --cwd ${cwd} --replace-stale-copy`,
-      `  2. Keep this copy as a separate board (this project then uses the online board): planban online keep-local-copy --cwd ${cwd} --title "${stale.title} (copy from ${stale.onlineSince.slice(0, 10)})"`,
+      `  1. Use the online board (recommended): ${planbanCommand()} online attach ${stale.url} ${stale.boardId} --cwd ${cwd} --replace-stale-copy`,
+      `  2. Keep this copy as a separate board (this project then uses the online board): ${planbanCommand()} online keep-local-copy --cwd ${cwd} --title "${stale.title} (copy from ${stale.onlineSince.slice(0, 10)})"`,
     ];
     if (stale.unsyncedChanges.length) {
       lines.push(`${stale.unsyncedChanges.length} change(s) on this machine never reached the online board. Both choices keep them:`);
@@ -188,7 +189,7 @@ export async function writeOnlineNote(cwd: string, board: Omit<OnlineNote, "note
   // A title is only for people to recognise the board; it is kept short so the note always reads back.
   const title = board.title.length > 200 ? `${board.title.slice(0, 199)}…` : board.title;
   const note: OnlineNote = {
-    note: `This project's Planban board "${title}" lives online at ${board.url} (board ${board.boardId}). Sign in with: planban online login ${board.url}`,
+    note: `This project's Planban board "${title}" lives online at ${board.url} (board ${board.boardId}). Sign in with: ${planbanCommand()} online login ${board.url}`,
     ...board,
     title,
   };

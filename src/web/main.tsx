@@ -884,7 +884,8 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
     // A missing or ended Online Board sign-in names the service, so the page can offer Sign in.
     if (payload && typeof payload === "object" && "signInNeeded" in payload && typeof payload.signInNeeded === "string") {
       const reason = "signedOut" in payload && payload.signedOut === "expired" ? "expired" : "missing";
-      Object.assign(error, { signedOut: { url: payload.signInNeeded, reason } satisfies SignedOut });
+      const command = "signInCommand" in payload && typeof payload.signInCommand === "string" ? payload.signInCommand : undefined;
+      Object.assign(error, { signedOut: { url: payload.signInNeeded, reason, ...(command ? { command } : {}) } satisfies SignedOut });
     }
     throw error;
   }

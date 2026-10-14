@@ -62,6 +62,7 @@ import {
   reconstructHierarchy,
 } from "../core/storage";
 import { boardPath, OnlineAuthenticationError, onlineRequest } from "../core/online/client";
+import { planbanCommand } from "../core/command";
 import type { LiveWatch } from "../core/online/live";
 import { registerOnlineRoutes } from "./onlineRoutes";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
@@ -1749,7 +1750,7 @@ export async function startServer(options: ServeOptions) {
           : 500;
     // A missing or ended Online Board sign-in: the board page offers Sign in for this service.
     const signIn = error instanceof OnlineAuthenticationError ? error.signIn : undefined;
-    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason } : {}) });
+    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}) });
   });
 
   try {

@@ -141,7 +141,7 @@ test("Planban MCP server registers focused tools", () => {
   assert.match(instructions, /\.planban\/agent-context\.md/u);
   assert.match(instructions, /absolute repository path/u);
   assert.match(instructions, /Serialize writes/u);
-  assert.match(instructions, /Complete is user-controlled/u);
+  assert.match(instructions, /Complete is person-controlled/u);
   assert.match(instructions, /move_card is the canonical placement operation/u);
   assert.match(instructions, /complete logical mutation batch/u);
   assert.match(instructions, /userReply\.markdown/u);

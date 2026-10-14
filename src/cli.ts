@@ -416,7 +416,7 @@ program
   .option("--board", "move to the main board")
   .option("--after <cardId>", "place after a sibling in the target status")
   .option("--first", "place first in the target ownership and status scope")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
@@ -451,7 +451,7 @@ program
   .option("--clear-blocked-by", "clear the blocking card")
   .option("--metadata-json <json>", "replace metadata with a JSON object")
   .option("--clear-metadata", "clear card metadata")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
@@ -487,7 +487,7 @@ program
   .argument("<cardId>")
   .option("--parent <cardId>", "move this Item into a root Group")
   .option("--board", "move to the main board")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
@@ -515,7 +515,7 @@ program
   .option("--position <position>", "insert at top or bottom of the target status column")
   .option("--after <cardId>", "insert after another card in the target status column")
   .option("--parent <cardId>", "create inside a Group")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (title, options) => {
@@ -550,7 +550,7 @@ function configureCreateGroupCommand(command: Command) {
     .option("--anchor <cardId>", "initial Item whose Main Board position the Group takes")
     .option("--spec-file <path>", "read initial Group spec markdown from a file")
     .option("--plan-file <path>", "read initial Group plan markdown from a file")
-    .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+    .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (title, options) => {
@@ -577,7 +577,7 @@ program
   .requiredOption("--title <title>", "title to create; repeat for multiple cards", collectOption, [])
   .option("--status <status>", "initial status")
   .option("--parent <cardId>", "create inside a Group")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (options) => {
@@ -596,10 +596,11 @@ for (const [command, status] of [
   program
     .command(command)
     .argument("<cardId>")
+    .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (cardId, options) => {
-      print(await setCardStatus(cwdOption(options.cwd), cardId, status), options);
+      print(await setCardStatus(cwdOption(options.cwd), cardId, status, options.baseRevision), options);
     });
 }
 
@@ -680,7 +681,7 @@ program
 program
   .command("reconstruct-hierarchy")
   .requiredOption("--file <path>", "JSON file containing { groups: [{ id, childIds }] }")
-  .requiredOption("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .requiredOption("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (options) => {

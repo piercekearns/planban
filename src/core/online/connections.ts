@@ -2,6 +2,7 @@
 import { PlanbanValidationError } from "../boardOperations";
 import { onlineRequest } from "./client";
 import { readCredentials, saveCredentials, serviceUrl } from "./credentials";
+import { planbanCommand } from "../command";
 
 /**
  * Signing out revokes this machine's connection on the service (owner
@@ -18,7 +19,7 @@ export async function onlineLogout(urlInput: string) {
     await onlineRequest(url, "/api/v1/connections/self/revoke", {}, { signal: AbortSignal.timeout(10_000) });
     revoked = true;
   } catch (error) {
-    note = `The service could not be reached (${error instanceof Error ? error.message : String(error)}). This machine's connection stays active until you revoke it with planban online revoke from another signed-in machine.`;
+    note = `The service could not be reached (${error instanceof Error ? error.message : String(error)}). This machine's connection stays active until you revoke it with ${planbanCommand()} online revoke from another signed-in machine.`;
   }
   await saveCredentials(url, null);
   return { url, signedOut: true, revoked, ...(note ? { note } : {}) };

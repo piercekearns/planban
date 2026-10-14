@@ -79,6 +79,8 @@ export async function browserSignIn(url: string | undefined, onBlocked: (link: s
 export interface SignedOut {
   url: string;
   reason: "missing" | "expired";
+  /** The sign-in command as this computer runs it. */
+  command?: string;
 }
 
 const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url; } };
@@ -110,7 +112,7 @@ export function SignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOu
         {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
         {blockedLink ? <p>Your browser blocked the sign-in tab. <a href={blockedLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
         {error ? <p className="online-board-error" role="alert">{error}</p> : null}
-        <p className="muted signed-out-hint">For agents and terminals: <code>planban online login {signedOut.url}</code></p>
+        <p className="muted signed-out-hint">For agents and terminals: <code>{signedOut.command ?? `planban online login ${signedOut.url}`}</code></p>
       </div>
     </main>
   );
@@ -815,7 +817,7 @@ interface Connection {
 type Registration = { id: string; name: string; registeredAt: string; connected: boolean };
 
 export function ConnectionsModal({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<{ signedIn: boolean; connections: Connection[]; registrations?: Registration[] } | null>(null);
+  const [data, setData] = useState<{ signedIn: boolean; command?: string; connections: Connection[]; registrations?: Registration[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => setData(await request<{ signedIn: boolean; connections: Connection[]; registrations?: Registration[] }>("/api/online/connections").catch((failure) => {
@@ -888,7 +890,7 @@ export function ConnectionsModal({ onClose }: { onClose: () => void }) {
               ))}
             </div>
           ) : null}
-          <div className="online-board-section"><h3>Personal access keys</h3>{keys.length ? keys.map((connection) => row(connection, <KeyRound size={16} />, false)) : <p className="muted">No keys. Create one from the command line with planban online keys create.</p>}</div>
+          <div className="online-board-section"><h3>Personal access keys</h3>{keys.length ? keys.map((connection) => row(connection, <KeyRound size={16} />, false)) : <p className="muted">No keys. Create one from the command line with <code>{data?.command ?? "planban"} online keys create</code>.</p>}</div>
         </>
       )}
       {error ? <div className="online-board-section"><p className="online-board-error" role="alert">{error}</p></div> : null}
