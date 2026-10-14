@@ -131,6 +131,44 @@ function isUuencodeLine(line: string) {
 const HASH_LINE = /^(?:[\w .:#/@-]{0,40}[\s:=])?([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{32}|[0-9a-fA-F]{128})[\s,.;)]*$/;
 const HASH_LINES_ALLOWED = 100;
 
+/** Explicit Adobe frames have their own alphabet, including incidental URL
+ * punctuation. Validate groups before treating a span as encoded content. */
+function ascii85Frames(text: string) {
+  const frames: Array<{ start: number; end: number; payload: number }> = [];
+  for (const match of text.matchAll(/<~([^~]*)~>/g)) {
+    let group = 0, value = 0, payload = 0, valid = true;
+    for (const character of match[1]!) {
+      if (/[ \t\r\n\f]/.test(character)) continue;
+      if (character === "z" && group === 0) { payload += 5; continue; }
+      const digit = character.charCodeAt(0) - 33;
+      if (digit < 0 || digit > 84) { valid = false; break; }
+      value = value * 85 + digit; group++; payload++;
+      if (group === 5) {
+        if (value > 0xffffffff) { valid = false; break; }
+        group = 0; value = 0;
+      }
+    }
+    // A final partial group contains two through four characters, never one.
+    if (group > 1) {
+      for (let padded = group; padded < 5; padded++) value = value * 85 + 84;
+      if (value > 0xffffffff) valid = false;
+    }
+    if (valid && group !== 1) frames.push({ start: match.index!, end: match.index! + match[0].length, payload });
+  }
+  return frames;
+}
+
+function replaceAscii85(text: string, replacement: string) {
+  let out = "", end = 0;
+  for (const frame of ascii85Frames(text)) {
+    out += text.slice(end, frame.start) + replacement;
+    end = frame.end;
+  }
+  return out + text.slice(end);
+}
+
+const ascii85Payload = (text: string) => ascii85Frames(text).reduce((sum, frame) => sum + frame.payload, 0);
+
 /** Each line's payload characters (0 for a line of prose), for lines that are not blank. */
 function payloadLines(text: string) {
   const lines: Array<{ index: number; payload: number; weak: number; hash?: number }> = [];
@@ -226,6 +264,10 @@ const nothing = (): Payload => ({ binary: false, image: false, data: 0, encoded:
 /** Adds the file-like content in one piece of text to `into`. */
 function measure(text: string, into: Payload, minBlock = 0) {
   if (BINARY.test(text)) into.binary = true;
+  const framed = ascii85Payload(text);
+  if (framed >= minBlock) into.block += framed;
+  // Measure frames before reference removal and do not count their bytes twice.
+  text = replaceAscii85(text, " ");
   if (/data:/i.test(text) && DATA_IMAGE.test(withoutCode(text))) into.image = true;
   for (const match of text.matchAll(DATA_URI)) into.data += match[1]!.length;
   const rest = text.replace(DATA_URI, " ").replace(WEB_ADDRESS, " ");
@@ -252,7 +294,7 @@ export function embeddedFileIn(text: string): string | null {
 /** Text with embedded files replaced by `placeholder` (for history, which cannot be edited). */
 export function withoutEmbeddedFiles(text: string, placeholder: string): string {
   if (!embeddedFileIn(text)) return text;
-  const cleaned = text
+  const cleaned = replaceAscii85(text, placeholder)
     .replace(new RegExp(BINARY.source, "g"), "")
     // History only: every data: address goes, however short.
     .replace(DATA_URI, () => placeholder)
@@ -277,13 +319,23 @@ export function withoutEmbeddedFiles(text: string, placeholder: string): string 
  * For history, which cannot be edited.
  */
 export function withoutEmbeddedValue<T>(value: T, placeholder: string): T {
+  // Substantial framed pieces can add up across history fields even when no
+  // individual field reaches the limit. Preserve short standalone examples.
+  const framedIn = (entry: unknown): number => {
+    if (typeof entry === "string") { const count = ascii85Payload(entry); return count >= FIELD_BLOCK_MIN ? count : 0; }
+    if (Array.isArray(entry)) return entry.reduce<number>((sum, item) => sum + framedIn(item), 0);
+    if (entry && typeof entry === "object") return Object.entries(entry).reduce((sum, [key, item]) => sum + framedIn(key) + framedIn(item), 0);
+    return 0;
+  };
+  const splitFrames = framedIn(value) > PAYLOAD_BLOCK_LIMIT;
+  const substantialFrames = (text: string) => splitFrames && ascii85Payload(text) >= FIELD_BLOCK_MIN;
   const clean = (entry: unknown): unknown => {
-    if (typeof entry === "string") return withoutEmbeddedFiles(entry, placeholder);
+    if (typeof entry === "string") return withoutEmbeddedFiles(substantialFrames(entry) ? replaceAscii85(entry, placeholder) : entry, placeholder);
     if (Array.isArray(entry)) {
       return entry.length > 16 && entry.every((item) => typeof item === "number") ? [] : entry.map(clean);
     }
     if (entry && typeof entry === "object") {
-      return Object.fromEntries(Object.entries(entry).map(([key, item], index) => [embeddedFileIn(key) ? `${placeholder} ${index}` : key, clean(item)]));
+      return Object.fromEntries(Object.entries(entry).map(([key, item], index) => [embeddedFileIn(key) || substantialFrames(key) ? `${placeholder} ${index}` : key, clean(item)]));
     }
     return entry;
   };

@@ -26,9 +26,11 @@ export function planbanSessionContext({ projectDir: requestedDir, port = 4317 })
   const manifestPath = join(projectDir, ".planban/project.json");
   if (!existsSync(manifestPath)) return null;
   let repoId = null;
+  let onlineUrl = null;
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     repoId = typeof manifest.repoId === "string" && manifest.repoId.trim() ? manifest.repoId.trim() : null;
+    onlineUrl = manifest.storage?.kind === "online" && typeof manifest.storage.url === "string" ? manifest.storage.url : null;
   } catch {
     return null;
   }
@@ -41,6 +43,11 @@ export function planbanSessionContext({ projectDir: requestedDir, port = 4317 })
     `This project tracks its work in Planban (board \`${repoId}\`, usually ${boardUrl}).${where}`,
     `Read \`${join(projectDir, ".planban/agent-context.md")}\` before reading or changing roadmap state, and use the Planban MCP tools (\`planban_*\`) with this repo's absolute path as \`cwd\`.`,
     "After opening the board or finishing a batch of Planning changes, include the clickable verified board URL from the tool result in your reply.",
+    ...(onlineUrl
+      ? [`This board is online at ${onlineUrl}: read and edit it only through the Planban tools, never local files. If Planban says this computer isn't signed in, ask the person to sign in.`]
+      : existsSync(join(projectDir, ".planban/online-board.json"))
+        ? ["This project's board was taken online on another computer, so this copy is read-only. Ask the person to sign in and choose \"Use the online board\"."]
+        : []),
   ].join("\n");
 }
 

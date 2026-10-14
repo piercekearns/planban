@@ -1,0 +1,18 @@
+{
+  "name": "planban-online-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev",
+    "typecheck": "tsc --noEmit -p convex"
+  },
+  "dependencies": {
+    "@clerk/backend": "3.23.2",
+    "convex": "^1.46.0",
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "typescript": "^5.9.3"
+  }
+}

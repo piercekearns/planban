@@ -33,6 +33,8 @@ import {
   writeDoc,
 } from "../src/core/storage";
 import { startServer } from "../src/server/server";
+import { planbanCommand } from "../src/core/command";
+const CMD = planbanCommand().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const repoId = "index-test";
 const pngBase64 = Buffer.alloc(3000, 7).toString("base64");
@@ -73,6 +75,18 @@ function dropFiles(folder: string) {
   writeFileSync(join(folder, "evidence", "run.log"), "ok\n");
 }
 
+test("single-card creation reserves folders containing leftover documents", async () => {
+  await withBoard(async ({ cwd, folder }) => {
+    mkdirSync(folder("alpha"), { recursive: true });
+    const oldSpec = "# Kept Spec\n\nEvidence left by an older card.\n";
+    writeFileSync(join(folder("alpha"), "spec.md"), oldSpec);
+    const created = (await createCard({ cwd, title: "Alpha", specMarkdown: "# New Spec\n" })).createdCard;
+    assert.notEqual(created.id, "alpha");
+    assert.equal(readFileSync(join(folder("alpha"), "spec.md"), "utf8"), oldSpec);
+    assert.equal((await readDoc({ cwd, cardId: created.id, kind: "spec" })).markdown, "# New Spec\n");
+  });
+});
+
 test("every local write refuses embedded files and oversized text, with advice on writing a reference", async () => {
   await withBoard(async ({ cwd, planningRoot }) => {
     const card = (await createCard({ cwd, title: "Alpha", status: "up-next" })).createdCard;
@@ -83,6 +97,7 @@ test("every local write refuses embedded files and oversized text, with advice o
     await assert.rejects(createCard({ cwd, title: "Beta", planMarkdown: pngBase64 }), refuses(/the Plan of card Beta contains an encoded file/u));
     await assert.rejects(createGroup({ cwd, title: "Gamma", summary: `Logo ${pngBase64}` }), refuses(/card gamma contains an encoded file/u));
     await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "spec", markdown: dataUriSpec }), refuses(reference));
+    await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "spec", markdown: "<~" + "z".repeat(768) + "~>" }), refuses(/encoded file/u));
     await assert.rejects(writeDoc({ cwd, cardId: card.id, kind: "plan", markdown: "word ".repeat(220 * 1024) }), refuses(/limit is 1024 KB/u));
     await assert.rejects(updateCard({ cwd, cardId: card.id, summary: `Screenshot: data:image/png;base64,${pngBase64}` }), refuses(/card alpha contains (?:an embedded file|a picture stored in the text)/u));
     await assert.rejects(updateCard({ cwd, cardId: card.id, metadata: { logo: Array.from({ length: 4000 }, (_, index) => index % 256) } }), refuses(/long lists? of numbers/u));
@@ -119,7 +134,7 @@ test("a card holding files is refused every change until tidied, while reads and
       assert.deepEqual(error.files, ["evidence/run.log", "shot.png"]);
       assert.match(error.message, /holds 2 files in its folder, .*: evidence\/run\.log, shot\.png\./u);
       assert.match(error.message, /Planban is an index, not file storage.*reading it still works/su);
-      assert.match(error.message, /planban move-files-out (alpha|old) --to <folder>.*--dry-run.*without overwriting or deleting anything/su);
+      assert.match(error.message, new RegExp(`${CMD} move-files-out (alpha|old) --to <folder>.*--dry-run.*without overwriting or deleting anything`, "su"));
       return true;
     };
     const before = readFileSync(join(folder(alpha.id), "spec.md"), "utf8");
@@ -159,12 +174,12 @@ test("cards holding files are flagged in stale signals, the session-start line a
     assert.deepEqual(Object.keys(staleness.cards), ["alpha"], "a parked card is flagged too: it refuses changes whatever its status");
     const [signal] = staleness.cards.alpha!;
     assert.equal(signal!.kind, "holds-files");
-    assert.match(signal!.detail, /^Holds 2 files in its folder \(evidence\/run\.log, shot\.png\); changes are refused until they are moved out with `planban move-files-out alpha --to <folder>`$/u);
+    assert.match(signal!.detail, new RegExp(`^Holds 2 files in its folder \\(evidence\\/run\\.log, shot\\.png\\); changes are refused until they are moved out with \`${CMD} move-files-out alpha --to <folder>\`$`, "u"));
     assert.equal(stalenessChipLabel(signal!), "Holds files");
     const attention = stalenessAttention(staleness, state.roadmap.roadmapItems);
     assert.deepEqual(attention.holdingFiles, { ids: ["alpha"], total: 1 });
     assert.equal(attention.total, 0, "holding files is not a stale-content signal an edit could fix");
-    const line = "1 card holds files in its folder (alpha). Planban is an index, not file storage, so it refuses changes to that card until the files are moved out with `planban move-files-out <card> --to <folder>`.";
+    const line = `1 card holds files in its folder (alpha). Planban is an index, not file storage, so it refuses changes to that card until the files are moved out with \`${planbanCommand()} move-files-out <card> --to <folder>\`.`;
     assert.equal(stalenessLine(attention), line);
     assert.equal(await planbanStalenessLine({ projectDir: cwd }), line);
   });
@@ -234,6 +249,24 @@ function cli(args: string[], home: string, input?: string) {
   });
 }
 
+test("the CLI's write-doc states the document version it was based on when given one", async () => {
+  await withBoard(async ({ cwd, home }) => {
+    await createCard({ cwd, title: "Alpha", status: "up-next" });
+    const read = JSON.parse(cli(["read-doc", "alpha", "spec", "--cwd", cwd, "-o", "json"], home).stdout);
+    const stale = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", String(read.mtimeMs - 1000)], home, "# Stale\n");
+    assert.equal(stale.status, 1);
+    const asNew = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", "new"], home, "# New\n");
+    assert.equal(asNew.status, 1, "an existing document can't be written as new");
+    for (const value of ["soon", "", " "]) assert.equal(cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", value], home, "# Bad\n").status, 1, `refuses ${JSON.stringify(value)}`);
+    await createCard({ cwd, title: "Beta", status: "up-next" });
+    const created = cli(["write-doc", "beta", "plan", "--cwd", cwd, "--expected-mtime", "new", "-o", "json"], home, "# New plan\n");
+    assert.equal(created.status, 0, created.stderr);
+    const ok = cli(["write-doc", "alpha", "spec", "--cwd", cwd, "--expected-mtime", String(read.mtimeMs), "-o", "json"], home, "# Fresh\n");
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(ok.stdout).markdown, "# Fresh\n");
+  });
+});
+
 test("the CLI refuses embedded files and flagged cards, and tidies with move-files-out", async () => {
   await withBoard(async ({ root, cwd, home, folder }) => {
     await createCard({ cwd, title: "Alpha", status: "up-next" });
@@ -244,7 +277,7 @@ test("the CLI refuses embedded files and flagged cards, and tidies with move-fil
     dropFiles(folder("alpha"));
     const refused = cli(["update-card", "alpha", "--summary", "Changed", "--cwd", cwd], home);
     assert.equal(refused.status, 1);
-    assert.match(refused.stderr, /holds 2 files in its folder.*planban move-files-out alpha --to <folder>/su);
+    assert.match(refused.stderr, new RegExp(`holds 2 files in its folder.*${CMD} move-files-out alpha --to <folder>`, "su"));
     assert.equal(cli(["get-card", "alpha", "--cwd", cwd, "-o", "json"], home).status, 0, "reads still work");
 
     const destination = join(root, "kept");
@@ -281,7 +314,7 @@ test("the web board's API refuses embedded files and flagged cards, and flags th
       dropFiles(folder("alpha"));
       const patched = await send("PATCH", "/cards/alpha", { summary: "Changed" });
       assert.equal(patched.status, 409);
-      assert.match(((await patched.json()) as { error: string }).error, /holds 2 files in its folder.*planban move-files-out alpha/su);
+      assert.match(((await patched.json()) as { error: string }).error, new RegExp(`holds 2 files in its folder.*${CMD} move-files-out alpha`, "su"));
       assert.equal((await send("POST", "/cards/alpha/move", { status: "in-progress" })).status, 409);
       assert.equal((await send("PUT", "/cards/alpha/docs/plan", { markdown: "# Plan\n" })).status, 409);
       assert.equal((await fetch(`${server.url}/api/boards/${repoId}/cards/alpha/docs/spec`)).status, 200, "reads still work");
@@ -337,7 +370,7 @@ test("MCP tools teach the rule, flag cards holding files, refuse writes to them,
       assert.match(tools.find((tool) => tool.name === name)!.description, /Planban is an index, not file storage.*GitHub link.*local path labelled with its machine/su, name);
     }
     assert.match(tools.find((tool) => tool.name === "planban_move_files_out")!.description, /never overwriting or deleting anything/u);
-    assert.match(responses[2].result.content[0].text, /\nThis card holds 2 files in its folder \(evidence\/run\.log, shot\.png\); changes are refused until they are moved out with `planban move-files-out alpha --to <folder>` or planban_move_files_out\. Planban is an index, not file storage\./u);
+    assert.match(responses[2].result.content[0].text, new RegExp(`\\nThis card holds 2 files in its folder \\(evidence\\/run\\.log, shot\\.png\\); changes are refused until they are moved out with \`${CMD} move-files-out alpha --to <folder>\` or planban_move_files_out\\. Planban is an index, not file storage\\.`, "u"));
     assert.match(responses[3].result.content[0].text, /\n1 card holds files in its folder \(alpha\)\./u);
     assert.match(responses[4].error.message, /holds 2 files in its folder.*planban_move_files_out/su);
     assert.match(responses[5].error.message, /^Not saved: the Spec of card Beta contains (?:an embedded file|a picture stored in the text)/u);

@@ -1,5 +1,6 @@
 import express from "express";
 import { spawn } from "node:child_process";
+import { urlOpener } from "../core/openUrl";
 import { randomUUID } from "node:crypto";
 import { closeSync, createReadStream, existsSync, mkdirSync, openSync } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
@@ -14,6 +15,7 @@ import { ensureDemoBoard } from "../core/demo";
 import {
   idempotencyFingerprint,
   LOCK_DIR,
+  QUEUE_DIR,
   PlanbanIdempotencyConflictError,
   runIdempotentBoardMutation,
 } from "../core/persistence";
@@ -33,6 +35,7 @@ import {
   getStatus,
   initializeProject,
   loadState,
+  readManifest,
   moveCard,
   PlanbanConflictError,
   PlanbanNotFoundError,
@@ -58,6 +61,10 @@ import {
   exportFlatVersion1,
   reconstructHierarchy,
 } from "../core/storage";
+import { boardPath, OnlineAuthenticationError, onlineRequest } from "../core/online/client";
+import { planbanCommand } from "../core/command";
+import type { LiveWatch } from "../core/online/live";
+import { registerOnlineRoutes } from "./onlineRoutes";
 import { PLANBAN_STATUSES, type PlanbanHistoryActor, type PlanbanRoadmapItem, type PlanbanStatus } from "../core/types";
 import { PlanbanQueryValidationError, queryWorkItems, workItemQueryFromSearchParams } from "../core/workItemQuery";
 import {
@@ -100,7 +107,7 @@ export function isIgnoredPlanbanWatchPath(path: string): boolean {
   const segments = relativePath.split(sep);
   // Reads take the board write lock too, so its folder comes and goes on every
   // board read; watching it would make each read tell the page to reload.
-  if (segments.includes(LOCK_DIR)) return true;
+  if (segments.includes(LOCK_DIR) || segments.includes(QUEUE_DIR)) return true;
   return segments[0] === "repos" && segments[2] === "history";
 }
 
@@ -215,12 +222,7 @@ function parseCardUpdate(value: unknown) {
 
 function openExternalUrl(url: string) {
   return new Promise<void>((resolveOpen, reject) => {
-    const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-    const args = process.platform === "darwin"
-      ? [url]
-      : process.platform === "win32"
-        ? ["/c", "start", "", url]
-        : [url];
+    const { command, args } = urlOpener(url);
     const child = spawn(command, args, { detached: true, stdio: "ignore" });
     child.once("error", reject);
     child.unref();
@@ -441,12 +443,36 @@ export async function startServer(options: ServeOptions) {
   let vite: ViteDevServer | null = null;
   let watcher: FSWatcher | null = null;
   let activitySweep: NodeJS.Timeout | null = null;
+  let onlineRefresh: NodeJS.Timeout | null = null;
+  let onlineRefreshRunning = false;
+  let closeOnlineWatches = () => {};
+  const onlineRevisions = new Map<string, number>();
+  const onlineAbort = new AbortController();
+  let onlineMoves: ReturnType<typeof registerOnlineRoutes> | null = null;
+  // An Online Board is only polled while a browser is watching that board (it
+  // polls /api/live?repoId=...), so an idle server, or one showing only local
+  // boards, makes no hosted requests.
+  const lastLiveRequestAt = new Map<string, number>();
   const activityStore = new PlanbanActivityStore();
   let liveVersion = 0;
   let stateVersion = 0;
   let boardsVersion = 0;
   let activityVersion = 0;
   const currentBoard = await registerBoardFromCwd(cwd).catch(() => null);
+
+  // Binding the socket to loopback does not protect against DNS rebinding:
+  // an arbitrary web hostname can resolve to this socket. Trust the actual
+  // request authority before parsing bodies or serving any API or page.
+  app.use((req, res, next) => {
+    const host = req.header("Host") ?? "";
+    const authority = /^(127\.0\.0\.1|localhost|\[::1\])(?::([0-9]{1,5}))?$/i.exec(host);
+    const port = authority?.[2] === undefined ? 80 : Number(authority[2]);
+    if (!authority || port !== req.socket.localPort) {
+      res.status(403).json({ error: "Planban requests must use this server's loopback address and port." });
+      return;
+    }
+    next();
+  });
 
   app.use(express.json({ limit: "4mb" }));
 
@@ -475,6 +501,13 @@ export async function startServer(options: ServeOptions) {
   }
 
   async function closeServer() {
+    await onlineMoves?.dispose();
+    onlineAbort.abort();
+    if (onlineRefresh) {
+      clearInterval(onlineRefresh);
+      onlineRefresh = null;
+    }
+    closeOnlineWatches();
     if (activitySweep) {
       clearInterval(activitySweep);
       activitySweep = null;
@@ -568,7 +601,8 @@ export async function startServer(options: ServeOptions) {
     });
   }
 
-  app.get("/api/live", (_req, res) => {
+  app.get("/api/live", (req, res) => {
+    if (typeof req.query.repoId === "string" && req.query.repoId) lastLiveRequestAt.set(req.query.repoId, Date.now());
     res.set("Cache-Control", "no-store").json({
       liveVersion,
       stateVersion,
@@ -789,7 +823,7 @@ export async function startServer(options: ServeOptions) {
       }
 
       const repoId = req.params.repoId as string;
-      const cwdForBoard = await boardCwd(repoId);
+      const cwdForBoard = await boardCwd(repoId, false);
       const { replayed, value: nextState } = await runApiMutation(req, cwdForBoard, async () => {
         const state = await loadState(cwdForBoard);
         let found = false;
@@ -829,7 +863,7 @@ export async function startServer(options: ServeOptions) {
 
   app.post("/api/boards/:repoId/cards/:id/codex-thread/sync", async (req, res, next) => {
     try {
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: result } = await runApiMutation(req, cwdForBoard, async () => {
         const state = await loadState(cwdForBoard);
         const item = state.roadmap.roadmapItems.find((entry) => entry.id === req.params.id);
@@ -895,9 +929,14 @@ export async function startServer(options: ServeOptions) {
     }
   });
 
-  async function boardCwd(repoId: string) {
+  /**
+   * Reading a board records it as recently opened. Changing one does not:
+   * a card write must take the board before writing anything, so it can give
+   * up cleanly if another process is stuck holding it.
+   */
+  async function boardCwd(repoId: string, recordOpened = true) {
     const board = await resolveBoardCwd(repoId);
-    await touchBoard(repoId);
+    if (recordOpened) await touchBoard(repoId);
     return board;
   }
 
@@ -913,6 +952,14 @@ export async function startServer(options: ServeOptions) {
       throw new PlanbanNotFoundError(`Planban card ${cardId} was not found.`);
     }
   }
+
+  onlineMoves = registerOnlineRoutes(app, {
+    resolveBoardCwd,
+    changed(repoId) {
+      sendEvent("boards", { repoId, action: "online" });
+      sendEvent("state", { repoId });
+    },
+  });
 
   app.get("/api/boards/:repoId/activity", async (req, res, next) => {
     try {
@@ -981,7 +1028,7 @@ export async function startServer(options: ServeOptions) {
     try {
       const exportId = typeof req.body?.exportId === "string" ? req.body.exportId : "";
       if (!exportId) throw new PlanbanValidationError("exportId is required.");
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: result } = await runApiMutation(req, cwdForBoard, () => exportFlatVersion1({ cwd: cwdForBoard, exportId }));
       res.json(result);
     } catch (error) { next(error); }
@@ -991,7 +1038,7 @@ export async function startServer(options: ServeOptions) {
     try {
       const groups = req.body?.groups ?? req.body?.programmes;
       if (!Array.isArray(groups)) throw new PlanbanValidationError("groups must be an array.");
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => reconstructHierarchy({
         cwd: cwdForBoard,
         groups,
@@ -1034,7 +1081,7 @@ export async function startServer(options: ServeOptions) {
         return;
       }
       const repoId = req.params.repoId as string;
-      const cwdForBoard = await boardCwd(repoId);
+      const cwdForBoard = await boardCwd(repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createCard({
         cwd: cwdForBoard,
         title,
@@ -1070,7 +1117,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: `Invalid status: ${String(req.body.status)}` }); return;
       }
       const repoId = req.params.repoId as string;
-      const cwdForBoard = await boardCwd(repoId);
+      const cwdForBoard = await boardCwd(repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createGroup({
         cwd: cwdForBoard,
         title,
@@ -1100,7 +1147,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "parentId must be a non-empty card id or null" }); return;
       }
       const status = typeof req.body?.status === "string" && isStatus(req.body.status) ? req.body.status : undefined;
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => createCards({
         cwd: cwdForBoard, titles: req.body.titles, status,
         parentId: typeof req.body?.parentId === "string" ? req.body.parentId : null,
@@ -1127,7 +1174,7 @@ export async function startServer(options: ServeOptions) {
 
   app.patch("/api/boards/:repoId/cards/:id", async (req, res, next) => {
     try {
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const update = parseCardUpdate(req.body);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => updateCard({
         cwd: cwdForBoard,
@@ -1161,7 +1208,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Reorder payload must include items with valid id and status" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => reorderCards({
         cwd: cwdForBoard,
         items: parsed as Array<{ id: string; status: PlanbanStatus }>,
@@ -1192,7 +1239,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "A status, parentId, or afterId is required" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => moveCard({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1214,7 +1261,7 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "parentId must be a non-empty card id or null" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => setCardParent({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1233,7 +1280,7 @@ export async function startServer(options: ServeOptions) {
   ] as const) {
     app.post(`/api/boards/:repoId/cards/:id/${route}`, async (req, res, next) => {
       try {
-        const cwdForBoard = await boardCwd(req.params.repoId);
+        const cwdForBoard = await boardCwd(req.params.repoId, false);
         const { value: state } = await runApiMutation(req, cwdForBoard, () =>
           setCardStatus(cwdForBoard, req.params.id, status),
         );
@@ -1247,7 +1294,7 @@ export async function startServer(options: ServeOptions) {
 
   app.delete("/api/boards/:repoId/cards/:id", async (req, res, next) => {
     try {
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => deleteArchivedCard({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1285,7 +1332,7 @@ export async function startServer(options: ServeOptions) {
         typeof req.body?.expectedMtimeMs === "number" || req.body?.expectedMtimeMs === null
           ? req.body.expectedMtimeMs
           : undefined;
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: payload } = await runApiMutation(req, cwdForBoard, () => writeDoc({
         cwd: cwdForBoard,
         cardId: req.params.id,
@@ -1328,11 +1375,12 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Invalid history version" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => restoreBoardVersion({
         cwd: cwdForBoard,
         version,
         actor: parseActor(req.body?.actor),
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -1348,12 +1396,13 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Invalid history version" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: state } = await runApiMutation(req, cwdForBoard, () => restoreCardVersion({
         cwd: cwdForBoard,
         version,
         cardId: req.params.id,
         actor: parseActor(req.body?.actor),
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: state.roadmap.revision });
       res.json(state);
@@ -1384,13 +1433,14 @@ export async function startServer(options: ServeOptions) {
         res.status(422).json({ error: "Invalid history document restore request" });
         return;
       }
-      const cwdForBoard = await boardCwd(req.params.repoId);
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value: payload } = await runApiMutation(req, cwdForBoard, () => restoreDocVersion({
         cwd: cwdForBoard,
         version,
         cardId: req.params.id,
         kind,
         actor: parseActor(req.body?.actor),
+        baseRevision: optionalBaseRevision(req.body?.baseRevision),
       }));
       sendEvent("state", { repoId: req.params.repoId, doc: payload.path });
       res.json(payload);
@@ -1698,7 +1748,9 @@ export async function startServer(options: ServeOptions) {
         : error instanceof PlanbanPathError || error instanceof PlanbanValidationError
           ? 422
           : 500;
-    res.status(responseStatus).json({ error: message });
+    // A missing or ended Online Board sign-in: the board page offers Sign in for this service.
+    const signIn = error instanceof OnlineAuthenticationError ? error.signIn : undefined;
+    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}) });
   });
 
   try {
@@ -1718,6 +1770,87 @@ export async function startServer(options: ServeOptions) {
   } catch {
     // Uninitialized projects can still be served so the UI can show onboarding.
   }
+
+  // Online authority has no local file events. For each Online Board a browser
+  // is watching, subscribe to its revision (Convex pushes changes) and raise
+  // the same state signal the board page already polls. Services without live
+  // updates are checked every few seconds instead, without overlapping checks.
+  // A board whose subscription is unavailable or failed is checked every few
+  // seconds instead, and the subscription is retried after a minute.
+  const SUBSCRIBE_RETRY_MS = 60_000;
+  type WatchState = { repoId: string; mode: "starting" } | { repoId: string; mode: "live"; watch: LiveWatch } | { repoId: string; mode: "poll"; retryAt: number };
+  const onlineWatches = new Map<string, WatchState>();
+  const signalRevision = (key: string, repoId: string, revision: number) => {
+    if (onlineRevisions.get(key) !== revision && onlineRefresh) {
+      onlineRevisions.set(key, revision);
+      sendEvent("state", { repoId });
+    }
+  };
+  const fallBackToPolling = (key: string, repoId: string, retryAt = Date.now() + SUBSCRIBE_RETRY_MS) => {
+    const entry = onlineWatches.get(key);
+    if (entry?.mode === "live") void entry.watch.close().catch(() => undefined);
+    if (entry) onlineWatches.set(key, { repoId, mode: "poll", retryAt });
+  };
+  const dropWatch = (key: string) => {
+    const entry = onlineWatches.get(key);
+    onlineWatches.delete(key);
+    if (entry?.mode === "live") void entry.watch.close().catch(() => undefined);
+  };
+  closeOnlineWatches = () => {
+    for (const key of [...onlineWatches.keys()]) dropWatch(key);
+  };
+  onlineRefresh = setInterval(() => {
+    if (onlineRefreshRunning) return;
+    const now = Date.now();
+    for (const [repoId, at] of lastLiveRequestAt) if (now - at > 15_000) lastLiveRequestAt.delete(repoId);
+    for (const [key, entry] of onlineWatches) if (!lastLiveRequestAt.has(entry.repoId)) dropWatch(key);
+    if (lastLiveRequestAt.size === 0) return;
+    onlineRefreshRunning = true;
+    void (async () => {
+      const boards = (await listBoards()).filter((board) => lastLiveRequestAt.has(board.repoId));
+      await Promise.all([...new Set(boards.map((board) => board.cwd))].map(async (boardCwd) => {
+        if (!onlineRefresh) return;
+        try {
+          const manifest = await readManifest(boardCwd);
+          if (!manifest?.enabled || manifest.storage?.kind !== "online" || !lastLiveRequestAt.has(manifest.repoId)) return;
+          const storage = manifest.storage;
+          const repoId = manifest.repoId;
+          const key = `${storage.url}/${storage.boardId}`;
+          let entry = onlineWatches.get(key);
+          if (entry?.mode === "poll" && Date.now() >= entry.retryAt) {
+            onlineWatches.delete(key);
+            entry = undefined;
+          }
+          if (!entry) {
+            onlineWatches.set(key, { repoId, mode: "starting" });
+            try {
+              const { watchRevision } = await import("../core/online/live");
+              const watch = await watchRevision(storage.url, storage.boardId,
+                (revision) => signalRevision(key, repoId, revision),
+                () => fallBackToPolling(key, repoId));
+              if (onlineWatches.get(key)?.mode !== "starting" || !onlineRefresh) {
+                await watch?.close();
+                return;
+              }
+              // A service without live updates is always checked instead.
+              if (watch) onlineWatches.set(key, { repoId, mode: "live", watch });
+              else onlineWatches.set(key, { repoId, mode: "poll", retryAt: Infinity });
+            } catch {
+              onlineWatches.set(key, { repoId, mode: "poll", retryAt: Date.now() + SUBSCRIBE_RETRY_MS });
+            }
+            entry = onlineWatches.get(key);
+          }
+          if (entry?.mode !== "poll") return;
+          const remote = await onlineRequest<{ revision: number }>(storage.url, boardPath(storage.boardId, `/changes?since=${onlineRevisions.get(key) ?? 0}&waitMs=0`), undefined, { signal: onlineAbort.signal });
+          signalRevision(key, repoId, remote.revision);
+        } catch {
+          // Foreground reads surface connectivity/authentication errors. Never
+          // replace remote authority with an editable offline copy.
+        }
+      }));
+    })().catch(() => undefined).finally(() => { onlineRefreshRunning = false; });
+  }, 3000);
+  onlineRefresh.unref();
 
   await new Promise<void>((resolveListen) => {
     server.listen(options.port, "127.0.0.1", resolveListen);

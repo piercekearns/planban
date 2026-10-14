@@ -1,7 +1,7 @@
 {
   "name": "planban",
   "version": "1.1.7",
-  "description": "Local Codex planning workflows for Planban boards.",
+  "description": "Codex planning workflows for Planban boards, local or online.",
   "author": {
     "name": "Planban"
   },
@@ -9,8 +9,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Planban",
-    "shortDescription": "Use local Planban roadmap boards in Codex.",
-    "longDescription": "Planban helps Codex agents discover local roadmap state, read card specs and plans, launch the local board, and update roadmap items with the Planban status protocol.",
+    "shortDescription": "Use Planban roadmap boards in Codex, local or online.",
+    "longDescription": "Planban helps Codex agents discover roadmap state, read card specs and plans, launch the board, and update roadmap items with the Planban status protocol. Boards stay on your computer with no account; take one online at app.planban.ai to share it.",
     "developerName": "Planban",
     "category": "Productivity",
     "capabilities": [

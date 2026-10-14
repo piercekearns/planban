@@ -1,0 +1,22 @@
+// Planban Online's public front at app.planban.ai. Deployed only with an
+// explicit, scoped token to the Planban Cloudflare account; see online/README.md.
+{
+  "name": "planban-service-edge",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "app.planban.ai", "custom_domain": true }],
+  // Per caller address. Registrations come from Anthropic's shared addresses, so they get more room.
+  "ratelimits": [
+    { "name": "SIGNIN_LIMITER", "namespace_id": "1001", "simple": { "limit": 6, "period": 60 } },
+    { "name": "REGISTER_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+  ],
+  "vars": {
+    "PUBLIC_HOST": "app.planban.ai",
+    // The production backend's native HTTP actions address, filled in once it
+    // exists. The Worker refuses every request until this is a real https URL.
+    "UPSTREAM": "unset"
+  }
+  // EDGE_PROOF is a secret: `wrangler secret put EDGE_PROOF`.
+}

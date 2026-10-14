@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -41,19 +41,47 @@ import type {
 import { PLANBAN_STATUSES } from "./types";
 import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
-import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
+import { loadOnlineState, onlineCacheRoot, onlineOperation, onlineState, refuseOnline } from "./online/adapter";
+import { boardPath, onlineRequest } from "./online/client";
+import { assertNotStaleCopy, checkInBackground, ONLINE_NOTE, STALE_MARKER } from "./online/copyCheck";
+import { credentialsPath } from "./online/credentials";
+import { ensureBoardIdentity } from "./boardIdentity";
+import type { PlanbanHistoryPayload } from "./types";
 import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
 import { checkIndexCard, checkIndexDocument, checkIndexText, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
 
-export { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
+import {
+  assertBaseRevision as assertRoadmapBaseRevision,
+  assertCommittable,
+  committedRoadmap,
+  createEmptyRoadmap as createEmptyRoadmapAt,
+  normalizeColumnPriorities,
+  normalizeRoadmap,
+  PlanbanConflictError,
+  PlanbanNotFoundError,
+  PlanbanValidationError,
+  planCreateCard,
+  planCreateCards,
+  planCreateGroup,
+  planDeleteArchivedCard,
+  planMoveCard,
+  planReorderCards,
+  planUpdateCard,
+  planWriteDoc,
+  type PlanbanCreateCardPosition,
+  type PlannedChange,
+} from "./boardOperations";
 
-const STATUS_LABELS: Record<PlanbanStatus, string> = {
-  "in-progress": "In Progress",
-  "up-next": "Up Next",
-  pending: "Pending",
-  complete: "Complete",
-  archived: "Archived",
-};
+export {
+  assertRoadmapRelations,
+  cardAncestry,
+  defaultColumns,
+  normalizeRoadmap,
+  PlanbanConflictError,
+  PlanbanNotFoundError,
+  PlanbanValidationError,
+  type PlanbanCreateCardPosition,
+} from "./boardOperations";
 
 export async function pathExists(path: string): Promise<boolean> {
   try {
@@ -65,14 +93,7 @@ export async function pathExists(path: string): Promise<boolean> {
 }
 
 function assertBaseRevision(state: PlanbanResolvedState, baseRevision?: number) {
-  if (baseRevision !== undefined && (!Number.isInteger(baseRevision) || baseRevision < 0)) {
-    throw new PlanbanValidationError("baseRevision must be a non-negative integer.");
-  }
-  if (baseRevision !== undefined && baseRevision !== state.roadmap.revision) {
-    throw new PlanbanConflictError(
-      `Roadmap changed from revision ${baseRevision} to ${state.roadmap.revision}. Reload before saving.`,
-    );
-  }
+  assertRoadmapBaseRevision(state.roadmap, baseRevision);
 }
 
 // Fields that only record a card's place or the time it was touched. Renumbering
@@ -163,141 +184,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function defaultColumns() {
-  return PLANBAN_STATUSES.map((id) => ({ id, label: STATUS_LABELS[id] }));
-}
-
-export function normalizeRoadmap(input: unknown): PlanbanRoadmap {
-  const parsed = roadmapSchema.parse(input);
-  const roadmap: PlanbanRoadmap = {
-    ...parsed,
-    writerVersion: parsed.version === 2 ? parsed.writerVersion : 0,
-    columns: parsed.columns.length > 0 ? parsed.columns : defaultColumns(),
-    roadmapItems: parsed.roadmapItems.map((item) => ({
-      id: item.id,
-      title: item.title,
-      status: item.status,
-      priority: item.priority,
-      summary: item.summary,
-      nextAction: item.nextAction,
-      tags: item.tags,
-      icon: item.icon,
-      blockedBy: item.blockedBy?.trim() || null,
-      specDoc: item.specDoc,
-      planDoc: item.planDoc,
-      completedAt: item.completedAt,
-      updatedAt: item.updatedAt,
-      isGroup: parsed.version === 2
-        ? parsed.writerVersion >= 6
-          ? "isGroup" in item && item.isGroup === true
-          : "isProgramme" in item && item.isProgramme === true
-        : false,
-      parentId: parsed.version === 2 && parsed.writerVersion >= 2 ? item.parentId as string | null : null,
-      boardRank: parsed.version === 2 && parsed.writerVersion >= 2
-        ? item.boardRank as number | null
-        : item.priority,
-      groupRank: parsed.version === 2 && parsed.writerVersion >= 2
-        ? parsed.writerVersion >= 6
-          ? "groupRank" in item ? item.groupRank as number | null : null
-          : "programmeRank" in item ? item.programmeRank as number | null : null
-        : null,
-      ...(item.metadata ? { metadata: item.metadata } : {}),
-    })),
-  };
-  if (parsed.version === 1 || parsed.writerVersion < 6) {
-    roadmap.roadmapItems = assignHierarchyRanks(roadmap.roadmapItems);
-  }
-  assertRoadmapRelations(roadmap);
-  return roadmap;
-}
-
-function assertRoadmapRelations(roadmap: PlanbanRoadmap): void {
-  const byId = new Map(roadmap.roadmapItems.map((item) => [item.id, item]));
-  if (byId.size !== roadmap.roadmapItems.length) {
-    throw new PlanbanValidationError("Work Item ids must be unique.");
-  }
-  for (const item of roadmap.roadmapItems) {
-    if (item.isGroup && item.parentId !== null) {
-      throw new PlanbanValidationError(`Group ${item.id} must remain on the Main Board.`);
-    }
-    if (item.parentId === null) {
-      if (!Number.isInteger(item.boardRank) || (item.boardRank ?? 0) < 1 || item.groupRank !== null) {
-        throw new PlanbanValidationError(`Root ${item.id} must have a positive Board Rank and no Group Rank.`);
-      }
-    } else if (!Number.isInteger(item.groupRank) || (item.groupRank ?? 0) < 1 || item.boardRank !== null) {
-      throw new PlanbanValidationError(`Owned item ${item.id} must have a positive Group Rank and no Board Rank.`);
-    }
-    if (item.parentId !== null && !byId.has(item.parentId)) {
-      throw new PlanbanValidationError(`Parent not found for ${item.id}: ${item.parentId}`);
-    }
-    if (item.parentId !== null && byId.get(item.parentId)?.isGroup !== true) {
-      throw new PlanbanValidationError(`Parent ${item.parentId} must have the Group role.`);
-    }
-    if (item.parentId === item.id) throw new PlanbanValidationError(`${item.id} cannot parent itself.`);
-    if (item.blockedBy !== null && !byId.has(item.blockedBy)) {
-      throw new PlanbanValidationError(`Dependency not found for ${item.id}: ${item.blockedBy}`);
-    }
-    if (item.blockedBy === item.id) throw new PlanbanValidationError(`${item.id} cannot block itself.`);
-    for (const relation of ["parentId", "blockedBy"] as const) {
-      const seen = new Set([item.id]);
-      let cursor = item[relation];
-      while (cursor) {
-        if (seen.has(cursor)) throw new PlanbanValidationError(`${relation === "parentId" ? "Hierarchy" : "Dependency"} cycle detected at ${item.id}.`);
-        seen.add(cursor);
-        cursor = byId.get(cursor)?.[relation] ?? null;
-      }
-    }
-  }
-  const ranksByScope = new Map<string, number[]>();
-  for (const item of roadmap.roadmapItems) {
-    const key = JSON.stringify([item.parentId, item.status]);
-    const ranks = ranksByScope.get(key) ?? [];
-    ranks.push((item.parentId === null ? item.boardRank : item.groupRank)!);
-    ranksByScope.set(key, ranks);
-  }
-  for (const [scope, ranks] of ranksByScope) {
-    ranks.sort((a, b) => a - b);
-    if (ranks.some((rank, index) => rank !== index + 1)) {
-      throw new PlanbanValidationError(`Ranks must be unique and contiguous in ${scope}.`);
-    }
-  }
-}
-
-export function cardAncestry(roadmap: PlanbanRoadmap, cardId: string): PlanbanRoadmapItem[] {
-  const byId = new Map(roadmap.roadmapItems.map((item) => [item.id, item]));
-  const item = byId.get(cardId);
-  if (!item) throw new PlanbanNotFoundError(`Card not found: ${cardId}`);
-  const result: PlanbanRoadmapItem[] = [];
-  let parentId = item.parentId;
-  while (parentId) {
-    const parent = byId.get(parentId);
-    if (!parent) throw new PlanbanValidationError(`Parent not found: ${parentId}`);
-    result.unshift(parent);
-    parentId = parent.parentId;
-  }
-  return result;
-}
-
 export function createEmptyRoadmap(input: { repoId: string; title: string }): PlanbanRoadmap {
-  const timestamp = nowIso();
-  return {
-    version: 2,
-    writerVersion: 6,
-    revision: 1,
-    updatedAt: timestamp,
-    project: {
-      id: input.repoId,
-      title: input.title,
-      status: "active",
-      description: "",
-      tags: [],
-    },
-    columns: defaultColumns(),
-    roadmapItems: [],
-  };
+  return createEmptyRoadmapAt({ ...input, now: nowIso() });
 }
-
 export function resolvePlanningRoot(manifest: PlanbanProjectManifest): string {
+  if (manifest.storage?.kind === "online") return onlineCacheRoot(manifest.storage);
   return manifest.storage?.root
     ? resolve(expandHome(manifest.storage.root))
     : defaultPlanningRoot(manifest.repoId);
@@ -307,13 +198,41 @@ export function resolveProjectCwd(cwdInput: string): string {
   return resolvePlanbanProjectDir(cwdInput).projectDir;
 }
 
+async function onlineManifest(cwd: string) {
+  const manifest = await readManifest(resolveProjectCwd(cwd));
+  return manifest?.enabled && manifest.storage?.kind === "online" ? manifest : null;
+}
+
+export async function refuseForOnline(cwd: string, operation: string) {
+  if (await onlineManifest(cwd)) refuseOnline(operation);
+}
+
 export async function withRoadmapWriteLock<T>(cwdInput: string, callback: () => Promise<T>): Promise<T> {
   const cwd = resolveProjectCwd(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest || !manifest.enabled) {
     throw new Error(`Planban is not initialized in ${cwd}`);
   }
-  return withBoardWriteLock(resolvePlanningRoot(manifest), callback);
+  const planningRoot = resolvePlanningRoot(manifest);
+  if (manifest.storage?.kind !== "online") await guardLocalCopy(planningRoot, cwd, manifest.repoId);
+  // A card write takes the board first, before writing anything, so it can
+  // give up cleanly if another process is stuck holding the board.
+  return withBoardWriteLock(planningRoot, callback, { giveUp: true });
+}
+
+/**
+ * A local copy of a board that was taken online elsewhere refuses writes
+ * (owner decision 14). Costs two file checks unless this machine has signed
+ * in to an online service, the project has an online note, or the copy is
+ * already marked stale.
+ */
+async function guardLocalCopy(planningRoot: string, cwd: string, repoId: string) {
+  if (!(await pathExists(join(planningRoot, STALE_MARKER))) && !(await pathExists(credentialsPath())) && !(await pathExists(join(cwd, ".planban", ONLINE_NOTE)))) return;
+  await assertNotStaleCopy(planningRoot, cwd, repoId);
+}
+
+async function checkLocalCopyInBackground(planningRoot: string) {
+  if (await pathExists(credentialsPath())) checkInBackground(planningRoot);
 }
 
 export async function readManifest(cwd: string): Promise<PlanbanProjectManifest | null> {
@@ -328,6 +247,7 @@ export async function loadState(cwdInput: string): Promise<PlanbanResolvedState>
   if (!manifest || !manifest.enabled) {
     throw new Error(`Planban is not initialized in ${cwd}`);
   }
+  if (manifest.storage?.kind === "online") return loadOnlineState(cwd, manifest);
 
   const planningRoot = resolvePlanningRoot(manifest);
   const liveRoadmapPath = roadmapPath(planningRoot);
@@ -345,6 +265,7 @@ export async function loadState(cwdInput: string): Promise<PlanbanResolvedState>
     roadmap: normalizeRoadmap(await readJson(liveRoadmapPath)),
   };
   await ensureHistoryBaseline(state);
+  void checkLocalCopyInBackground(planningRoot).catch(() => undefined);
   return state;
 }
 
@@ -356,8 +277,8 @@ function buildAgentsBlock(): string {
 
 This repo uses Planban.
 
-Canonical live planning state for this device is not branch-local.
-Read \`.planban/project.json\` and \`.planban/agent-context.md\` before making roadmap or plan updates.
+Canonical live planning state is not branch-local: it lives on this device for a local board, or at its online service for an online board.
+Read \`.planban/project.json\` and \`.planban/agent-context.md\` before making roadmap or plan updates; the agent context says which applies.
 If the user asks to update the roadmap, follow the Planban protocol described there.
 If an agent starts implementation work on a roadmap item, move it to In Progress if needed; leave completed agent work In Progress with a review/testing next action until the user explicitly asks to mark it Complete or confirms completion.
 If Planban tools (names ending in \`planban_<operation>\`) are unavailable in the current host, tell the user once that Planban is not installed for this host, link ${PLANBAN_INSTALL_URL}, then continue.
@@ -384,6 +305,7 @@ export async function initializeProject(input: {
   updateAgents?: boolean | undefined;
 }): Promise<PlanbanResolvedState> {
   const cwd = resolve(input.cwd);
+  await refuseForOnline(cwd, "Reinitializing an existing board");
   const repoId = input.repoId ?? defaultRepoId(cwd);
   const title = input.title ?? repoId.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   checkIndexText(title, "the board title", MAX_DETAILS_BYTES);
@@ -391,6 +313,9 @@ export async function initializeProject(input: {
   const liveRoadmapPath = roadmapPath(planningRoot);
 
   return withBoardWriteLock(planningRoot, async () => {
+  if (await pathExists(join(planningRoot, "ONLINE-BOARD.txt"))) {
+    throw new PlanbanValidationError("This local planning root is an Online Board recovery snapshot. Use online attach or online take-local.");
+  }
   const manifest: PlanbanProjectManifest = {
     version: 1,
     repoId,
@@ -403,6 +328,7 @@ export async function initializeProject(input: {
   await mkdir(dirname(liveRoadmapPath), { recursive: true });
 
   await atomicWriteFile(manifestPath(cwd), JSON.stringify(manifest, null, 2) + "\n");
+  await ensureBoardIdentity(planningRoot);
   await atomicWriteFile(
     agentContextPath(cwd),
     buildAgentContext({
@@ -442,18 +368,13 @@ export async function saveRoadmap(
     affectedCards: roadmap.roadmapItems.map((item) => item.id),
   },
 ) {
+  if (state.manifest.storage?.kind === "online") refuseOnline("Raw roadmap saving");
+  await guardLocalCopy(state.planningRoot, state.cwd, state.manifest.repoId);
   return withBoardWriteLock(state.planningRoot, async () => {
-  assertRoadmapRelations(roadmap);
-  assertGroupLifecycle(roadmap);
+  assertCommittable(roadmap);
   await assertIndexWrite(state, roadmap);
   if (history !== false) await ensureHistoryBaseline(state);
-  const updated: PlanbanRoadmap = {
-    ...roadmap,
-    version: 2,
-    writerVersion: 6,
-    revision: roadmap.revision + 1,
-    updatedAt: nowIso(),
-  };
+  const updated = committedRoadmap(roadmap, nowIso());
   await mkdir(dirname(state.roadmapPath), { recursive: true });
   const originalRoadmap = await readFile(state.roadmapPath, "utf8");
   await atomicWriteFile(state.roadmapPath, JSON.stringify(updated, null, 2) + "\n");
@@ -478,89 +399,27 @@ export async function appendEvent(planningRoot: string, event: Record<string, un
   await appendLineDurably(eventsPath(planningRoot), line);
 }
 
-function normalizeColumnPriorities(items: PlanbanRoadmapItem[]): PlanbanRoadmapItem[] {
-  return assignHierarchyRanks(PLANBAN_STATUSES.flatMap((status) =>
-    items
-      .filter((item) => item.status === status)
-      .map((item, index) => ({ ...item, priority: index + 1 })),
-  ));
+async function reservedItemIds(planningRoot: string): Promise<(id: string) => boolean> {
+  const entries = new Set(await readdir(join(planningRoot, "items")).catch(() => [] as string[]));
+  return (id) => entries.has(slugify(id));
 }
 
-function assignColumnPriorities(items: PlanbanRoadmapItem[]): PlanbanRoadmapItem[] {
-  const counts = new Map<PlanbanStatus, number>();
-  return assignHierarchyRanks(items.map((item) => {
-    const priority = (counts.get(item.status) ?? 0) + 1;
-    counts.set(item.status, priority);
-    return { ...item, priority };
-  }));
-}
-
-function assignHierarchyRanks(items: PlanbanRoadmapItem[]): PlanbanRoadmapItem[] {
-  const counts = new Map<string, number>();
-  return items.map((item) => {
-    const key = JSON.stringify([item.parentId, item.status]);
-    const rank = (counts.get(key) ?? 0) + 1;
-    counts.set(key, rank);
-    return { ...item, boardRank: item.parentId === null ? rank : null, groupRank: item.parentId === null ? null : rank };
-  });
-}
-
-export type PlanbanCreateCardPosition = "top" | "bottom";
-
-function defaultSpecMarkdown(input: { title: string }) {
-  return `# ${input.title} Spec\n\nStatus: **Draft. Complete the Current state section before using this Spec for execution.**\n\n## Purpose\n\nDescribe why this Item or Group exists.\n\n## Target outcome\n\nDescribe the future success condition.\n\n## Current state\n\nState what is true now. This section is authoritative for current execution after review.\n\n## Agent reference\n\nRecord applicable scope, decisions, constraints, acceptance, verification, rollback, and authoritative links.\n`;
-}
-
-function insertCreatedCard(
-  items: PlanbanRoadmapItem[],
-  item: PlanbanRoadmapItem,
-  input: { position?: PlanbanCreateCardPosition | undefined; afterId?: string | undefined },
-) {
-  if (input.position !== undefined && input.position !== "top" && input.position !== "bottom") {
-    throw new Error("position must be top or bottom");
+async function writePlannedDocs(state: PlanbanResolvedState, change: PlannedChange) {
+  for (const doc of change.docWrites) {
+    const path = resolveInsideRoot(state.planningRoot, doc.path, `${doc.kind} document path for ${doc.cardId}`);
+    await mkdir(dirname(path), { recursive: true });
+    await atomicWriteFile(path, doc.markdown);
+    await appendEvent(state.planningRoot, { type: "doc.written", at: nowIso(), cardId: doc.cardId, kind: doc.kind, path });
   }
-
-  if (input.afterId) {
-    const afterIndex = items.findIndex((entry) => entry.id === input.afterId);
-    if (afterIndex < 0) throw new Error(`afterId not found: ${input.afterId}`);
-    if (items[afterIndex]?.status !== item.status) {
-      throw new Error(`afterId must refer to a card in ${STATUS_LABELS[item.status]}`);
-    }
-    if (items[afterIndex]?.parentId !== item.parentId) {
-      throw new Error("afterId must refer to a sibling in the same Group or on the main board");
-    }
-    const result = [...items];
-    result.splice(afterIndex + 1, 0, item);
-    return result;
-  }
-
-  const result = [...items];
-  if (input.position === "top") {
-    const firstTargetIndex = result.findIndex((entry) => entry.status === item.status);
-    if (firstTargetIndex >= 0) result.splice(firstTargetIndex, 0, item);
-    else result.push(item);
-    return result;
-  }
-
-  const lastTargetIndex = result.map((entry) => entry.status).lastIndexOf(item.status);
-  if (lastTargetIndex >= 0) result.splice(lastTargetIndex + 1, 0, item);
-  else result.push(item);
-  return result;
 }
 
-function assertGroupLifecycle(candidate: PlanbanRoadmap): void {
-  for (const group of candidate.roadmapItems.filter((entry) =>
-    entry.isGroup && (entry.status === "complete" || entry.status === "archived")
-  )) {
-    const openItem = candidate.roadmapItems.find((entry) =>
-      entry.parentId === group.id && entry.status !== "complete" && entry.status !== "archived"
-    );
-    if (openItem) {
-      throw new PlanbanConflictError(
-        `Cannot move ${group.title} to ${STATUS_LABELS[group.status]} while Item ${openItem.title} remains ${STATUS_LABELS[openItem.status]}.`,
-      );
-    }
-  }
+/** Commits a change whose roadmap edit and documents land as one history version. */
+async function commitWithDocs(state: PlanbanResolvedState, change: PlannedChange): Promise<PlanbanRoadmap> {
+  for (const doc of change.docWrites) checkIndexDocument(doc.markdown, doc.cardId, doc.kind);
+  const roadmap = await saveRoadmap(state, change.roadmap, false);
+  await writePlannedDocs(state, change);
+  await recordHistoryVersion({ ...state, roadmap }, roadmap, change.history);
+  return roadmap;
 }
 
 export async function moveCard(input: {
@@ -572,82 +431,16 @@ export async function moveCard(input: {
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
 }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "moveCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
   const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
-  if (!item) throw new Error(`Card not found: ${input.cardId}`);
+  if (!item) throw new PlanbanNotFoundError(`Card not found: ${input.cardId}`);
   await assertCardsHoldNoFiles(state.planningRoot, [item]);
-  if (input.status === undefined && input.parentId === undefined && input.afterId === undefined) {
-    throw new PlanbanValidationError("A status, parentId, or rank position is required.");
-  }
-  if (typeof input.parentId === "string" && !input.parentId.trim()) {
-    throw new PlanbanValidationError("parentId must be a non-empty card id or null.");
-  }
-  const status = input.status ?? item.status;
-  const parentId = input.parentId === undefined ? item.parentId : input.parentId?.trim() || null;
-  if (parentId === item.id) throw new PlanbanValidationError(`${item.id} cannot parent itself.`);
-  const parent = parentId ? state.roadmap.roadmapItems.find((entry) => entry.id === parentId) : null;
-  if (parentId && !parent) throw new PlanbanNotFoundError(`Parent not found: ${parentId}`);
-  if (parentId && item.isGroup) {
-    throw new PlanbanValidationError("A Group cannot be placed inside another Group.");
-  }
-  if (parent && parent.parentId !== null) {
-    throw new PlanbanValidationError("An owned Item cannot own another Work Item. Move it to the Main Board first.");
-  }
-  if (parent && !parent.isGroup) {
-    throw new PlanbanValidationError("The destination must be an existing Group.");
-  }
-  if (typeof input.afterId === "string") {
-    const after = state.roadmap.roadmapItems.find((entry) => entry.id === input.afterId);
-    if (!after) throw new PlanbanNotFoundError(`afterId not found: ${input.afterId}`);
-    if (after.id === item.id || after.parentId !== parentId || after.status !== status) {
-      throw new PlanbanValidationError("afterId must refer to another Work Item in the target ownership and status scope.");
-    }
-  }
-
-  const remaining = state.roadmap.roadmapItems.filter((entry) => entry.id !== input.cardId);
-  const changedAt = nowIso();
-  const moved = {
-    ...item,
-    status,
-    parentId,
-    completedAt: status === "complete" ? item.completedAt ?? changedAt : null,
-    updatedAt: changedAt,
-  };
-  const result: PlanbanRoadmapItem[] = [];
-  let inserted = false;
-
-  for (const entry of remaining) {
-    if (input.afterId === null && !inserted && entry.parentId === parentId && entry.status === status) {
-      result.push(moved);
-      inserted = true;
-    }
-    result.push(entry);
-    if (typeof input.afterId === "string" && entry.id === input.afterId) {
-      result.push(moved);
-      inserted = true;
-    }
-  }
-
-  if (!inserted) {
-    const lastTargetIndex = result.map((entry) => entry.parentId === parentId && entry.status === status).lastIndexOf(true);
-    if (lastTargetIndex >= 0) result.splice(lastTargetIndex + 1, 0, moved);
-    else result.push(moved);
-  }
-
-  const candidate = {
-    ...state.roadmap,
-    roadmapItems: normalizeColumnPriorities(result),
-  };
-  const roadmap = await saveRoadmap(state, candidate, {
-    actor: input.actor ?? "user",
-    operation: parentId !== item.parentId ? "card.parent.update" : "card.move",
-    summary: parentId !== item.parentId
-      ? parent ? `Moved ${item.title} into ${parent.title}` : `Moved ${item.title} to the main board`
-      : status !== item.status ? `Moved ${item.title} to ${STATUS_LABELS[status]}` : `Placed ${item.title} in ${STATUS_LABELS[status]}`,
-    affectedCards: parent ? [item.id, parent.id] : [item.id],
-  });
+  const change = planMoveCard(state.roadmap, input, { now: nowIso() });
+  const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   return { ...state, roadmap };
   });
 }
@@ -664,51 +457,14 @@ export async function updateCard(input: {
   metadata?: Record<string, unknown> | null | undefined;
   actor?: PlanbanHistoryActor | undefined;
 }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "updateCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
-  const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
-  if (!item) throw new Error(`Card not found: ${input.cardId}`);
-  const title = input.title === undefined ? undefined : input.title.trim();
-  if (title !== undefined && !title) throw new PlanbanValidationError("title is required");
-
-  const updatedItem: PlanbanRoadmapItem = {
-    ...item,
-    ...(title !== undefined ? { title } : {}),
-    ...(input.summary !== undefined ? { summary: input.summary?.trim() || null } : {}),
-    ...(input.nextAction !== undefined ? { nextAction: input.nextAction?.trim() || null } : {}),
-    ...(input.tags !== undefined ? { tags: input.tags.map((tag) => tag.trim()).filter(Boolean) } : {}),
-    ...(input.blockedBy !== undefined ? { blockedBy: input.blockedBy?.trim() || null } : {}),
-    ...(input.metadata !== undefined ? (input.metadata === null ? {} : { metadata: input.metadata }) : {}),
-    updatedAt: nowIso(),
-  };
-
-  if (input.blockedBy !== undefined) {
-    const blockerId = input.blockedBy?.trim() || null;
-    if (blockerId === item.id) throw new PlanbanValidationError(`${item.id} cannot block itself.`);
-    if (blockerId && !state.roadmap.roadmapItems.some((entry) => entry.id === blockerId)) {
-      throw new PlanbanNotFoundError(`Dependency not found: ${blockerId}`);
-    }
-    const candidate = {
-      ...state.roadmap,
-      roadmapItems: state.roadmap.roadmapItems.map((entry) => entry.id === item.id ? updatedItem : entry),
-    };
-    assertRoadmapRelations(candidate);
-  }
-
-  if (input.metadata === null) delete updatedItem.metadata;
-
-  const roadmap = await saveRoadmap(state, {
-    ...state.roadmap,
-    roadmapItems: state.roadmap.roadmapItems.map((entry) => entry.id === input.cardId ? updatedItem : entry),
-  }, {
-    actor: input.actor ?? "user",
-    operation: "card.update",
-    summary: title !== undefined && title !== item.title
-      ? `Renamed ${item.title} to ${title}`
-      : `Updated ${item.title}`,
-    affectedCards: [item.id],
-  });
+  const change = planUpdateCard(state.roadmap, input, { now: nowIso() });
+  await assertCardsHoldNoFiles(state.planningRoot, [state.roadmap.roadmapItems.find((item) => item.id === input.cardId)!]);
+  const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   return { ...state, roadmap };
   });
 }
@@ -723,8 +479,8 @@ export async function setCardParent(input: {
   return moveCard(input);
 }
 
-export async function setCardStatus(cwd: string, cardId: string, status: PlanbanStatus) {
-  return moveCard({ cwd, cardId, status });
+export async function setCardStatus(cwd: string, cardId: string, status: PlanbanStatus, baseRevision?: number) {
+  return moveCard({ cwd, cardId, status, baseRevision });
 }
 
 export async function deleteArchivedCard(input: {
@@ -732,27 +488,13 @@ export async function deleteArchivedCard(input: {
   cardId: string;
   baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "deleteArchivedCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
-  const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
-  if (!item) throw new Error(`Card not found: ${input.cardId}`);
-  if (item.status !== "archived") {
-    throw new PlanbanConflictError("Only archived cards can be deleted.");
-  }
-  if (state.roadmap.roadmapItems.some((entry) => entry.parentId === item.id)) {
-    throw new PlanbanConflictError("A Group with children cannot be deleted.");
-  }
-
-  const roadmap = await saveRoadmap(state, {
-    ...state.roadmap,
-    roadmapItems: normalizeColumnPriorities(state.roadmap.roadmapItems.filter((entry) => entry.id !== input.cardId)),
-  }, {
-    actor: "user",
-    operation: "card.delete",
-    summary: `Deleted ${item.title}`,
-    affectedCards: [item.id],
-  });
+  const change = planDeleteArchivedCard(state.roadmap, input);
+  const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   await rm(itemRoot(state.planningRoot, input.cardId), { recursive: true, force: true });
   return { ...state, roadmap };
   });
@@ -763,40 +505,13 @@ export async function reorderCards(input: {
   items: Array<{ id: string; status: PlanbanStatus }>;
   baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "reorderCards", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
-
-  const existingById = new Map(state.roadmap.roadmapItems.map((item) => [item.id, item]));
-  const seen = new Set<string>();
-  const reordered: PlanbanRoadmapItem[] = [];
-
-  for (const entry of input.items) {
-    const existing = existingById.get(entry.id);
-    if (!existing) throw new Error(`Unknown card in reorder payload: ${entry.id}`);
-    if (seen.has(entry.id)) throw new Error(`Duplicate card in reorder payload: ${entry.id}`);
-    seen.add(entry.id);
-    reordered.push({
-      ...existing,
-      status: entry.status,
-      updatedAt: existing.status === entry.status ? existing.updatedAt : nowIso(),
-    });
-  }
-
-  if (seen.size !== existingById.size) {
-    throw new Error("Reorder payload must include every card id");
-  }
-
-  const candidate = {
-    ...state.roadmap,
-    roadmapItems: normalizeColumnPriorities(reordered),
-  };
-  const roadmap = await saveRoadmap(state, candidate, {
-    actor: "user",
-    operation: "cards.reorder",
-    summary: "Reordered board cards",
-    affectedCards: input.items.map((item) => item.id),
-  });
+  const change = planReorderCards(state.roadmap, input, { now: nowIso() });
+  const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   return { ...state, roadmap };
   });
 }
@@ -817,107 +532,23 @@ export async function createCard(input: {
   parentId?: string | null | undefined;
   baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState & { createdCard: PlanbanRoadmapItem }> {
+  const online = await onlineManifest(input.cwd);
+  if (online) {
+    const { state, result } = await onlineOperation<{ createdCard: PlanbanRoadmapItem }>(resolveProjectCwd(input.cwd), online, "createCard", input);
+    return { ...state, createdCard: result.createdCard };
+  }
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
-  const title = input.title.trim();
-  if (!title) throw new Error("title is required");
-  const baseId = input.title
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-  if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, title, "spec");
-  if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, title, "plan");
-  const existingIds = new Set(state.roadmap.roadmapItems.map((item) => item.id));
-  let id = baseId || "card";
-  let suffix = 2;
-  // A leftover folder may hold files; a new card never inherits it.
-  while (existingIds.has(id) || await pathExists(cardFolder(state.planningRoot, id))) {
-    id = `${baseId || "card"}-${suffix}`;
-    suffix += 1;
-  }
-
-  const status = input.status ?? "pending";
-  if (typeof input.parentId === "string" && !input.parentId.trim()) {
-    throw new PlanbanValidationError("parentId must be a non-empty card id or null.");
-  }
-  const parentId = input.parentId?.trim() || null;
-  const parent = parentId ? state.roadmap.roadmapItems.find((entry) => entry.id === parentId) : null;
-  if (parentId && !parent) throw new PlanbanNotFoundError(`Parent not found: ${parentId}`);
-  if (parent && parent.parentId !== null) {
-    throw new PlanbanValidationError("An owned Item cannot own another Work Item. Move it to the Main Board first.");
-  }
-  if (parent && !parent.isGroup) {
-    throw new PlanbanValidationError("The destination must be an existing Group.");
-  }
-  const priority = state.roadmap.roadmapItems.filter((item) => item.status === status && item.parentId === parentId).length + 1;
-  const timestamp = nowIso();
-  const item: PlanbanRoadmapItem = {
-    id,
-    title,
-    status,
-    priority,
-    summary: input.summary?.trim() || null,
-    nextAction: input.nextAction?.trim() || null,
-    tags: input.tags?.map((tag) => tag.trim()).filter(Boolean) ?? [],
-    icon: null,
-    blockedBy: null,
-    specDoc: `items/${id}/spec.md`,
-    planDoc: input.planMarkdown !== undefined ? `items/${id}/plan.md` : null,
-    completedAt: null,
-    updatedAt: timestamp,
-    isGroup: false,
-    parentId,
-    boardRank: parentId === null ? priority : null,
-    groupRank: parentId === null ? null : priority,
-    ...(input.metadata ? { metadata: input.metadata } : {}),
-  };
-  const roadmapItems = assignColumnPriorities(insertCreatedCard(state.roadmap.roadmapItems, item, input));
-
-  const candidate = {
-    ...state.roadmap,
-    roadmapItems,
-  };
-  const roadmap = await saveRoadmap(state, candidate, false);
-
-  await mkdir(itemRoot(state.planningRoot, id), { recursive: true });
-  const specPath = resolveInsideRoot(state.planningRoot, item.specDoc ?? `items/${id}/spec.md`, `spec document path for ${id}`);
-  await mkdir(dirname(specPath), { recursive: true });
-  await atomicWriteFile(specPath, input.specMarkdown ?? defaultSpecMarkdown({ title }));
-  await appendEvent(state.planningRoot, {
-    type: "doc.written",
-    at: nowIso(),
-    cardId: id,
-    kind: "spec",
-    path: specPath,
+  const change = planCreateCard(state.roadmap, input, {
+    now: nowIso(),
+    isIdReserved: await reservedItemIds(state.planningRoot),
   });
-  const affectedDocs: PlanbanHistoryMeta["affectedDocs"] = [{ cardId: item.id, kind: "spec", path: item.specDoc }];
-
-  if (item.planDoc !== null && input.planMarkdown !== undefined) {
-    const planPath = resolveInsideRoot(state.planningRoot, item.planDoc, `plan document path for ${id}`);
-    await mkdir(dirname(planPath), { recursive: true });
-    await atomicWriteFile(planPath, input.planMarkdown);
-    await appendEvent(state.planningRoot, {
-      type: "doc.written",
-      at: nowIso(),
-      cardId: id,
-      kind: "plan",
-      path: planPath,
-    });
-    affectedDocs.push({ cardId: item.id, kind: "plan", path: item.planDoc });
-  }
-
-  await recordHistoryVersion({ ...state, roadmap }, roadmap, {
-    actor: input.actor ?? "user",
-    operation: "card.create",
-    summary: `Created ${item.title}`,
-    affectedCards: parent ? [item.id, parent.id] : [item.id],
-    affectedDocs,
-  });
-
-  const createdCard = roadmap.roadmapItems.find((entry) => entry.id === id) ?? item;
+  if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, input.title.trim(), "spec");
+  if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, input.title.trim(), "plan");
+  await mkdir(itemRoot(state.planningRoot, change.cardId), { recursive: true });
+  const roadmap = await commitWithDocs(state, change);
+  const createdCard = roadmap.roadmapItems.find((entry) => entry.id === change.cardId)!;
   return { ...state, roadmap, createdCard };
   });
 }
@@ -935,98 +566,23 @@ export async function createGroup(input: {
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
 }): Promise<PlanbanResolvedState & { createdGroup: PlanbanRoadmapItem }> {
+  const online = await onlineManifest(input.cwd);
+  if (online) {
+    const { state, result } = await onlineOperation<{ createdGroup: PlanbanRoadmapItem }>(resolveProjectCwd(input.cwd), online, "createGroup", input);
+    return { ...state, createdGroup: result.createdGroup };
+  }
   return withRoadmapWriteLock(input.cwd, async () => {
     const state = await loadState(input.cwd);
     assertBaseRevision(state, input.baseRevision);
-    const title = input.title.trim();
-    if (!title) throw new PlanbanValidationError("title is required");
-    const summary = input.summary?.trim() || null;
-    if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, title, "spec");
-    if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, title, "plan");
-
-    const itemIds = [...new Set((input.itemIds ?? []).map((id) => id.trim()))];
-    if (itemIds.some((id) => !id)) throw new PlanbanValidationError("itemIds must contain non-empty card ids.");
-    const itemIdSet = new Set(itemIds);
-    const items = itemIds.map((id) => {
-      const item = state.roadmap.roadmapItems.find((entry) => entry.id === id);
-      if (!item) throw new PlanbanNotFoundError(`Item not found: ${id}`);
-      if (item.isGroup) throw new PlanbanValidationError(`${item.title} is a Group and cannot be placed inside another Group.`);
-      if (item.parentId !== null) throw new PlanbanValidationError(`${item.title} is already owned by a Group. Move it to the Main Board first.`);
-      return item;
+    const change = planCreateGroup(state.roadmap, input, {
+      now: nowIso(),
+      isIdReserved: await reservedItemIds(state.planningRoot),
     });
-    const anchorId = input.anchorId?.trim();
-    if (anchorId && !itemIdSet.has(anchorId)) {
-      throw new PlanbanValidationError("anchorId must identify one of the initial Items.");
-    }
-    const anchor = anchorId ? items.find((item) => item.id === anchorId)! : null;
-
-    const baseId = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
-    const existingIds = new Set(state.roadmap.roadmapItems.map((item) => item.id));
-    let id = baseId || "group";
-    let suffix = 2;
-    while (existingIds.has(id) || await pathExists(itemRoot(state.planningRoot, id)) || await pathExists(cardFolder(state.planningRoot, id))) {
-      id = `${baseId || "group"}-${suffix}`;
-      suffix += 1;
-    }
-
-    const timestamp = nowIso();
-    const status = input.status ?? anchor?.status ?? "pending";
-    const group: PlanbanRoadmapItem = {
-      id,
-      title,
-      status,
-      priority: 1,
-      summary,
-      nextAction: input.nextAction?.trim() || null,
-      tags: [],
-      icon: null,
-      blockedBy: null,
-      specDoc: `items/${id}/spec.md`,
-      planDoc: input.planMarkdown !== undefined ? `items/${id}/plan.md` : null,
-      completedAt: null,
-      updatedAt: timestamp,
-      isGroup: true,
-      parentId: null,
-      boardRank: 1,
-      groupRank: null,
-    };
-
-    const anchorIndex = anchor ? state.roadmap.roadmapItems.findIndex((item) => item.id === anchor.id) : state.roadmap.roadmapItems.length;
-    const remaining = state.roadmap.roadmapItems.filter((item) => !itemIdSet.has(item.id));
-    const rootsBeforeAnchor = state.roadmap.roadmapItems.slice(0, anchorIndex).filter((item) => !itemIdSet.has(item.id)).length;
-    const ownedItems = state.roadmap.roadmapItems
-      .filter((item) => itemIdSet.has(item.id))
-      .map((item) => ({ ...item, parentId: id, boardRank: null, groupRank: 1, updatedAt: timestamp }));
-    const arranged = [...remaining];
-    arranged.splice(rootsBeforeAnchor, 0, group);
-    arranged.push(...ownedItems);
-    const roadmapItems = normalizeColumnPriorities(arranged);
-    const candidate = { ...state.roadmap, roadmapItems };
-    const roadmap = await saveRoadmap(state, candidate, false);
-
-    await mkdir(itemRoot(state.planningRoot, id), { recursive: true });
-    const specPath = resolveInsideRoot(state.planningRoot, group.specDoc!, `spec document path for ${id}`);
-    await mkdir(dirname(specPath), { recursive: true });
-    await atomicWriteFile(specPath, input.specMarkdown ?? defaultSpecMarkdown({ title }));
-    await appendEvent(state.planningRoot, { type: "doc.written", at: nowIso(), cardId: id, kind: "spec", path: specPath });
-    const affectedDocs: PlanbanHistoryMeta["affectedDocs"] = [{ cardId: id, kind: "spec", path: group.specDoc }];
-    if (group.planDoc && input.planMarkdown !== undefined) {
-      const planPath = resolveInsideRoot(state.planningRoot, group.planDoc, `plan document path for ${id}`);
-      await mkdir(dirname(planPath), { recursive: true });
-      await atomicWriteFile(planPath, input.planMarkdown);
-      await appendEvent(state.planningRoot, { type: "doc.written", at: nowIso(), cardId: id, kind: "plan", path: planPath });
-      affectedDocs.push({ cardId: id, kind: "plan", path: group.planDoc });
-    }
-    await recordHistoryVersion({ ...state, roadmap }, roadmap, {
-      actor: input.actor ?? "user",
-      operation: "group.create",
-      summary: items.length > 0
-        ? `Created ${title} with ${items.length} ${items.length === 1 ? "Item" : "Items"}`
-        : `Created empty Group ${title}`,
-      affectedCards: [id, ...itemIds],
-      affectedDocs,
-    });
-    const createdGroup = roadmap.roadmapItems.find((item) => item.id === id) ?? group;
+    if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, input.title.trim(), "spec");
+    if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, input.title.trim(), "plan");
+    await mkdir(itemRoot(state.planningRoot, change.groupId), { recursive: true });
+    const roadmap = await commitWithDocs(state, change);
+    const createdGroup = roadmap.roadmapItems.find((item) => item.id === change.groupId)!;
     return { ...state, roadmap, createdGroup };
   });
 }
@@ -1040,81 +596,39 @@ export async function createCards(input: {
   actor?: PlanbanHistoryActor | undefined;
   writeSpecFile?: ((path: string, markdown: string) => Promise<void>) | undefined;
 }): Promise<PlanbanResolvedState & { createdCards: PlanbanRoadmapItem[] }> {
+  const online = await onlineManifest(input.cwd);
+  if (online) {
+    if (input.writeSpecFile) refuseOnline("Custom document file writers");
+    const { state, result } = await onlineOperation<{ createdCards: PlanbanRoadmapItem[] }>(resolveProjectCwd(input.cwd), online, "createCards", input);
+    return { ...state, createdCards: result.createdCards };
+  }
   return withRoadmapWriteLock(input.cwd, async () => {
     const state = await loadState(input.cwd);
     assertBaseRevision(state, input.baseRevision);
-    const titles = input.titles.map((title) => title.trim());
-    if (titles.length === 0 || titles.some((title) => !title)) {
-      throw new PlanbanValidationError("titles must contain at least one non-empty title.");
-    }
-    const parentId = input.parentId?.trim() || null;
-    const parent = parentId ? state.roadmap.roadmapItems.find((entry) => entry.id === parentId) : null;
-    if (parentId && !parent) throw new PlanbanNotFoundError(`Parent not found: ${parentId}`);
-    if (parent && parent.parentId !== null) {
-      throw new PlanbanValidationError("An owned Item cannot own another Work Item. Move it to the Main Board first.");
-    }
-    if (parent && !parent.isGroup) {
-      throw new PlanbanValidationError("The destination must be an existing Group.");
-    }
-    const status = input.status ?? "pending";
-    const timestamp = nowIso();
-    const existingIds = new Set(state.roadmap.roadmapItems.map((item) => item.id));
-    const createdItems: PlanbanRoadmapItem[] = [];
-    for (const title of titles) {
-      const baseId = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "card";
-      let id = baseId;
-      let suffix = 2;
-      while (existingIds.has(id) || await pathExists(itemRoot(state.planningRoot, id)) || await pathExists(cardFolder(state.planningRoot, id))) { id = `${baseId}-${suffix}`; suffix += 1; }
-      existingIds.add(id);
-      createdItems.push({
-        id,
-        title,
-        status,
-        priority: 1,
-        summary: null,
-        nextAction: null,
-        tags: [],
-        icon: null,
-        blockedBy: null,
-        specDoc: `items/${id}/spec.md`,
-        planDoc: null,
-        completedAt: null,
-        updatedAt: timestamp,
-        isGroup: false,
-        parentId,
-        boardRank: parentId === null ? 1 : null,
-        groupRank: parentId === null ? null : 1,
-      });
-    }
-    const roadmapItems = assignColumnPriorities([...state.roadmap.roadmapItems, ...createdItems]);
-    const affectedDocs: PlanbanHistoryMeta["affectedDocs"] = [];
+    const change = planCreateCards(state.roadmap, input, {
+      now: nowIso(),
+      isIdReserved: await reservedItemIds(state.planningRoot),
+    });
     const transactionRoot = join(state.planningRoot, ".transactions", `create-cards-${randomUUID()}`);
     const publishedRoots: string[] = [];
     const writeSpecFile = input.writeSpecFile ?? atomicWriteFile;
     let roadmap: PlanbanRoadmap;
     try {
-      for (const item of createdItems) {
-        const stagedSpecPath = join(transactionRoot, item.id, "spec.md");
+      for (const doc of change.docWrites) {
+        const stagedSpecPath = join(transactionRoot, doc.cardId, "spec.md");
         await mkdir(dirname(stagedSpecPath), { recursive: true });
-        await writeSpecFile(stagedSpecPath, defaultSpecMarkdown({ title: item.title }));
-        affectedDocs.push({ cardId: item.id, kind: "spec", path: item.specDoc });
+        await writeSpecFile(stagedSpecPath, doc.markdown);
       }
-      for (const item of createdItems) {
-        const finalRoot = itemRoot(state.planningRoot, item.id);
+      for (const cardId of change.cardIds) {
+        const finalRoot = itemRoot(state.planningRoot, cardId);
         await mkdir(dirname(finalRoot), { recursive: true });
-        await rename(join(transactionRoot, item.id), finalRoot);
+        await rename(join(transactionRoot, cardId), finalRoot);
         publishedRoots.push(finalRoot);
       }
-      roadmap = await saveRoadmap(state, { ...state.roadmap, roadmapItems }, {
-        actor: input.actor ?? "user",
-        operation: "cards.create",
-        summary: `Created ${createdItems.length} Items`,
-        affectedCards: [...createdItems.map((item) => item.id), ...(parent ? [parent.id] : [])],
-        affectedDocs,
-      });
-      for (const item of createdItems) {
-        const specPath = resolveInsideRoot(state.planningRoot, item.specDoc!, `spec document path for ${item.id}`);
-        await appendEvent(state.planningRoot, { type: "doc.written", at: nowIso(), cardId: item.id, kind: "spec", path: specPath }).catch(() => undefined);
+      roadmap = await saveRoadmap(state, change.roadmap, change.history);
+      for (const doc of change.docWrites) {
+        const specPath = resolveInsideRoot(state.planningRoot, doc.path, `spec document path for ${doc.cardId}`);
+        await appendEvent(state.planningRoot, { type: "doc.written", at: nowIso(), cardId: doc.cardId, kind: "spec", path: specPath }).catch(() => undefined);
       }
     } catch (error) {
       await Promise.allSettled(publishedRoots.map((root) => rm(root, { recursive: true, force: true })));
@@ -1122,12 +636,13 @@ export async function createCards(input: {
       throw error;
     }
     await rm(transactionRoot, { recursive: true, force: true }).catch(() => undefined);
-    const createdIds = new Set(createdItems.map((item) => item.id));
+    const createdIds = new Set(change.cardIds);
     return { ...state, roadmap, createdCards: roadmap.roadmapItems.filter((item) => createdIds.has(item.id)) };
   });
 }
 
 export function docPathForItem(state: PlanbanResolvedState, item: PlanbanRoadmapItem, kind: "spec" | "plan") {
+  if (state.manifest.storage?.kind === "online") return null;
   const configured = kind === "spec" ? item.specDoc : item.planDoc;
   if (!configured) return null;
   return resolveInsideRoot(state.planningRoot, configured, `${kind} document path for ${item.id}`);
@@ -1138,6 +653,8 @@ export async function readDoc(input: {
   cardId: string;
   kind: "spec" | "plan";
 }): Promise<PlanbanDocPayload> {
+  const online = await onlineManifest(input.cwd);
+  if (online?.storage?.kind === "online") return onlineRequest<PlanbanDocPayload>(online.storage.url, boardPath(online.storage.boardId, `/docs/${encodeURIComponent(input.cardId)}/${input.kind}`));
   const state = await loadState(input.cwd);
   const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
   if (!item) throw new Error(`Card not found: ${input.cardId}`);
@@ -1161,6 +678,7 @@ export async function exportFlatVersion1(input: {
   exportId: string;
   actor?: PlanbanHistoryActor | undefined;
 }) {
+  await refuseForOnline(input.cwd, "Flat version-1 export");
   if (!/^[a-z0-9][a-z0-9-]{0,79}$/u.test(input.exportId)) {
     throw new PlanbanValidationError("exportId must use 1-80 lowercase letters, numbers, or hyphens.");
   }
@@ -1240,6 +758,7 @@ export async function reconstructHierarchy(input: {
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
 }) {
+  await refuseForOnline(input.cwd, "Hierarchy reconstruction");
   if (!Array.isArray(input.groups) || input.groups.length === 0) {
     throw new PlanbanValidationError("groups must contain at least one explicit hierarchy mapping.");
   }
@@ -1334,29 +853,17 @@ export async function writeDoc(input: {
   /** Only for move-files-out: records files it moved even when a failure left others in the card folder. */
   recordingMovedFiles?: boolean | undefined;
 }): Promise<PlanbanDocPayload> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation<{ doc: PlanbanDocPayload }>(resolveProjectCwd(input.cwd), online, "writeDoc", input)).result.doc;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
-  const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
-  if (!item) throw new Error(`Card not found: ${input.cardId}`);
+  const planned = planWriteDoc(state.roadmap, input, { now: nowIso() });
+  const item = planned.item;
   checkIndexDocument(input.markdown, item.id, input.kind);
   if (!input.recordingMovedFiles) await assertCardsHoldNoFiles(state.planningRoot, [item]);
+  if (planned.roadmap) await saveRoadmap(state, planned.roadmap, false);
 
-  let relativePath = input.kind === "spec" ? item.specDoc : item.planDoc;
-  if (!relativePath) {
-    relativePath = `items/${item.id}/${input.kind}.md`;
-    const updatedItems = state.roadmap.roadmapItems.map((entry) =>
-      entry.id === item.id
-        ? {
-            ...entry,
-            ...(input.kind === "spec" ? { specDoc: relativePath } : { planDoc: relativePath }),
-            updatedAt: nowIso(),
-          }
-        : entry,
-    );
-    await saveRoadmap(state, { ...state.roadmap, roadmapItems: updatedItems }, false);
-  }
-
-  const path = resolveInsideRoot(state.planningRoot, relativePath, `${input.kind} document path for ${item.id}`);
+  const path = resolveInsideRoot(state.planningRoot, planned.path, `${input.kind} document path for ${item.id}`);
   const existsBeforeWrite = await pathExists(path);
   if (input.expectedMtimeMs !== undefined) {
     if (existsBeforeWrite) {
@@ -1381,25 +888,26 @@ export async function writeDoc(input: {
   });
   if (input.history !== false) {
     const latestState = await loadState(input.cwd);
-    await recordHistoryVersion(latestState, latestState.roadmap, input.history ?? {
-      actor: "user",
-      operation: "doc.write",
-      summary: `Edited ${item.title} ${input.kind}`,
-      affectedCards: [item.id],
-      affectedDocs: [{ cardId: item.id, kind: input.kind, path: relativePath }],
-    });
+    await recordHistoryVersion(latestState, latestState.roadmap, input.history ?? planned.history);
   }
   return { cardId: input.cardId, kind: input.kind, path, exists: true, markdown: input.markdown, mtimeMs: stats.mtimeMs };
   });
 }
 
 export async function historyPayload(cwd: string) {
+  const online = await onlineManifest(cwd);
+  if (online?.storage?.kind === "online") return onlineRequest<PlanbanHistoryPayload>(online.storage.url, boardPath(online.storage.boardId, "/history"));
   const state = await loadState(cwd);
   const { listHistory } = await import("./history");
   return listHistory(state);
 }
 
 export async function loadHistoryState(input: { cwd: string; version: number }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online?.storage?.kind === "online") {
+    const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(online.storage.url, boardPath(online.storage.boardId, `/history/${input.version}`));
+    return onlineState(resolveProjectCwd(input.cwd), online, roadmap);
+  }
   const state = await loadState(input.cwd);
   const { readHistoryRoadmap } = await import("./history");
   return { ...state, roadmap: await readHistoryRoadmap(state, input.version) };
@@ -1411,6 +919,10 @@ export async function readHistoryDoc(input: {
   cardId: string;
   kind: "spec" | "plan";
 }): Promise<PlanbanDocPayload> {
+  const online = await onlineManifest(input.cwd);
+  if (online?.storage?.kind === "online") {
+    return onlineRequest<PlanbanDocPayload>(online.storage.url, boardPath(online.storage.boardId, `/history/${input.version}/cards/${encodeURIComponent(input.cardId)}/docs/${input.kind}`));
+  }
   const state = await loadState(input.cwd);
   return resolveHistoryDoc(state, input.version, input.cardId, input.kind);
 }
@@ -1419,7 +931,10 @@ export async function restoreBoardVersion(input: {
   cwd: string;
   version: number;
   actor?: PlanbanHistoryActor | undefined;
+  baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreBoard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const restored = await restoreRoadmapFromHistory({ state, version: input.version, actor: input.actor });
@@ -1438,7 +953,10 @@ export async function restoreCardVersion(input: {
   version: number;
   cardId: string;
   actor?: PlanbanHistoryActor | undefined;
+  baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const restoredCard = await restoreCardFromHistory({ state, version: input.version, cardId: input.cardId });
@@ -1465,7 +983,13 @@ export async function restoreDocVersion(input: {
   cardId: string;
   kind: "spec" | "plan";
   actor?: PlanbanHistoryActor | undefined;
+  baseRevision?: number | undefined;
 }): Promise<PlanbanDocPayload> {
+  const online = await onlineManifest(input.cwd);
+  if (online) {
+    await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreDoc", input);
+    return readDoc({ cwd: input.cwd, cardId: input.cardId, kind: input.kind });
+  }
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const historicalDoc = await resolveHistoryDoc(state, input.version, input.cardId, input.kind);
@@ -1498,6 +1022,17 @@ export async function getStatus(cwdInput: string) {
       cwd,
       manifestPath: manifestPath(cwd),
       version: currentVersionInfo(),
+    };
+  }
+  if (manifest.storage?.kind === "online") {
+    const state = await loadOnlineState(cwd, manifest);
+    return {
+      initialized: true, cwd,
+      requestedCwd: discovery.via === "cwd" ? undefined : discovery.requestedCwd,
+      discoveredVia: discovery.via === "cwd" ? undefined : discovery.via,
+      manifestPath: state.manifestPath, agentContextPath: state.agentContextPath,
+      planningRoot: state.planningRoot, roadmapPath: state.roadmapPath,
+      roadmapExists: true, repoId: manifest.repoId, storage: manifest.storage, version: currentVersionInfo(),
     };
   }
   const planningRoot = resolvePlanningRoot(manifest);

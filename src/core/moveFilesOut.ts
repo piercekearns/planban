@@ -11,7 +11,7 @@ import { cardFolder } from "./cardFiles";
 import { checkIndexDocument } from "./contentRules";
 import { filesInCard, friendlyPath, machineName } from "./indexCheck";
 import { defaultPlanbanRoot, expandHome, isPathInsideRoot } from "./paths";
-import { loadState, readDoc, withRoadmapWriteLock, writeDoc } from "./storage";
+import { loadState, readDoc, refuseForOnline, withRoadmapWriteLock, writeDoc } from "./storage";
 import type { PlanbanHistoryActor } from "./types";
 
 export interface MoveFilesOutResult {
@@ -234,7 +234,10 @@ export async function moveFilesOut(input: {
   now?: Date | undefined;
 }): Promise<MoveFilesOutResult> {
   if (!input.to?.trim()) throw new PlanbanValidationError("Choose a folder to move the files to, outside Planban, such as the project's repository or a shared drive.");
+  await refuseForOnline(input.cwd, "Moving files out of card folders");
   return withRoadmapWriteLock(input.cwd, async () => {
+    // Recheck after acquiring the lock in case authority changed while waiting.
+    await refuseForOnline(input.cwd, "Moving files out of card folders");
     const state = await loadState(input.cwd);
     const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
     if (!item) throw new PlanbanNotFoundError(`Card not found: ${input.cardId}`);

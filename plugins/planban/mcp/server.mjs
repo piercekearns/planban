@@ -39,18 +39,19 @@ const INDEX_RULE = `Planban is an index, not file storage: a card holds only tex
 
 const SERVER_NAME = "Planban MCP";
 const PLANBAN_MCP_INSTRUCTIONS = [
-  "Prefer these Planban tools for all Planban board, card, and document reads and writes.",
+  "Prefer these tools for all Planban reads and writes.",
   "Pass cwd as the absolute repository path, or repoId for a registered board.",
   "Before creating or materially editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style when installed.",
   "Serialize writes: one mutation at a time per board.",
   "Planban is an index, not file storage: link to files; planban_move_files_out tidies cards holding them.",
-  "Complete is user-controlled: move cards to complete only when the user explicitly asks, confirms review/testing, or waives review.",
+  "Complete is person-controlled: complete a card only when a person on the board asks, confirms after review, or waives it.",
+  "Online Boards: pass baseRevision and expectedMtimeMs; read only through these tools.",
   "move_card is the canonical placement operation.",
   "After a successful open, or after the complete logical mutation batch, include the exact clickable Board URL from the result's userReply.markdown in the final reply.",
   "If the host has an in-app browser, make at most one bounded attempt to show that URL there; never reopen the board after every write.",
   "If boardUrlVerified is false, call planban_launch_board once to verify the URL before presenting it.",
   "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card using repoId and cardId; the id is the identity and any quoted title beside it is display context only.",
-  "Board administration, migration/recovery, and the legacy set_card_parent alias are advertised only through explicit profiles.",
+  "Board administration, recovery and the legacy set_card_parent alias appear only through explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;
 const JsonRpcError = {
@@ -480,14 +481,14 @@ const tools = [
   {
     name: "planban_status",
     title: "Planban Status",
-    description: "Check whether Planban is initialized for a local repository and report live state paths.",
+    description: "Check whether Planban is initialized for a repository, whether its board is local or online, and report live state paths.",
     inputSchema: schema.object(commonBoardProperties),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: "planban_list_boards",
     title: "List Planban Boards",
-    description: "List registered local Planban boards on this device.",
+    description: "List the Planban boards registered on this device, local and online.",
     inputSchema: schema.object({
       includeArchived: { type: "boolean", description: "Include archived boards." },
     }),
@@ -559,7 +560,7 @@ const tools = [
   {
     name: "planban_get_card",
     title: "Get Planban Card",
-    description: "Read one Planban roadmap card, including linked document paths and metadata.",
+    description: "Read one Planban roadmap card and its metadata. On local boards it includes the linked document paths; read documents with planban_read_doc.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
@@ -601,7 +602,7 @@ const tools = [
       position: { type: "string", enum: ["top", "bottom"], description: "Insert at top or bottom of the target status column." },
       afterId: { type: "string", description: "Optional card id to insert after in the target status column." },
       parentId: { type: "string", description: "Optional existing Group id. Creates an owned Item." },
-      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["title"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -619,7 +620,7 @@ const tools = [
       anchorId: { type: "string", description: "Initial Item whose Main Board position the Group takes." },
       specMarkdown: { type: "string", description: "Optional initial Group spec markdown." },
       planMarkdown: { type: "string", description: "Optional initial Group plan markdown." },
-      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["title"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -632,7 +633,7 @@ const tools = [
       titles: { type: "array", items: { type: "string" }, description: "One or more Work Item titles." },
       status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Initial status. Defaults to pending." },
       parentId: { type: "string", description: "Optional parent Group id." },
-      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["titles"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -658,7 +659,7 @@ const tools = [
       status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Optional target status." },
       parentId: { type: ["string", "null"], description: "Optional root Group/destination id, or null for the Main Board." },
       afterId: { type: ["string", "null"], description: "Optional sibling id to insert after, or null for first position." },
-      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
       completionConfirmed: {
         type: "boolean",
         description: "Required true when moving a card to complete.",
@@ -673,7 +674,7 @@ const tools = [
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
-      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
       title: { type: "string", description: "New non-empty card title." },
       summary: { type: ["string", "null"], description: "New card summary, or null to clear." },
       nextAction: { type: ["string", "null"], description: "New next action, or null to clear." },
@@ -691,7 +692,7 @@ const tools = [
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
       parentId: { type: ["string", "null"], description: "Root Group/destination id, or null for the Main Board." },
-      baseRevision: { type: "number", description: "Optional roadmap revision for stale-write protection." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["cardId", "parentId"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -704,7 +705,7 @@ const tools = [
       cardId: { type: "string", description: "Planban card id." },
       kind: { type: "string", enum: ["spec", "plan"], description: "Document kind to write." },
       markdown: { type: "string", description: "Full markdown contents." },
-      expectedMtimeMs: { type: ["number", "null"], description: "Optional expected document mtime for stale-write protection." },
+      expectedMtimeMs: { type: ["number", "null"], description: "The mtimeMs from planban_read_doc (null for a new document), for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["cardId", "kind", "markdown"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },

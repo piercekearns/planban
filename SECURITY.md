@@ -1,7 +1,10 @@
 # Security Policy
 
 Planban runs locally and can interact with project planning state through Codex,
-Claude Code, CLI, local API, and MCP tools. Please avoid posting sensitive details publicly.
+Claude Code, CLI, local API, and MCP tools. Online Boards add a hosted service at
+app.planban.ai: sign-in, connections from apps and computers, personal access keys,
+invitation links, and the remote MCP server at app.planban.ai/mcp are all in scope.
+Please avoid posting sensitive details publicly.
 
 ## Reporting a Vulnerability
 

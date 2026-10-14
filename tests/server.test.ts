@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { EventEmitter, once } from "node:events";
-import { Agent as HttpAgent, createServer as createHttpServer, get as httpGet, type IncomingMessage } from "node:http";
+import { Agent as HttpAgent, createServer as createHttpServer, get as httpGet, request as httpRequest, type IncomingMessage } from "node:http";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -317,6 +317,9 @@ test("bounds filesystem watching when history is large and file descriptors are 
     assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, ".planban-write.lock")), true);
     assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, ".planban-write.lock", "owner.json")), true);
     assert.equal(isIgnoredPlanbanWatchPath(join(planbanHome, ".planban-write.lock")), true);
+    // The lock's queue of waiting writers comes and goes on every board read too.
+    assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, ".planban-write.queue")), true);
+    assert.equal(isIgnoredPlanbanWatchPath(join(planningRoot, ".planban-write.queue", "ticket-000000000001-00000000-0000-4000-8000-000000000001.json")), true);
     assert.equal((await fetch(`${server.url}/api/status`)).status, 200);
   } finally {
     await server.close();
@@ -665,6 +668,62 @@ test("persists reorder and rejects stale API writes", async () => {
   } finally {
     await server.close();
   }
+});
+
+test("rejects untrusted request authority before reads, pages or matching-origin mutations", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const port = await freePort();
+  const server = await startServer({ cwd, port, useVite: false });
+  // fetch can replace Host with the URL's authority. Use the raw HTTP client
+  // so the attack's actual Host reaches the server unchanged.
+  const request = (path: string, headers: Record<string, string>, body?: string) => new Promise<number | undefined>((resolveRequest, rejectRequest) => {
+    const req = httpRequest(`${server.url}${path}`, { headers, setHost: false, method: body === undefined ? "GET" : "POST" }, (response) => {
+      response.resume();
+      response.on("end", () => resolveRequest(response.statusCode));
+    });
+    req.on("error", rejectRequest);
+    req.end(body);
+  });
+  try {
+    for (const host of [`evil.example:${port}`, `localhost.evil.example:${port}`, `127.0.0.1:${port + 1}`, `localhost:${port}/`, `user@localhost:${port}`, ""]) {
+      for (const route of ["/api/state", "/api/status", "/boards"]) {
+        assert.equal(await request(route, { Host: host, "X-Forwarded-Host": `localhost:${port}` }), 403, `${host} ${route}`);
+      }
+    }
+    const attack = await request(`/api/boards/${repoId}/cards`,
+      { Host: `evil.example:${port}`, Origin: `http://evil.example:${port}`, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+      JSON.stringify({ title: "Must not exist", status: "pending" }));
+    assert.equal(attack, 403);
+    assert.equal((await loadState(cwd)).roadmap.roadmapItems.length, 0);
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, `LOCALHOST:${port}`, `[::1]:${port}`]) {
+      assert.equal(await request("/api/status", { Host: host }), 200, host);
+    }
+    // Node's nonbrowser HTTP client normally supplies Host automatically.
+    // Suppress it to exercise the missing-authority boundary directly.
+    const missing = await new Promise<IncomingMessage>((resolveRequest, rejectRequest) => {
+      const req = httpGet(`${server.url}/api/state`, { setHost: false }, resolveRequest);
+      req.on("error", rejectRequest);
+    });
+    missing.resume();
+    assert.ok(missing.statusCode === 400 || missing.statusCode === 403, "Node or the application refuses a missing Host");
+  } finally { await server.close(); }
+});
+
+test("online invite relay rejects malformed supplied roles instead of turning them into viewer", async () => {
+  await initializeProject({ cwd, title: "Server Test", repoId, updateAgents: false });
+  const server = await startServer({ cwd, port: await freePort(), useVite: false });
+  try {
+    for (const role of [null, "owner", "EDITOR", 1, [], {}]) {
+      const response = await fetch(`${server.url}/api/boards/${repoId}/online/invites`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }),
+      });
+      assert.equal(response.status, 422);
+      assert.match((await response.json()).error, /role must be viewer or editor/);
+    }
+    const omitted = await fetch(`${server.url}/api/boards/${repoId}/online/invites`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(omitted.status, 422);
+    assert.match((await omitted.json()).error, /Take this board online/, "omission retains the viewer default before the board boundary");
+  } finally { await server.close(); }
 });
 
 test("rejects cross-origin browser-shaped API mutations", async () => {

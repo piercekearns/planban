@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { boardPath, cardPath } from "./apiPaths";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -39,6 +40,8 @@ import {
   SquarePen,
   Trash2,
   X,
+  Settings,
+  Link2,
 } from "lucide-react";
 import {
   closestCorners,
@@ -96,6 +99,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
+import { BoardPeopleContext, BoardSettingsModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, SignedOutScreen, useBoardPeople, useOnlineStatus, type SignedOut } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -337,6 +341,8 @@ interface HistoryEntry {
   summary: string;
   affectedCards: string[];
   affectedDocs: Array<{ cardId: string; kind: DocKind; path: string | null }>;
+  /** Online Boards: who made the change and through which app. */
+  attribution?: { userId: string; clientName: string; actor: string };
 }
 
 interface HistoryPayload {
@@ -349,10 +355,6 @@ interface HistoryPayload {
     maxAgeDays: number;
   };
   entries: HistoryEntry[];
-}
-
-function boardPath(repoId: string, path: string) {
-  return `/api/boards/${encodeURIComponent(repoId)}${path}`;
 }
 
 function repoIdFromPath() {
@@ -879,6 +881,12 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
         : `Request failed: ${response.status}`;
     const error = new Error(errorMessage);
     Object.assign(error, { status: response.status });
+    // A missing or ended Online Board sign-in names the service, so the page can offer Sign in.
+    if (payload && typeof payload === "object" && "signInNeeded" in payload && typeof payload.signInNeeded === "string") {
+      const reason = "signedOut" in payload && payload.signedOut === "expired" ? "expired" : "missing";
+      const command = "signInCommand" in payload && typeof payload.signInCommand === "string" ? payload.signInCommand : undefined;
+      Object.assign(error, { signedOut: { url: payload.signInNeeded, reason, ...(command ? { command } : {}) } satisfies SignedOut });
+    }
     throw error;
   }
   if (payload === null) throw new Error(`Empty response from ${path}`);
@@ -1098,7 +1106,10 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {item.icon ? <span className="card-title-icon">{item.icon}</span> : null}
           {item.title}
         </p>
-        {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
+        <span className="card-title-tail">
+          <CardFace cardId={item.id} />
+          {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
+        </span>
       </div>
       <StalenessChip itemId={item.id} />
       {ancestry.length > 0 ? <p className="card-ancestry">{ancestry.map((entry) => entry.title).join(" › ")}</p> : null}
@@ -1855,6 +1866,8 @@ function BoardPicker({
 }
 
 function BoardMoreMenu({
+  onOpenSettings,
+  onOpenConnections,
   onOpenHistory,
   onOpenTutorial,
   onOpenFeedback,
@@ -1862,6 +1875,8 @@ function BoardMoreMenu({
   showArchived,
   onToggleArchived,
 }: {
+  onOpenSettings?: () => void;
+  onOpenConnections?: () => void;
   onOpenHistory?: () => void;
   onOpenTutorial: () => void;
   onOpenFeedback: () => void;
@@ -1888,6 +1903,8 @@ function BoardMoreMenu({
       </TooltipButton>
       {open ? (
         <div className="board-more-popover" role="menu">
+          {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
+          {onOpenConnections ? <button role="menuitem" onClick={() => choose(onOpenConnections)}><Link2 size={14} /><span>Your connections</span></button> : null}
           {onOpenHistory ? <button role="menuitem" onClick={() => choose(onOpenHistory)}><History size={14} /><span>Board history</span></button> : null}
           <button role="menuitem" onClick={() => choose(onOpenTutorial)}><HelpCircle size={14} /><span>Tutorial</span></button>
           <button role="menuitem" onClick={() => choose(onOpenFeedback)}><Bug size={14} /><span>Feedback / Bug</span></button>
@@ -1941,7 +1958,7 @@ function BoardHistoryModal({
                 else onSelectVersion(entry.version);
                 onClose();
               }}>
-                <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
+                <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} actor={entry.actor} /><small>{formatHistoryTime(entry.createdAt)} · {entry.actor} · {entry.summary}</small></span>
               </button>
             );
           })}
@@ -3328,7 +3345,7 @@ function DetailHistoryMenu({
               disabled={active && previewVersion === null}
               onClick={() => select(entry.version)}
             >
-              <span><b>{versionLabel(entry.version, currentVersion)}</b><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
+              <span><b>{versionLabel(entry.version, currentVersion)}</b><HistoryAuthor attribution={entry.attribution} actor={entry.actor} /><small>{formatHistoryTime(entry.createdAt)} · {entry.summary}</small></span>
             </button>
           );
         })}
@@ -3823,7 +3840,7 @@ function DetailView({
     if (status === item.status) return;
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+      await api<PlanbanState>(cardPath(boardId, item.id, `/move`), {
         method: "POST",
         body: JSON.stringify({ status, baseRevision: state.roadmap.revision }),
       });
@@ -3848,7 +3865,7 @@ function DetailView({
         : placementSiblings.at(-1)?.id ?? null;
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}/move`), {
+      await api<PlanbanState>(cardPath(boardId, item.id, `/move`), {
         method: "POST",
         body: JSON.stringify({ parentId, status, afterId, baseRevision: state.roadmap.revision }),
       });
@@ -3865,7 +3882,7 @@ function DetailView({
   async function saveObjective() {
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${item.id}`), {
+      await api<PlanbanState>(cardPath(boardId, item.id, ``), {
         method: "PATCH",
         body: JSON.stringify({
           summary: objectiveDraft.trim() || null,
@@ -3886,7 +3903,7 @@ function DetailView({
     setGroupOptimisticItems(previewGroupWorkspaceMove(state.roadmap.roadmapItems, activeId, move));
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${activeId}/move`), {
+      await api<PlanbanState>(cardPath(boardId, activeId, `/move`), {
         method: "POST",
         body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
       });
@@ -3980,7 +3997,7 @@ function DetailView({
     setGroupOptimisticItems(previewGroupWorkspaceMove(state.roadmap.roadmapItems, target.id, { afterId }));
     setBusy(true);
     try {
-      await api<PlanbanState>(boardPath(boardId, `/cards/${target.id}/move`), {
+      await api<PlanbanState>(cardPath(boardId, target.id, `/move`), {
         method: "POST",
         body: JSON.stringify({ afterId, baseRevision: state.roadmap.revision }),
       });
@@ -4043,8 +4060,8 @@ function DetailView({
     async (kind: DocKind) => {
       const payload = await api<DocPayload>(
         previewVersion
-          ? boardPath(boardId, `/history/${previewVersion}/cards/${item.id}/docs/${kind}`)
-          : boardPath(boardId, `/cards/${item.id}/docs/${kind}`),
+          ? cardPath(boardId, item.id, `/docs/${kind}`, previewVersion)
+          : cardPath(boardId, item.id, `/docs/${kind}`),
       );
       setDocsByKind((current) => ({ ...current, [kind]: payload }));
       return payload;
@@ -4073,7 +4090,7 @@ function DetailView({
   async function saveDoc() {
     setBusy(true);
     try {
-      const payload = await api<DocPayload>(boardPath(boardId, `/cards/${item.id}/docs/${activeTab}`), {
+      const payload = await api<DocPayload>(cardPath(boardId, item.id, `/docs/${activeTab}`), {
         method: "PUT",
         body: JSON.stringify({ markdown: draft, expectedMtimeMs: doc?.mtimeMs ?? null }),
       });
@@ -4751,6 +4768,8 @@ function BoardView({
   const [preview, setPreview] = useState<{ version: number; entry: HistoryEntry | null; state: PlanbanState } | null>(null);
   const [boardHistoryOpen, setBoardHistoryOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onlineScreen, setOnlineScreen] = useState<"people" | "invite" | "connections" | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [postUpdateVersion, setPostUpdateVersion] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("planbanUpdated");
@@ -4769,6 +4788,8 @@ function BoardView({
   const isPreviewing = preview !== null;
   const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
   const isDemoBoard = boardKind === "demo";
+  const online = useOnlineStatus(isDemoBoard ? null : boardId, state.roadmap.revision);
+  const boardPeople = useBoardPeople(isDemoBoard ? null : boardId, online.status?.location === "online", `${state.roadmap.revision}:${online.status?.location}`);
   const isActivityLab = activityLabIsEnabled(boardId, boardKind, window.location.search);
   const activityLabCards = useMemo(
     () => items.filter((item) => item.status !== "archived"),
@@ -5124,7 +5145,7 @@ function BoardView({
       for (const item of pendingItems) {
         try {
           const result = await api<{ linked: boolean; state?: PlanbanState }>(
-            boardPath(boardId, `/cards/${item.id}/codex-thread/sync`),
+            cardPath(boardId, item.id, `/codex-thread/sync`),
             { method: "POST", body: "{}" },
           );
           if (!cancelled && result.linked && result.state) {
@@ -5173,7 +5194,7 @@ function BoardView({
     if (!confirmed) return;
     const next = await api<PlanbanState>(boardPath(boardId, `/history/${preview.version}/restore-board`), {
       method: "POST",
-      body: JSON.stringify({ actor: "user" }),
+      body: JSON.stringify({ actor: "user", baseRevision: state.roadmap.revision }),
     });
     setPreview(null);
     onStateChange(next);
@@ -5185,9 +5206,9 @@ function BoardView({
     const item = preview.state.roadmap.roadmapItems.find((entry) => entry.id === cardId);
     const confirmed = window.confirm(`Restore "${item?.title ?? cardId}" card details from v${preview.version} to the latest version?`);
     if (!confirmed) return;
-    const next = await api<PlanbanState>(boardPath(boardId, `/history/${preview.version}/cards/${cardId}/restore`), {
+    const next = await api<PlanbanState>(cardPath(boardId, cardId, `/restore`, preview.version), {
       method: "POST",
-      body: JSON.stringify({ actor: "user" }),
+      body: JSON.stringify({ actor: "user", baseRevision: state.roadmap.revision }),
     });
     setPreview(null);
     onStateChange(next);
@@ -5198,9 +5219,9 @@ function BoardView({
     if (!preview) return;
     const confirmed = window.confirm(`Restore this ${kind} document from v${preview.version} to the latest version?`);
     if (!confirmed) return;
-    await api<DocPayload>(boardPath(boardId, `/history/${preview.version}/cards/${cardId}/docs/${kind}/restore`), {
+    await api<DocPayload>(cardPath(boardId, cardId, `/docs/${kind}/restore`, preview.version), {
       method: "POST",
-      body: JSON.stringify({ actor: "user" }),
+      body: JSON.stringify({ actor: "user", baseRevision: state.roadmap.revision }),
     });
     setPreview(null);
     await refreshState();
@@ -5209,7 +5230,7 @@ function BoardView({
   async function moveItem(id: string, status: Status) {
     if (isPreviewing) return;
     try {
-      const next = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+      const next = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
         method: "POST",
         body: JSON.stringify({ status, baseRevision: state.roadmap.revision }),
       });
@@ -5231,7 +5252,7 @@ function BoardView({
     if (!confirmed) return;
 
     try {
-      const next = await api<PlanbanState>(boardPath(boardId, `/cards/${id}`), {
+      const next = await api<PlanbanState>(cardPath(boardId, id, ``), {
         method: "DELETE",
         body: JSON.stringify({ baseRevision: state.roadmap.revision }),
       });
@@ -5374,7 +5395,7 @@ function BoardView({
       const move = flattenedExecutionMoveForDrop(dragStartItems, id, resolvedOverId);
       if (!move) return;
       try {
-        const placed = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+        const placed = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
           method: "POST",
           body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
         });
@@ -5409,7 +5430,7 @@ function BoardView({
       if (!move) return;
       setItems(previewGroupWorkspaceMove(dragStartItems, id, move));
       try {
-        const placed = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+        const placed = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
           method: "POST",
           body: JSON.stringify({ ...move, baseRevision: state.roadmap.revision }),
         });
@@ -5454,7 +5475,7 @@ function BoardView({
     }));
 
     try {
-      const reordered = await api<PlanbanState>(boardPath(boardId, `/cards/${id}/move`), {
+      const reordered = await api<PlanbanState>(cardPath(boardId, id, `/move`), {
         method: "POST",
         body: JSON.stringify({
           baseRevision: state.roadmap.revision,
@@ -5508,7 +5529,7 @@ function BoardView({
         : await (async () => {
             const decision = groupPlacementDecision(pendingBoardPlacement, decisionInput.status, decisionInput.position);
             if (!decision) throw new Error("Placement is no longer valid.");
-            return api<PlanbanState>(boardPath(boardId, `/cards/${decision.activeId}/move`), {
+            return api<PlanbanState>(cardPath(boardId, decision.activeId, `/move`), {
               method: "POST",
               body: JSON.stringify({ ...decision.move, baseRevision: state.roadmap.revision }),
             });
@@ -5526,6 +5547,7 @@ function BoardView({
 
   if (selectedItem) {
     return (
+      <BoardPeopleContext.Provider value={boardPeople.people}>
       <DetailView
         state={activityDetailKind === "group" ? activityDetailState : displayState}
         item={selectedItem}
@@ -5552,12 +5574,14 @@ function BoardView({
           },
         } : {})}
       />
+      </BoardPeopleContext.Provider>
     );
   }
 
   return (
     <StalenessContext.Provider value={stalenessCards}>
-    <main className="board-screen">
+    <BoardPeopleContext.Provider value={boardPeople.people}>
+    <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
         <div className="board-title-group">
           <div className="board-home-row">
@@ -5567,6 +5591,7 @@ function BoardView({
           </div>
           <div className="board-title-row">
             <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
+            <LocationPill status={online.status} />
           </div>
         </div>
         <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
@@ -5601,6 +5626,8 @@ function BoardView({
               {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
             </TooltipButton>
             <BoardMoreMenu
+              {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
+              {...(!isDemoBoard && online.status?.signedIn.length ? { onOpenConnections: () => setOnlineScreen("connections") } : {})}
               {...(!isDemoBoard ? { onOpenHistory: () => setBoardHistoryOpen(true) } : {})}
               onOpenTutorial={() => openTutorial("first-run", isDemoBoard ? null : boardId)}
               onOpenFeedback={() => setFeedbackOpen(true)}
@@ -5611,6 +5638,7 @@ function BoardView({
           </div>
         </div>
       </header>
+      <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} />
 
       {isActivityLab ? (
         <ActivityLabPanel
@@ -5627,6 +5655,13 @@ function BoardView({
       ) : null}
 
       {feedbackOpen ? <FeedbackModal state={state} onClose={() => setFeedbackOpen(false)} /> : null}
+      {settingsOpen && online.status ? (
+        <BoardSettingsModal repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload}
+          onManagePeople={() => { setSettingsOpen(false); setOnlineScreen("people"); }} onClose={() => setSettingsOpen(false)} />
+      ) : null}
+      {onlineScreen === "people" ? <PeopleModal repoId={boardId} boardTitle={state.roadmap.project.title} onInvite={() => setOnlineScreen("invite")} onClose={() => { setOnlineScreen(null); void boardPeople.reload(); }} /> : null}
+      {onlineScreen === "invite" ? <InviteModal repoId={boardId} boardTitle={state.roadmap.project.title} onClose={() => setOnlineScreen("people")} /> : null}
+      {onlineScreen === "connections" ? <ConnectionsModal onClose={() => setOnlineScreen(null)} /> : null}
       {boardHistoryOpen ? (
         <BoardHistoryModal
           history={history}
@@ -5774,6 +5809,7 @@ function BoardView({
         </DragOverlay>
       </DndContext>}
     </main>
+    </BoardPeopleContext.Provider>
     </StalenessContext.Provider>
   );
 }
@@ -6104,6 +6140,7 @@ function App() {
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [signedOut, setSignedOut] = useState<SignedOut | null>(null);
   const [activities, setActivities] = useState<PlanbanActivitySnapshot[]>([]);
   const appLoadRequestRef = useRef(0);
   const boardLoadRequestRef = useRef(0);
@@ -6131,10 +6168,13 @@ function App() {
       if (routeRepoId !== repoId && selectedRepoIdRef.current !== repoId) return null;
       setState(nextState);
       setError(null);
+      setSignedOut(null);
       return nextState;
     } catch (loadError) {
       if (requestId === boardLoadRequestRef.current && !preserveCurrentOnError) {
-        setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
+        const needed = (loadError as { signedOut?: SignedOut } | null)?.signedOut;
+        setSignedOut(needed ?? null);
+        if (!needed) setError(loadError instanceof Error ? loadError.message : "Failed to load the Board");
       }
       return null;
     }
@@ -6194,7 +6234,8 @@ function App() {
     let pollTimer: number | null = null;
     const poll = async () => {
       try {
-        const snapshot = await api<LiveSnapshot>("/api/live", undefined, 3_000);
+        const watchedRepoId = selectedRepoIdRef.current;
+        const snapshot = await api<LiveSnapshot>(watchedRepoId ? `/api/live?repoId=${encodeURIComponent(watchedRepoId)}` : "/api/live", undefined, 3_000);
         if (stopped) return;
         setActivities(snapshot.activities);
         const previous = liveVersionRef.current;
@@ -6234,10 +6275,21 @@ function App() {
   }, [loadSelectedBoard]);
 
   useEffect(() => {
+    // A signed-out screen belongs to the board that showed it.
+    setSignedOut(null);
     if (!selectedRepoId) return;
     void loadSelectedBoard(selectedRepoId);
   }, [loadSelectedBoard, selectedRepoId]);
 
+  if (signedOut && selectedRepoId) {
+    const repoId = selectedRepoId;
+    // Keyed by board, so a sign-in started on another board's screen can't finish on this one.
+    return <SignedOutScreen key={repoId} signedOut={signedOut} onSignedIn={() => {
+      if (selectedRepoIdRef.current !== repoId) return;
+      setSignedOut(null);
+      void loadSelectedBoard(repoId);
+    }} />;
+  }
   if (error) {
     return (
       <main className="error-screen">

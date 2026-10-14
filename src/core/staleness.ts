@@ -1,6 +1,7 @@
 // Stale signals: derived hints that an active card may no longer match reality.
 // Pure and browser-safe; the git, history and file inputs are gathered by stalenessSources.ts.
 import type { PlanbanHistoryEntry, PlanbanRoadmapItem } from "./types";
+import { planbanCommand } from "./command";
 
 export type StalenessKind = "holds-files" | "merged" | "doc-edited" | "quiet" | "awaiting-owner" | "group-behind";
 
@@ -131,7 +132,7 @@ export function parseMergeLog(text: string): MergeRecord[] {
 
 /** The command that tidies a card holding files. */
 export function moveFilesOutCommand(cardId: string) {
-  return `planban move-files-out ${cardId} --to <folder>`;
+  return `${planbanCommand()} move-files-out ${cardId} --to <folder>`;
 }
 
 // Planban is an index, not storage: a card whose folder holds files refuses changes until they are moved out.

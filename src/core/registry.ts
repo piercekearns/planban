@@ -21,6 +21,7 @@ import { ensureHistoryBaseline, recordHistoryVersion } from "./history";
 import { atomicWriteFile, appendLineDurably, withBoardWriteLock } from "./persistence";
 import { buildAgentContext } from "./protocol";
 import { manifestSchema } from "./schema";
+import { onlineCacheRoot, refuseOnline } from "./online/adapter";
 import type { PlanbanBoardRecord, PlanbanBoardRegistry, PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap } from "./types";
 
 const boardRecordSchema = z.object({
@@ -60,7 +61,8 @@ async function readManifest(cwd: string) {
   return manifestSchema.parse(JSON.parse(await readFile(path, "utf8")));
 }
 
-function resolvePlanningRoot(manifest: { repoId: string; storage?: { root?: string | undefined } | undefined }) {
+function resolvePlanningRoot(manifest: PlanbanProjectManifest) {
+  if (manifest.storage?.kind === "online") return onlineCacheRoot(manifest.storage);
   return manifest.storage?.root
     ? resolve(expandHome(manifest.storage.root))
     : defaultPlanningRoot(manifest.repoId);
@@ -240,6 +242,7 @@ export async function duplicateBoard(input: {
   const registry = await readRegistryFile();
   const source = registry.boards.find((board) => board.repoId === input.sourceRepoId);
   if (!source) throw new Error(`Planban board not found: ${input.sourceRepoId}`);
+  if ((await readManifest(source.cwd))?.storage?.kind === "online") refuseOnline("Board duplication");
   if (!(await pathExists(source.roadmapPath))) {
     throw new Error(`Planban roadmap is missing at ${source.roadmapPath}`);
   }
@@ -368,6 +371,10 @@ export async function registerBoardFromCwd(cwdInput: string): Promise<PlanbanBoa
   const cwd = resolvePlanbanProjectDir(cwdInput).projectDir;
   const manifest = await readManifest(cwd);
   if (!manifest || !manifest.enabled) return null;
+  if (manifest.storage?.kind === "online") {
+    const { loadState } = await import("./storage");
+    return registerBoardFromState(await loadState(cwd));
+  }
   const planningRoot = resolvePlanningRoot(manifest);
   const liveRoadmapPath = roadmapPath(planningRoot);
   if (!(await pathExists(liveRoadmapPath))) return null;

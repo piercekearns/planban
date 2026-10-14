@@ -4,14 +4,14 @@
     "name": "Planban"
   },
   "metadata": {
-    "description": "Local, agent-native Kanban boards for agent-led planning.",
+    "description": "Agent-native Kanban boards for agent-led planning, local by default and online when you share them.",
     "version": "1.1.7"
   },
   "plugins": [
     {
       "name": "planban",
       "source": "./plugins/planban",
-      "description": "Open local Planban boards beside your session and keep roadmap items current with the Planban protocol.",
+      "description": "Open Planban boards beside your session and keep roadmap items current with the Planban protocol.",
       "category": "productivity"
     }
   ]

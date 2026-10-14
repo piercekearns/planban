@@ -1,6 +1,7 @@
 import { Command, Option } from "commander";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { ensureDemoBoard } from "./core/demo";
 import { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, restoreBoard } from "./core/registry";
 import {
@@ -19,6 +20,7 @@ import {
   updateCard,
   exportFlatVersion1,
   reconstructHierarchy,
+  readManifest,
 } from "./core/storage";
 import { PLANBAN_STATUSES, type PlanbanStatus } from "./core/types";
 import { queryWorkItems, workItemQueryFromSearchParams } from "./core/workItemQuery";
@@ -29,6 +31,11 @@ import { buildUpdateCommandPlan, runPlanbanUpdate } from "./core/updateRunner";
 import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
+import { onlineLogin } from "./core/online/login";
+import { onlineStatus } from "./core/online/credentials";
+import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
+import { invitePeople, joinBoard, listPeople, setMyAgents } from "./core/online/people";
+import { attachOnline, exportOnline, keepLocalCopy, keepSeparateBoard, restoreBackup, stopTakeOnline, takeLocal, takeOnline } from "./core/online/transfers";
 
 function cwdOption(value: string | undefined) {
   return resolve(value ?? process.cwd());
@@ -103,7 +110,90 @@ async function readStdin(): Promise<string> {
 }
 
 const program = new Command();
-program.name("planban").description("Local, agent-native planning board for Codex and Claude Code").version(PLANBAN_VERSION);
+program.name("planban").description("Agent-native planning board for Codex and Claude Code: local by default, online when you share a board").version(PLANBAN_VERSION);
+
+const online = program.command("online").description("Sign in and move boards between local and online authority");
+online.command("login <url>").description("sign this computer in to Planban Online, for example: login https://app.planban.ai")
+  // Development-only sign-in on a local backend; hidden from help.
+  .addOption(new Option("--access <scope>", "with --dev-user: connection access").choices(["all", "board"]).default("all").hideHelp())
+  .addOption(new Option("--boards <id>", "with --dev-user: the one board the connection reaches").hideHelp())
+  .addOption(new Option("--dev-user <id>", "development sign-in on a local Online Board backend").hideHelp())
+  .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
+  .option("--no-browser", "print the sign-in link instead of opening a browser (for remote machines)")
+  .action(async (url, options) => print(await onlineLogin(url, {
+    ...options,
+    ...(options.browser === false ? { openBrowser: async (link: string) => { process.stderr.write(`Open this link to sign in to Planban:\n${link}\n`); } } : {}),
+  }), {}));
+online.command("logout <url>").description("sign out on this machine and revoke its connection")
+  .action(async (url) => print(await onlineLogout(url), {}));
+online.command("connections <url>").description("list this person's machines, agents and keys")
+  .action(async (url) => print(await listConnections(url), {}));
+online.command("revoke <url> <connectionId>").description("cut off a machine, agent or key at once")
+  .action(async (url, connectionId) => print(await revokeConnection(url, connectionId), {}));
+const keys = online.command("keys").description("personal access keys");
+keys.command("create <url>").requiredOption("--board <id>", "the one board the key reaches")
+  .addOption(new Option("--level <level>", "what the key may do").choices(["read", "plan", "complete"]).makeOptionMandatory())
+  .requiredOption("--name <name>", "a name to recognise the key by")
+  .option("--expires-days <days>", "days until the key stops working", (value) => Number(value))
+  .action(async (url, options) => {
+    const created = await createKey(url, { boardId: options.board, level: options.level, name: options.name, expiresInDays: options.expiresDays });
+    process.stderr.write("Copy this key now. Planban keeps only a fingerprint of it and cannot show it again.\n");
+    print(created, {});
+  });
+online.command("status").description("which Planban Online services this computer is signed in to").action(async () => print(await onlineStatus(), {}));
+online.command("take-online <url>").description("take this project's board online, for example to https://app.planban.ai; it must hold no files").option("--cwd <path>", "project directory")
+  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
+online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")
+  .action(async (options) => print(await stopTakeOnline(cwdOption(options.cwd)), {}));
+const onlineBoardOf = async (cwd: string) => {
+  const manifest = await readManifest(cwd);
+  if (!manifest?.enabled || manifest.storage?.kind !== "online") throw new Error("This project does not point to an Online Board.");
+  return manifest.storage;
+};
+online.command("export").description("save a copy of this project's online board, with its history, to a file").option("--cwd <path>", "project directory").requiredOption("--out <file>", "bundle destination")
+  .action(async (options) => {
+    await exportOnline(cwdOption(options.cwd), options.out);
+    print({ exported: resolve(options.out) }, {});
+  });
+online.command("take-local").description("bring this project's online board back to this computer, with its history").option("--cwd <path>", "project directory")
+  .option("--remove-others", "on a shared board: confirm that everyone else and their agents lose access")
+  .action(async (options) => print(await takeLocal(cwdOption(options.cwd), { removeOthers: !!options.removeOthers }), {}));
+online.command("attach <url> <boardId>").description("use an online board in this project folder on this computer").requiredOption("--cwd <path>", "project directory")
+  .option("--replace-stale-copy", "set aside this project's out-of-date local copy of the board")
+  .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd), { replaceStaleCopy: !!options.replaceStaleCopy }), {}));
+online.command("restore-backup").description("make a new local board from a backup this computer kept of an online board").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
+  .requiredOption("--cwd <path>", "empty project directory").requiredOption("--repo-id <id>", "id for the restored local board")
+  .action(async (options) => print(await restoreBackup(options.from, cwdOption(options.cwd), options.repoId), {}));
+online.command("invite").description("invite someone to this project's online board; the link works for 7 days")
+  .option("--cwd <path>", "project directory")
+  .addOption(new Option("--role <role>", "what they may do").choices(["editor", "viewer"]).default("viewer"))
+  .option("--email <address>", "an invite for one person, by email")
+  .action(async (options) => print(await invitePeople(cwdOption(options.cwd), { role: options.role, ...(options.email ? { email: options.email } : {}) }), {}));
+online.command("join <link>").description("join a board from an invite link, signed in as yourself")
+  .option("--cwd <path>", "also use the board in this project folder")
+  .action(async (link, options) => print(await joinBoard(link, options.cwd ? { cwd: cwdOption(options.cwd) } : {}), {}));
+online.command("people").description("who is on this project's online board, their roles, and what their agents may do")
+  .option("--cwd <path>", "project directory")
+  .action(async (options) => print(await listPeople(cwdOption(options.cwd)), {}));
+online.command("my-agents <level>").description("choose what your own agents may do on this board: read, plan or complete")
+  .option("--cwd <path>", "project directory")
+  .action(async (level, options) => {
+    if (!["read", "plan", "complete"].includes(level)) throw new Error("level must be read, plan or complete.");
+    print(await setMyAgents(cwdOption(options.cwd), level), {});
+  });
+online.command("keep-local-copy").description("keep an older copy of an online board as a separate board; this project then uses the online board")
+  .requiredOption("--cwd <path>", "project directory")
+  .option("--title <title>", "name for the separate board")
+  .option("--new-id <id>", "id for the separate board")
+  .option("--in-this-project", "instead, keep using the separate board in this project (its agents follow it, not the online board)")
+  .action(async (options) => {
+    if (options.inThisProject) {
+      if (!options.newId) throw new Error("--in-this-project needs --new-id.");
+      print(await keepLocalCopy(cwdOption(options.cwd), options.newId, options.title), {});
+    } else {
+      print(await keepSeparateBoard(cwdOption(options.cwd), { title: options.title, newId: options.newId }), {});
+    }
+  });
 
 program
   .command("init")
@@ -316,7 +406,8 @@ program
     const state = await loadState(cwdOption(options.cwd));
     const card = state.roadmap.roadmapItems.find((item) => item.id === cardId);
     if (!card) throw new Error(`Card not found: ${cardId}`);
-    print({ ...card, ancestry: cardAncestry(state.roadmap, cardId) }, options);
+    // The board's revision travels with the card, for --base-revision on the next edit.
+    print({ revision: state.roadmap.revision, ...card, ancestry: cardAncestry(state.roadmap, cardId) }, options);
   });
 
 program
@@ -327,7 +418,7 @@ program
   .option("--board", "move to the main board")
   .option("--after <cardId>", "place after a sibling in the target status")
   .option("--first", "place first in the target ownership and status scope")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
@@ -362,7 +453,7 @@ program
   .option("--clear-blocked-by", "clear the blocking card")
   .option("--metadata-json <json>", "replace metadata with a JSON object")
   .option("--clear-metadata", "clear card metadata")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
@@ -398,7 +489,7 @@ program
   .argument("<cardId>")
   .option("--parent <cardId>", "move this Item into a root Group")
   .option("--board", "move to the main board")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
@@ -426,7 +517,7 @@ program
   .option("--position <position>", "insert at top or bottom of the target status column")
   .option("--after <cardId>", "insert after another card in the target status column")
   .option("--parent <cardId>", "create inside a Group")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (title, options) => {
@@ -461,7 +552,7 @@ function configureCreateGroupCommand(command: Command) {
     .option("--anchor <cardId>", "initial Item whose Main Board position the Group takes")
     .option("--spec-file <path>", "read initial Group spec markdown from a file")
     .option("--plan-file <path>", "read initial Group plan markdown from a file")
-    .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+    .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (title, options) => {
@@ -488,7 +579,7 @@ program
   .requiredOption("--title <title>", "title to create; repeat for multiple cards", collectOption, [])
   .option("--status <status>", "initial status")
   .option("--parent <cardId>", "create inside a Group")
-  .option("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (options) => {
@@ -507,10 +598,11 @@ for (const [command, status] of [
   program
     .command(command)
     .argument("<cardId>")
+    .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (cardId, options) => {
-      print(await setCardStatus(cwdOption(options.cwd), cardId, status), options);
+      print(await setCardStatus(cwdOption(options.cwd), cardId, status, options.baseRevision), options);
     });
 }
 
@@ -531,11 +623,18 @@ program
   .argument("<kind>")
   .option("--cwd <path>", "project directory")
   .option("--file <path>", "read markdown from a file instead of stdin")
+  .option("--expected-mtime <mtimeMs|new>", "the document version this edit is based on: mtimeMs from read-doc, or new for a document that doesn't exist yet (required for Online Boards)")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, kind, options) => {
     if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
+    let expectedMtimeMs: number | null | undefined;
+    if (options.expectedMtime !== undefined) {
+      const raw = String(options.expectedMtime).trim();
+      expectedMtimeMs = raw === "new" ? null : Number(raw);
+      if (expectedMtimeMs !== null && (!raw || !Number.isFinite(expectedMtimeMs))) throw new Error("--expected-mtime is the mtimeMs value from read-doc, or new");
+    }
     const markdown = options.file ? readFileSync(options.file, "utf8") : await readStdin();
-    print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown }), options);
+    print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown, ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs }) }), options);
   });
 
 function describeMoveFilesOut(result: MoveFilesOutResult) {
@@ -584,7 +683,7 @@ program
 program
   .command("reconstruct-hierarchy")
   .requiredOption("--file <path>", "JSON file containing { groups: [{ id, childIds }] }")
-  .requiredOption("--base-revision <revision>", "roadmap revision for stale-write protection", parseRevisionOption)
+  .requiredOption("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (options) => {

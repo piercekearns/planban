@@ -55,4 +55,16 @@ jobs:
         run: npm run build
 
       - name: Verify fresh cached plugin startup
+        id: cold-install
+        env:
+          PLANBAN_COLD_INSTALL_DIAGNOSTICS_DIR: ${{ runner.temp }}/planban-cold-install-diagnostics
         run: node scripts/verify-cold-install.mjs
+
+      - name: Upload cold startup failure diagnostics
+        if: failure() && steps.cold-install.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cold-install-diagnostics
+          path: ${{ runner.temp }}/planban-cold-install-diagnostics/cold-install-npm-events.json
+          if-no-files-found: ignore
+          retention-days: 3

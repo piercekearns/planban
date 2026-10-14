@@ -342,27 +342,27 @@ export async function resolveHistoryDoc(
   kind: "spec" | "plan",
 ): Promise<PlanbanDocPayload> {
   const history = await listHistory(state);
+  // The newest stored body at or before the version applies. Usually that
+  // version names the document; a board brought back from Online Mode can
+  // also hold a body at a version that doesn't, because online pruning moves
+  // the body that still applies onto the first kept version.
   const candidates = history.entries
     .filter((entry) => entry.version <= version)
-    .filter((entry) => entry.affectedDocs.some((doc) => doc.cardId === cardId && doc.kind === kind))
-    .sort((a, b) => b.version - a.version)
-    .slice(0, history.retention.documentVersions);
+    .sort((a, b) => b.version - a.version);
 
   for (const entry of candidates) {
-    const path = historyDocPath(state.planningRoot, entry.version, cardId, kind);
-    if (!(await pathExists(path))) continue;
-    const stats = await stat(path);
-    return {
-      cardId,
-      kind,
-      path,
-      exists: true,
-      markdown: await readFile(path, "utf8"),
-      mtimeMs: stats.mtimeMs,
-    };
+    const found = await historyDocAt(state, entry.version, cardId, kind);
+    if (found) return found;
   }
 
   return { cardId, kind, path: null, exists: false, markdown: "", mtimeMs: null };
+}
+
+async function historyDocAt(state: PlanbanResolvedState, version: number, cardId: string, kind: "spec" | "plan"): Promise<PlanbanDocPayload | null> {
+  const path = historyDocPath(state.planningRoot, version, cardId, kind);
+  if (!(await pathExists(path))) return null;
+  const stats = await stat(path);
+  return { cardId, kind, path, exists: true, markdown: await readFile(path, "utf8"), mtimeMs: stats.mtimeMs };
 }
 
 export async function restoreRoadmapFromHistory(input: {

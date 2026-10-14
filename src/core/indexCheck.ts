@@ -9,6 +9,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { checkIndexCard, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, MAX_DOCUMENT_BYTES, withoutCode } from "./contentRules";
+import { planbanCommand } from "./command";
 
 /** This machine's name as people know it, such as "Pierce's Mac mini". */
 export function machineName(): string {
@@ -36,7 +37,7 @@ export function howToTidy(machine = machineName()) {
     "- Move each file in its folder to where it belongs (the project's repository, a shared drive or a website), and link to it from the card's Spec or Plan: a GitHub link, a web address, or a path labelled with its machine, such as "
       + `"${machine}: ~/Projects/app/renders/front.png".`,
     "- Replace each picture that is stored in a Spec or Plan, or points at a file on this machine, with such a link or labelled path.",
-    "- Or run `planban move-files-out <card> --to <folder>` (add --dry-run to preview): it moves the folder's files to that folder without overwriting anything, and adds a Files section to the card's Spec that refers to them.",
+    `- Or run \`${planbanCommand()} move-files-out <card> --to <folder>\` (add --dry-run to preview): it moves the folder's files to that folder without overwriting anything, and adds a Files section to the card's Spec that refers to them.`,
   ].join("\n");
 }
 

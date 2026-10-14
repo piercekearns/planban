@@ -4,6 +4,8 @@ Planban is a local-first, agent-native Kanban board that installs as a plugin in
 
 It gives you a simple roadmap board, keeps your planning state local, and helps your coding agent start work from the right card, spec, and project context. Its MCP server also works from any host that can run a local MCP server.
 
+Planban is free to use on your computer with no account. When you want to share a board, use it from another computer, or reach it from ChatGPT or claude.ai, you can take that one board online with a free Planban account (see [Online Boards](#online-boards)). Every other board stays on your computer.
+
 Planban's broader product direction is a durable planning system shared by humans and agents, designed first to give an individual clear sight of project work across agent surfaces. Read the [Planban Product Constitution](PRODUCT.md) for the principles that guide product and feature decisions. Learn more at https://planban.ai/.
 
 ## What Planban Does
@@ -14,6 +16,7 @@ Planban's broader product direction is a durable planning system shared by human
 - Organizes related outcomes into root Groups while each owned Item remains independently completable, ranked, documented, and movable.
 - Supports board creation, duplication, archiving, restoring, card movement, docs, history, and feedback flows.
 - Ships CLI, local API, and MCP tools so any agent host can work with Planban through structured local actions.
+- Takes a board online when you choose, so people you invite and their agents can work on it, with roles and limits on what agents may do.
 
 ## Install
 
@@ -246,6 +249,39 @@ After a manual update, start a new session so the host loads the updated plugin 
 
 Planban does not silently update itself and does not send private board contents, repo paths, logs, or project details as part of update checks.
 
+## Online Boards
+
+An Online Board lives at app.planban.ai instead of on one computer. Use one when you want to work on a board with someone else, open it from another computer, or let ChatGPT or claude.ai read and update it. Boards stay on your computer unless you take them online, and Planban never needs an account for local boards.
+
+In the commands below, `planban` means Planban's command line. If it isn't installed as a command on your computer, Planban's own messages print the exact form to run, which is `node "<Planban install folder>/bin/planban.mjs"`.
+
+**Take a board online.** In the board, open Board settings and choose Take online, or run:
+
+```bash
+planban online login https://app.planban.ai          # once per computer; opens sign-in in your browser
+planban online take-online https://app.planban.ai --cwd /path/to/project
+```
+
+A board goes online only when it holds no files (see [Local Storage](#local-storage)). Taking it online leaves `.planban/online-board.json` in the project folder: commit it, so other computers and agents know the board lives online. This computer keeps a backup copy. You can bring the board back any time with Board settings, Take local (or `planban online take-local`), and its history comes with it.
+
+**Invite people.** Board settings, People, Invite people, or `planban online invite --email <address> --role editor` (the role is viewer unless you say otherwise). Each person has a role:
+
+- **Owner** can do everything, including inviting people and taking the board online or local.
+- **Editor** can change cards, Specs and Plans, and mark work complete.
+- **Viewer** can read the board and its history.
+
+Each person also chooses what their own agents may do: read, plan, or plan and complete (`planban online my-agents <level>`). An agent can never do more than its person. People join from the invitation link with `planban online join <link>`.
+
+**Connect AI apps.** Codex and Claude Code with the Planban plugin already work with online boards once this computer is signed in. Other apps connect to `https://app.planban.ai/mcp` and ask you to sign in and click Allow:
+
+- ChatGPT and claude.ai: add a custom connector with that address.
+- Claude Code without the plugin: `claude mcp add --transport http planban https://app.planban.ai/mcp`, then sign in with `/mcp`.
+- Codex without the plugin: `codex mcp add planban --url https://app.planban.ai/mcp`, then `codex mcp login planban`.
+
+See and cut off any of these from Board settings, Connections, or `planban online connections https://app.planban.ai`.
+
+**Limits.** An online board holds up to 256 MB, each account can make up to 5,000 changes and write up to 64 MB of text a day, and Planban stays an index, not file storage.
+
 ## Local Storage
 
 Planban keeps live planning state on your machine:
@@ -265,7 +301,7 @@ planban move-files-out <card-id> --to <folder>
 
 This moves the files to that folder, never overwriting or deleting anything, and adds a Files section to the card's Spec that refers to each one where it now lives.
 
-Do not commit `~/.planban` state to your project repo. We recommend adding `.planban/` to your project's `.gitignore`: `planban init` does not do this for you, and `.planban/agent-context.md` contains absolute paths from your machine.
+Do not commit `~/.planban` state to your project repo. We recommend adding `.planban/agent-context.md` to your project's `.gitignore`: `planban init` does not do this for you, and that file contains absolute paths from your machine. If the board is online, do commit `.planban/online-board.json`, so other computers know where the board lives.
 
 ## License
 
