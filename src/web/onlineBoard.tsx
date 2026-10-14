@@ -8,6 +8,7 @@ import { Bot, Check, Cloud, Copy, Globe, Info, KeyRound, Laptop, Link, Loader2, 
 import { capabilities } from "./capabilities";
 import { pageFetch } from "./transport";
 import { Dropdown } from "./Dropdown";
+import { Wordmark } from "./Wordmark";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -102,11 +103,16 @@ export function webSignInPath(returnTo = `${window.location.pathname}${window.lo
 /** On the web: no error and no command, just Log in, which returns to this board. */
 function WebSignedOutScreen({ signedOut }: { signedOut: SignedOut }) {
   return (
-    <main className="error-screen">
-      <div className="load-error-card signed-out-card">
-        <h1>{signedOut.reason === "expired" ? "Your Planban sign-in has ended." : "You're signed out of Planban."}</h1>
-        <p>Log in to open this board.</p>
-        <button className="primary" onClick={() => window.location.assign(webSignInPath())}>Log in</button>
+    <main className="web-screen">
+      <header className="web-apphead">
+        <a href="https://planban.ai" aria-label="Planban"><Wordmark /></a>
+      </header>
+      <div className="web-wrap narrow">
+        <div className="web-panel web-card">
+          <h1 className="web-h">{signedOut.reason === "expired" ? "Your Planban sign-in has ended." : "You're signed out of Planban."}</h1>
+          <p className="web-sub">Log in to open this board.</p>
+          <button className="web-button dark" onClick={() => window.location.assign(webSignInPath())}>Log in</button>
+        </div>
       </div>
     </main>
   );

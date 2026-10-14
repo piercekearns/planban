@@ -4,6 +4,7 @@
 // Also what the screens around sign-in need: the public sign-in settings, the
 // invitation preview, sign-out, and where to go afterwards.
 import { clerkScriptUrls } from "../core/clerkPins";
+import { CLERK_APPEARANCE, CLERK_LOCALIZATION } from "./clerkLook";
 
 const HEADERS = { "X-Planban-Client": "web", "Content-Type": "application/json" } as const;
 
@@ -149,6 +150,6 @@ export async function loadClerk(settings: SignInSettings): Promise<ClerkBrowser>
   const globals = window as unknown as { Clerk?: ClerkBrowser; __internal_ClerkUICtor?: unknown };
   if (!globals.Clerk) throw new Error("Sign-in couldn't load. Try again.");
   // No telemetry: the page's security policy refuses it, and it tells nobody anything they need.
-  await globals.Clerk.load({ ui: { ClerkUI: globals.__internal_ClerkUICtor }, telemetry: { disabled: true } });
+  await globals.Clerk.load({ ui: { ClerkUI: globals.__internal_ClerkUICtor }, telemetry: { disabled: true }, appearance: CLERK_APPEARANCE, localization: CLERK_LOCALIZATION });
   return globals.Clerk;
 }

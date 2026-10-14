@@ -826,7 +826,7 @@ h1 {
 }
 
 .board-history-list { overflow-y: auto; padding: 5px; }
-.board-history-list button { display: flex; width: 100%; border-radius: 6px; background: transparent; color: var(--text); padding: 9px 10px; text-align: left; cursor: pointer; }
+.board-history-list button { display: flex; width: 100%; border-radius: 6px; background: transparent; color: var(--text); padding: 9px 10px; font-size: 13px; text-align: left; cursor: pointer; }
 .board-history-list button:hover,
 .board-history-list button.active { background: var(--surface-subtle); }
 .board-history-list b,
@@ -5963,10 +5963,10 @@ button.content-edit-action:hover {
   .board-screen .board-grid .card .card-actions { display: none; }
 }
 
-/* Phones: dialogs are full-height sheets; the card page keeps its actions and Save at the bottom. */
+/* Phones: dialogs are sheets from the bottom, as tall as their content (approved mockup section 8); the card page keeps its actions and Save at the bottom. */
 @media (max-width: 640px) {
   .modal-backdrop { place-items: end stretch; padding: 0; padding-top: max(24px, env(safe-area-inset-top)); }
-  .modal-backdrop > [role="dialog"] { width: 100%; max-width: none; max-height: none; height: 100%; margin: 0; border-radius: 16px 16px 0 0; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom); }
+  .modal-backdrop > [role="dialog"] { width: 100%; max-width: none; max-height: 100%; height: auto; margin: 0; border-radius: 16px 16px 0 0; overflow-y: auto; padding-bottom: env(safe-area-inset-bottom); }
   .modal-backdrop > [role="dialog"]::before { content: ""; display: block; width: 36px; height: 4px; margin: 8px auto 0; border-radius: 4px; background: var(--border-strong); }
   .detail .detail-item-actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; justify-content: space-around; gap: 0; min-height: 52px; padding: 4px 12px calc(4px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg); opacity: 1; }
   .detail .detail-item-actions > button, .detail .detail-item-actions .tooltip-trigger > button { min-width: 44px; min-height: 44px; }
@@ -6005,10 +6005,13 @@ button.content-edit-action:hover {
 }
 
 /* The web's own screens (Planban 2.0, approved mockup sections 5, 6, 7 and 9). */
-.web-screen { min-height: 100dvh; background: var(--bg); color: var(--text); }
+/* Web screens sit on a light grey page with white panels, as in the approved mockup. */
+.web-screen { min-height: 100dvh; background: color-mix(in oklab, var(--text) 2.5%, var(--bg)); color: var(--text); }
 .web-apphead { display: flex; align-items: center; gap: 10px; padding: 13px 22px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .web-apphead a { display: inline-flex; }
 .web-apphead-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.web-apphead-right .web-apphead-link { color: var(--text-muted); font-size: 13px; text-decoration: none; }
+.web-apphead-right .web-apphead-link:hover { color: var(--text); }
 .web-wordmark img { display: block; width: auto; }
 .web-wrap { max-width: 760px; margin: 28px auto; padding: 0 22px 40px; }
 .web-wrap.narrow { max-width: 460px; }
@@ -6042,6 +6045,7 @@ button.content-edit-action:hover {
 .web-row-arrow { color: var(--text-muted); flex: 0 0 auto; }
 .web-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--border)); border-radius: 10px; background: color-mix(in oklab, var(--accent) 7%, var(--surface)); padding: 10px 14px; font-size: 12.5px; }
 .web-banner > span { flex: 1 1 220px; }
+.web-banner > .web-banner-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .web-first-run { max-width: 560px; margin: 0 auto; }
 .web-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .web-step { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 11px 13px; }
@@ -6062,16 +6066,20 @@ button.web-step-box { cursor: pointer; }
 .web-account-menu button { display: block; width: 100%; border: 0; border-radius: 6px; background: none; padding: 7px 9px; color: var(--text); font: 13px var(--font-sans); text-align: left; cursor: pointer; }
 .web-account-menu button:hover, .web-account-menu button:focus-visible { background: var(--surface-subtle); }
 .web-account-who, .web-account-note { margin: 6px 9px; color: var(--text-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+/* Who is signed in, above a line (approved mockup section 7, account menu). */
+.web-account-who { margin: 0 0 4px; border-bottom: 1px solid var(--border); padding: 7px 9px 9px; }
+.web-account-who b { display: block; color: var(--text); font-size: 13px; font-weight: 600; }
+.web-signed-in { margin: 14px 0 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); padding: 9px 12px; font-size: 13px; overflow-wrap: anywhere; }
 .web-toast { position: fixed; left: 50%; bottom: 24px; z-index: 60; transform: translateX(-50%); border-radius: 999px; background: var(--text); color: var(--bg); padding: 8px 16px; font-size: 13px; box-shadow: 0 8px 24px rgba(0, 0, 0, .14); }
-.web-signin { display: grid; place-items: start center; padding: 48px 20px; }
-.web-signin-card { width: 100%; max-width: 400px; }
-.web-signin-card h1 { margin: 22px 0 4px; font-size: 20px; font-weight: 650; letter-spacing: -.3px; }
-.web-clerk { margin: 8px 0; }
+.web-wrap.narrow.web-signin { max-width: 444px; margin-top: 40px; }
+.web-signin-note { margin: 12px 0 0; color: var(--text-muted); font-size: 12.5px; text-align: center; }
+.web-signin-note + .web-signin-note { margin-top: 4px; }
 .web-code-compare { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); padding: 10px 12px; font-size: 12.5px; color: var(--text-muted); }
-.web-code-compare b { color: var(--text); font: 600 18px ui-monospace, Menlo, monospace; letter-spacing: .08em; }
+.web-code-compare b { flex: none; color: var(--text); font: 600 18px ui-monospace, Menlo, monospace; letter-spacing: .08em; white-space: nowrap; }
 @media (max-width: 640px) {
   .web-apphead { padding: 10px 12px; }
   .web-wrap { margin: 12px auto; padding: 0 12px 32px; }
+  .web-wrap.narrow.web-signin { margin-top: 24px; }
   .web-h { font-size: 17px; }
   .web-row { padding: 11px 12px; }
   .web-row-arrow, .web-needs { display: none; }
@@ -6083,4 +6091,36 @@ button.web-step-box { cursor: pointer; }
 .access-key-made p { margin: 0 0 8px; font-size: 13px; }
 .access-key-choices { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
 .access-key-choices > span { display: grid; gap: 4px; justify-items: start; }
+/* Below the boards list, the steps line up with it. */
 .web-first-run-below { margin-top: 28px; }
+.web-first-run-below .web-first-run { max-width: none; }
+/* An empty list's one line, at the size of the rows around it. */
+.online-board-section > p.muted { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 19px; }
+
+/* The board's header on the web (approved mockup section 8): Planban / Your boards / the board, in one row; on a phone, "Planban ‹ Your boards" above the board's name. */
+.web-board-title { display: flex; align-items: center; gap: 8px; }
+.web-board-title .board-home-row { gap: 8px; min-height: 0; margin-bottom: 0; }
+.web-crumb-mark { display: inline-flex; border: 0; background: none; padding: 0; cursor: pointer; }
+.web-crumb { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; color: var(--text-muted); font: 13px var(--font-sans); white-space: nowrap; cursor: pointer; }
+.web-crumb:hover { color: var(--text); }
+.web-crumb::before, .web-crumb::after { content: "/"; color: var(--border-strong); }
+@media (max-width: 760px) {
+  .web-crumb { gap: 3px; font-size: 12.5px; }
+  .web-crumb::before { content: "‹"; color: var(--text-muted); font-size: 15px; }
+  .web-crumb::after { content: none; }
+  .web-board-title .board-title-row { margin-top: 2px; }
+}
+/* A card's back arrow stays beside its board name and title on a phone. */
+@media (max-width: 640px) {
+  .detail-header { gap: 8px 10px; padding: 12px; }
+  .detail-header > div:not(.detail-header-actions) { flex: 1 1 0; }
+}
+/* Phone sheets: their buttons share one row, as in the mockup's phone screens. */
+@media (max-width: 640px) {
+  .modal-backdrop .feedback-actions { flex-direction: row; flex-wrap: wrap; }
+  .modal-backdrop .feedback-actions button { flex: 1 1 0; width: auto; min-height: 40px; justify-content: center; }
+}
+/* Touch screens have no hover: a tap opens the control, without its tooltip covering what opened. */
+@media (hover: none) {
+  .floating-tooltip { display: none; }
+}

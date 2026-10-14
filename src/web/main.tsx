@@ -122,6 +122,7 @@ import { Dropdown } from "./Dropdown";
 import { useKeyboardInset, usePhoneLayout } from "./phoneLayout";
 import { latestRequestGate } from "./latestRequest";
 import { AccountMenu, ApprovePage, HostedDashboard, InvitePage, JoinedNote, SignInPage, webScreen } from "./hostedScreens";
+import { Wordmark } from "./Wordmark";
 import { captureAddressSecrets } from "./webAccount";
 
 // On the web, an invitation's token or a sign-in request in the address is
@@ -5682,11 +5683,19 @@ function BoardView({
     <BoardPeopleContext.Provider value={boardPeople.people}>
     <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
       <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
-        <div className="board-title-group">
+        <div className={`board-title-group ${capabilities.hosted ? "web-board-title" : ""}`}>
           <div className="board-home-row">
-            <TooltipButton label="All Boards" className="board-home-button" onClick={() => onSelectBoard(null)}>
-              <Home size={15} />
-            </TooltipButton>
+            {capabilities.hosted ? (
+              // The web page's way back (approved mockup section 8): Planban / Your boards / this board.
+              <>
+                <button className="web-crumb-mark" aria-label="Your boards" onClick={() => onSelectBoard(null)}><Wordmark height={17} /></button>
+                <button className="web-crumb" onClick={() => onSelectBoard(null)}>Your boards</button>
+              </>
+            ) : (
+              <TooltipButton label="All Boards" className="board-home-button" onClick={() => onSelectBoard(null)}>
+                <Home size={15} />
+              </TooltipButton>
+            )}
           </div>
           <div className="board-title-row">
             <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />

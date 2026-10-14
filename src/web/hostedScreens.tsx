@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useRef, useState, type ReactNode } from 
 import { Check, ChevronRight, Copy, Loader2, Plus } from "lucide-react";
 import { ConnectionsModal, NewBoardModal } from "./onlineBoard";
 import { pageFetch } from "./transport";
+import { Wordmark } from "./Wordmark";
 import {
   clearApproval, clearInvite, loadClerk, pendingApproval, pendingInvite, previewInvite, rememberAccount, rememberedAccount,
   safeNext, signInSettings, signOutWeb, startWebSession, type ClerkBrowser, type InvitePreview,
@@ -38,15 +39,6 @@ export function webScreen(pathname = window.location.pathname): "sign-in" | "inv
   if (pathname.startsWith("/invite/")) return "invite";
   if (pathname === "/approve") return "approve";
   return null;
-}
-
-function Wordmark({ height = 20 }: { height?: number }) {
-  return (
-    <picture className="web-wordmark">
-      <source srcSet="/assets/planban-logo-wordmark-white.svg" media="(prefers-color-scheme: dark)" />
-      <img src="/assets/planban-logo-wordmark-black.svg" alt="Planban" style={{ height }} />
-    </picture>
-  );
 }
 
 function initials(account: { email: string | null; name: string | null } | null) {
@@ -111,7 +103,9 @@ export function AccountMenu() {
         onKeyDown={(event) => { if (event.key === "ArrowDown" && !open) { event.preventDefault(); setOpen(true); } }}>{initials(account)}</button>
       {open ? (
         <div className="web-account-menu" role="menu" aria-label="Your account" onKeyDown={onMenuKey}>
-          {account?.email ? <p className="web-account-who">Signed in as <b>{account.email}</b></p> : null}
+          {account?.email ? (
+            <p className="web-account-who">{account.name ? <><b>{account.name}</b>{account.email}</> : <>Signed in as <b>{account.email}</b></>}</p>
+          ) : null}
           <button role="menuitem" tabIndex={-1} onClick={() => { close(false); setConnections(true); }}>Connections</button>
           <button role="menuitem" tabIndex={-1} onClick={() => void signOut()}>Sign out</button>
           {error ? <p className="web-account-note" role="alert">{error}</p> : null}
@@ -140,13 +134,16 @@ export function SignInPage() {
   const [message, setMessage] = useState<string | null>(null);
   const clerkRef = useRef<ClerkBrowser | null>(null);
   const finishing = useRef(false);
-  // Clerk's own check before creating an account shows no text inside our layout; say what's happening.
-  const [checking, setChecking] = useState(() => window.location.hash.includes("protect-check"));
+  // Clerk keeps its step in the address's fragment: empty on the first step.
+  const [step, setStep] = useState(() => window.location.hash);
   useEffect(() => {
-    const onHash = () => setChecking(window.location.hash.includes("protect-check"));
+    const onHash = () => setStep(window.location.hash);
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  const firstStep = step === "" || step === "#" || step === "#/";
+  // Clerk's own check before creating an account shows no text inside our layout; say what's happening.
+  const checking = step.includes("protect-check");
 
   const finish = useCallback(async (clerk: ClerkBrowser) => {
     if (finishing.current) return;
@@ -187,10 +184,6 @@ export function SignInPage() {
             // GitHub sends people back here, which then finishes on its own.
             forceRedirectUrl: window.location.href,
             signUpForceRedirectUrl: window.location.href,
-            appearance: {
-              layout: { socialButtonsPlacement: "top", logoPlacement: "none" },
-              elements: { header: { display: "none" }, footer: { display: "none" }, card: { boxShadow: "none", border: "0", padding: "0", background: "transparent" }, rootBox: { width: "100%" }, cardBox: { width: "100%", boxShadow: "none", border: "0" } },
-            },
           });
         }
       } catch (error) {
@@ -214,11 +207,19 @@ export function SignInPage() {
   }
 
   return (
-    <main className="web-screen web-signin">
-      <div className="web-signin-card">
-        <Wordmark height={22} />
-        <h1>Log in or sign up</h1>
-        <p className="web-sub">Free. Your boards stay private until you share them.</p>
+    <main className="web-screen">
+      <header className="web-apphead">
+        <a href="https://planban.ai" aria-label="Planban"><Wordmark /></a>
+        <span className="web-apphead-right"><a className="web-apphead-link" href="https://planban.ai">planban.ai</a></span>
+      </header>
+      <div className="web-wrap narrow web-signin">
+        {/* Clerk shows each step's own title once it's ready (see clerkLook.ts). */}
+        {status === "ready" ? null : (
+          <>
+            <h1 className="web-h">Log in or sign up</h1>
+            <p className="web-sub">Free. Your boards stay private until you share them.</p>
+          </>
+        )}
         {status === "unavailable" ? <p className="web-note" role="alert">Sign-in isn't available here yet.</p> : null}
         <div ref={mountRef} className="web-clerk" hidden={status !== "ready"} />
         {status === "ready" && checking ? <p className="web-muted" role="status"><Loader2 size={14} className="spin" /> Checking this browser before creating your account…</p> : null}
@@ -229,8 +230,12 @@ export function SignInPage() {
             <button className="web-button" onClick={() => void startAgain()}>Sign in again</button>
           </div>
         ) : null}
-        <p className="web-muted">We'll email you a code. No password.</p>
-        <p className="web-foot">New here? The same steps create your account.</p>
+        {firstStep ? (
+          <>
+            <p className="web-signin-note">We'll email you a code. No password.</p>
+            <p className="web-signin-note">New here? The same steps create your account.</p>
+          </>
+        ) : null}
       </div>
     </main>
   );
@@ -397,8 +402,10 @@ export function HostedDashboard({ boards, onSelectBoard, onBoardsChanged }: { bo
         {showing.map((invite) => (
           <div className="web-banner" key={invite.id}>
             <span><b>{invite.inviterName} invited you to {invite.boardTitle}</b> as {invite.role === "editor" ? "an editor" : "a viewer"}.</span>
-            <button className="web-button dark" disabled={busy !== null} onClick={() => void join(invite)}>{busy === invite.id ? <Loader2 size={13} className="spin" /> : null}Join</button>
-            <button className="web-button ghost" disabled={busy !== null} onClick={() => notNow(invite)}>Not now</button>
+            <span className="web-banner-actions">
+              <button className="web-button dark" disabled={busy !== null} onClick={() => void join(invite)}>{busy === invite.id ? <Loader2 size={13} className="spin" /> : null}Join</button>
+              <button className="web-button ghost" disabled={busy !== null} onClick={() => notNow(invite)}>Not now</button>
+            </span>
           </div>
         ))}
         {error ? <p className="web-note" role="alert">{error}</p> : null}
@@ -547,7 +554,7 @@ export function InvitePage({ onOpenBoard }: { onOpenBoard: (boardId: string) => 
       <button className="web-button dark" onClick={() => window.location.assign(signInPath("/invite/pending"))}>Log in or sign up</button>);
   }
   return card(`${preview.inviterName} invited you to ${preview.boardTitle}`,
-    <>{body}{account?.email ? <p className="web-muted">Signed in as {account.email}</p> : null}</>,
+    <>{body}{account?.email ? <p className="web-signed-in">Signed in as <b>{account.email}</b></p> : null}</>,
     <button className="web-button dark" disabled={busy} onClick={() => void join()}>{busy ? <Loader2 size={13} className="spin" /> : null}Join {preview.boardTitle}</button>);
 }
 
