@@ -82,7 +82,7 @@ export function consentPage(page: ConsentPage): string {
       try{await Clerk.load({nonce:${literal(nonce)},ui:{ClerkUI:window.__internal_ClerkUICtor}});Clerk.addListener(render);render();
         document.addEventListener('visibilitychange',()=>{if(document.hidden)invalidate();else restored();});
         window.addEventListener('offline',wentOffline);window.addEventListener('online',cameOnline);
-        if(navigator.onLine===false)wentOffline();
+        if(typeof navigator!=='undefined'&&navigator.onLine===false)wentOffline();
         window.addEventListener('focus',restored);window.addEventListener('pageshow',restored);
         const tick=()=>{if(!requestEnded){if(clock()>=validUntil)endRequest();else if(!document.hidden&&!inflight&&!deciding)void refreshValidity();setTimeout(tick,15000);}};
         setInterval(()=>{if(!requestEnded&&clock()>=validUntil)endRequest();},1000);
