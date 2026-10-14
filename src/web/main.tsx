@@ -127,7 +127,11 @@ import { captureAddressSecrets } from "./webAccount";
 
 // On the web, an invitation's token or a sign-in request in the address is
 // moved out of it before anything else runs.
-if (capabilities.hosted) captureAddressSecrets();
+if (capabilities.hosted) {
+  captureAddressSecrets();
+  // The web page's own look where it differs from the installed app's, such as dark primary buttons.
+  document.documentElement.classList.add("web-hosted");
+}
 import { newIdempotencyKey } from "./hostedAdapter";
 import { watchHostedBoard } from "./hostedLive";
 import { hostedAdapter, pageFetch } from "./transport";

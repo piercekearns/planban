@@ -6124,3 +6124,16 @@ button.web-step-box { cursor: pointer; }
 @media (hover: none) {
   .floating-tooltip { display: none; }
 }
+/* On the web page, a dialog's main action is dark, like Join, Continue and New board (approved mockup sections 7 to 9). */
+.web-hosted .feedback-actions .update-now-action,
+.web-hosted .feedback-actions .update-now-action:disabled,
+.web-hosted .feedback-actions .update-now-action:disabled:hover { background: var(--text); color: var(--bg); }
+.web-hosted .feedback-actions .update-now-action:hover { background: color-mix(in oklab, var(--text) 85%, var(--bg)); color: var(--bg); }
+.web-hosted .editor-actions .primary { border-color: var(--text); background: var(--text); color: var(--bg); }
+.web-hosted .editor-actions .primary:hover:not(:disabled) { border-color: var(--text); background: color-mix(in oklab, var(--text) 85%, var(--bg)); color: var(--bg); }
+@media (max-width: 640px) {
+  /* Editing a Spec or Plan on a phone gives the editor the screen (approved mockup section 8). */
+  .detail:has(.editor-pane) .overview-panel { display: none; }
+  /* The invitation sits on the page, with only who is signed in boxed (approved mockup section 9). */
+  .web-invite.web-panel { border: 0; background: none; padding: 6px 2px 0; }
+}

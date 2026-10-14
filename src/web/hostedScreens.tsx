@@ -520,7 +520,7 @@ export function InvitePage({ onOpenBoard }: { onOpenBoard: (boardId: string) => 
     <main className="web-screen">
       <AppHeaderMaybe signedIn={signedIn === true} />
       <div className="web-wrap narrow">
-        <section className="web-panel web-card" aria-labelledby="invite-title">
+        <section className="web-panel web-card web-invite" aria-labelledby="invite-title">
           <p className="web-eyebrow">Invitation</p>
           <h1 id="invite-title" className="web-h">{title}</h1>
           {body}
