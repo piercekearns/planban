@@ -4,9 +4,9 @@
 //
 //   ~/mac-mini-setup/dev24 node --import tsx/esm online/edge/write-headers.ts \
 //     --clerk https://clerk.example --convex https://name-123.eu-west-1.convex.cloud
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { headersFile } from "./webHeaders";
+import { headersFile, inlineScriptsOf } from "./webHeaders";
 
 const args = process.argv.slice(2);
 const value = (name: string) => {
@@ -20,5 +20,7 @@ if (!clerk || !convex) {
   process.exit(2);
 }
 const out = value("out") ?? fileURLToPath(new URL("../../dist/web/_headers", import.meta.url));
-await writeFile(out, headersFile({ clerkFrontendApi: clerk, convexCloudUrl: convex }));
+// The built main page's inline script is allowed by its exact hash.
+const page = await readFile(value("page") ?? fileURLToPath(new URL("../../dist/web/index.html", import.meta.url)), "utf8");
+await writeFile(out, headersFile({ clerkFrontendApi: clerk, convexCloudUrl: convex, inlineScripts: inlineScriptsOf(page) }));
 process.stdout.write(`Wrote ${out}\n`);

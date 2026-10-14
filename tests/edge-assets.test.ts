@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import worker, { isServicePath, WORKER_FIRST, type Env } from "../online/edge/worker";
-import { contentSecurityPolicy, headersFile } from "../online/edge/webHeaders";
+import { createHash } from "node:crypto";
+import { contentSecurityPolicy, headersFile, inlineScriptsOf } from "../online/edge/webHeaders";
 
 const PUBLIC = "https://app.planban.example";
 const UPSTREAM = "https://native-123.eu-west-1.convex.site";
@@ -117,9 +118,25 @@ test("the page's Content Security Policy is exact, from the deployed Clerk and C
   ]) assert.throws(() => contentSecurityPolicy(bad), /https origin/u, JSON.stringify(bad));
 });
 
-test("the policy allows everything the page loads: its own files and nothing inline", async () => {
+test("the policy allows the page's own files and, by exact hash, only its one inline script", async () => {
   const html = await readFile(new URL("../src/web/index.html", import.meta.url), "utf8");
-  assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/u, "no inline scripts, which script-src would refuse");
+  const scripts = inlineScriptsOf(html);
+  assert.equal(scripts.length, 1, "the address bootstrap");
   assert.doesNotMatch(html, /\bon[a-z]+=/u, "no inline event handlers");
   assert.doesNotMatch(html, /https?:\/\//u, "nothing loaded from elsewhere");
+  const policy = contentSecurityPolicy({ clerkFrontendApi: "https://clerk.planban.example", convexCloudUrl: "https://name-123.eu-west-1.convex.cloud", inlineScripts: scripts });
+  const hash = createHash("sha256").update(scripts[0]!, "utf8").digest("base64");
+  assert.ok(policy.includes(`script-src 'self' 'sha256-${hash}' https://clerk.planban.example `), policy);
+  assert.doesNotMatch(policy, /unsafe-inline'[^;]*;[^;]*script|script-src[^;]*unsafe-inline/u, "scripts are never allowed wholesale");
+});
+
+test("the deploy step hashes the built page's inline script, which the build keeps as written", async () => {
+  const source = await readFile(new URL("../online/edge/write-headers.ts", import.meta.url), "utf8");
+  assert.match(source, /inlineScripts: inlineScriptsOf\(page\)/u);
+  const built = await readFile(new URL("../dist/web/index.html", import.meta.url), "utf8").catch(() => null);
+  // The tracked build is refreshed at integration; when it has the bootstrap, it must be byte-identical to the source's.
+  if (built && inlineScriptsOf(built).length) {
+    const html = await readFile(new URL("../src/web/index.html", import.meta.url), "utf8");
+    assert.deepEqual(inlineScriptsOf(built), inlineScriptsOf(html));
+  }
 });
