@@ -27,9 +27,10 @@ export function shellQuote(value: string, windows = (globalThis as { process?: {
 /** The command to print for an install at `script`. */
 export function commandFor(script: string, { windows, onPath }: { windows: boolean; onPath: boolean }): string {
   if (onPath) return "planban";
-  // Command Prompt and PowerShell expand %…% and $… even inside double quotes, and no one
-  // quoting suits both, so such a path gets a description to follow instead of a command.
-  if (windows && /[%$`!^"]/.test(script)) return `node "<Planban install folder>\\bin\\planban.mjs"`;
+  // Command Prompt and PowerShell each treat different characters specially even inside
+  // double quotes (%, $, `, curly quotes and more), and no one quoting suits both. Only a path
+  // made of plainly safe characters is printed as a command; any other gets a description.
+  if (windows && !/^[A-Za-z0-9 _.:\\()-]+$/.test(script)) return `node "<Planban install folder>\\bin\\planban.mjs"`;
   return `node ${shellQuote(script, windows)}`;
 }
 
