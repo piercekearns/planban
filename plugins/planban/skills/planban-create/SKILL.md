@@ -74,7 +74,8 @@ Browser-presentation failure does not invalidate a successful creation.
 
 Prefer the Planban MCP tools. These commands run from a Planban checkout; elsewhere use
 the `planban` command (see the protocol's Online authority section). On an online
-board, add `--base-revision <revision>` from `planban status` to each create, and an
+board, add `--base-revision <revision>` (the `revision` from `get-card` or
+`query-cards`) to each create, and an
 online board can't be created with `init`: take an existing local board online instead.
 
 For a simple card:

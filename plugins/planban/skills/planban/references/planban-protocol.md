@@ -386,7 +386,8 @@ genuinely unresolved; do not invent a specific objective from weak context. The 
 may leave the objective blank and add or edit it later.
 
 On an online board, add `--base-revision <revision>` to each edit (the `revision`
-from `status` or `get-card`) and `--expected-mtime <mtimeMs>` to `write-doc`.
+from `get-card` or `query-cards`) and `--expected-mtime <mtimeMs>` to `write-doc`
+(the `mtimeMs` from `read-doc`).
 
 ```bash
 npm run planban -- status --cwd /path/to/repo -o json

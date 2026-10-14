@@ -406,7 +406,8 @@ program
     const state = await loadState(cwdOption(options.cwd));
     const card = state.roadmap.roadmapItems.find((item) => item.id === cardId);
     if (!card) throw new Error(`Card not found: ${cardId}`);
-    print({ ...card, ancestry: cardAncestry(state.roadmap, cardId) }, options);
+    // The board's revision travels with the card, for --base-revision on the next edit.
+    print({ revision: state.roadmap.revision, ...card, ancestry: cardAncestry(state.roadmap, cardId) }, options);
   });
 
 program
