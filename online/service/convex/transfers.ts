@@ -5,12 +5,21 @@ import { internal } from "./_generated/api";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { liveConnection } from "./model/access";
 import { fail } from "./model/errors";
-import { abortTransfer, beginTransfer, commitTransfer, putPart, requireOwnConnection } from "./model/transfer";
+import { abortTransfer, beginTransfer, commitTransfer, createOnlineBoard, putPart, requireOwnConnection } from "./model/transfer";
 
 const CLEANUP_BATCH = 25;
 
 const attributionOf = (connection: { _id: string; userId: string; clientName: string }) =>
   ({ userId: connection.userId, clientName: connection.clientName, actor: "user" as const, connectionId: connection._id });
+
+/** New board on the web (Planban 2.0): an empty online board owned by the signed-in person. */
+export const createBoard = internalMutation({
+  args: { connectionId: v.id("connections"), title: v.string() },
+  handler: async (ctx, { connectionId, title }) => {
+    const connection = await liveConnection(ctx, connectionId);
+    return createOnlineBoard(ctx, connection, { title }, attributionOf(connection));
+  },
+});
 
 export const begin = internalMutation({
   args: { connectionId: v.id("connections"), transferId: v.string(), roadmap: v.any(), retention: v.optional(v.any()), retiredIds: v.optional(v.array(v.string())), uid: v.optional(v.string()) },

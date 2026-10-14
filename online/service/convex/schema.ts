@@ -166,6 +166,8 @@ export default defineSchema({
     invites: v.optional(v.number()),
     inviteEmails: v.optional(v.number()),
     keys: v.optional(v.number()),
+    /** Boards that came online today: new on the web, or taken online from a computer. */
+    boards: v.optional(v.number()),
   }).index("by_user_day", ["userId", "day"]).index("by_day", ["day"]),
 
   /** How a person appears to others on shared boards (name and picture from the sign-in account). */

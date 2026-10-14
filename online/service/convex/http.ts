@@ -139,6 +139,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
   }
   if (parts[0] !== "boards") return json({ error: { code: "not_found", message: "Unknown endpoint." } }, 404);
   if (parts.length === 1 && method === "GET") return json({ boards: await ctx.runQuery(internal.boards.listBoards, { connectionId }) });
+  if (parts.length === 1 && method === "POST") {
+    const input = await body(request);
+    return json(await ctx.runMutation(internal.transfers.createBoard, { connectionId, title: String(input.title ?? "") }), 201);
+  }
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {
     return json(await ctx.runMutation(internal.transfers.importBundle, { connectionId, transferId: crypto.randomUUID(), bundle: await body(request) }), 201);
   }

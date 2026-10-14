@@ -6,6 +6,7 @@
 import {
   assertCommittable,
   committedRoadmap,
+  createEmptyRoadmap,
   normalizeRoadmap,
 } from "../../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanRoadmap } from "../../../../src/core/types";
@@ -16,7 +17,7 @@ import { BOARD_ID_PATTERN } from "./access";
 import { packJson, packText } from "./codec";
 import { asServiceError, fail } from "./errors";
 import { checkCards, checkDocuments, checkImportedExtras } from "./indexRules";
-import { addStored, chargeImport, sizeOf } from "./limits";
+import { addStored, chargeImport, chargeNewOnlineBoard, sizeOf } from "./limits";
 import { seedCardChanges } from "./cardChanges";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
@@ -123,12 +124,17 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
     if (board.localTransfer && Date.now() - Date.parse(board.localTransfer.at) < 24 * 60 * 60 * 1000) {
       fail("conflict", "This board is still being taken local on a machine. Finish that Take Local first.");
     }
+    // A board taken local that comes back online counts like a new one; an
+    // upload already under way for it (below) is replaced, not counted twice.
+    const underWay = await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", boardId).eq("state", "open")).first();
+    if (board.authority === "returned-local" && !underWay) await chargeNewOnlineBoard(ctx, connection.userId);
     for (const open of await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", boardId).eq("state", "open")).collect()) {
       if (Date.now() - Date.parse(open.updatedAt) < STALE_TRANSFER_MS) fail("conflict", `${boardId} is being taken online right now. Try again in a few minutes.`);
       await abortTransfer(ctx, open);
     }
     if (board.authority === "returned-local") previousRevision = board.revision;
   } else {
+    await chargeNewOnlineBoard(ctx, connection.userId);
     const id = await ctx.db.insert("boards", {
       boardId, title: roadmap.project.title, ownerId: connection.userId, authority: "importing",
       revision: roadmap.revision, generation: 0, historyVersion: 0, createdAt: now, updatedAt: now,
@@ -277,4 +283,50 @@ export async function commitTransfer(ctx: MutationCtx, connection: Doc<"connecti
     await ctx.scheduler.runAfter(CLEANUP_DELAY_MS, internal.transfers.cleanupGeneration, { boardId: board!.boardId, generation: previousGeneration });
   }
   return { boardId: board!.boardId, roadmap: committed };
+}
+
+const MAX_BOARD_TITLE = 120;
+
+/** A free board id from a title: its slug, or the slug with a short random suffix when taken. */
+async function freeBoardId(ctx: MutationCtx, title: string) {
+  const slug = title.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "") || "board";
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = attempt === 0 ? slug : `${slug}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36).slice(0, 6)}`;
+    if (BOARD_ID_PATTERN.test(candidate) && !await boardRow(ctx, candidate)) return candidate;
+  }
+  fail("conflict", "Couldn't find a free name for this board. Try another name.");
+  return "";
+}
+
+/**
+ * New board on the web: an empty online board owned by the person, created in
+ * one transaction with its first history entry. Counts against the account's
+ * online board limits before anything is written.
+ */
+export async function createOnlineBoard(ctx: MutationCtx, connection: Doc<"connections">, input: { title: string }, attribution: Attribution) {
+  requireOwnConnection(connection);
+  const title = input.title.replace(/\s+/g, " ").trim();
+  if (!title || title.length > MAX_BOARD_TITLE) fail("validation", `Give the board a name of up to ${MAX_BOARD_TITLE} characters.`);
+  await chargeNewOnlineBoard(ctx, connection.userId);
+  const boardId = await freeBoardId(ctx, title);
+  const now = new Date().toISOString();
+  const roadmap = createEmptyRoadmap({ repoId: boardId, title, now });
+  const generation = await nextGeneration(ctx);
+  const at = { boardId, generation };
+  const packedRoadmap = packJson(roadmap);
+  await ctx.db.insert("boardState", { ...at, roadmap: packedRoadmap });
+  await addStored(ctx, at, sizeOf(packedRoadmap));
+  const id = await ctx.db.insert("boards", {
+    boardId, title, ownerId: connection.userId, authority: "online", revision: roadmap.revision,
+    generation, historyVersion: 0, onlineSince: now, uid: crypto.randomUUID(), createdAt: now, updatedAt: now,
+  });
+  await ctx.db.insert("members", { boardId, userId: connection.userId, role: "owner" });
+  const board = (await ctx.db.get(id))!;
+  await seedCardChanges(ctx, at, roadmap, connection.userId, now);
+  await recordHistory(ctx, {
+    board, previous: null, committed: roadmap,
+    history: { actor: "user", operation: "board.create", summary: "Created the board online", affectedCards: [] },
+    docs: [], attribution, now,
+  });
+  return { boardId, title, revision: roadmap.revision };
 }

@@ -154,6 +154,9 @@ export const me = internalQuery({
   },
 });
 
+/** A board's people count is shown as "200+" past this. */
+const MAX_LISTED_PEOPLE = 200;
+
 export const listBoards = internalQuery({
   args: { connectionId: v.id("connections") },
   handler: async (ctx, { connectionId }) => {
@@ -163,9 +166,29 @@ export const listBoards = internalQuery({
     for (const member of memberships) {
       if (!reaches(connection, member.boardId)) continue;
       const board = await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", member.boardId)).unique();
-      if (board && board.authority !== "importing") {
-        boards.push({ boardId: board.boardId, title: board.title, role: member.role, authority: board.authority, revision: board.revision });
+      if (!board || board.authority === "importing") continue;
+      const entry = { boardId: board.boardId, title: board.title, role: member.role, authority: board.authority, revision: board.revision, lastChangedAt: board.updatedAt };
+      if (board.authority !== "online") { boards.push(entry); continue; }
+      // The dashboard's summary of each online board (Planban 2.0 plan): people,
+      // cards per column, the owner's name on shared boards, and, for the owner
+      // only, how many cards wait on them.
+      const roadmap = await currentRoadmap(ctx, { boardId: board.boardId, generation: board.generation });
+      const cardCounts: Record<string, number> = {};
+      let needYou = 0;
+      for (const item of roadmap.roadmapItems) {
+        if (item.isGroup) continue;
+        cardCounts[item.status] = (cardCounts[item.status] ?? 0) + 1;
+        if (item.status !== "complete" && item.status !== "archived" && /^\s*Owner:/.test(item.nextAction ?? "")) needYou += 1;
       }
+      const people = (await ctx.db.query("members").withIndex("by_board", (q) => q.eq("boardId", board.boardId)).take(MAX_LISTED_PEOPLE + 1)).length;
+      const owner = board.ownerId === connection.userId ? null
+        : await ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", board.ownerId)).unique();
+      boards.push({
+        ...entry,
+        people,
+        cardCounts,
+        ...(member.role === "owner" ? { needYou } : { ownerName: owner?.name ?? "Someone" }),
+      });
     }
     return boards;
   },
