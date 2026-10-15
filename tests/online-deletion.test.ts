@@ -266,3 +266,9 @@ test("on the web page, Board settings knows a read-only copy, and its Delete onl
     assert.equal((await page.fetch(`/api/boards/${boardId}/state`)).status, 404);
   });
 });
+
+test("other people's boards show a deleted account's changes as 'A deleted account', and never anyone's raw account id", async () => {
+  const { absentPerson } = await import("../src/web/onlineBoard");
+  assert.equal(absentPerson(erasure.DELETED_ACCOUNT).name, "A deleted account");
+  assert.equal(absentPerson("user_3KjNmCA4RC6B9pT7PIyRgMOdoUW").name, "Someone no longer on this board");
+});

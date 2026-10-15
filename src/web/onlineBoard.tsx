@@ -675,13 +675,18 @@ export function CardFace({ cardId }: { cardId: string }) {
   if (!board?.shared) return null;
   const change = board.cards[cardId];
   if (!change) return null;
-  const person = board.people.find((entry) => entry.userId === change.userId) ?? { userId: change.userId, name: change.userId, imageUrl: null };
+  const person = board.people.find((entry) => entry.userId === change.userId) ?? absentPerson(change.userId);
   const who = change.agent ? `${person.name}'s agent${change.clientName ? ` (${change.clientName})` : ""}` : person.name;
   return (
     <span className="card-face" title={`${who}: ${change.summary} · ${timeAgo(change.at)}`}>
       <Face person={person} agent={change.agent} />
     </span>
   );
+}
+
+/** Someone no longer on the board: never their raw account id. A deleted account's changes say so (owner decision (b), 15 October 2026). */
+export function absentPerson(userId: string) {
+  return { userId, name: userId === "deleted-account" ? "A deleted account" : "Someone no longer on this board", imageUrl: null };
 }
 
 /** "Maya Okafor" or "Maya Okafor's agent (Claude)" for a history entry on a shared board, else null. */
@@ -694,7 +699,7 @@ export function useChangeAuthor(attribution: { userId: string; clientName: strin
     if (!owner) return null;
     return { person: owner, agent: actor === "agent", via: null };
   }
-  const person = board.people.find((entry) => entry.userId === attribution.userId) ?? { userId: attribution.userId, name: attribution.userId, imageUrl: null };
+  const person = board.people.find((entry) => entry.userId === attribution.userId) ?? absentPerson(attribution.userId);
   return { person, agent: attribution.actor === "agent", via: attribution.actor === "agent" ? attribution.clientName : null };
 }
 
