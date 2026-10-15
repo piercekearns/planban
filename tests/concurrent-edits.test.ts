@@ -118,3 +118,12 @@ test("a person's own refused edit isn't kept: the page shows them what changed",
   assert.doesNotMatch(report.message, /unresolved/);
   assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes, []);
 });
+
+test("a clash older than the recent changes still names who made it", async () => {
+  const cwd = await onlineBoard("Alpha", "Beta");
+  const read = (await storage.loadState(cwd)).roadmap.revision;
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "The first agent's", baseRevision: read, actor: agent });
+  for (let i = 0; i < 22; i += 1) await storage.updateCard({ cwd, cardId: "beta", summary: `Beta ${i}`, baseRevision: (await storage.loadState(cwd)).roadmap.revision, actor: agent });
+  const report = await refusal(storage.updateCard({ cwd, cardId: "alpha", summary: "The second agent's", baseRevision: read, actor: agent }));
+  assert.match(report.message, /^Not saved: Ana's agent \(Planban CLI\) changed the summary of card "Alpha" since you read it \(Updated Alpha,/);
+});

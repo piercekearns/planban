@@ -147,7 +147,6 @@ async function requireBaseRevision(ctx: QueryCtx, at: BoardRows, current: Planba
   if (base === current.revision) return input;
   assertBaseRevision({ ...current, revision: base }, base);
   if (base > current.revision) assertBaseRevision(current, base);
-  const changes = await describeChanges(ctx, await recentEntries(ctx, at, (entry) => entry.roadmapRevision <= base), base);
   const cardId = typeof input.cardId === "string" ? input.cardId : undefined;
   // Editing at the same time (Spec point 20): only a field this edit touches
   // that changed since the revision it read is a clash; anything else applies
@@ -155,8 +154,16 @@ async function requireBaseRevision(ctx: QueryCtx, at: BoardRows, current: Planba
   const read = await roadmapAtRevision(ctx, at, base);
   const rebased = read ? rebaseEdit(op, input, read, current) : null;
   if (rebased?.ok) return rebased.input;
+  // Refused: now say what changed, and who changed what this edit clashes with.
+  const changes = await describeChanges(ctx, await recentEntries(ctx, at, (entry) => entry.roadmapRevision <= base), base);
   const clashes = rebased && "clashes" in rebased ? rebased.clashes : undefined;
   const clashCards = new Set(clashes?.map((clash) => clash.cardId));
+  for (const clashCard of clashCards) {
+    // An older change to the clashing card, beyond the recent ones listed: from the card's own last-change record.
+    if (changes.some((change) => change.cards.includes(clashCard))) continue;
+    const last = await ctx.db.query("cardChanges").withIndex("by_board_generation_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", clashCard)).unique();
+    if (last) changes.unshift({ at: last.at, by: await personName(ctx, last.userId, last.agent ? last.clientName ?? "" : null), agent: last.agent, summary: last.summary.slice(0, 200), cards: [clashCard] });
+  }
   const relevant = clashes ? changes.filter((change) => change.cards.some((id) => clashCards.has(id))) : changes;
   const conflict: ConflictDetails = {
     currentRevision: current.revision, yourRevision: base,

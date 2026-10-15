@@ -134,21 +134,22 @@ export function rebaseEdit(op: string, input: Input, read: PlanbanRoadmap, curre
 /** The same intent, expressed against the current board. */
 function adaptToCurrent(op: string, input: Input, read: PlanbanRoadmap, current: PlanbanRoadmap): Input {
   const currentCards = new Map(current.roadmapItems.map((item) => [item.id, item]));
-  if (op === "updateCard" && input.metadata !== undefined && input.metadata !== null) {
-    // Apply only the keys this edit changed, onto the metadata as it is now.
+  if (op === "updateCard" && input.metadata !== undefined) {
+    // Apply only the keys this edit changed, onto the metadata as it is now;
+    // clearing it (null) removes only the keys that were read, never ones added since.
     const card = read.roadmapItems.find((item) => item.id === input.cardId);
     const before = card?.metadata ?? {};
-    const after = input.metadata as Record<string, unknown>;
+    const after = (input.metadata ?? {}) as Record<string, unknown>;
     const merged = { ...(currentCards.get(String(input.cardId))?.metadata ?? {}) };
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
       if (same(before[key], after[key])) continue;
       if (key in after) merged[key] = after[key];
       else delete merged[key];
     }
-    return { ...input, metadata: merged };
+    return { ...input, metadata: Object.keys(merged).length ? merged : null };
   }
   if (op === "moveCard" || op === "setCardParent") return placeAfterNeighbour(input, current);
-  if (op === "reorderCards") return { ...input, items: reorderOnto(input.items as Array<{ id: string; status: PlanbanStatus }>, current) };
+  if (op === "reorderCards") return { ...input, items: reorderOnto(input.items as Array<{ id: string; status: PlanbanStatus }>, read, current) };
   return input;
 }
 
@@ -171,10 +172,13 @@ function placeAfterNeighbour(input: Input, current: PlanbanRoadmap): Input {
  * current board: the listed cards keep that order and their columns, cards
  * added since go to the end of their column, and cards removed since are left out.
  */
-function reorderOnto(items: Array<{ id: string; status: PlanbanStatus }>, current: PlanbanRoadmap) {
+function reorderOnto(items: Array<{ id: string; status: PlanbanStatus }>, read: PlanbanRoadmap, current: PlanbanRoadmap) {
   if (!Array.isArray(items)) throw new PlanbanValidationError("items must be a list of cards.");
-  const present = new Set(current.roadmapItems.map((item) => item.id));
-  const listed = items.filter((item) => present.has(item.id));
+  const readStatus = new Map(read.roadmapItems.map((item) => [item.id, item.status]));
+  const currentStatus = new Map(current.roadmapItems.map((item) => [item.id, item.status]));
+  // A card whose column this reorder didn't change keeps the column it has now (someone may have moved it since).
+  const listed = items.filter((item) => currentStatus.has(item.id))
+    .map((item) => readStatus.get(item.id) === item.status ? { id: item.id, status: currentStatus.get(item.id)! } : item);
   const seen = new Set(listed.map((item) => item.id));
   const added = current.roadmapItems.filter((item) => !seen.has(item.id)).map((item) => ({ id: item.id, status: item.status }));
   return [...listed, ...added];

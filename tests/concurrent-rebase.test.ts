@@ -101,3 +101,21 @@ test("restoring the whole board still needs the current revision", () => {
   const read = board("A");
   assert.deepEqual(rebaseEdit("restoreBoard", { version: 1 }, read, update(read, { cardId: "a", summary: "x" })), { ok: false, boardWide: true });
 });
+
+test("a stale whole-board reorder keeps a column someone changed since, for a card it didn't move", async () => {
+  const read = board("A", "B");
+  const current = move(read, { cardId: "a", status: "in-progress" });
+  const items = [{ id: "b", status: "pending" }, { id: "a", status: "pending" }];
+  const result = rebaseEdit("reorderCards", { items }, read, current);
+  assert.ok(result.ok);
+  const applied = committedRoadmap(planReorderCards(current, result.input as never, { now }).roadmap, now);
+  assert.equal(applied.roadmapItems.find((item) => item.id === "a")!.status, "in-progress");
+});
+
+test("clearing metadata from an older read removes only the keys that were read", () => {
+  const read = update(board("Alpha"), { cardId: "alpha", metadata: { a: 1 } });
+  const current = update(read, { cardId: "alpha", metadata: { a: 1, newKey: "keep me" } });
+  const result = rebaseEdit("updateCard", { cardId: "alpha", metadata: null }, read, current);
+  assert.ok(result.ok);
+  assert.deepEqual(update(current, result.input).roadmapItems[0]!.metadata, { newKey: "keep me" });
+});
