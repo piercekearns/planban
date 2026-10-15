@@ -285,9 +285,11 @@ async function main() {
     assert.equal(assertNoError(responseById(responses, 10)).markdown, "# MCP Verification Plan\n\nThis was written through the Planban MCP server.\n");
     check("planban_write_doc", "plan document written");
 
+    // A refusal is a tool result that keeps its kind, not a protocol error.
     const completionResponse = responseById(responses, 11);
-    assert.equal(completionResponse.error.code, -32602);
-    assert.match(completionResponse.error.message, /completionConfirmed/);
+    assert.equal(completionResponse.result.isError, true);
+    assert.equal(completionResponse.result.structuredContent.error.category, "validation");
+    assert.match(completionResponse.result.content[0].text, /completionConfirmed/);
     check("completion guard", "complete without confirmation rejected");
 
     const launch = assertNoError(responseById(responses, 12));
