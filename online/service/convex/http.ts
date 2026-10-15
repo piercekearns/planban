@@ -273,10 +273,17 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     const idempotencyKey = request.headers.get("Idempotency-Key");
     // Completing a card states that a person confirmed it, in the body as on MCP.
     const completionConfirmed: boolean = typeof input === "object" && input !== null && (input as { completionConfirmed?: unknown }).completionConfirmed === true;
-    return json(await ctx.runMutation(internal.boards.run, {
+    const ran = await ctx.runMutation(internal.boards.run, {
       connectionId, boardId, op: rest[1]!, input, ...(completionConfirmed ? { completionConfirmed } : {}),
       ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
-    }));
+    });
+    // A refused agent edit, kept as an unresolved change: a conflict, like any other.
+    if ("refused" in ran && ran.refused) return json({ error: ran.refused }, 409);
+    return json(ran);
+  }
+  if (rest[0] === "unresolved" && rest.length === 1 && method === "GET") {
+    const cardId = url.searchParams.get("card") ?? undefined;
+    return json(await ctx.runQuery(internal.boards.unresolved, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));
   }
   // Owner decision 18: Planban is an index, not storage. Online boards hold
   // text only; files stay where they live and cards refer to them.

@@ -179,3 +179,8 @@ function reorderOnto(items: Array<{ id: string; status: PlanbanStatus }>, curren
   const added = current.roadmapItems.filter((item) => !seen.has(item.id)).map((item) => ({ id: item.id, status: item.status }));
   return [...listed, ...added];
 }
+
+/** The card fields an edit touches, read against `roadmap` (null for whole-board operations). */
+export function touchedFields(op: string, input: Record<string, unknown>, roadmap: PlanbanRoadmap): TouchedField[] | null {
+  return intended(op, input, roadmap)?.map(({ cardId, field }) => ({ cardId, field })) ?? null;
+}

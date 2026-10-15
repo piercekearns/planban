@@ -40,6 +40,7 @@ const INSTRUCTIONS = [
   "Call planban_list_boards first to find the boardId.",
   "After board access changes, request tools/list again. This stateless endpoint sends no tool-list change notifications; if your client caches discovery, reconnect or reload its MCP connection. Expanded OAuth scopes require new explicit authorization.",
   "Card and board edits pass baseRevision, the board revision you last read. Spec and Plan writes pass expectedMtimeMs instead: that document's mtimeMs from planban_read_doc (null for a new document).",
+  "An edit is refused only if a field it touches (or the document it writes) changed since you read it; edits elsewhere go through, and moves never clash. A refused edit is kept as an unresolved change on its card: planban_get_card shows a card's, and planban_unresolved_changes lists the board's. Settle one by saving a reconsidered version of the same fields, or drop it with planban_drop_change and a reason.",
   "If an edit is refused because someone changed things since you read them, the refusal says who and when, and includes what changed, the current card or document, and its new version. Read what changed. Decide whether your change is still needed, needs adjusting given theirs, or is already covered, and apply only what is still needed against the new version; for a document, write your change into the current text. If you drop or change your edit, tell the person. Never just resend it, and never give up silently.",
   "A pasted planban:<board>/<item> token is a Planban reference: <board> is the boardId and <item> is the cardId; any quoted title beside it is display context only.",
   "Pass an idempotencyKey with each edit: a fresh one per edit, and the same one only to resend that unchanged edit after a lost reply, so it is never applied twice. A revised edit, such as one merged after a conflict, gets a new key.",
@@ -116,6 +117,20 @@ export const TOOLS: ToolDefinition[] = [
     description: "Read a card's Spec or Plan.",
     inputSchema: object({ boardId, cardId: { type: "string" }, kind: { type: "string", enum: ["spec", "plan"] } }, ["boardId", "cardId", "kind"]),
     annotations: read,
+  },
+  {
+    name: "planban_unresolved_changes",
+    title: "Planban Unresolved Changes",
+    description: "List agents' edits on a board that were refused because something they touched changed since they read it, and are still waiting: each with its card, who, when, what it proposed and which fields clashed. Before editing a card, check its unresolved changes (planban_get_card includes them). Save a reconsidered version of the same fields to settle one, or drop it with planban_drop_change and a reason.",
+    inputSchema: object({ boardId, cardId: { type: "string", description: "Only this card's unresolved changes." } }, ["boardId"]),
+    annotations: read,
+  },
+  {
+    name: "planban_drop_change",
+    title: "Drop Planban Unresolved Change",
+    description: "Drop an unresolved change that is no longer needed (already covered, or overtaken), with a short reason. The card's history records it. Tell the person too.",
+    inputSchema: object({ boardId, changeId: { type: "string" }, reason: { type: "string", description: "Why it is dropped, in a sentence." }, baseRevision, idempotencyKey }, ["boardId", "changeId", "reason", "baseRevision"]),
+    annotations: write,
   },
   {
     name: "planban_history",
@@ -336,12 +351,19 @@ export class McpService {
     return this.call(() => this.ctx.runQuery(internal.boards.history, { connectionId: this.connectionId, boardId }));
   }
 
+  unresolved(boardId: string, cardId?: string): Promise<{ changes: unknown[] }> {
+    return this.call(() => this.ctx.runQuery(internal.boards.unresolved, { connectionId: this.connectionId, boardId, ...(cardId ? { cardId } : {}) }));
+  }
+
   async run(boardId: string, op: string, input: Record<string, unknown>, completionConfirmed: boolean, idempotencyKey?: string) {
     const requestHash = idempotencyKey ? await sha256Hex(`${boardId}\n${op}\n${JSON.stringify(input)}\n${completionConfirmed}`) : undefined;
-    return this.call(() => this.ctx.runMutation(internal.boards.run, {
+    const ran = await this.call(() => this.ctx.runMutation(internal.boards.run, {
       connectionId: this.connectionId, boardId, op, input, completionConfirmed,
       ...(idempotencyKey ? { idempotencyKey, requestHash } : {}),
-    })) as Promise<{ roadmap: PlanbanRoadmap; result: unknown; replayed?: boolean; originalRevision?: number }>;
+    })) as { roadmap: PlanbanRoadmap; result: unknown; replayed?: boolean; originalRevision?: number } | { refused: ServiceErrorData };
+    // A refused agent edit, kept as an unresolved change, is a tool error like any conflict.
+    if ("refused" in ran) throw new ToolError(`conflict: ${ran.refused.message}`, ran.refused);
+    return ran;
   }
 }
 
@@ -397,7 +419,18 @@ async function callTool(service: McpService, origin: string, name: string, args:
       const cardId = stringArg(args, "cardId");
       const card = roadmap.roadmapItems.find((item) => item.id === cardId);
       if (!card) throw new ToolError(`not_found: Card not found: ${cardId}`);
-      return { revision: roadmap.revision, card, ancestry: cardAncestry(roadmap, cardId) };
+      // Agents see edits to this card that were refused and are still waiting (Spec point 20).
+      const { changes } = await service.unresolved(stringArg(args, "boardId"), cardId);
+      return { revision: roadmap.revision, card, ancestry: cardAncestry(roadmap, cardId), ...(changes.length ? { unresolvedChanges: changes } : {}) };
+    }
+    case "planban_unresolved_changes": {
+      const cardId = typeof args.cardId === "string" ? args.cardId : undefined;
+      return await service.unresolved(stringArg(args, "boardId"), cardId);
+    }
+    case "planban_drop_change": {
+      const key = typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined;
+      const outcome = await service.run(stringArg(args, "boardId"), "dropChange", operationInput(args), false, key);
+      return { revision: outcome.roadmap.revision, ...(outcome.result as Record<string, unknown>), ...handoff(origin, stringArg(args, "boardId")) };
     }
     case "planban_read_doc":
       return await service.readDoc(stringArg(args, "boardId"), stringArg(args, "cardId"), args.kind === "plan" ? "plan" : "spec");

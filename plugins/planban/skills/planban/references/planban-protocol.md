@@ -168,9 +168,20 @@ owner chooses, with a free Planban account at https://app.planban.ai.
      card's summary or Plan when it matters later).
 
   Never just resend the same edit with a newer version, and never give up silently:
-  a change must never quietly fail to happen. Today any change to the board makes an
-  older `baseRevision` stale, even on another card, so check whether the changes
-  touch your card before deciding.
+  a change must never quietly fail to happen.
+- **What clashes.** On an online board, `baseRevision` means "the version I read".
+  An edit is refused only if a field it touches (title, summary, next action, column,
+  tags, blocked-by, each metadata key) changed since then; edits to other cards or
+  other fields go through. Moves never clash: a card goes after the same neighbour, or
+  to the end of the column if that neighbour has moved. A Spec or Plan is checked by
+  its own version. Restoring the whole board still needs the current revision.
+- **Unresolved changes.** On an online board, an agent's refused edit is kept as an
+  unresolved change on its card, so it is never lost. `planban_get_card` shows the
+  card's own, and `planban_unresolved_changes` (`unresolved-changes`) lists the
+  board's. Before editing a card, settle any that are waiting: save a reconsidered
+  version of the same fields from the current revision, or drop it with
+  `planban_drop_change` (`drop-change`) and a reason. Both go in the card's history.
+  These are for agents; people don't see them on the board.
 - **Retries.** If an edit's reply was lost, resend it unchanged with the same
   `idempotencyKey` (`--idempotency-key`): it applies once, and the result says it was
   a replay. A revised edit, such as one merged after a conflict, gets a new key.
@@ -239,6 +250,7 @@ write_doc. Differences:
   all): `admin` (archive, restore, duplicate and delete board), `maintenance`
   (export_flat_v1, reconstruct_hierarchy) and `legacy` (set_card_parent, an old alias
   of move_card). Local tools take `cwd` or `repoId`.
+- **Both, for online boards:** unresolved_changes and drop_change.
 - **Remote only:** history, and search and fetch (for ChatGPT and claude.ai). Remote
   tools take `boardId`, from list_boards. Deleting cards and taking a board local are
   not available remotely.

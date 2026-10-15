@@ -8,7 +8,9 @@ import {
   getStatus,
   initializeProject,
   loadState,
+  dropChange,
   moveCard,
+  unresolvedChanges,
   readDoc,
   setCardParent,
   cardAncestry,
@@ -638,6 +640,25 @@ for (const [command, status] of [
       }), options);
     });
 }
+
+program
+  .command("unresolved-changes")
+  .description("on an online board: agents' edits refused because something they touched changed since, still waiting")
+  .option("--card <cardId>", "only this card's")
+  .option("--cwd <path>", "project directory")
+  .option("-o, --output <format>", "output format")
+  .action(async (options) => print(await unresolvedChanges({ cwd: cwdOption(options.cwd), cardId: options.card }), options));
+
+program
+  .command("drop-change")
+  .description("on an online board: drop an unresolved change that is no longer needed, with the reason, into the card's history")
+  .argument("<changeId>")
+  .requiredOption("--reason <reason>", "why it is dropped, in a sentence")
+  .requiredOption("--base-revision <revision>", "roadmap revision you last read", parseRevisionOption)
+  .option("--idempotency-key <key>", "reuse only to retry the same drop after a lost reply")
+  .option("--cwd <path>", "project directory")
+  .option("-o, --output <format>", "output format")
+  .action(async (changeId, options) => print(await dropChange({ cwd: cwdOption(options.cwd), changeId, reason: options.reason, baseRevision: options.baseRevision, actor: "agent", idempotencyKey: options.idempotencyKey }), options));
 
 program
   .command("read-doc")

@@ -39,7 +39,7 @@ export const MAX_CONFLICT_CHANGES = 20;
 export const MAX_CONFLICT_DOCUMENT_CHARS = 256 * 1024;
 
 /** What to do with a refused edit, the same on every surface. */
-export const RECONCILE = "Read what changed (included in this answer). Decide whether your change is still needed, needs adjusting given theirs, or is already covered, and apply only what is still needed against the new version. If you drop or change your edit, tell the person, and note it in the card's summary or Plan when it matters later. Never just resend it, and never give up silently.";
+export const RECONCILE = "Read what changed (included in this answer). Decide whether your change is still needed, needs adjusting given theirs, or is already covered, and apply only what is still needed against the new version. If you drop or change your edit, tell the person. Never just resend it, and never give up silently.";
 
 export class PlanbanEditConflictError extends PlanbanConflictError {
   readonly currentRevision: number;

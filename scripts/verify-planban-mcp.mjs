@@ -227,6 +227,8 @@ async function main() {
       "planban_get_board",
       "planban_query_cards",
       "planban_get_card",
+      "planban_unresolved_changes",
+      "planban_drop_change",
       "planban_create_card",
       "planban_create_group",
       "planban_create_cards",

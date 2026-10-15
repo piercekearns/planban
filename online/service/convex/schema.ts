@@ -63,6 +63,30 @@ export default defineSchema({
     roadmap: v.bytes(),
   }).index("by_board_generation", ["boardId", "generation"]),
 
+  /**
+   * Agents' edits that were refused because something they touched changed
+   * since they read it (Spec point 20). Each stays until an agent saves a
+   * reconsidered version or drops it with a reason. Shown to agents only.
+   */
+  unresolvedChanges: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    cardId: v.string(),
+    changeId: v.string(),
+    userId: v.string(),
+    clientName: v.string(),
+    createdAt: v.string(),
+    op: v.string(),
+    /** What the refused edit asked for (its input, without bookkeeping). */
+    proposed: v.any(),
+    /** The fields it touched that had changed ("spec"/"plan" for a document; "*" for the whole card). */
+    fields: v.array(v.string()),
+    /** The board revision when it was refused. */
+    refusedAtRevision: v.number(),
+    /** Plain words for the clash, as the refusal said it. */
+    message: v.string(),
+  }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_changeId", ["changeId"]),
+
   docs: defineTable({
     boardId: v.string(),
     generation: v.number(),

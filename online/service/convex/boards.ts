@@ -21,12 +21,13 @@ import {
 } from "../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from "../../../src/core/types";
 import { cardSubject, changesSince, clashSubject, conflictMessage, MAX_CONFLICT_CHANGES, MAX_CONFLICT_DOCUMENT_CHARS, type ConflictDetails } from "../../../src/core/conflicts";
-import { rebaseEdit } from "../../../src/core/concurrent";
+import { rebaseEdit, touchedFields } from "../../../src/core/concurrent";
+import { publicUnresolved, recordUnresolved, settledBy, unresolvedOn } from "./model/unresolved";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
-import { asServiceError, fail } from "./model/errors";
+import { asServiceError, fail, type ServiceErrorData } from "./model/errors";
 import { checkCards, checkDocuments } from "./model/indexRules";
 import { addStored, chargeWrite, sizeOf } from "./model/limits";
 import { historyEntries, historyPage, recordHistory, roadmapAtVersion, type Attribution, type BoardRows } from "./model/history";
@@ -36,7 +37,7 @@ import { reserveRetiredId } from "./model/retired";
 export const BOARD_OPERATIONS = [
   "createCard", "createCards", "createGroup", "updateCard", "moveCard",
   "setCardParent", "reorderCards", "deleteArchivedCard", "writeDoc",
-  "restoreBoard", "restoreCard", "restoreDoc",
+  "restoreBoard", "restoreCard", "restoreDoc", "dropChange",
 ] as const;
 export type BoardOperation = (typeof BOARD_OPERATIONS)[number];
 
@@ -328,6 +329,21 @@ export const readDoc = internalQuery({
     const item = roadmap.roadmapItems.find((entry) => entry.id === cardId);
     if (!item) fail("not_found", `Card not found: ${cardId}`);
     return docPayload(await docRow(ctx, live(board), cardId, kind), cardId, kind, (kind === "spec" ? item!.specDoc : item!.planDoc) ?? null);
+  },
+});
+
+/** Agents' refused edits still waiting on this board, or one card (Spec point 20). For agent tools only. */
+export const unresolved = internalQuery({
+  args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, cardId }) => {
+    const { board } = await readableBoard(ctx, connectionId, boardId);
+    const rows = await unresolvedOn(ctx, live(board), cardId);
+    const changes = [];
+    for (const row of rows) {
+      const change = publicUnresolved(row);
+      changes.push({ ...change, by: await personName(ctx, row.userId, row.clientName) });
+    }
+    return { changes };
   },
 });
 
@@ -643,8 +659,15 @@ export const run = internalMutation({
     const current = await currentRoadmap(ctx, at);
     const now = new Date().toISOString();
     let outcome: { committed: PlanbanRoadmap; version: number; result: unknown };
+    // An agent's earlier refused edits that this one settles (Spec point 20).
+    let settled: Doc<"unresolvedChanges">[] = [];
     try {
-      if (op === "writeDoc") {
+      if (op === "dropChange") {
+        outcome = await dropChange(ctx, access.board, current, input, now, attribution);
+      } else if (op === "writeDoc") {
+        if (attribution.actor === "agent" && typeof input.cardId === "string" && (input.kind === "spec" || input.kind === "plan")) {
+          settled = await settledBy(ctx, at, [{ cardId: input.cardId, field: input.kind }], null);
+        }
         outcome = await writeDoc(ctx, access.board, current, input, now, attribution);
       } else if (op === "restoreBoard" || op === "restoreCard" || op === "restoreDoc") {
         // Restores state the revision they were based on, like any edit, and
@@ -690,6 +713,7 @@ export const run = internalMutation({
           }
         }
         checkOwnerControlled(current, change.roadmap, acting, attribution.actor, completionConfirmed);
+        settled = await settle(ctx, at, op, input, current, change, attribution.actor);
         const { committed, version: written } = await commit(ctx, access.board, current, change, attribution, now);
         outcome = { committed, version: written, result: {} };
       } else {
@@ -740,12 +764,21 @@ export const run = internalMutation({
             fail("not_found", `Unknown operation: ${op}`);
         }
         checkOwnerControlled(current, change.roadmap, acting, attribution.actor, completionConfirmed);
+        settled = await settle(ctx, at, op, input, current, change, attribution.actor);
         const { committed, version } = await commit(ctx, access.board, current, change, attribution, now);
         outcome = { committed, version, result: result(committed) };
       }
     } catch (error) {
-      throw asServiceError(error, current.revision);
+      const refusal = asServiceError(error, current.revision);
+      const data = refusal.data as ServiceErrorData;
+      // An agent's edit refused over a clash is kept, never lost silently (Spec point 20).
+      const kept = data.code === "conflict" && data.conflict && attribution.actor === "agent"
+        ? await keepRefused(ctx, at, op, input, data, current, attribution)
+        : null;
+      if (kept) return { refused: kept };
+      throw refusal;
     }
+    for (const row of settled) await ctx.db.delete(row._id);
     if (idempotencyKey) {
       await ctx.db.insert("operations", {
         userId: access.connection.userId, key: idempotencyKey, requestHash: requestHash!, boardId,
@@ -756,6 +789,54 @@ export const run = internalMutation({
     return { roadmap: outcome.committed, result: outcome.result };
   },
 });
+
+/** The unresolved changes this agent edit settles; its history says so, plainly. */
+async function settle(ctx: MutationCtx, at: BoardRows, op: string, input: Record<string, unknown>, current: PlanbanRoadmap, change: PlannedChange, actor: "user" | "agent") {
+  if (actor !== "agent") return [];
+  const touched = touchedFields(op, input, current);
+  if (!touched?.length) return [];
+  const settled = await settledBy(ctx, at, touched, typeof input.baseRevision === "number" ? input.baseRevision : null);
+  if (settled.length) change.history = { ...change.history, summary: `${change.history.summary} (reconsidered after an earlier clash)` };
+  return settled;
+}
+
+/** Records a refused agent edit as an unresolved change on its card, and says so in the refusal. */
+async function keepRefused(ctx: MutationCtx, at: BoardRows, op: string, input: Record<string, unknown>, data: ServiceErrorData, current: PlanbanRoadmap, attribution: Attribution) {
+  const conflict = data.conflict as unknown as ConflictDetails;
+  const cardId = typeof input.cardId === "string" ? input.cardId : conflict.clashes?.[0]?.cardId ?? conflict.document?.cardId;
+  if (!cardId) return null;
+  const fields = conflict.clashes?.filter((clash) => clash.cardId === cardId).map((clash) => clash.field)
+    ?? (conflict.document ? [conflict.document.kind] : touchedFields(op, input, current)?.filter((entry) => entry.cardId === cardId).map((entry) => entry.field) ?? ["*"]);
+  const { baseRevision: _base, actor: _actor, idempotencyKey: _key, ...proposed } = input;
+  const changeId = await recordUnresolved(ctx, at, {
+    cardId, userId: attribution.userId, clientName: attribution.clientName, createdAt: new Date().toISOString(), op, proposed,
+    fields: fields.length ? fields : ["*"], refusedAtRevision: current.revision, message: data.message.split(". The ")[0]!.slice(0, 500),
+  });
+  return {
+    ...data,
+    message: `${data.message} Until you save a reconsidered version or drop it (planban_drop_change with a reason), it is kept as unresolved change ${changeId} on this card, for agents to see.`,
+    conflict: { ...conflict, unresolvedChange: changeId } as unknown as Value,
+  };
+}
+
+/** Drops an unresolved change, with the reason, into the card's history. */
+async function dropChange(ctx: MutationCtx, board: Doc<"boards">, current: PlanbanRoadmap, input: Record<string, unknown>, now: string, attribution: Attribution) {
+  const changeId = String(input.changeId ?? "");
+  const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+  if (!reason) fail("validation", "Say why the change is dropped (reason).");
+  if (reason.length > 500) fail("validation", "Keep the reason under 500 characters.");
+  const row = await ctx.db.query("unresolvedChanges").withIndex("by_changeId", (q) => q.eq("changeId", changeId)).unique();
+  if (!row || row.boardId !== board.boardId || row.generation !== board.generation) fail("not_found", `Unresolved change not found: ${changeId}`);
+  const card = current.roadmapItems.find((item) => item.id === row!.cardId);
+  await ctx.db.delete(row!._id);
+  const change: PlannedChange = {
+    roadmap: current,
+    history: { actor: attribution.actor, operation: "card.change.dropped", summary: `Dropped an edit to ${card ? card.title : row!.cardId}: ${reason}`, affectedCards: card ? [card.id] : [] },
+    docWrites: [],
+  };
+  const { committed, version } = await commit(ctx, board, current, change, attribution, now);
+  return { committed, version, result: { dropped: changeId } };
+}
 
 async function writeDoc(ctx: MutationCtx, board: Doc<"boards">, current: PlanbanRoadmap, input: Record<string, unknown>, now: string, attribution: Attribution) {
   const cardId = String(input.cardId ?? "");

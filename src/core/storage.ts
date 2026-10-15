@@ -1000,6 +1000,24 @@ export async function loadHistoryState(input: { cwd: string; version: number }):
   return { ...state, roadmap: await readHistoryRoadmap(state, input.version) };
 }
 
+/**
+ * Agents' refused edits still waiting on an online board, or one card (Spec
+ * point 20). A board only on this computer has one writer, so it has none.
+ */
+export async function unresolvedChanges(input: { cwd: string; cardId?: string | undefined }): Promise<{ changes: Array<Record<string, unknown>> }> {
+  const online = await onlineManifest(input.cwd);
+  if (!online || online.storage?.kind !== "online") return { changes: [] };
+  const query = input.cardId ? `?card=${encodeURIComponent(input.cardId)}` : "";
+  return onlineRequest(online.storage.url, boardPath(online.storage.boardId, `/unresolved${query}`));
+}
+
+/** Drops an unresolved change with a reason, into the card's history. */
+export async function dropChange(input: { cwd: string; changeId: string; reason: string; baseRevision?: number | undefined; actor?: PlanbanHistoryActor | undefined; idempotencyKey?: string | undefined }): Promise<PlanbanResolvedState> {
+  const online = await onlineManifest(input.cwd);
+  if (!online) throw new PlanbanValidationError("Only online boards keep unresolved changes; a board on this computer has one writer at a time.");
+  return (await onlineOperation(resolveProjectCwd(input.cwd), online, "dropChange", input)).state;
+}
+
 export async function readHistoryDoc(input: {
   cwd: string;
   version: number;

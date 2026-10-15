@@ -24,7 +24,7 @@ const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_RO
 const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
 const errorReportModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/errorReport.ts")).href);
 
-const { cardAncestry, createCard, createCards, createGroup, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, updateCard, writeDoc } = storageModule;
+const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { queryWorkItems } = queryModule;
@@ -258,6 +258,12 @@ async function boardHandoff(repoId) {
       ? { urlRequired: true, url, markdown: `[Open the verified board](${url})` }
       : { urlRequired: true, url, markdown: `[Open the board](${url})`, verifyWith: "planban_launch_board" },
   };
+}
+
+/** A card's unresolved changes, for get_card; nothing when there are none or the service can't be asked. */
+async function unresolvedFor(cwd, cardId) {
+  const result = await unresolvedChanges({ cwd, cardId }).catch(() => ({ changes: [] }));
+  return result.changes.length ? { unresolvedChanges: result.changes } : {};
 }
 
 async function boardResult(text, repoId, structuredContent) {
@@ -580,6 +586,29 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: "planban_unresolved_changes",
+    title: "Planban Unresolved Changes",
+    description: "On an online board: agents' edits that were refused because something they touched changed since they read it, and are still waiting, with card, who, when, what each proposed and which fields clashed. planban_get_card includes a card's own. Save a reconsidered version of the same fields to settle one, or drop it with planban_drop_change and a reason.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      cardId: { type: "string", description: "Only this card's unresolved changes." },
+    }, []),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "planban_drop_change",
+    title: "Drop Planban Unresolved Change",
+    description: "On an online board: drop an unresolved change that is no longer needed (already covered, or overtaken), with a short reason. The card's history records it. Tell the person too.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      changeId: { type: "string", description: "The unresolved change's id." },
+      reason: { type: "string", description: "Why it is dropped, in a sentence." },
+      baseRevision: { type: "number", description: "Roadmap revision you last read." },
+      idempotencyKey: { type: "string", description: "Reuse only to retry the same drop after a lost reply." },
+    }, ["changeId", "reason", "baseRevision"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "planban_export_flat_v1",
     title: "Export Recoverable Flat Version-1 Board",
     description: "Create a deliberate history-backed flat version-1 export without changing the live hierarchy.",
@@ -897,7 +926,24 @@ async function callToolImpl(name, args) {
       card,
       ancestry: cardAncestry(state.roadmap, cardId),
       staleness,
+      // Edits to this card that were refused and still wait (online boards; Spec point 20).
+      ...await unresolvedFor(cwd, cardId),
     });
+  }
+
+  if (name === "planban_unresolved_changes") {
+    const cwd = await cwdFromArgs(args);
+    const result = await unresolvedChanges({ cwd, cardId: optionalString(args.cardId, "cardId") });
+    return textResult(result.changes.length ? `${result.changes.length} unresolved change${result.changes.length === 1 ? "" : "s"} waiting.` : "No unresolved changes.", result);
+  }
+
+  if (name === "planban_drop_change") {
+    const cwd = await cwdFromArgs(args);
+    const state = await dropChange({
+      cwd, changeId: requireString(args.changeId, "changeId"), reason: requireString(args.reason, "reason"),
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent", idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
+    });
+    return await boardResult(`Dropped unresolved change ${args.changeId}.`, state.manifest.repoId, compactBoardSummary(state));
   }
 
   if (name === "planban_export_flat_v1") {
