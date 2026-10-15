@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-test("the release preflight's MCP verification passes", async () => {
+// The release preflight runs on Linux and macOS; its server cleanup there uses lsof.
+test("the release preflight's MCP verification passes", { skip: process.platform === "win32" ? "the release preflight runs on Linux and macOS" : false }, async () => {
   const result = await new Promise<{ status: number | null; output: string }>((resolve, reject) => {
     const child = spawn(process.execPath, ["scripts/verify-planban-mcp.mjs"], { env: process.env });
     let output = "";
