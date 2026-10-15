@@ -3,6 +3,11 @@
 // higher level. Each section has its own version (a hash of its text), so two
 // agents editing different sections never clash; whole-document saves keep
 // their own check. Pure functions, shared by the service and local boards.
+import type { Heading } from "mdast";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { toString } from "mdast-util-to-string";
+import { gfm } from "micromark-extension-gfm";
 import { PlanbanValidationError } from "./boardOperations";
 
 export interface DocSection {
@@ -15,16 +20,6 @@ export interface DocSection {
   version: string;
   start: number;
   end: number;
-}
-
-/** An ATX heading: up to three spaces, 1 to 6 #s, a space, the text; a closing run of #s counts only after a space. */
-const ATX = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/u;
-const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/u;
-const FENCE = /^ {0,3}(`{3,}|~{3,})/u;
-
-function atxText(raw: string | undefined) {
-  const text = (raw ?? "").replace(/(?:^|[ \t]+)#+[ \t]*$/u, "").trim();
-  return text;
 }
 
 /** A 64-bit hash of the text, as 16 hex digits (plain JavaScript: it also runs in the service). */
@@ -40,85 +35,30 @@ export function sectionVersion(text: string) {
   return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
 }
 
+/** Where a document's front matter (between --- lines at the very top) ends, or 0. */
+function frontMatterEnd(markdown: string) {
+  const match = /^---[ \t]*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/u.exec(markdown);
+  return match ? match[0].length : 0;
+}
+
 /**
- * The sections of a document, in order, as Markdown reads its headings: ATX
- * (## Heading) and underlined (Heading, then === or ---), any line endings;
- * nothing inside fenced code counts.
+ * The sections of a document, in order, read by the same Markdown parser
+ * (with GitHub tables and the like) that shows the document on the board:
+ * each top-level heading, up to the next one of the same or a higher level.
  */
 export function docSections(markdown: string): DocSection[] {
-  const raw = markdown.split("\n");
-  const lines = raw.map((line) => line.replace(/\r$/u, ""));
-  const offsets: number[] = [];
-  let at = 0;
-  for (const line of raw) {
-    offsets.push(at);
-    at += line.length + 1;
-  }
-  const headings: Array<{ line: number; level: number; heading: string }> = [];
-  let fence: { char: string; length: number } | null = null;
-  // The open paragraph's first line, or null; only a plain paragraph can be an underlined heading.
-  let paragraphStart: number | null = null;
-  // Front matter at the very top (between --- lines) is not part of any heading.
-  let index = 0;
-  if (/^---[ \t]*$/u.test(lines[0] ?? "")) {
-    const close = lines.findIndex((line, at) => at > 0 && /^(---|\.\.\.)[ \t]*$/u.test(line));
-    if (close > 0) index = close + 1;
-  }
-  const THEMATIC = /^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/u;
-  const DELIMITER_ROW = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/u;
-  // A table starts with a row that has a | and a delimiter row (with a |) right under it; prose with a | is still prose.
-  const tableStart = (at: number) => (lines[at] ?? "").includes("|") && (lines[at + 1] ?? "").includes("|") && DELIMITER_ROW.test(lines[at + 1] ?? "");
-  const notParagraph = (line: string) => /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/u.test(line) || /^ {0,3}>/u.test(line) || /^(?: {4}|\t)/u.test(line);
-  for (; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const marker = FENCE.exec(line)?.[1];
-    if (fence) {
-      // A fence closes only with the same character, at least as long, and nothing after it.
-      if (marker && marker[0] === fence.char && marker.length >= fence.length && /^ {0,3}(`+|~+)[ \t]*$/u.test(line)) fence = null;
-      continue;
-    }
-    if (marker) {
-      fence = { char: marker[0]!, length: marker.length };
-      paragraphStart = null;
-      continue;
-    }
-    const atx = ATX.exec(line);
-    if (atx) {
-      headings.push({ line: index, level: atx[1]!.length, heading: atxText(atx[2]) });
-      paragraphStart = null;
-      continue;
-    }
-    const underline = SETEXT.exec(line);
-    if (underline && paragraphStart !== null && paragraphStart >= 0) {
-      // The whole paragraph is the heading; its section starts at the paragraph's first line.
-      headings.push({ line: paragraphStart, level: underline[1]![0] === "=" ? 1 : 2, heading: lines.slice(paragraphStart, index).map((entry) => entry.trim()).join(" ") });
-      paragraphStart = null;
-      continue;
-    }
-    if (paragraphStart === null && THEMATIC.test(line)) {
-      // A rule on its own is a separator, never part of a heading.
-      continue;
-    }
-    if (paragraphStart === null && tableStart(index)) {
-      paragraphStart = -1;
-      continue;
-    }
-    if (line.trim() === "" || notParagraph(line)) {
-      // A blank line ends a paragraph; lists, quotes, tables and indented code are never headings.
-      paragraphStart = line.trim() === "" ? null : -1;
-      continue;
-    }
-    if (paragraphStart === null) paragraphStart = index;
-    // A line after a list, quote or table continues that block, not a paragraph.
-  }
+  const offset = frontMatterEnd(markdown);
+  const tree = fromMarkdown(markdown.slice(offset), { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+  const headings = tree.children
+    .filter((node): node is Heading => node.type === "heading" && typeof node.position?.start.offset === "number")
+    .map((node) => ({ start: offset + node.position!.start.offset!, level: node.depth, heading: toString(node).replace(/\s+/gu, " ").trim() }));
   const seen = new Map<string, number>();
   return headings.map((entry, index) => {
     const next = headings.slice(index + 1).find((other) => other.level <= entry.level);
-    const start = offsets[entry.line]!;
-    const end = next ? offsets[next.line]! : markdown.length;
+    const end = next ? next.start : markdown.length;
     const occurrence = seen.get(entry.heading) ?? 0;
     seen.set(entry.heading, occurrence + 1);
-    return { heading: entry.heading, level: entry.level, occurrence, version: sectionVersion(markdown.slice(start, end)), start, end };
+    return { heading: entry.heading, level: entry.level, occurrence, version: sectionVersion(markdown.slice(entry.start, end)), start: entry.start, end };
   });
 }
 

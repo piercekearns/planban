@@ -85,3 +85,11 @@ test("a rule before a heading stays a rule, and prose with a | can be a heading"
   const edited = editSection(md, { heading: "A", expectedVersion: list[0]!.version, text: "## A\n\nOne, edited.\n" });
   assert.ok(edited.ok && edited.markdown.includes("A | B\n---\n\nTwo."));
 });
+
+test("tables and rules are read exactly as the board shows them", () => {
+  // Not a table (one column needs a header with a |): an underlined heading.
+  assert.deepEqual(sectionList("Header\n| --- |\n---\n").map((section) => section.heading), []);
+  assert.deepEqual(sectionList("Intro\nA | B\n--- | ---\n---\n").map((section) => section.heading), []);
+  assert.deepEqual(sectionList("A | B\n| --- |\n---\n").map((section) => section.heading), ["A | B | --- |"]);
+  assert.deepEqual(sectionList("Intro\n***\nHeading\n---\n").map((section) => section.heading), ["Heading"]);
+});
