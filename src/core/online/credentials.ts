@@ -125,8 +125,11 @@ export async function saveCredentials(url: string, credentials: OnlineCredential
   await changeStored((file) => {
     const entry = file.services[key] ?? { default: "", accounts: {} };
     if (credentials) {
-      const id = accountKey(credentials);
-      entry.accounts[id] = { ...credentials, savedAt: new Date().toISOString() };
+      // The same sign-in saved again (a key signed in twice) stays one entry, under the id it already has.
+      const same = Object.entries(entry.accounts).find(([, saved]) => saved.accessToken === credentials.accessToken);
+      const id = credentials.person ?? same?.[0] ?? accountKey(credentials);
+      for (const [other, saved] of Object.entries(entry.accounts)) if (other !== id && saved.accessToken === credentials.accessToken) delete entry.accounts[other];
+      entry.accounts[id] = { ...(same?.[1] ?? {}), ...credentials, savedAt: new Date().toISOString() };
       entry.default = id;
       file.services[key] = entry;
     } else {
@@ -186,11 +189,13 @@ export async function updateSignedIn(url: string, accessToken: string, facts: Pi
     filedAs = id;
     const updated = { ...current, ...Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) } as OnlineCredentials;
     const newId = updated.person ?? id;
-    delete entry.accounts[id];
+    // Every entry holding this same sign-in becomes the one.
+    const merged = Object.entries(entry.accounts).filter(([, saved]) => saved.accessToken === accessToken).map(([other]) => other);
+    for (const other of merged) delete entry.accounts[other];
     // Of two sign-ins for one account, the one saved later is kept (one with no time saved is the older).
-    const other = newId !== id ? entry.accounts[newId] : undefined;
+    const other = entry.accounts[newId];
     if (!other || (other.savedAt ?? "") <= (updated.savedAt ?? "")) entry.accounts[newId] = updated;
-    if (entry.default === id) entry.default = newId;
+    if (merged.includes(entry.default)) entry.default = newId;
   });
   return filedAs as string | null;
 }

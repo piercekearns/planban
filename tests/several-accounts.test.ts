@@ -306,3 +306,28 @@ test("of two sign-ins for one account, the one saved later is kept, whichever le
   assert.equal((await accountCredentials(bridge.url, "ana"))!.accessToken, newer.accessToken);
   assert.deepEqual(Object.keys((await readCredentials()).accounts[bridge.url]!.accounts), ["ana"]);
 });
+
+test("an old sign-in that turns out to open an unlinked board links it as the account it really is", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, revival);
+  await oldSignIn();
+  await rm(join(credentialsRoot(), "board-accounts.json"));
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  assert.equal((await storage.loadState(revival)).roadmap.roadmapItems[0]!.title, "Alpha");
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+  // Signing Ana out leaves no sign-in of hers behind for the board to use.
+  await onlineLogout(bridge.url, { account: "ana@example.com" });
+  await assert.rejects(storage.loadState(revival), /This board uses ana@example\.com, which isn't signed in on this computer/);
+});
+
+test("the same sign-in saved twice stays one account", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const ana = (await accountCredentials(bridge.url, "ana"))!;
+  // As a personal key signed in again: saved before the service says whose it is.
+  await saveCredentials(bridge.url, { ...ana, person: undefined, email: undefined });
+  await rememberIdentity(bridge.url, 1);
+  assert.deepEqual(Object.keys((await readCredentials()).accounts[bridge.url]!.accounts), ["ana"]);
+  await onlineLogout(bridge.url);
+  assert.equal((await readCredentials()).accounts[bridge.url], undefined);
+});

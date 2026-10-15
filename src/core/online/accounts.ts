@@ -128,7 +128,8 @@ export async function findBoardAccount<T>(url: string, boardId: string, path: st
     if (person === entry!.default) continue;
     try {
       const found = await onlineRequest<T>(url, path, undefined, { credentials });
-      await recordBoardAccount(url, boardId, { person, ...(credentials.email ? { email: credentials.email } : {}) });
+      // Linked to the account it really is: an old sign-in learns its id first.
+      await recordBoardAccountAs(url, boardId, await withIdentity(url, credentials));
       return found;
     } catch {
       // Not this account's board either.
