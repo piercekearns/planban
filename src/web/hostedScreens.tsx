@@ -369,6 +369,23 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
 }) {
   const account = rememberedAccount();
   const first = account?.name?.split(/\s+/)[0];
+  // Moving between views puts focus on the new heading; arrivals are announced.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const shownView = useRef(view);
+  useEffect(() => {
+    if (shownView.current !== view) headingRef.current?.focus();
+    shownView.current = view;
+  }, [view]);
+  const [announcement, setAnnouncement] = useState("");
+  const seen = useRef({ computer: signals.computer?.name ?? null, boards: owned.length, invites: invites.length });
+  useEffect(() => {
+    const before = seen.current;
+    if (signals.computer && !before.computer) setAnnouncement(`${signals.computer.name} is signed in.`);
+    else if (owned.length > before.boards) setAnnouncement(`${owned[owned.length - 1]?.title ?? "A board"} is online.`);
+    else if (invites.length > before.invites) setAnnouncement("A new invitation arrived.");
+    seen.current = { computer: signals.computer?.name ?? null, boards: owned.length, invites: invites.length };
+  }, [signals.computer, owned, invites.length]);
+  const live = <p className="visually-hidden" aria-live="polite">{announcement}</p>;
   const origin = window.location.origin;
   const mcp = `${origin}/mcp`;
   // Back to where they started, whenever they've moved away from it.
@@ -378,6 +395,7 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
     <p className="web-foot">
       {view !== "computer" ? <><button className="web-link" onClick={() => setView("computer")}>Also using Planban on your computer?</button><br /></> : null}
       {view !== "fresh" ? <><button className="web-link" onClick={() => setView("fresh")}>Starting something new? Make a board here</button><br /></> : null}
+      {view !== "invited" ? <><button className="web-link" onClick={() => setView("invited")}>Invited to a board? Find it</button><br /></> : null}
       <button className="web-link" onClick={onDone}>Go to Your boards</button>
     </p>
   );
@@ -385,8 +403,9 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
   if (view === "invited") {
     return (
       <section className="web-welcome" aria-labelledby="welcome-title">
+        {live}
         {back}
-        <h1 id="welcome-title" className="web-h">{invites.length ? (invites.length === 1 ? "You've been invited to a board" : "You've been invited to boards") : "Find your invitation"}</h1>
+        <h1 id="welcome-title" className="web-h" tabIndex={-1} ref={headingRef}>{invites.length ? (invites.length === 1 ? "You've been invited to a board" : "You've been invited to boards") : "Find your invitation"}</h1>
         <p className="web-sub">{invites.length ? "Join to open it straight away." : "Invitations come by email, from the board's owner."}</p>
         {invites.length ? (
           <div className="web-panel">
@@ -394,7 +413,7 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
               <div className="web-invite-row" key={invite.id}>
                 <span className="web-row-main"><b>{invite.boardTitle}</b><small>{invite.inviterName} invited you as {invite.role === "editor" ? "an editor" : "a viewer"}</small></span>
                 <button className="web-button dark" disabled={busy !== null} onClick={() => onJoin(invite)}>{busy === invite.id ? <Loader2 size={13} className="spin" /> : null}Join</button>
-                <button className="web-button ghost" disabled={busy !== null} onClick={() => onNotNow(invite)}>Not now</button>
+                <button className="web-button ghost" disabled={busy !== null} onClick={() => { onNotNow(invite); if (invites.length === 1) setView(null); }}>Not now</button>
               </div>
             ))}
           </div>
@@ -411,51 +430,57 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
   }
 
   if (view === "computer") {
+    // Ticked only while a computer is signed in now; boards alone don't prove that.
     const known = signals.computer;
+    const boardList = owned.length ? (
+      <div className="web-welcome-boards">
+        <p className="web-welcome-boards-head">On Planban online now</p>
+        {owned.map((board) => (
+          <div className="web-welcome-board" key={board.repoId}>
+            <span className="web-row-main"><b>{board.title}</b><small>{board.online?.authority === "online" ? `online · ${changedAgo(board.online.lastChangedAt)}` : "a read-only copy; the board itself is back on a computer"}</small></span>
+            {board.online?.authority === "online"
+              ? <button className="web-button" onClick={() => onSelectBoard(board.repoId)}>Open</button>
+              : <span className="web-role">Read-only copy</span>}
+          </div>
+        ))}
+      </div>
+    ) : null;
     return (
       <section className="web-welcome" aria-labelledby="welcome-title">
+        {live}
         {back}
-        <h1 id="welcome-title" className="web-h">{owned.length ? "Your boards are coming online" : "Bring your boards online"}</h1>
-        <p className="web-sub">{known || owned.length ? "Your computer is signed in. Now each project's board." : "Two steps, both on your computer. This page follows along by itself."}</p>
+        <h1 id="welcome-title" className="web-h" tabIndex={-1} ref={headingRef}>Bring your boards online</h1>
+        <p className="web-sub">{known ? "Your computer is signed in. Now each project's board."
+          : owned.length ? "Sign your computer in to bring more of your boards here. This page follows along by itself."
+          : "Two steps, both on your computer. This page follows along by itself."}</p>
         <ol className="web-steps">
-          <li className={`web-step ${known || owned.length ? "done" : ""}`}>
-            <span className="web-step-box" aria-hidden="true">{known || owned.length ? <Check size={11} /> : null}</span>
+          <li className={`web-step ${known ? "done" : ""}`}>
+            <span className="web-step-box" aria-hidden="true">{known ? <Check size={11} /> : null}</span>
             <div>
-              <b>{known || owned.length ? "Computer signed in" : "Sign your computer in"}</b>
-              {known ? <small>{known.name} · signed in {ago(known.lastUsedAt)}</small>
-                : owned.length ? <small>A computer of yours has brought boards online.</small>
-                : <>
-                    <small>In Codex or Claude Code on that computer, paste:</small>
-                    <CopyLine text={`Sign this computer in to Planban online: planban online login ${origin}`} />
-                    <small>It shows a link and a code. Open the link here or on your phone, check the code and tap Allow.</small>
-                    <Watching>Waiting for a computer to sign in…</Watching>
-                  </>}
+              <b>{known ? "Computer signed in" : "Sign your computer in"}</b>
+              {known ? <small>{known.name} · last used {ago(known.lastUsedAt)}</small> : (
+                <>
+                  <small>In Codex or Claude Code on that computer, paste:</small>
+                  <CopyLine text={`Sign this computer in to Planban online: planban online login ${origin} --no-browser`} />
+                  <small>It shows a link and a code. Open the link here or on your phone, check the code and tap Allow.</small>
+                  <Watching>Waiting for a computer to sign in…</Watching>
+                </>
+              )}
             </div>
           </li>
-          <li className={`web-step ${known || owned.length ? "" : "web-step-later"}`}>
+          <li className={`web-step ${known ? "" : "web-step-later"}`}>
             <span className="web-step-box" aria-hidden="true" />
             <div>
               <b>Take each project's board online</b>
-              {known || owned.length ? (
+              {known ? (
                 <>
                   <small>In each project, ask your agent:</small>
                   <CopyLine text="Take this project's Planban board online" />
                   <small>Or in the Planban app on your computer: Board settings, then Take online. Boards appear here as they arrive.</small>
-                  {owned.length ? (
-                    <div className="web-welcome-boards">
-                      {owned.map((board) => (
-                        <div className="web-welcome-board" key={board.repoId}>
-                          <span className="web-row-main"><b>{board.title}</b><small>{board.online?.authority === "online" ? `online · ${changedAgo(board.online.lastChangedAt)}` : "taken back to a computer"}</small></span>
-                          {board.online?.authority === "online"
-                            ? <button className="web-button" onClick={() => onSelectBoard(board.repoId)}>Open</button>
-                            : <span className="web-role">Read-only copy</span>}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
+                  {boardList}
                   <Watching>Watching for more boards…</Watching>
                 </>
-              ) : <small>Next, once your computer is signed in.</small>}
+              ) : <><small>Next, once your computer is signed in.</small>{boardList}</>}
             </div>
           </li>
         </ol>
@@ -468,8 +493,9 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
   if (view === "fresh") {
     return (
       <section className="web-welcome" aria-labelledby="welcome-title">
+        {live}
         {back}
-        <h1 id="welcome-title" className="web-h">Start your first board</h1>
+        <h1 id="welcome-title" className="web-h" tabIndex={-1} ref={headingRef}>Start your first board</h1>
         <p className="web-sub">One board per project works best. You can invite people once it's made.</p>
         <FirstBoard onCreated={onCreated} />
         <div className="web-panel web-card">
@@ -487,8 +513,9 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
   const app = signals.appConnected;
   return (
     <section className="web-welcome" aria-labelledby="welcome-title">
+        {live}
       {app ? <p className="web-connected"><Check size={14} aria-hidden="true" /> <span><b>ChatGPT or Claude is connected to your account.</b> It can read and update the boards you have here.</span></p> : null}
-      <h1 id="welcome-title" className="web-h">{first ? `Welcome to Planban, ${first}` : "Welcome to Planban"}</h1>
+      <h1 id="welcome-title" className="web-h" tabIndex={-1} ref={headingRef}>{first ? `Welcome to Planban, ${first}` : "Welcome to Planban"}</h1>
       <p className="web-sub">{app ? "Where are your plans now?" : "Tell us where you're starting from, and we'll get your boards here."}</p>
       <div className="web-choices">
         <Choice icon={<Laptop size={17} />} title={app ? "In Planban on my computer" : "I already use Planban on my computer"}
@@ -547,13 +574,26 @@ export function HostedDashboard({ boards, onSelectBoard, onBoardsChanged }: { bo
     setWelcomeDone(true);
   };
 
+  // One check at a time; a failed answer keeps what was known, and repeated failures slow the checks.
+  const checking = useRef(false);
+  const failures = useRef(0);
+  const nextCheck = useRef(0);
   const recheck = useCallback(async () => {
-    const [waiting, listed] = await Promise.all([
-      call<{ invitations: WaitingInvite[] }>("/api/online/invites").catch(() => ({ invitations: [] })),
-      call<{ connections?: Array<{ kind: string; name: string; lastUsedAt: string; active?: boolean }> }>("/api/online/connections").catch(() => ({ connections: [] })),
-    ]);
-    setInvites(waiting.invitations);
-    setConnections(listed.connections ?? []);
+    if (checking.current || Date.now() < nextCheck.current) return;
+    checking.current = true;
+    try {
+      const [waiting, listed] = await Promise.all([
+        call<{ invitations: WaitingInvite[] }>("/api/online/invites").catch(() => null),
+        call<{ connections?: Array<{ kind: string; name: string; lastUsedAt: string; active?: boolean }> }>("/api/online/connections").catch(() => null),
+      ]);
+      if (waiting) setInvites(waiting.invitations);
+      if (listed) setConnections(listed.connections ?? []);
+      else setConnections((known) => known ?? []);
+      failures.current = waiting && listed ? 0 : failures.current + 1;
+      nextCheck.current = failures.current ? Date.now() + Math.min(60_000, 5_000 * 2 ** failures.current) : 0;
+    } finally {
+      checking.current = false;
+    }
   }, []);
   const showing = invites.filter((invite) => !dismissed.includes(invite.id));
   const welcoming = !welcomeDone && shared.length === 0;
@@ -611,12 +651,15 @@ export function HostedDashboard({ boards, onSelectBoard, onBoardsChanged }: { bo
       <div className="web-wrap">
         {welcoming ? (
           connections === null ? <p className="web-muted" role="status"><Loader2 size={14} className="spin" /> One moment…</p> : (
-            <Welcome view={view} setView={setChosen} signals={signals} owned={owned} invites={showing} busy={busy}
+            <Welcome view={view} setView={setChosen} signals={signals} owned={owned} invites={invites} busy={busy}
               onJoin={(invite) => void join(invite)} onNotNow={notNow} onSelectBoard={onSelectBoard} onDone={finishWelcome}
               onCreated={(repoId) => { finishWelcome(); void onBoardsChanged().then(() => onSelectBoard(repoId)); }} />
           )
         ) : (
           <>
+            {invites.length > showing.length ? (
+              <p className="web-foot"><button className="web-link" onClick={() => { sessionStorage.removeItem(DISMISSED_KEY); setDismissed([]); }}>Show {invites.length - showing.length === 1 ? "the invitation" : `${invites.length - showing.length} invitations`} you put off</button></p>
+            ) : null}
             {showing.map((invite) => (
               <div className="web-banner" key={invite.id}>
                 <span><b>{invite.inviterName} invited you to {invite.boardTitle}</b> as {invite.role === "editor" ? "an editor" : "a viewer"}.</span>

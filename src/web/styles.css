@@ -6193,6 +6193,8 @@ button.web-step-box { cursor: pointer; }
 /* A ticked step here is done, not cancelled: no strike-through. */
 .web-welcome .web-step.done > div > b { color: var(--text); text-decoration: none; }
 .web-welcome-boards { margin-top: 12px; border-top: 1px solid var(--border); }
+.web-welcome-boards-head { margin: 10px 0 0; color: var(--text-muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.web-welcome h1:focus { outline: none; }
 .web-welcome-board { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .web-welcome-board .web-row-main b { font-size: 13.5px; }
 .web-invite-row { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
