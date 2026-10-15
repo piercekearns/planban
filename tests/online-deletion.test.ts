@@ -273,7 +273,7 @@ test("other people's boards show a deleted account's changes as 'A deleted accou
   assert.equal(absentPerson("user_3KjNmCA4RC6B9pT7PIyRgMOdoUW").name, "Someone no longer on this board");
 });
 
-test("a deleted account stays deleted: it can't be added to a board or start a sign-in, even after its deletion record is gone", async () => {
+test("a deleted account stays deleted: it can't be added to a board, and while its record lasts it can't start a sign-in", async () => {
   await withServiceEnv(async () => {
     const service = memoryService();
     const host = await service.signIn("user_host", "Hal");
@@ -284,21 +284,21 @@ test("a deleted account stays deleted: it can't be added to a board or start a s
     try {
       await requestAccount(service, "gwen@example.com");
       await service.runJobs();
-      service.rows.find((row) => row._table === "erasures").doneAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
-      await service.call(internal.erasure.sweep, {});
-      await service.runJobs();
-      assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
-      assert.deepEqual(leftovers(service, "user_gone"), [], "only a hash of the id is kept");
-
-      const added = await hostApi("POST", `/api/v1/boards/${boardId}/members`, { userId: "user_gone", role: "editor" });
-      assert.equal(added.status, 404);
-      await assert.rejects(service.signIn("user_gone", "Gwen"), /has been deleted/);
       const hex = "a".repeat(64);
       await assert.rejects(service.call(internal.oauth.createRequest, {
         requestHash: hex, browserHash: hex, csrfHash: hex, clientId: "planban-cli", clientName: "Planban CLI", redirectUri: "http://127.0.0.1/callback",
         resource: "https://planban.example", scopes: ["planban:machine"], level: "complete", challenge: "c".repeat(43), state: "s",
         purpose: "machine", userId: "user_gone", expiresAt: Date.now() + 60_000,
-      }), /has been deleted/);
+      }), /has been deleted/, "a sign-in already under way when the account was deleted is refused");
+      // A day after it finishes, the deletion record goes; its Clerk user is long gone, so no sign-in can start.
+      service.rows.find((row) => row._table === "erasures").doneAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      await service.call(internal.erasure.sweep, {});
+      await service.runJobs();
+      assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
+      assert.deepEqual(leftovers(service, "user_gone"), [], "nothing of the account is kept, not even its id");
+
+      const added = await hostApi("POST", `/api/v1/boards/${boardId}/members`, { userId: "user_gone", role: "editor" });
+      assert.equal(added.status, 404);
       assert.deepEqual(leftovers(service, "user_gone"), []);
     } finally {
       clerk.restore();
@@ -325,5 +325,22 @@ test("a board's deletion removes every generation under its id, however many upl
     assert.deepEqual([...new Set(service.rows.filter((row) => row.boardId === boardId).map((row) => row._table))].filter((table) => table !== "operations"), []);
     assert.deepEqual(service.rows.filter((row) => row._table === "transferParts"), []);
     assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
+  });
+});
+
+test("an account deletion drains every refresh token of an app connection before removing the connection", async () => {
+  await withServiceEnv(async () => {
+    const service = memoryService();
+    const signedIn = await service.signIn("user_apps", "Ada");
+    const grant = await service.ctx.db.insert("connections", { userId: "user_apps", kind: "oauth", name: "ChatGPT", clientName: "ChatGPT", boards: "all", level: "plan", canAdminister: false, createdAt: new Date().toISOString(), lastUsedAt: new Date().toISOString() });
+    for (let i = 0; i < 250; i += 1) {
+      await service.ctx.db.insert("oauthRefresh", { tokenHash: `spent-${i}`, connectionId: grant, clientId: "chatgpt", resource: "https://planban.example", scopes: ["planban:plan"], expiresAt: Date.now() + 1e9, usedAt: Date.now() });
+    }
+    assert.ok(signedIn.connectionId);
+    await service.call(internal.erasure.beginAccount, { userId: "user_apps", emails: [] });
+    await service.call(internal.erasure.noteClerkDeleted, { userId: "user_apps" });
+    await service.runJobs(10_000);
+    assert.deepEqual(service.rows.filter((row) => row._table === "oauthRefresh"), []);
+    assert.equal((await service.call(internal.erasure.accountStatus, { userId: "user_apps" })).finished, true);
   });
 });

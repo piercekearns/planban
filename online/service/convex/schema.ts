@@ -357,12 +357,6 @@ export default defineSchema({
     doneAt: v.optional(v.string()),
   }).index("by_kind", ["kind"]).index("by_user", ["userId"]).index("by_board", ["boardId"]),
 
-  /**
-   * Accounts that have been deleted, kept only as a SHA-256 of the account id,
-   * so nothing can ever be created for one again (owner decision (b)).
-   */
-  retiredAccounts: defineTable({ userHash: v.string() }).index("by_hash", ["userHash"]),
-
   /** Counters shared across boards. Generations are numbered globally so rows of a deleted and re-created board never collide. */
   counters: defineTable({
     name: v.string(),

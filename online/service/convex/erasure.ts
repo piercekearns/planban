@@ -9,8 +9,8 @@
 // Each deletion is a row in `erasures`, worked through by its own job in
 // small steps that save their place, so no step reads much and one stuck
 // deletion never holds up another. A daily sweep restarts any job that
-// stopped. model/erasureGate.ts keeps a deleted account from ever signing in
-// or being added again, and keeps a deleted board's id from being reused
+// stopped. model/erasureGate.ts keeps an account being deleted from signing
+// in or being added again, and keeps a deleted board's id from being reused
 // until all its rows are gone, so every row under that id is the deleted
 // board's, whatever its generation.
 import { v } from "convex/values";
@@ -19,7 +19,6 @@ import type { Doc } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import { boardAccess } from "./model/access";
 import { fail } from "./model/errors";
-import { retireAccount } from "./model/erasureGate";
 
 /** Rows per step: small, so a step stays far inside Convex's per-transaction limits. */
 const STEP = 100;
@@ -75,7 +74,6 @@ export const beginAccount = internalMutation({
     if (!/^user_[A-Za-z0-9]+$/.test(userId)) fail("validation", "A Clerk user id is required.");
     const now = new Date().toISOString();
     let erasure = await ctx.db.query("erasures").withIndex("by_user", (q) => q.eq("userId", userId)).first();
-    await retireAccount(ctx, userId);
     if (!erasure) {
       const id = await ctx.db.insert("erasures", { kind: "account", userId, ownedBoards: [], clerkDeleted: false, stage: "revoke", cursor: null, requestedAt: now });
       erasure = (await ctx.db.get(id))!;
@@ -338,10 +336,14 @@ const ACCOUNT_STEPS: Array<[string, Step]> = [
   ["connections", async (ctx, erasure) => {
     const connections = await ctx.db.query("connections").withIndex("by_user", (q) => q.eq("userId", erasure.userId!)).take(20);
     for (const connection of connections) {
-      for (const refresh of await ctx.db.query("oauthRefresh").withIndex("by_connection", (q) => q.eq("connectionId", connection._id)).take(STEP)) await ctx.db.delete(refresh._id);
-      if (connection.clerkSessionId) {
-        for (const barrier of await ctx.db.query("webSessionBarriers").withIndex("by_clerkSession", (q) => q.eq("clerkSessionId", connection.clerkSessionId!)).take(STEP)) await ctx.db.delete(barrier._id);
-      }
+      // A connection goes only once everything found through it is gone (spent refresh tokens can be many).
+      const refreshes = await ctx.db.query("oauthRefresh").withIndex("by_connection", (q) => q.eq("connectionId", connection._id)).take(STEP);
+      for (const refresh of refreshes) await ctx.db.delete(refresh._id);
+      const barriers = connection.clerkSessionId
+        ? await ctx.db.query("webSessionBarriers").withIndex("by_clerkSession", (q) => q.eq("clerkSessionId", connection.clerkSessionId!)).take(STEP)
+        : [];
+      for (const barrier of barriers) await ctx.db.delete(barrier._id);
+      if (refreshes.length === STEP || barriers.length === STEP) return "more";
       await ctx.db.delete(connection._id);
     }
     return connections.length ? "more" : "next";
