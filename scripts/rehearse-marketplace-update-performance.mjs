@@ -177,8 +177,14 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
     if (!options.keep) {
       const cleanupStartedAt = performance.now();
       process.stderr.write("  Removing sample fixture...\n");
-      await rm(sampleRoot, { recursive: true, force: true });
-      process.stderr.write(`  Removed sample fixture in ${Math.round(performance.now() - cleanupStartedAt)}ms\n`);
+      // Retries ride out Windows releasing files late; a fixture that still can't be
+      // removed is reported, never allowed to hide why the sample itself failed.
+      try {
+        await rm(sampleRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+        process.stderr.write(`  Removed sample fixture in ${Math.round(performance.now() - cleanupStartedAt)}ms\n`);
+      } catch (error) {
+        process.stderr.write(`  Couldn't remove sample fixture: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
     } else process.stderr.write(`Preserved rehearsal at ${sampleRoot}\n`);
   }
 }

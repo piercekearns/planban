@@ -31,8 +31,16 @@ async function until(condition: () => boolean, what: string) {
   assert.ok(condition(), `timed out waiting: ${what}`);
 }
 
+/** The service calls the watcher has made that haven't answered yet (see slow()). */
+const inFlight = new Set<Promise<unknown>>();
+
+/** Waits until the watcher is idle: its service calls have answered and what follows them has run. */
 const settle = async () => {
-  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  for (;;) {
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    if (!inFlight.size) return;
+    await Promise.allSettled([...inFlight]);
+  }
 };
 
 /** Timers the test moves forward by hand. */
@@ -148,15 +156,26 @@ async function ownerWithBoard() {
   const owner = await service.signIn("user_owner");
   const created = await service.browserSend(owner.token)("/api/v1/boards", { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ title: "Live board" }) });
   const { boardId } = await created.json() as { boardId: string };
-  const adapter = service.adapterFor(owner.token);
-  // A live token takes real time to arrive, as on a slow machine, so a test
-  // that expects a new connection must wait for it rather than assume it.
-  const liveToken = adapter.liveToken.bind(adapter);
-  adapter.liveToken = async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    return liveToken();
+  return { service, owner, boardId, adapter: slow(service.adapterFor(owner.token)) };
+}
+
+/**
+ * Live tokens and revision checks take real time, as on a slow machine, and
+ * settle() waits for them. So no test can pass by assuming one has answered
+ * already, as a test on a fast machine might.
+ */
+function slow(adapter: HostedAdapter) {
+  const tracked = <T,>(call: () => Promise<T>) => {
+    const answer = new Promise((resolve) => setTimeout(resolve, 20)).then(call);
+    inFlight.add(answer);
+    void answer.finally(() => inFlight.delete(answer)).catch(() => undefined);
+    return answer;
   };
-  return { service, owner, boardId, adapter };
+  const liveToken = adapter.liveToken.bind(adapter);
+  const revision = adapter.revision.bind(adapter);
+  adapter.liveToken = () => tracked(liveToken);
+  adapter.revision = (boardId) => tracked(() => revision(boardId));
+  return adapter;
 }
 
 async function edit(adapter: HostedAdapter, boardId: string, title: string) {
@@ -208,7 +227,7 @@ test("removed from the board: the subscription ends, and reloading shows the boa
   await withServiceEnv(() => withLiveTokens(async () => {
     const { service, owner, boardId, adapter } = await ownerWithBoard();
     await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/members`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "user_editor", role: "editor" }) });
-    const editor = service.adapterFor((await service.signIn("user_editor")).token);
+    const editor = slow(service.adapterFor((await service.signIn("user_editor")).token));
     const convex = fakeConvex(service);
     const { lost } = watch(editor, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
     await until(() => convex.fake.urls.length >= 1, "the live connection");
@@ -229,7 +248,7 @@ test("removed from the board: the subscription ends, and reloading shows the boa
 test("a revoked browser session ends the subscription, and the board shows signed out", async () => {
   await withServiceEnv(() => withLiveTokens(async () => {
     const { service, boardId, adapter } = await ownerWithBoard();
-    const laptop = service.adapterFor((await service.signIn("user_owner")).token);
+    const laptop = slow(service.adapterFor((await service.signIn("user_owner")).token));
     const convex = fakeConvex(service);
     const { lost } = watch(laptop, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
     await until(() => convex.fake.urls.length >= 1, "the live connection");
@@ -329,7 +348,7 @@ test("without live updates configured, the page checks every 15 seconds; a remov
   await withServiceEnv(async () => {
     const { service, owner, boardId, adapter } = await ownerWithBoard();
     await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/members`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "user_viewer", role: "viewer" }) });
-    const viewer = service.adapterFor((await service.signIn("user_viewer")).token);
+    const viewer = slow(service.adapterFor((await service.signIn("user_viewer")).token));
     assert.equal(await viewer.liveToken(), null);
     const convex = fakeConvex(service);
     const clock = manualTimers();
