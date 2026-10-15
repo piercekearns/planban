@@ -31,6 +31,7 @@ import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
 import { rememberIdentity } from "./core/online/accounts";
+import { errorReport } from "./core/errorReport";
 import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
@@ -344,10 +345,11 @@ program
   .description("delete a whole Planban board after creating a timestamped local backup")
   .argument("<repoId>")
   .option("--yes", "confirm deletion")
+  .option("--this-computer-only", "for an online board: only remove it from this computer; it stays online for everyone")
   .option("-o, --output <format>", "output format")
   .action(async (repoId, options) => {
     if (!options.yes) throw new Error("Refusing to delete a board without --yes");
-    print(await deleteBoard(repoId), options);
+    print(await deleteBoard(repoId, { thisComputerOnly: options.thisComputerOnly === true }), options);
   });
 
 program
@@ -429,6 +431,7 @@ program
   .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
+  .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
     if (options.parent && options.board) throw new Error("Choose at most one of --parent or --board.");
@@ -444,7 +447,7 @@ program
         parentId: options.parent ? options.parent : options.board ? null : undefined,
         afterId: options.after ? options.after : options.first ? null : undefined,
         baseRevision: options.baseRevision,
-        actor: "agent",
+        actor: "agent", idempotencyKey: options.idempotencyKey,
         completionConfirmed: options.completionConfirmed === true,
       }),
       options,
@@ -466,6 +469,7 @@ program
   .option("--clear-metadata", "clear card metadata")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
+  .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
     if (options.summary !== undefined && options.clearSummary) throw new Error("Choose at most one of --summary or --clear-summary.");
@@ -490,7 +494,7 @@ program
       blockedBy: options.clearBlockedBy ? null : options.blockedBy,
       metadata: options.clearMetadata ? null : options.metadataJson !== undefined ? parseMetadataJson(options.metadataJson) : undefined,
       baseRevision: options.baseRevision,
-      actor: "agent",
+      actor: "agent", idempotencyKey: options.idempotencyKey,
     }), options);
   });
 
@@ -502,6 +506,7 @@ program
   .option("--board", "move to the main board")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
+  .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, options) => {
     if ((options.parent ? 1 : 0) + (options.board ? 1 : 0) !== 1) {
@@ -512,7 +517,7 @@ program
       cardId,
       parentId: options.board ? null : options.parent,
       baseRevision: options.baseRevision,
-      actor: "agent",
+      actor: "agent", idempotencyKey: options.idempotencyKey,
     }), options);
   });
 
@@ -532,6 +537,7 @@ program
   .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
+  .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
   .option("-o, --output <format>", "output format")
   .action(async (title, options) => {
     print(
@@ -549,7 +555,7 @@ program
         afterId: options.after,
         parentId: options.parent,
         baseRevision: options.baseRevision,
-        actor: "agent",
+        actor: "agent", idempotencyKey: options.idempotencyKey,
         completionConfirmed: options.completionConfirmed === true,
       }),
       options,
@@ -569,6 +575,7 @@ function configureCreateGroupCommand(command: Command) {
     .option("--plan-file <path>", "read initial Group plan markdown from a file")
     .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
     .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
+    .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (title, options) => {
@@ -583,7 +590,7 @@ function configureCreateGroupCommand(command: Command) {
         specMarkdown: options.specFile ? readFileSync(resolve(options.specFile), "utf8") : undefined,
         planMarkdown: options.planFile ? readFileSync(resolve(options.planFile), "utf8") : undefined,
         baseRevision: options.baseRevision,
-        actor: "agent",
+        actor: "agent", idempotencyKey: options.idempotencyKey,
         completionConfirmed: options.completionConfirmed === true,
       }), options);
     });
@@ -600,13 +607,14 @@ program
   .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
+  .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
   .option("-o, --output <format>", "output format")
   .action(async (options) => {
     print(await createCards({
       cwd: cwdOption(options.cwd), titles: options.title,
       status: options.status ? requireStatus(options.status) : undefined,
       parentId: options.parent, baseRevision: options.baseRevision,
-      actor: "agent", completionConfirmed: options.completionConfirmed === true,
+      actor: "agent", idempotencyKey: options.idempotencyKey, completionConfirmed: options.completionConfirmed === true,
     }), options);
   });
 
@@ -620,12 +628,13 @@ for (const [command, status] of [
     .argument("<cardId>")
     .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
     .option("--completion-confirmed", "for complete-card: a person on the board asked for, confirmed or waived review of completing it")
+    .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (cardId, options) => {
       print(await moveCard({
         cwd: cwdOption(options.cwd), cardId, status, baseRevision: options.baseRevision,
-        actor: "agent", completionConfirmed: options.completionConfirmed === true,
+        actor: "agent", idempotencyKey: options.idempotencyKey, completionConfirmed: options.completionConfirmed === true,
       }), options);
     });
 }
@@ -648,6 +657,7 @@ program
   .option("--cwd <path>", "project directory")
   .option("--file <path>", "read markdown from a file instead of stdin")
   .option("--expected-mtime <mtimeMs|new>", "the document version this edit is based on: mtimeMs from read-doc, or new for a document that doesn't exist yet (required for Online Boards)")
+  .option("--idempotency-key <key>", "online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores); reuse it only to retry the same edit after a lost reply")
   .option("-o, --output <format>", "output format")
   .action(async (cardId, kind, options) => {
     if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
@@ -658,7 +668,7 @@ program
       if (expectedMtimeMs !== null && (!raw || !Number.isFinite(expectedMtimeMs))) throw new Error("--expected-mtime is the mtimeMs value from read-doc, or new");
     }
     const markdown = options.file ? readFileSync(options.file, "utf8") : await readStdin();
-    print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown, ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs }) }), options);
+    print(await writeDoc({ cwd: cwdOption(options.cwd), cardId, kind, markdown, actor: "agent", ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}), ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs }) }), options);
   });
 
 function describeMoveFilesOut(result: MoveFilesOutResult) {
@@ -720,8 +730,20 @@ program
     }), options);
   });
 
+// Every command takes -o json, the online ones included (their results are JSON already).
+const everyCommand = (command: Command): Command[] => [command, ...command.commands.flatMap(everyCommand)];
+for (const command of everyCommand(online)) {
+  if (!command.options.some((option) => option.long === "--output")) command.option("-o, --output <format>", "output format");
+}
+
+/** Whether this run asked for JSON output, however the option was written. */
+function wantsJson(argv: string[]) {
+  return argv.some((arg, index) => arg === "--output=json" || arg === "-ojson" || ((arg === "-o" || arg === "--output") && argv[index + 1] === "json"));
+}
+
 program.parseAsync().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unknown error";
-  process.stderr.write(`${message}\n`);
+  // A JSON caller gets the failure as JSON too: its kind, message and details (agent-surface audit).
+  if (wantsJson(process.argv)) process.stdout.write(JSON.stringify({ error: errorReport(error) }, null, 2) + "\n");
+  process.stderr.write(`${error instanceof Error ? error.message : "Unknown error"}\n`);
   process.exitCode = 1;
 });

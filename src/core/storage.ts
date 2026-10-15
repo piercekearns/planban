@@ -440,6 +440,8 @@ async function commitWithDocs(state: PlanbanResolvedState, change: PlannedChange
 
 export async function moveCard(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   cardId: string;
   status?: PlanbanStatus | undefined;
   parentId?: string | null | undefined;
@@ -465,6 +467,8 @@ export async function moveCard(input: {
 
 export async function updateCard(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   cardId: string;
   baseRevision?: number | undefined;
   title?: string | undefined;
@@ -489,6 +493,8 @@ export async function updateCard(input: {
 
 export async function setCardParent(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   cardId: string;
   parentId: string | null;
   baseRevision?: number | undefined;
@@ -503,6 +509,8 @@ export async function setCardStatus(cwd: string, cardId: string, status: Planban
 
 export async function deleteArchivedCard(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   cardId: string;
   baseRevision?: number | undefined;
 }): Promise<PlanbanResolvedState> {
@@ -520,6 +528,8 @@ export async function deleteArchivedCard(input: {
 
 export async function reorderCards(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   items: Array<{ id: string; status: PlanbanStatus }>;
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
@@ -539,6 +549,8 @@ export async function reorderCards(input: {
 
 export async function createCard(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   title: string;
   status?: PlanbanStatus | undefined;
   summary?: string | undefined;
@@ -578,6 +590,8 @@ export async function createCard(input: {
 
 export async function createGroup(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   title: string;
   summary?: string | undefined;
   nextAction?: string | undefined;
@@ -614,6 +628,8 @@ export async function createGroup(input: {
 
 export async function createCards(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   titles: string[];
   status?: PlanbanStatus | undefined;
   parentId?: string | null | undefined;
@@ -872,16 +888,24 @@ export async function reconstructHierarchy(input: {
 
 export async function writeDoc(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   cardId: string;
   kind: "spec" | "plan";
   markdown: string;
   expectedMtimeMs?: number | null | undefined;
   history?: PlanbanHistoryMeta | false | undefined;
+  /** Who is writing; defaults to the history's actor. On an online board, an agent stays within the person's setting for their agents. */
+  actor?: PlanbanHistoryActor | undefined;
   /** Only for move-files-out: records files it moved even when a failure left others in the card folder. */
   recordingMovedFiles?: boolean | undefined;
 }): Promise<PlanbanDocPayload> {
   const online = await onlineManifest(input.cwd);
-  if (online) return (await onlineOperation<{ doc: PlanbanDocPayload }>(resolveProjectCwd(input.cwd), online, "writeDoc", input)).result.doc;
+  if (online) {
+    const { history, ...rest } = input;
+    const actor = input.actor ?? (history ? history.actor : undefined);
+    return (await onlineOperation<{ doc: PlanbanDocPayload }>(resolveProjectCwd(input.cwd), online, "writeDoc", { ...rest, ...(actor ? { actor } : {}) })).result.doc;
+  }
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const planned = planWriteDoc(state.roadmap, input, { now: nowIso() });
@@ -956,6 +980,8 @@ export async function readHistoryDoc(input: {
 
 export async function restoreBoardVersion(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   version: number;
   actor?: PlanbanHistoryActor | undefined;
   baseRevision?: number | undefined;
@@ -979,6 +1005,8 @@ export async function restoreBoardVersion(input: {
 
 export async function restoreCardVersion(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   version: number;
   cardId: string;
   actor?: PlanbanHistoryActor | undefined;
@@ -1008,6 +1036,8 @@ export async function restoreCardVersion(input: {
 
 export async function restoreDocVersion(input: {
   cwd: string;
+  /** Online boards: one key per logical edit, reused only to retry that same edit. */
+  idempotencyKey?: string | undefined;
   version: number;
   cardId: string;
   kind: "spec" | "plan";

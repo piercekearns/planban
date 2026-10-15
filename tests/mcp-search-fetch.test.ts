@@ -27,3 +27,20 @@ test("search and fetch cite each card's address on the web page", async () => {
   assert.equal(fetched.structuredContent.title, "Choose the vest supplier");
   assert.match(fetched.structuredContent.text, /One supplier for 300 units/);
 });
+
+test("remote results have the local tools' shape: query matches at the top level, and every edit returns the link to give the person", async () => {
+  const query = await call("planban_query_cards", { boardId: "deadleg", search: "vest" });
+  assert.equal(query.structuredContent.boardId, "deadleg");
+  assert.equal(query.structuredContent.revision, 3);
+  assert.equal(query.structuredContent.matches[0].item.id, "vest");
+  assert.equal(query.structuredContent.results, undefined);
+
+  const edited: any = { ...service, run: async () => ({ roadmap: { ...roadmap, revision: 4 }, result: {} }) };
+  const response = await handleMcp(new Request("https://app.planban.example/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "planban_update_card", arguments: { boardId: "deadleg", cardId: "vest", summary: "Picked.", baseRevision: 3 } } }) }), edited, "https://app.planban.example");
+  const result = (await response.json()).result.structuredContent;
+  assert.equal(result.revision, 4);
+  assert.equal(result.card.id, "vest", "the changed card, as the local tools return it");
+  assert.equal(result.boardUrl, "https://app.planban.example/boards/deadleg");
+  assert.equal(result.boardUrlVerified, true);
+  assert.deepEqual(result.userReply, { urlRequired: true, url: "https://app.planban.example/boards/deadleg#card=vest", markdown: "[Open the board](https://app.planban.example/boards/deadleg#card=vest)" });
+});

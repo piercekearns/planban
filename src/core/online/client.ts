@@ -14,6 +14,15 @@ export class OnlineAuthenticationError extends Error {
   }
 }
 
+/** The service refused this connection the action (a viewer, an agent's level, or an owner-only step). Its message says which, and what to do. */
+export class PlanbanForbiddenError extends Error {
+  readonly statusCode = 403;
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanbanForbiddenError";
+  }
+}
+
 function loginRequired(url: string, reason: "missing" | "expired") {
   return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run ${planbanCommand()} online login ${url}.`, 401, { url, reason });
 }
@@ -99,7 +108,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     if (response.status === 400) throw new PlanbanValidationError(message);
     if (response.status === 404) throw new PlanbanNotFoundError(message);
     if (response.status === 401) throw loginRequired(url, "expired");
-    if (response.status === 403) throw new OnlineAuthenticationError(`${message} Ask the board owner for access.`, 403);
+    if (response.status === 403) throw new PlanbanForbiddenError(message);
     // A daily limit (owner decision 18): kept as 429 so the board page and agents see a limit, not a failure.
     if (response.status === 429) throw Object.assign(new Error(message), { name: "OnlineLimitError", statusCode: 429 });
     throw new Error(message);

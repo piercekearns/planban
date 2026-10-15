@@ -39,11 +39,12 @@ const INSTRUCTIONS = [
   "These tools read and edit Planban Online Boards shared across devices and people.",
   "Call planban_list_boards first to find the boardId.",
   "After board access changes, request tools/list again. This stateless endpoint sends no tool-list change notifications; if your client caches discovery, reconnect or reload its MCP connection. Expanded OAuth scopes require new explicit authorization.",
-  "Every edit must pass baseRevision, the board revision you last read; document edits pass the mtimeMs from planban_read_doc as expectedMtimeMs (null for a new document). On a conflict, reread and retry.",
+  "Card and board edits pass baseRevision, the board revision you last read. Spec and Plan writes pass expectedMtimeMs instead: that document's mtimeMs from planban_read_doc (null for a new document). If a card edit conflicts, reread the card and apply your change again only if it still makes sense. If a document write conflicts, keep your proposed text, read the document again, merge your change into the current text without dropping anyone else's edits, and write that with the new version; never resend your old text with only a newer version.",
   "A pasted planban:<board>/<item> token is a Planban reference: <board> is the boardId and <item> is the cardId; any quoted title beside it is display context only.",
-  "Pass a fresh idempotencyKey with each edit and reuse it if you retry the same edit, so it is never applied twice.",
+  "Pass an idempotencyKey with each edit: a fresh one per edit, and the same one only to resend that unchanged edit after a lost reply, so it is never applied twice. A revised edit, such as one merged after a conflict, gets a new key.",
   "Serialize writes: one mutation at a time per board.",
-  "Complete is person-controlled: move a card to complete only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review, and set completionConfirmed true. What you may do also depends on what that person lets their agents do.",
+  "Complete is person-controlled: put a card in complete (by moving it or creating it complete) only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review, and set completionConfirmed true.",
+  "A refusal says why: a viewer can't change the board; the person's agents may be limited to read or plan (they can change that in the board's People settings); this connection may reach only some boards; some steps are for the owner's own sign-in. Tell the person instead of working around it.",
   "Deleting cards and taking a board back to Local Mode are not available to agents.",
   `Planban is an index, not storage: boards hold text only (cards, Specs, Plans and history). Never put files, images or encoded data in a card or document. ${HOW_TO_REFER} Edits that embed files are refused.`,
 ].join(" ");
@@ -201,7 +202,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_move_card",
     title: "Place Planban Card",
-    description: "Change an Item's status, Group, and/or sibling rank in one mutation. Use null afterId for first position. Only use status complete only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review; set completionConfirmed true.",
+    description: "Change an Item's status, Group, and/or sibling rank in one mutation. Use null afterId for first position. Use status complete only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review; set completionConfirmed true.",
     inputSchema: object({
       boardId,
       cardId: { type: "string" },
@@ -352,6 +353,13 @@ function operationInput(args: Record<string, unknown>) {
   return { ...input, actor: "agent" };
 }
 
+/** The link to give the person after an edit, in the local tools' shape. The web address is always reachable, so it needs no check. */
+function handoff(origin: string, boardId: string, cardId?: string) {
+  const boardUrl = `${origin}/boards/${encodeURIComponent(boardId)}`;
+  const url = cardId ? cardUrl(origin, boardId, cardId) : boardUrl;
+  return { boardUrl, boardUrlVerified: true, userReply: { urlRequired: true, url, markdown: `[Open the board](${url})` } };
+}
+
 /** A card on the web page: the board's address, opening the card. */
 export function cardUrl(origin: string, boardId: string, cardId: string): string {
   return `${origin}/boards/${encodeURIComponent(boardId)}#card=${encodeURIComponent(cardId)}`;
@@ -366,7 +374,8 @@ async function callTool(service: McpService, origin: string, name: string, args:
     case "planban_query_cards": {
       const { boardId: _id, ...query } = args;
       const roadmap = await service.getBoard(stringArg(args, "boardId"));
-      return { revision: roadmap.revision, results: queryWorkItems(roadmap.roadmapItems, query as WorkItemQuery) };
+      // The same shape as the local planban_query_cards: the matches at the top level.
+      return { boardId: roadmap.project.id, revision: roadmap.revision, ...queryWorkItems(roadmap.roadmapItems, query as WorkItemQuery) };
     }
     case "planban_get_card": {
       const roadmap = await service.getBoard(stringArg(args, "boardId"));
@@ -401,9 +410,20 @@ async function callTool(service: McpService, origin: string, name: string, args:
       const key = typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined;
       const outcome = await service.run(stringArg(args, "boardId"), op, operationInput(args), args.completionConfirmed === true, key);
       // A retried edit says so, and which revision it originally produced.
+      // Like the local tools, every edit returns the link to give the person.
+      const boardIdArg = stringArg(args, "boardId");
+      const changedCard = typeof args.cardId === "string" ? args.cardId
+        : (outcome.result as { createdCard?: { id?: string }; createdGroup?: { id?: string } })?.createdCard?.id
+          ?? (outcome.result as { createdGroup?: { id?: string } })?.createdGroup?.id;
+      // What changed, under the local tools' names too (card, cards, group; a document's fields).
+      const result = outcome.result as { createdCard?: unknown; createdCards?: unknown; createdGroup?: unknown; doc?: Record<string, unknown> };
+      const card = result.createdCard ?? (typeof args.cardId === "string" && !result.doc ? outcome.roadmap.roadmapItems.find((item) => item.id === args.cardId) : undefined);
       return {
-        revision: outcome.roadmap.revision, ...(outcome.result as Record<string, unknown>),
+        revision: outcome.roadmap.revision, ...result,
+        ...(card ? { card } : {}), ...(result.createdCards ? { cards: result.createdCards } : {}), ...(result.createdGroup ? { group: result.createdGroup } : {}),
+        ...(result.doc ? { ...result.doc, doc: result.doc } : {}),
         ...(outcome.replayed ? { replayed: true, ...(outcome.originalRevision === undefined ? {} : { originalRevision: outcome.originalRevision }) } : {}),
+        ...handoff(origin, boardIdArg, changedCard),
       };
     }
     case "search": {

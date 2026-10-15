@@ -281,6 +281,14 @@ A board goes online only when it holds no files (see [Local Storage](#local-stor
 
 Each person also chooses what their own agents may do: read, plan, or plan and complete (`planban online my-agents <level>`). An agent can never do more than its person. People join by opening the invitation link in a browser (it leads through sign-in straight to the board), or with `planban online join <link>`.
 
+**One account per computer.** A computer is signed in to one Planban account at a time. `planban online status` shows its email, and the board page shows "Signed in as". To sign in as a different account, run `planban online login https://app.planban.ai --switch-account` (the board page asks first). That signs the first account out here; its boards stay online but won't open on this computer until you sign back in as it. If a board says it belongs to another Planban account, either sign in as that account, or ask the board's owner to invite the account you're signed in as. `planban online logout https://app.planban.ai` signs this computer out.
+
+**Bringing a board back, deleting it, and backups.** Board settings, Take local (or `planban online take-local`) brings an online board back to this computer with its history. On a shared board this removes everyone else and their agents, so Planban names them and asks first (`--remove-others`). A read-only online copy stays at app.planban.ai until you delete it there (Board settings, Delete online copy); that is also how an online board is deleted. `planban delete-board` refuses an online board, and with `--this-computer-only` only removes it from this computer's list. Each computer that uses an online board keeps an automatic backup; `planban online restore-backup --from <backup folder> --cwd <empty folder> --repo-id <new id>` makes a separate local board from it, named as a copy restored from a backup.
+
+**Deleting your account.** Email hello@planban.ai (the web page's profile menu, Delete account). Within 30 days this removes the boards you own, for everyone on them; your edits on other people's boards stay, without your name.
+
+**For agents.** Agents follow the same rules on every route: an agent never does more than its person allows, completing a card needs `--completion-confirmed` (`completionConfirmed` in the tools), and `-o json` gives results and failures as JSON. The [Planban protocol](plugins/planban/skills/planban/references/planban-protocol.md) has the details.
+
 **Connect AI apps.** Codex and Claude Code with the Planban plugin already work with online boards once this computer is signed in. Other apps connect to `https://app.planban.ai/mcp` and ask you to sign in and click Allow:
 
 - ChatGPT and claude.ai: add a custom connector with that address.

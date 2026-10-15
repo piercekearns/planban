@@ -13,7 +13,7 @@ import { historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath } fr
 import { manifestSchema } from "../src/core/schema";
 import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/registry";
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
-import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
+import { onlineRequest, OnlineAuthenticationError, PlanbanForbiddenError } from "../src/core/online/client";
 import { revokeToken as revokeServiceToken } from "../online/service/convex/oauth";
 import { onlineLogin } from "../src/core/online/login";
 import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanNotReadyForOnline, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
@@ -565,7 +565,7 @@ test("documents preserve online stamps and stale roadmap or document edits confl
 });
 
 test("hosted errors retain domain classes, access status and revision details", async () => {
-  for (const [status, type] of [[400, storage.PlanbanValidationError], [404, storage.PlanbanNotFoundError], [409, storage.PlanbanConflictError], [403, OnlineAuthenticationError]] as const) {
+  for (const [status, type] of [[400, storage.PlanbanValidationError], [404, storage.PlanbanNotFoundError], [409, storage.PlanbanConflictError], [403, PlanbanForbiddenError]] as const) {
     await assert.rejects(onlineRequest(fake.url, `/error/${status}`), (error: any) => error instanceof type && (status !== 409 || error.currentRevision === 19));
   }
 });

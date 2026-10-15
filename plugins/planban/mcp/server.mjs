@@ -22,6 +22,7 @@ const stalenessModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT,
 const stalenessSourcesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/stalenessSources.ts")).href);
 const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/contentRules.ts")).href);
 const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
+const errorReportModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/errorReport.ts")).href);
 
 const { cardAncestry, createCard, createCards, createGroup, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, updateCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
@@ -46,16 +47,17 @@ const SERVER_ICONS = [
 const PLANBAN_MCP_INSTRUCTIONS = [
   "Prefer these tools for all Planban reads and writes.",
   "Pass cwd as the absolute repository path, or repoId for a registered board.",
-  "Before creating or materially editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style when installed.",
+  "Before editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style.",
   "Serialize writes: one mutation at a time per board.",
   "Planban is an index, not file storage: link to files; planban_move_files_out tidies cards holding them.",
-  "Complete is person-controlled: complete a card only when a person on the board asks, confirms after review, or waives it.",
-  "Online Boards: pass baseRevision and expectedMtimeMs; read only through these tools.",
+  "Complete is person-controlled: only when a person asks, confirms or waives review; set completionConfirmed true.",
+  "Online Boards: card edits pass baseRevision, document writes their expectedMtimeMs; after a document conflict, merge into the reread text, never resend old text; retry a lost reply with the same idempotencyKey; never edit board files.",
+  "Refusals say why: tell the person.",
   "move_card is the canonical placement operation.",
-  "After a successful open, or after the complete logical mutation batch, include the exact clickable Board URL from the result's userReply.markdown in the final reply.",
-  "If the host has an in-app browser, make at most one bounded attempt to show that URL there; never reopen the board after every write.",
+  "After an open or the complete logical mutation batch, include the clickable Board URL from userReply.markdown in the final reply.",
+  "With an in-app browser, make at most one bounded attempt to show it; never reopen the board after every write.",
   "If boardUrlVerified is false, call planban_launch_board once to verify the URL before presenting it.",
-  "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card using repoId and cardId; the id is the identity and any quoted title beside it is display context only.",
+  "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card (repoId, cardId); trust the id over any quoted title.",
   "Board administration, recovery and the legacy set_card_parent alias appear only through explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;
@@ -531,10 +533,11 @@ const tools = [
   {
     name: "planban_delete_board",
     title: "Delete Planban Board",
-    description: "Delete a whole Planban board after creating a timestamped local backup. This never deletes the user's source project repository.",
+    description: "Delete a whole local Planban board after creating a timestamped local backup. This never deletes the user's source project repository. An online board can't be deleted from a computer: this is refused, and says how its owner deletes it. With thisComputerOnly, an online board is only removed from this computer and stays online for everyone.",
     inputSchema: schema.object({
       repoId: { type: "string", description: "Registered Planban repo id to delete." },
       confirmRepoId: { type: "string", description: "Must exactly match repoId." },
+      thisComputerOnly: { type: "boolean", description: "Online boards only: remove it from this computer's list and cache. The board itself stays online." },
     }, ["repoId", "confirmRepoId"]),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
@@ -609,6 +612,7 @@ const tools = [
       parentId: { type: "string", description: "Optional existing Group id. Creates an owned Item." },
       completionConfirmed: { type: "boolean", description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
     }, ["title"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -628,6 +632,7 @@ const tools = [
       planMarkdown: { type: "string", description: "Optional initial Group plan markdown." },
       completionConfirmed: { type: "boolean", description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
     }, ["title"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -642,6 +647,7 @@ const tools = [
       parentId: { type: "string", description: "Optional parent Group id." },
       completionConfirmed: { type: "boolean", description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
     }, ["titles"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -668,6 +674,7 @@ const tools = [
       parentId: { type: ["string", "null"], description: "Optional root Group/destination id, or null for the Main Board." },
       afterId: { type: ["string", "null"], description: "Optional sibling id to insert after, or null for first position." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
       completionConfirmed: {
         type: "boolean",
         description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review.",
@@ -683,6 +690,7 @@ const tools = [
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
       title: { type: "string", description: "New non-empty card title." },
       summary: { type: ["string", "null"], description: "New card summary, or null to clear." },
       nextAction: { type: ["string", "null"], description: "New next action, or null to clear." },
@@ -701,6 +709,7 @@ const tools = [
       cardId: { type: "string", description: "Planban card id." },
       parentId: { type: ["string", "null"], description: "Root Group/destination id, or null for the Main Board." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
     }, ["cardId", "parentId"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -714,6 +723,7 @@ const tools = [
       kind: { type: "string", enum: ["spec", "plan"], description: "Document kind to write." },
       markdown: { type: "string", description: "Full markdown contents." },
       expectedMtimeMs: { type: ["number", "null"], description: "The mtimeMs from planban_read_doc (null for a new document), for stale-write protection. Optional on local boards; required on Online Boards." },
+      idempotencyKey: { type: "string", description: "Online boards: a key for this edit (8 to 100 letters, digits, dashes or underscores). Reuse it only to retry the same edit after a lost reply; a revised edit after a conflict gets a new key." },
     }, ["cardId", "kind", "markdown"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -816,9 +826,11 @@ async function callToolImpl(name, args) {
     const repoId = requireString(args.repoId, "repoId");
     const confirmRepoId = requireString(args.confirmRepoId, "confirmRepoId");
     if (confirmRepoId !== repoId) throw new Error("confirmRepoId must exactly match repoId.");
-    const result = await deleteBoard(repoId);
+    const result = await deleteBoard(repoId, { thisComputerOnly: optionalBoolean(args.thisComputerOnly, "thisComputerOnly") === true });
     return textResult(
-      result.backupPath
+      result.removedFromThisComputerOnly
+        ? `Removed online board ${repoId} from this computer. It is still online for everyone on it.`
+        : result.backupPath
         ? `Deleted Planban board ${repoId}. A local backup was created at ${result.backupPath}.`
         : `Deleted Planban board ${repoId}. No planning root existed to back up.`,
       result,
@@ -935,6 +947,7 @@ async function callToolImpl(name, args) {
       parentId: optionalString(args.parentId, "parentId"),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
+      idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
       completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     const notes = metadataNotes(state.createdCard);
@@ -952,7 +965,7 @@ async function callToolImpl(name, args) {
       cwd: await cwdFromArgs(args), titles,
       status: optionalStatus(args.status, "status"),
       parentId: optionalString(args.parentId, "parentId"),
-      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent", idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
       completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     return await boardResult(`Created ${state.createdCards.length} Planban cards.`, state.manifest.repoId, { ...compactBoardSummary(state), cards: state.createdCards });
@@ -974,6 +987,7 @@ async function callToolImpl(name, args) {
       planMarkdown: args.planMarkdown === undefined ? undefined : requireText(args.planMarkdown, "planMarkdown"),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
+      idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
       completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     return await boardResult(`Created Group ${state.createdGroup.id} with ${itemIds.length} Items.`, state.manifest.repoId, {
@@ -997,6 +1011,7 @@ async function callToolImpl(name, args) {
       afterId,
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
+      idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
       completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
@@ -1018,6 +1033,7 @@ async function callToolImpl(name, args) {
       blockedBy: optionalNullableString(args.blockedBy, "blockedBy"),
       metadata: optionalMetadata(args.metadata, "metadata"),
       actor: "agent",
+      idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
     const notes = metadataNotes(card);
@@ -1033,7 +1049,7 @@ async function callToolImpl(name, args) {
     const parentId = args.parentId === null ? null : requireString(args.parentId, "parentId");
     const state = await setCardParent({
       cwd: await cwdFromArgs(args), cardId, parentId,
-      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
+      baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent", idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
     });
     const card = findCard(state, cardId);
     return await boardResult(parentId ? `Moved ${card.id} into ${parentId}.` : `Moved ${card.id} to the main board.`, state.manifest.repoId, {
@@ -1051,6 +1067,7 @@ async function callToolImpl(name, args) {
       kind,
       markdown: requireText(args.markdown, "markdown"),
       expectedMtimeMs: args.expectedMtimeMs === undefined ? undefined : optionalNumber(args.expectedMtimeMs, "expectedMtimeMs") ?? null,
+      idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
       history: {
         actor: "agent",
         operation: "doc.write",
@@ -1059,7 +1076,7 @@ async function callToolImpl(name, args) {
         affectedDocs: [{ cardId, kind, path: `items/${cardId}/${kind}.md` }],
       },
     });
-    return await boardResult(`Wrote ${payload.kind} document for ${payload.cardId}.`, repoIdFromCwd(cwd), payload);
+    return await boardResult(`Wrote ${payload.kind} document for ${payload.cardId}.`, repoIdFromCwd(cwd), { ...payload, doc: payload });
   }
 
   if (name === "planban_move_files_out") {
@@ -1136,7 +1153,12 @@ async function handleRequest(message) {
       const result = await callTool(params?.name, params?.arguments ?? {});
       sendResult(id, result);
     } catch (error) {
-      sendError(id, JsonRpcError.INVALID_PARAMS, error instanceof Error ? error.message : String(error));
+      // Bad arguments stay protocol errors. A tool that ran and was refused or
+      // failed reports it as a tool result, with its kind and details readable
+      // (conflict and the current revision, signed out, forbidden...).
+      const report = errorReportModule.errorReport(error);
+      if (report.category === "error") sendError(id, JsonRpcError.INVALID_PARAMS, report.message);
+      else sendResult(id, { content: [{ type: "text", text: report.message }], structuredContent: { error: report }, isError: true });
     }
     return;
   }

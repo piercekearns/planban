@@ -136,18 +136,113 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   online board", or to keep the copy as a separate board.
 - **Roles and agent levels.** Each person is an owner, editor or viewer, and chooses
   what their own agents may do: read, plan, or plan and complete. An agent never does
-  more than its person. A "forbidden" refusal means this agent's level doesn't allow
-  the action: tell the person; they can change it in People or with
-  `planban online my-agents <level>`.
-- **Edits.** Every edit on an online board passes the roadmap revision you last read
-  (`baseRevision`, or `--base-revision`), and every Spec or Plan write passes the
-  `mtimeMs` from reading it (`expectedMtimeMs`, or `--expected-mtime`). On a conflict,
-  read again and retry. Serialize writes.
+  more than its person, on any route, including Planban's tools and command line on
+  the person's own computer. A refusal says which of these applies; tell the person
+  and never work around it:
+  - **Viewer:** the person can only read the board, so their agents can't change it
+    either. Only the owner can make them an editor.
+  - **Agent level:** the person's agents are limited to read or plan. The person can
+    change it in People or with `planban online my-agents <level>`.
+  - **Connection scope:** a key or app connection can reach only the boards and level
+    it was given. The person can make a new one from Connections.
+  - **Owner only:** inviting people, changing roles, taking the board local and
+    deleting it are for the owner's own sign-in, never an agent.
+- **Two version numbers.** Card and board edits pass `baseRevision`: the board's
+  `revision` from your latest read (`--base-revision` on the command line). Spec and
+  Plan writes pass the document's own version instead: `expectedMtimeMs`, the
+  `mtimeMs` from reading that document (`--expected-mtime <mtimeMs>`, or `new` for a
+  document that doesn't exist yet). They are different numbers; `write-doc` has no
+  `--base-revision`. Serialize writes.
+- **Conflicts.** If a card edit is refused because the board changed, reread the card
+  and apply your change again only if it still makes sense. If a Spec or Plan write
+  is refused because the document changed, keep your proposed text, read the document
+  again, merge your change into the current text without dropping anyone else's
+  edits, then write the merged text with the new version. Never resend your old text
+  with only a newer version: that overwrites someone's work.
+- **Retries.** If an edit's reply was lost, resend it unchanged with the same
+  `idempotencyKey` (`--idempotency-key`): it applies once, and the result says it was
+  a replay. A revised edit, such as one merged after a conflict, gets a new key.
+- **Complete.** Every route that would put a card in Complete (moving it, creating
+  it complete, restoring a version) needs `completionConfirmed: true`
+  (`--completion-confirmed`), given only when a person on the board asked, confirmed
+  after review, or waived review.
 - **Limits.** A board holds up to 256 MB with its history, and each account can make
   up to 5,000 changes a day. Planban stays an index, not storage.
 - **Signed out.** If Planban says this computer's sign-in is missing or has ended,
   ask the person to sign in again (the board page offers Sign in, or the printed
   `online login` command). Do not use local files instead.
+- **One account per computer.** A computer is signed in to one Planban account at a
+  time; `planban online status` shows its email, and the board page shows "Signed in
+  as". Signing in as a different account needs `--switch-account` and signs the first
+  one out here; its boards stay online but won't open here until it signs back in.
+  Never switch accounts unless the person asks.
+- **Another account's board.** If Planban says a board belongs to another Planban
+  account, ask the person which they want: sign in as that account here (`planban
+  online login <url> --switch-account`), or ask the board's owner to invite the
+  account that is signed in. Don't retry, and don't use local files.
+- **Never edit an online board's files.** Under `~/.planban`, an online board has a
+  cache, automatic backups and the copy kept from before it went online. None of
+  them is the board. Read and edit it only through Planban's tools or command line.
+
+### Online lifecycle
+
+Do any of these only when the person asks.
+
+- **Sign out:** `planban online logout <url>` ends this computer's sign-in and cuts off
+  its connection. `planban online connections <url>` lists computers, apps and keys;
+  `planban online revoke <url> <id>` cuts one off.
+- **Invite and join:** the owner invites with Board settings, People, or
+  `planban online invite --email <address> --role editor|viewer` (links last 7 days).
+  The invited person opens the link in a browser, or runs `planban online join <link>`
+  (add `--cwd <project>` to use the board in a project folder).
+- **Use an online board in another project folder:** `planban online attach <url>
+  <board> --cwd <project>`.
+- **Take local:** the owner brings the board back to one computer with Board
+  settings, Take local, or `planban online take-local`. On a shared board this removes
+  everyone else and their agents, so it needs `--remove-others` and the person's
+  clear agreement. A read-only online copy stays at app.planban.ai until the owner
+  deletes it there (Board settings, Delete online copy).
+- **Deleting an online board:** not possible from a computer. The owner takes it
+  local, then deletes the online copy at app.planban.ai. `planban delete-board <board>
+  --this-computer-only --yes` only removes it from this computer's list.
+- **Backups:** every computer that uses an online board keeps an automatic backup.
+  `planban online restore-backup --from <backup folder> --cwd <empty folder>
+  --repo-id <new id>` makes a separate local board from one, with a new id and a
+  title that says it is a copy restored from a backup; taking it online makes a
+  second board.
+- **Deleting an account:** by email to hello@planban.ai (the web page's profile menu,
+  Delete account). It removes the boards the person owns, for everyone on them,
+  within 30 days. Their edits on other people's boards stay, without their name.
+
+### Tools on each surface
+
+The local tools (the Planban plugin, through this computer) and the remote tools
+(`https://app.planban.ai/mcp`, for ChatGPT, claude.ai and apps without the plugin)
+share names and arguments for: list_boards, get_board, query_cards, get_card,
+read_doc, create_card, create_cards, create_group, move_card, update_card and
+write_doc. Differences:
+
+- **Local only:** status, launch_board and move_files_out. Three more sets appear
+  only when the person sets `PLANBAN_MCP_PROFILE` (comma-separated, or `full` for
+  all): `admin` (archive, restore, duplicate and delete board), `maintenance`
+  (export_flat_v1, reconstruct_hierarchy) and `legacy` (set_card_parent, an old alias
+  of move_card). Local tools take `cwd` or `repoId`.
+- **Remote only:** history, and search and fetch (for ChatGPT and claude.ai). Remote
+  tools take `boardId`, from list_boards. Deleting cards and taking a board local are
+  not available remotely.
+
+Shared result contract, the same on both:
+
+- Reads return the board's `revision`; `query_cards` returns `matches` at the top
+  level, and `get_card` returns `card` and `ancestry`.
+- Card and board edits return the new `revision` and what changed (`card`, `cards`
+  or `group`); a Spec or Plan write returns `doc` with its new `mtimeMs`. Every edit
+  also returns `boardUrl`, `boardUrlVerified` and `userReply`, with the link to give
+  the person. A retried edit adds `replayed: true`.
+- Failures keep their kind: `conflict` (with `currentRevision`), `validation`,
+  `not_found`, `forbidden`, `signed_out`, `account_in_use`, `other_account` or
+  `limit`. Local tools return them as a tool error with `structuredContent.error`;
+  the command line prints `{"error": ...}` with `-o json`.
 
 The `planban` command: Planban's messages print the exact command for this computer.
 If `planban` isn't installed as a command, it is
@@ -380,8 +475,9 @@ in the final response.
   verified Board URL.
 
 When Planban MCP tools are available, prefer them for structured board, card, and
-document reads/writes. Use shell commands or direct file edits only as a fallback when
-the tools are unavailable or insufficient for the task.
+document reads/writes. Use the command line when the tools are unavailable. Edit
+board files directly only as a last resort, and only for a local board: never for an
+online board, its cache, its backups or the copy kept from before it went online.
 
 Prefer the Planban CLI or API when available. Example CLI operations from the Planban
 repo (elsewhere, replace `npm run planban --` with the `planban` command described
@@ -392,9 +488,9 @@ only when the owner explicitly asks for no objective or when the larger outcome 
 genuinely unresolved; do not invent a specific objective from weak context. The UI
 may leave the objective blank and add or edit it later.
 
-On an online board, add `--base-revision <revision>` to each edit (the `revision`
-from `get-card` or `query-cards`) and `--expected-mtime <mtimeMs>` to `write-doc`
-(the `mtimeMs` from `read-doc`).
+On an online board, add `--base-revision <revision>` to each card or board edit (the
+`revision` from `get-card` or `query-cards`). `write-doc` takes the document's own
+version instead: `--expected-mtime <mtimeMs>` (the `mtimeMs` from `read-doc`).
 
 ```bash
 npm run planban -- status --cwd /path/to/repo -o json

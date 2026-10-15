@@ -622,8 +622,10 @@ test("Planban MCP move card guards completion", async () => {
       },
     ], { PLANBAN_HOME: planbanHome });
 
-    assert.equal(responses[1].error.code, -32602);
-    assert.match(responses[1].error.message, /completionConfirmed/);
+    // A refusal is a tool result that keeps its kind, not a protocol error.
+    assert.equal(responses[1].result.isError, true);
+    assert.equal(responses[1].result.structuredContent.error.category, "validation");
+    assert.match(responses[1].result.content[0].text, /completionConfirmed/);
     assert.equal(responses[2].result.structuredContent.card.status, "complete");
   });
 });
