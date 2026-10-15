@@ -179,7 +179,10 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   Spec or Plan with its own version. To change one section, use
   `planban_write_doc_section` (`write-doc-section`) with its heading and version: only
   that section is checked, so edits to other sections never clash. Prefer it on shared
-  documents; whole-document writes keep the document's own check.
+  documents; whole-document writes keep the document's own check. A section edit that
+  would change any other section, or the text before the first heading, is refused:
+  write the whole document then. Link and footnote definitions apply to the whole
+  document, so changing one can change how links elsewhere show.
 - **Unresolved changes.** On an online board, an agent's refused edit is kept as an
   unresolved change on its card, so it is never lost. `planban_get_card` shows the
   card's own, and `planban_unresolved_changes` (`unresolved-changes`) lists the
