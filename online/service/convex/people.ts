@@ -10,6 +10,7 @@ import { agentLevel } from "./schema";
 import { boardAccess, memberAgentLevel, roleLevel } from "./model/access";
 import { fail } from "./model/errors";
 import type { CardChange } from "./model/cardChanges";
+import { accountBeingDeleted } from "./model/erasureGate";
 
 /** Fetches a person's name and picture from Clerk. Development sign-ins have none. */
 export const refresh = internalAction({
@@ -36,8 +37,10 @@ export const refresh = internalAction({
 export const store = internalMutation({
   args: { userId: v.string(), name: v.string(), imageUrl: v.optional(v.string()), email: v.optional(v.string()) },
   handler: async (ctx, profile) => {
+    // A profile is never written back for an account being deleted.
+    if (await accountBeingDeleted(ctx, profile.userId)) return;
     const existing = await ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", profile.userId)).unique();
-    const row = { ...profile, imageUrl: profile.imageUrl, email: profile.email, updatedAt: new Date().toISOString() };
+    const row = { ...profile, imageUrl: profile.imageUrl, email: profile.email?.toLowerCase(), updatedAt: new Date().toISOString() };
     if (existing) await ctx.db.patch(existing._id, row);
     else await ctx.db.insert("people", row);
   },

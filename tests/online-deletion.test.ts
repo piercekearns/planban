@@ -1,7 +1,8 @@
 // Deleting for good (owner decisions, 15 October 2026), against the service's
 // real handlers: (a) a board's read-only online copy, deleted by its owner;
 // (b) a whole account, deleted by the operator within 30 days of a request.
-// Each test then looks through every stored row for anything left behind.
+// After each deletion the tests search every stored row, compressed fields
+// unpacked, for anything left behind.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { internal } from "../online/service/convex/_generated/api";
@@ -29,6 +30,12 @@ async function boardWithCard(api: ReturnType<typeof as>, title: string) {
   return boardId;
 }
 
+async function addCard(api: ReturnType<typeof as>, boardId: string, title: string) {
+  const state = await api("GET", `/api/v1/boards/${boardId}`);
+  const added = await api("POST", `/api/v1/boards/${boardId}/ops/createCard`, { title, status: "pending", baseRevision: state.body.roadmap.revision });
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+}
+
 /** A row as text, compressed fields (boards, documents, history) unpacked. */
 function readable(row: Record<string, unknown>) {
   return JSON.stringify(row, (_key, value) => value instanceof ArrayBuffer ? unpackText(value) : value);
@@ -44,6 +51,26 @@ async function takeLocal(service: Service, connectionId: string, boardId: string
   await service.call(internal.boards.finishTakeLocal, { connectionId, boardId, transferId: "take-local-1" });
 }
 
+/** The sign-in service as the operator's command sees it; `deletes` records each user it was asked to delete. */
+function fakeClerk(users: Record<string, Array<{ id: string; email_addresses?: Array<{ email_address: string }> }>>, options: { reachable?: () => boolean } = {}) {
+  const deletes: string[] = [];
+  const realFetch = globalThis.fetch;
+  process.env.CLERK_SECRET_KEY = "sk_test_operator";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v1/users" && (!init?.method || init.method === "GET")) return Response.json(users[url.searchParams.get("email_address") ?? ""] ?? []);
+    if (init?.method === "DELETE") {
+      if (options.reachable && !options.reachable()) return new Response("unavailable", { status: 503 });
+      deletes.push(decodeURIComponent(url.pathname.replace("/v1/users/", "")));
+      return Response.json({ deleted: true });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  return { deletes, restore: () => { globalThis.fetch = realFetch; delete process.env.CLERK_SECRET_KEY; } };
+}
+
+const requestAccount = (service: Service, email: string) => (erasure.requestAccount as any)._handler(service.actionCtx, { email });
+
 test("an owner deletes a board's read-only online copy: it's gone at once for everyone, then every stored row goes", async () => {
   await withServiceEnv(async () => {
     const service = memoryService();
@@ -57,154 +84,165 @@ test("an owner deletes a board's read-only online copy: it's gone at once for ev
     assert.equal(key.status, 201, JSON.stringify(key.body));
 
     // While the board is online there is no read-only copy to delete.
-    const tooSoon = await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy board" });
-    assert.equal(tooSoon.status, 409);
+    assert.equal((await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy board" })).status, 409);
 
     await takeLocal(service, owner.connectionId, boardId, ["user_editor"]);
     assert.equal((await ownerApi("GET", `/api/v1/boards/${boardId}`)).status, 200, "the owner can still read the copy");
-
-    const wrongName = await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy" });
-    assert.equal(wrongName.status, 400);
-    const byOther = await as(service, editor.token)("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy board" });
-    assert.equal(byOther.status, 404, "someone no longer on the board can't even see it");
+    assert.equal((await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy" })).status, 400);
+    assert.equal((await as(service, editor.token)("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy board" })).status, 404, "someone no longer on the board can't even see it");
 
     const deleted = await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Copy board" });
     assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
     assert.equal((await ownerApi("GET", `/api/v1/boards/${boardId}`)).status, 404);
-    assert.deepEqual((await ownerApi("GET", "/api/v1/boards")).body.boards.map((board: { boardId: string }) => board.boardId), []);
-    const keyRow = service.rows.find((row) => row._table === "connections" && row.kind === "key");
-    assert.ok(keyRow.revokedAt, "a key for only this board stops working");
+    assert.deepEqual((await ownerApi("GET", "/api/v1/boards")).body.boards, []);
 
-    // A new board may take the same id before the old rows are gone; it is never touched.
-    const again = await boardWithCard(ownerApi, "Copy board");
-    assert.equal(again, boardId);
+    // Its id stays reserved until the rows are gone: a new board meanwhile gets another.
+    const meanwhile = await boardWithCard(ownerApi, "Copy board");
+    assert.notEqual(meanwhile, boardId);
     await service.runJobs();
-    assert.equal((await ownerApi("GET", `/api/v1/boards/${again}`)).status, 200, "the new board is intact");
-    const newGeneration = service.rows.find((row) => row._table === "boards" && row.boardId === again).generation;
-    const stale = service.rows.filter((row) => row.boardId === boardId && "generation" in row && row._table !== "boards" && row.generation !== newGeneration && row._table !== "transfers");
-    assert.deepEqual(stale.map((row) => row._table), [], "no row of the deleted copy is left");
+    const stale = service.rows.filter((row) => row.boardId === boardId);
+    assert.deepEqual(stale.map((row) => row._table).filter((table) => table !== "operations"), [], "no row of the deleted copy is left (retry records expire in 7 days)");
+    assert.ok(service.rows.find((row) => row._table === "connections" && row.kind === "key").revokedAt, "a key for only this board stops working");
     assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
-    assert.deepEqual(service.rows.filter((row) => row._table === "invites"), [], "its invitation link went with it");
+    // Once the rows are gone, the id is free again.
+    assert.equal(await boardWithCard(ownerApi, "Copy board"), boardId);
   });
 });
 
-test("deleting an account removes everything of theirs, credits their changes elsewhere to a deleted account, and deletes the sign-in account", async () => {
+test("deleting an account removes everything of theirs, credits their changes elsewhere to a deleted account, and deletes the sign-in account first", async () => {
   await withServiceEnv(async () => {
     const service = memoryService();
     const leaving = await service.signIn("user_leaving", "Lee Leaving");
-    const second = await service.signIn("user_leaving", "Lee Leaving");
+    await service.signIn("user_leaving", "Lee Leaving");
     const friend = await service.signIn("user_friend", "Fran");
     const host = await service.signIn("user_host", "Hal");
-    const profile = service.rows.find((row) => row._table === "people" && row.userId === "user_leaving");
-    profile.email = "Lee@Example.com";
-
+    service.rows.find((row) => row._table === "people" && row.userId === "user_leaving").email = "lee@example.com";
     const leavingApi = as(service, leaving.token), friendApi = as(service, friend.token), hostApi = as(service, host.token);
-    // Lee owns a board shared with Fran, and has a key and an access request history.
+
+    // Lee owns a board shared with Fran, and has a key.
     const own = await boardWithCard(leavingApi, "Lee's board");
     await leavingApi("POST", `/api/v1/boards/${own}/members`, { userId: "user_friend", role: "editor" });
     await leavingApi("POST", "/api/v1/keys", { name: "Laptop agent", boardId: own, level: "plan" });
-    // Lee joined Hal's board by link and changed a card there; an email invitation to Lee waits on another.
+    // Lee joined Hal's board by link and added a card; an email invitation to Lee waits on another.
     const hosts = await boardWithCard(hostApi, "Hal's board");
     const link = await hostApi("POST", `/api/v1/boards/${hosts}/invites`, { role: "editor" });
-    const joined = await leavingApi("POST", "/api/v1/invites/accept", { token: String(link.body.link).split("/invite/")[1] });
-    assert.equal(joined.status, 200, JSON.stringify(joined.body));
-    const state = await leavingApi("GET", `/api/v1/boards/${hosts}`);
-    const edit = await leavingApi("POST", `/api/v1/boards/${hosts}/ops/createCard`, { title: "Lee's idea", status: "pending", baseRevision: state.body.roadmap.revision });
-    assert.equal(edit.status, 200, JSON.stringify(edit.body));
+    assert.equal((await leavingApi("POST", "/api/v1/invites/accept", { token: String(link.body.link).split("/invite/")[1] })).status, 200);
+    await addCard(leavingApi, hosts, "Lee's idea");
+    // Lee also changed a board Hal later removed them from.
+    const former = await boardWithCard(hostApi, "Hal's old board");
+    await hostApi("POST", `/api/v1/boards/${former}/members`, { userId: "user_leaving", role: "editor" });
+    await addCard(leavingApi, former, "Lee's old card");
+    assert.equal((await hostApi("POST", `/api/v1/boards/${former}/members/user_leaving/remove`, {})).status, 200);
     const other = await boardWithCard(hostApi, "Hal's other board");
     await hostApi("POST", `/api/v1/boards/${other}/invites`, { role: "viewer", email: "lee@example.com" });
+    // Lee signed the other browser out, leaving a barrier against its session.
+    const listed = await leavingApi("GET", "/api/v1/connections");
+    const otherBrowser = listed.body.connections.find((row: { id: string; current?: boolean; kind: string }) => row.kind === "web" && !row.current);
+    assert.equal((await leavingApi("POST", `/api/v1/connections/${otherBrowser.id}/revoke`, {})).status, 200);
+    assert.ok(service.rows.some((row) => row._table === "webSessionBarriers"));
 
-    // The sign-in service, as the operator's command sees it.
-    const calls: string[] = [];
-    const realFetch = globalThis.fetch;
-    process.env.CLERK_SECRET_KEY = "sk_test_operator";
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      calls.push(`${init?.method ?? "GET"} ${url.replace("https://api.clerk.com/v1", "")}`);
-      if (url.includes("/users?email_address=")) return Response.json([{ id: "user_leaving", email_addresses: [{ email_address: "lee@example.com" }, { email_address: "lee.work@example.com" }] }]);
-      if (url.endsWith("/users/user_leaving") && init?.method === "DELETE") return Response.json({ deleted: true });
-      return new Response("not found", { status: 404 });
-    }) as typeof fetch;
+    const clerk = fakeClerk({ "lee@example.com": [{ id: "user_leaving", email_addresses: [{ email_address: "lee@example.com" }, { email_address: "lee.work@example.com" }] }] });
     try {
-      const started = await (erasure.requestAccount as any)._handler(service.actionCtx, { email: "LEE@example.com" });
-      assert.deepEqual(started, { userId: "user_leaving", boardsDeleted: 1, boardsLeft: 1, invitesRemoved: 1 });
+      const started = await requestAccount(service, "LEE@example.com");
+      assert.deepEqual(started, { userId: "user_leaving", invitesRemoved: 1, signInAccountDeleted: true, note: null });
+      assert.deepEqual(clerk.deletes, ["user_leaving"], "the sign-in account is deleted straight away");
 
-      // At once: every sign-in stops, Fran loses Lee's board, Lee is off Hal's.
+      // At once: every sign-in stops, and no new one can start.
       assert.equal((await leavingApi("GET", "/api/v1/boards")).status, 401);
-      assert.equal((await as(service, second.token)("GET", "/api/v1/boards")).status, 401);
-      assert.equal((await friendApi("GET", `/api/v1/boards/${own}`)).status, 404);
-      const hostPeople = await hostApi("GET", `/api/v1/boards/${hosts}/people`);
-      assert.deepEqual(hostPeople.body.people.map((person: { userId: string }) => person.userId), ["user_host"]);
+      await assert.rejects(service.signIn("user_leaving", "Lee again"), /has been deleted/);
 
       await service.runJobs();
 
-      // The check reads inside compressed fields: Lee's card text is found there.
+      assert.equal((await friendApi("GET", `/api/v1/boards/${own}`)).status, 404, "Lee's board is gone for Fran too");
+      // The leak check reads inside compressed fields: Lee's card text is found there.
       assert.ok(leftovers(service, "Lee's idea").includes("boardState"));
-      assert.deepEqual(leftovers(service, "user_leaving"), [], "nothing anywhere names the account");
-      assert.deepEqual(leftovers(service, own, ["operations"]), [], "nothing of the board they owned is left");
+      assert.deepEqual(leftovers(service, "user_leaving", ["erasures"]), [], "nothing names the account but its deletion record");
+      assert.deepEqual(leftovers(service, own, ["operations", "erasures"]), [], "nothing of the board they owned is left");
       assert.deepEqual(leftovers(service, "lee@example.com"), []);
-      assert.deepEqual(calls.filter((call) => call.startsWith("DELETE")), ["DELETE /users/user_leaving"], "the sign-in account is deleted, once");
-      // Hal's board keeps Lee's card, credited to a deleted account.
+      // Hal's boards keep Lee's cards, credited to a deleted account, including the board Lee had left.
       const hostBoard = await hostApi("GET", `/api/v1/boards/${hosts}`);
       assert.ok(hostBoard.body.roadmap.roadmapItems.some((item: { title: string }) => item.title === "Lee's idea"));
-      const credited = service.rows.filter((row) => row._table === "history" && row.boardId === hosts && row.entry.attribution.userId === erasure.DELETED_ACCOUNT);
-      assert.equal(credited.length, 1);
-      assert.ok(service.rows.some((row) => row._table === "cardChanges" && row.boardId === hosts && row.userId === erasure.DELETED_ACCOUNT));
+      for (const boardId of [hosts, former]) {
+        assert.ok(service.rows.some((row) => row._table === "history" && row.boardId === boardId && row.entry.attribution.userId === erasure.DELETED_ACCOUNT), boardId);
+      }
       const status = await service.call(internal.erasure.accountStatus, { userId: "user_leaving" });
       assert.equal(status.finished, true, JSON.stringify(status));
+      // The deletion record itself goes after a day.
+      service.rows.find((row) => row._table === "erasures").doneAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      await service.call(internal.erasure.sweep, {});
+      await service.runJobs();
+      assert.deepEqual(leftovers(service, "user_leaving"), []);
+      assert.equal((await service.call(internal.erasure.accountStatus, { userId: "user_leaving" })).finished, true);
     } finally {
-      globalThis.fetch = realFetch;
-      delete process.env.CLERK_SECRET_KEY;
+      clerk.restore();
     }
   });
 });
 
-test("an account deletion that can't reach the sign-in service waits, and the daily sweep finishes it", async () => {
+test("when the sign-in service can't be reached, the deletion says so and isn't finished until the daily sweep deletes the sign-in account", async () => {
   await withServiceEnv(async () => {
     const service = memoryService();
     await service.signIn("user_gone", "Gwen");
-    const realFetch = globalThis.fetch;
     let reachable = false;
-    process.env.CLERK_SECRET_KEY = "sk_test_operator";
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === "DELETE") return reachable ? Response.json({ deleted: true }) : new Response("unavailable", { status: 503 });
-      return Response.json([]);
-    }) as typeof fetch;
+    const clerk = fakeClerk({ "gwen@example.com": [{ id: "user_gone" }] }, { reachable: () => reachable });
     try {
-      await service.call(internal.erasure.eraseAccount, { userId: "user_gone", emails: [] });
+      const started = await requestAccount(service, "gwen@example.com");
+      assert.equal(started.signInAccountDeleted, false);
+      assert.match(started.note, /answered 503/);
       await service.runJobs();
       let status = await service.call(internal.erasure.accountStatus, { userId: "user_gone" });
-      assert.equal(status.finished, false);
-      assert.equal(status.stage, "clerk");
+      assert.equal(status.stage, "done");
+      assert.equal(status.finished, false, "not finished while the sign-in account exists");
       assert.deepEqual(leftovers(service, "user_gone", ["erasures"]), [], "everything else is already gone");
+      await assert.rejects(service.signIn("user_gone", "Gwen"), /has been deleted/, "and the account still can't sign in");
       reachable = true;
       await service.call(internal.erasure.sweep, {});
       await service.runJobs();
       status = await service.call(internal.erasure.accountStatus, { userId: "user_gone" });
       assert.equal(status.finished, true);
-      assert.deepEqual(leftovers(service, "user_gone"), []);
+      assert.deepEqual(clerk.deletes, ["user_gone"]);
     } finally {
-      globalThis.fetch = realFetch;
-      delete process.env.CLERK_SECRET_KEY;
+      clerk.restore();
     }
   });
 });
 
-test("the operator's command refuses an address that matches no account, or more than one", async () => {
+test("one deletion waiting on the sign-in service never holds up another", async () => {
   await withServiceEnv(async () => {
     const service = memoryService();
-    const realFetch = globalThis.fetch;
-    process.env.CLERK_SECRET_KEY = "sk_test_operator";
-    globalThis.fetch = (async (input: RequestInfo | URL) => String(input).includes("twice")
-      ? Response.json([{ id: "user_a" }, { id: "user_b" }])
-      : Response.json([])) as typeof fetch;
+    const clerk = fakeClerk(Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`stuck${i}@example.com`, [{ id: `user_stuck${i}` }]])), { reachable: () => false });
     try {
-      await assert.rejects((erasure.requestAccount as any)._handler(service.actionCtx, { email: "nobody@example.com" }), /No account uses/);
-      await assert.rejects((erasure.requestAccount as any)._handler(service.actionCtx, { email: "twice@example.com" }), /matches 2 accounts/);
-      assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
+      for (let i = 0; i < 12; i += 1) {
+        await service.signIn(`user_stuck${i}`);
+        await requestAccount(service, `stuck${i}@example.com`);
+      }
+      const owner = await service.signIn("user_owner", "Owen");
+      const ownerApi = as(service, owner.token);
+      const boardId = await boardWithCard(ownerApi, "Unrelated board");
+      await takeLocal(service, owner.connectionId, boardId, []);
+      assert.equal((await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Unrelated board" })).status, 200);
+      await service.call(internal.erasure.sweep, {});
+      await service.runJobs();
+      assert.deepEqual(service.rows.filter((row) => row._table === "erasures" && row.kind === "board"), [], "the board's deletion finished");
+      assert.equal(service.rows.filter((row) => row._table === "erasures" && row.kind === "account").length, 12);
     } finally {
-      globalThis.fetch = realFetch;
-      delete process.env.CLERK_SECRET_KEY;
+      clerk.restore();
+    }
+  });
+});
+
+test("the operator's command refuses an address that matches no account, or more than one, and needs the sign-in service", async () => {
+  await withServiceEnv(async () => {
+    const service = memoryService();
+    await assert.rejects(requestAccount(service, "anyone@example.com"), /no sign-in service key/);
+    const clerk = fakeClerk({ "twice@example.com": [{ id: "user_a" }, { id: "user_b" }] });
+    try {
+      await assert.rejects(requestAccount(service, "nobody@example.com"), /No account uses/);
+      await assert.rejects(requestAccount(service, "twice@example.com"), /matches 2 accounts/);
+      assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
+      assert.deepEqual(clerk.deletes, []);
+    } finally {
+      clerk.restore();
     }
   });
 });

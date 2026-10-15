@@ -21,6 +21,7 @@ async function notRevoked(ctx: QueryCtx, userId: string) {
   return ctx.db.query("connections").withIndex("by_user_revoked", (q) => q.eq("userId", userId).eq("revokedAt", undefined)).collect();
 }
 import { agentLevel } from "./schema";
+import { refuseDeletedAccount } from "./model/erasureGate";
 
 /** A connection is marked used at most this often, to avoid a write per request. */
 const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
@@ -62,6 +63,7 @@ export const createDevConnection = internalMutation({
     level: agentLevel,
   },
   handler: async (ctx, args) => {
+    await refuseDeletedAccount(ctx, args.userId);
     const now = new Date().toISOString();
     const id = await ctx.db.insert("connections", {
       userId: args.userId,
@@ -227,6 +229,7 @@ export const createKey = internalMutation({
     if (held.filter((row) => row.kind === "key" && connectionIsUsable(row)).length >= MAX_ACTIVE_KEYS) {
       fail("rate_limited", `You have ${MAX_ACTIVE_KEYS} active personal access keys. Revoke one before creating another.`);
     }
+    await refuseDeletedAccount(ctx, connection.userId);
     await chargeAdmin(ctx, connection.userId, "keys");
     const now = new Date().toISOString();
     const id = await ctx.db.insert("connections", {

@@ -10,6 +10,7 @@ import { publicOrigin } from "./model/auth";
 import { fail } from "./model/errors";
 import { sessionClient } from "./model/humanSession";
 import { WEB_SESSION_MS } from "./model/webSession";
+import { refuseDeletedAccount } from "./model/erasureGate";
 
 /** Barriers outlive any Clerk session they could refer to. */
 const BARRIER_MS = 60 * 24 * 60 * 60 * 1000;
@@ -54,6 +55,7 @@ export const enroll = internalMutation({
     }
     const expiresAt = new Date(Math.min(cutoff, args.clerkExpiresAt ?? Infinity)).toISOString();
     if (Date.parse(expiresAt) <= now) fail("unauthorized", "This sign-in has ended. Sign in again.");
+    await refuseDeletedAccount(ctx, args.userId);
     const connectionId = await ctx.db.insert("connections", {
       userId: args.userId,
       kind: "web",

@@ -22,6 +22,7 @@ import { seedCardChanges } from "./cardChanges";
 import { importHistoryVersion, recordHistory, type Attribution, type BoardRows } from "./history";
 import { DOC_KINDS, currentRoadmap, docRow, retiredIds, stateRow, type DocKind } from "./rows";
 import { reserveRetiredId } from "./retired";
+import { boardIdReserved } from "./erasureGate";
 
 /** Delay before an old generation's clean-up (and file carry-over) starts after a commit. */
 const CLEANUP_DELAY_MS = 5_000;
@@ -134,6 +135,7 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
     }
     if (board.authority === "returned-local") previousRevision = board.revision;
   } else {
+    if (await boardIdReserved(ctx, boardId)) fail("conflict", `An online copy of ${boardId} is still being deleted. Try again in a few minutes.`);
     await chargeNewOnlineBoard(ctx, connection.userId);
     const id = await ctx.db.insert("boards", {
       boardId, title: roadmap.project.title, ownerId: connection.userId, authority: "importing",
@@ -292,7 +294,7 @@ async function freeBoardId(ctx: MutationCtx, title: string) {
   const slug = title.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "") || "board";
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const candidate = attempt === 0 ? slug : `${slug}-${crypto.getRandomValues(new Uint32Array(1))[0]!.toString(36).slice(0, 6)}`;
-    if (BOARD_ID_PATTERN.test(candidate) && !await boardRow(ctx, candidate)) return candidate;
+    if (BOARD_ID_PATTERN.test(candidate) && !await boardRow(ctx, candidate) && !await boardIdReserved(ctx, candidate)) return candidate;
   }
   fail("conflict", "Couldn't find a free name for this board. Try another name.");
   return "";

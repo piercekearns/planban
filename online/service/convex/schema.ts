@@ -43,7 +43,7 @@ export default defineSchema({
     retention: v.optional(v.any()),
     createdAt: v.string(),
     updatedAt: v.string(),
-  }).index("by_boardId", ["boardId"]).index("by_uid", ["uid"]),
+  }).index("by_boardId", ["boardId"]).index("by_uid", ["uid"]).index("by_owner", ["ownerId"]),
 
   /**
    * Fingerprints ("version|createdAt|operation") of every history entry a
@@ -73,7 +73,7 @@ export default defineSchema({
     stamp: v.number(),
     updatedAt: v.string(),
     updatedBy: v.string(),
-  }).index("by_board_card_kind", ["boardId", "generation", "cardId", "kind"]),
+  }).index("by_board_card_kind", ["boardId", "generation", "cardId", "kind"]).index("by_updatedBy", ["updatedBy"]),
 
   /**
    * One small row per history version: what happened, who and when. Its
@@ -144,7 +144,7 @@ export default defineSchema({
     clientName: v.union(v.string(), v.null()),
     at: v.string(),
     summary: v.string(),
-  }).index("by_board_generation_card", ["boardId", "generation", "cardId"]),
+  }).index("by_board_generation_card", ["boardId", "generation", "cardId"]).index("by_user", ["userId"]),
 
   /** Stored text per board generation, history included, in bytes as stored (see model/limits.ts). */
   boardSizes: defineTable({
@@ -241,7 +241,7 @@ export default defineSchema({
     connectionId: v.optional(v.id("connections")), codeHash: v.optional(v.string()), codeExpiresAt: v.optional(v.number()),
     /** One-tap approval: SHA-256 of the device code the waiting agent polls with. */
     deviceHash: v.optional(v.string()),
-  }).index("by_requestHash", ["requestHash"]).index("by_deviceHash", ["deviceHash"]).index("by_launchHash", ["launchHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]),
+  }).index("by_requestHash", ["requestHash"]).index("by_deviceHash", ["deviceHash"]).index("by_launchHash", ["launchHash"]).index("by_codeHash", ["codeHash"]).index("by_expiry", ["expiresAt"]).index("by_user", ["userId"]),
 
   /** Rotating refresh family, including spent hashes for replay detection. */
   oauthRefresh: defineTable({
@@ -316,7 +316,7 @@ export default defineSchema({
     uid: v.optional(v.string()),
     createdAt: v.string(),
     updatedAt: v.string(),
-  }).index("by_transferId", ["transferId"]).index("by_board_state", ["boardId", "state"]).index("by_state_updated", ["state", "updatedAt"]),
+  }).index("by_transferId", ["transferId"]).index("by_board_state", ["boardId", "state"]).index("by_state_updated", ["state", "updatedAt"]).index("by_user", ["userId"]),
 
   transferParts: defineTable({
     transferId: v.string(),
@@ -344,18 +344,19 @@ export default defineSchema({
    */
   erasures: defineTable({
     kind: v.union(v.literal("board"), v.literal("account")),
-    /** A board: its id, and the newest generation its rows can be in (generations are numbered globally). */
+    /** A board: its id (reserved until the rows are gone), and the newest generation its rows can be in (generations are numbered globally). */
     boardId: v.optional(v.string()),
     maxGeneration: v.optional(v.number()),
-    /** An account: whose, the boards where their name is still to be taken off history, and how far that has got. */
+    /** An account: whose, the boards they owned, and whether their sign-in account (Clerk) is deleted. */
     userId: v.optional(v.string()),
-    scrubBoards: v.optional(v.array(v.string())),
-    /** The boards they owned, all deleted with the account; it is finished once their rows are gone. */
     ownedBoards: v.optional(v.array(v.string())),
-    stage: v.optional(v.string()),
+    clerkDeleted: v.optional(v.boolean()),
+    /** Where the removal has got to, and a page cursor within that step. */
+    stage: v.string(),
     cursor: v.optional(v.union(v.string(), v.null())),
     requestedAt: v.string(),
-  }).index("by_kind", ["kind"]),
+    doneAt: v.optional(v.string()),
+  }).index("by_kind", ["kind"]).index("by_user", ["userId"]).index("by_board", ["boardId"]),
 
   /** Counters shared across boards. Generations are numbered globally so rows of a deleted and re-created board never collide. */
   counters: defineTable({

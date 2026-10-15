@@ -9,6 +9,7 @@ import { connectionIsUsable, liveConnection, registrationLive } from "./model/ac
 import { fail } from "./model/errors";
 import { agentLevel } from "./schema";
 import { MAX_REGISTRATIONS_PER_PERSON, metadataClientAllowed, REGISTERED_CLIENT_NAME, registeredClientId, type OAuthClient } from "./model/oauthClient";
+import { refuseDeletedAccount } from "./model/erasureGate";
 
 export const REQUEST_MS = 10 * 60_000;
 export const MACHINE_REQUEST_MS = 5 * 60_000;
@@ -287,6 +288,7 @@ export const approve = internalMutation({
         await ctx.db.patch(registration!._id, { userId: args.userId, expiresAt: undefined });
       }
     }
+    await refuseDeletedAccount(ctx, args.userId);
     const now = new Date().toISOString();
     // Pending grants are visible and revocable before code redemption; they
     // have no credential and cannot authorize resource work.
@@ -471,6 +473,7 @@ export const decideDevice = internalMutation({
       await scheduleCleanup(ctx, Math.max(0, args.expiresAt - Date.now()) + CODE_MS);
       return { allowed: false };
     }
+    await refuseDeletedAccount(ctx, approver.userId);
     await chargeApproval(ctx, approver.userId);
     const now = new Date().toISOString();
     // Like any approval: a pending connection with no credential until the agent collects it.
