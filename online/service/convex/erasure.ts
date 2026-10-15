@@ -9,16 +9,17 @@
 // Each deletion is a row in `erasures`, worked through by its own job in
 // small steps that save their place, so no step reads much and one stuck
 // deletion never holds up another. A daily sweep restarts any job that
-// stopped. While the row exists, model/erasureGate.ts keeps the account from
-// signing in again and the board's id from being reused. Board rows are found
-// by board id and generation; generations are numbered globally, so a board
-// created later under the same id is never touched.
+// stopped. model/erasureGate.ts keeps a deleted account from ever signing in
+// or being added again, and keeps a deleted board's id from being reused
+// until all its rows are gone, so every row under that id is the deleted
+// board's, whatever its generation.
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import { boardAccess } from "./model/access";
 import { fail } from "./model/errors";
+import { retireAccount } from "./model/erasureGate";
 
 /** Rows per step: small, so a step stays far inside Convex's per-transaction limits. */
 const STEP = 100;
@@ -44,12 +45,8 @@ type Step = (ctx: MutationCtx, erasure: Doc<"erasures">) => Promise<"more" | "ne
  * rest (people, invitations, keys limited to it, stored rows) is removed.
  */
 async function removeBoard(ctx: MutationCtx, board: Doc<"boards">, now: string) {
-  let maxGeneration = board.generation;
-  for (const transfer of await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", board.boardId)).take(STEP)) {
-    maxGeneration = Math.max(maxGeneration, transfer.generation);
-  }
   await ctx.db.delete(board._id);
-  const id = await ctx.db.insert("erasures", { kind: "board", boardId: board.boardId, maxGeneration, stage: "members", cursor: null, requestedAt: now });
+  const id = await ctx.db.insert("erasures", { kind: "board", boardId: board.boardId, stage: "members", cursor: null, requestedAt: now });
   await ctx.scheduler.runAfter(0, internal.erasure.work, { erasureId: id });
 }
 
@@ -78,6 +75,7 @@ export const beginAccount = internalMutation({
     if (!/^user_[A-Za-z0-9]+$/.test(userId)) fail("validation", "A Clerk user id is required.");
     const now = new Date().toISOString();
     let erasure = await ctx.db.query("erasures").withIndex("by_user", (q) => q.eq("userId", userId)).first();
+    await retireAccount(ctx, userId);
     if (!erasure) {
       const id = await ctx.db.insert("erasures", { kind: "account", userId, ownedBoards: [], clerkDeleted: false, stage: "revoke", cursor: null, requestedAt: now });
       erasure = (await ctx.db.get(id))!;
@@ -242,25 +240,25 @@ const BOARD_STEPS: Array<[string, Step]> = [
     for (const invite of invites) await ctx.db.delete(invite._id);
     return invites.length ? "more" : "next";
   }],
+  // Every stored row under the id, in every generation (the id is reserved, so all are the deleted board's).
   ["rows", async (ctx, erasure) => {
     for (const [table, index] of BOARD_ROWS) {
-      const rows = await (ctx.db.query(table) as any)
-        .withIndex(index, (q: any) => q.eq("boardId", erasure.boardId!).lte("generation", erasure.maxGeneration!))
-        .take(LARGE_TABLES.has(table) ? LARGE_STEP : STEP);
-      for (const row of rows) await ctx.db.delete(row._id);
-      if (rows.length) return "more";
+      const query = () => (ctx.db.query(table) as any).withIndex(index, (q: any) => q.eq("boardId", erasure.boardId!));
+      if (!(await query().take(1)).length) continue;
+      // One table per step, at most STEP rows and STEP_BYTES read.
+      const page = await query().paginate({ numItems: LARGE_TABLES.has(table) ? LARGE_STEP : STEP, cursor: null, maximumBytesRead: STEP_BYTES });
+      for (const row of page.page) await ctx.db.delete(row._id);
+      return "more";
     }
     return "next";
   }],
   ["transfers", async (ctx, erasure) => {
-    for (const transfer of await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", erasure.boardId!)).take(STEP)) {
-      if (transfer.generation > erasure.maxGeneration! || transfer.createdAt > erasure.requestedAt) continue;
-      const parts = await ctx.db.query("transferParts").withIndex("by_transfer_seq", (q) => q.eq("transferId", transfer.transferId)).take(STEP);
-      for (const part of parts) await ctx.db.delete(part._id);
-      if (parts.length < STEP) await ctx.db.delete(transfer._id);
-      return "more";
-    }
-    return "next";
+    const transfer = (await ctx.db.query("transfers").withIndex("by_board_state", (q) => q.eq("boardId", erasure.boardId!)).take(1))[0];
+    if (!transfer) return "next";
+    const parts = await ctx.db.query("transferParts").withIndex("by_transfer_seq", (q) => q.eq("transferId", transfer.transferId)).take(STEP);
+    for (const part of parts) await ctx.db.delete(part._id);
+    if (parts.length < STEP) await ctx.db.delete(transfer._id);
+    return "more";
   }],
 ];
 
@@ -326,9 +324,11 @@ const ACCOUNT_STEPS: Array<[string, Step]> = [
     return rows.length ? "more" : "next";
   }],
   ["docs", async (ctx, erasure) => {
-    const rows = await ctx.db.query("docs").withIndex("by_updatedBy", (q) => q.eq("updatedBy", erasure.userId!)).take(LARGE_STEP);
-    for (const row of rows) await ctx.db.patch(row._id, { updatedBy: DELETED_ACCOUNT });
-    return rows.length ? "more" : "next";
+    // Documents can be large: at most STEP_BYTES read. Each one patched leaves the index range.
+    const page = await ctx.db.query("docs").withIndex("by_updatedBy", (q) => q.eq("updatedBy", erasure.userId!))
+      .paginate({ numItems: LARGE_STEP, cursor: null, maximumBytesRead: STEP_BYTES } as any);
+    for (const row of page.page) await ctx.db.patch(row._id, { updatedBy: DELETED_ACCOUNT });
+    return page.page.length ? "more" : "next";
   }],
   ["invites", scan("invites", async (ctx, row: Doc<"invites">, userId) => {
     if (row.createdBy === userId) await ctx.db.delete(row._id);
@@ -350,7 +350,8 @@ const ACCOUNT_STEPS: Array<[string, Step]> = [
   ["oauthRegistrations", byUser((ctx, userId) => ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", userId)).take(STEP))],
   ["signInApprovals", byUser((ctx, userId) => ctx.db.query("signInApprovals").withIndex("by_user_hour", (q) => q.eq("userId", userId)).take(STEP))],
   ["usage", byUser((ctx, userId) => ctx.db.query("usage").withIndex("by_user_day", (q) => q.eq("userId", userId)).take(STEP))],
-  ["operations", byUser((ctx, userId) => ctx.db.query("operations").withIndex("by_user_key", (q) => q.eq("userId", userId)).take(LARGE_STEP))],
+  ["operations", byUser(async (ctx, userId) => (await ctx.db.query("operations").withIndex("by_user_key", (q) => q.eq("userId", userId))
+    .paginate({ numItems: LARGE_STEP, cursor: null, maximumBytesRead: STEP_BYTES } as any)).page)],
   ["transfers", async (ctx, erasure) => {
     const transfers = await ctx.db.query("transfers").withIndex("by_user", (q) => q.eq("userId", erasure.userId!)).take(10);
     for (const transfer of transfers) {

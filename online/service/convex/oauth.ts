@@ -215,6 +215,7 @@ export const createRequest = internalMutation({
     // A note is used once; a computer's launch link is approved once.
     if (await requestRow(ctx, args.requestHash)) fail("unauthorized", "Start a fresh authorization request.");
     if (args.launchHash && await ctx.db.query("oauthRequests").withIndex("by_launchHash", (q) => q.eq("launchHash", args.launchHash)).first()) fail("unauthorized", "Start a fresh authorization request.");
+    await refuseDeletedAccount(ctx, args.userId);
     await chargeApproval(ctx, args.userId);
     await ctx.db.insert("oauthRequests", { ...args, status: "pending" });
     await scheduleCleanup(ctx, Math.max(0, args.expiresAt - Date.now()) + CODE_MS);
@@ -247,6 +248,7 @@ export const bindIdentity = internalMutation({
     const row = await requestRow(ctx, args.requestHash);
     if (!row || row.status !== "pending" || row.expiresAt <= Date.now() || row.browserHash !== args.browserHash || row.csrfHash !== args.csrfHash || (row.userId && row.userId !== args.userId)) fail("unauthorized", "Start a fresh authorization request.");
     if (row!.sessionId && row!.sessionId !== args.sessionId) fail("unauthorized", "The signed-in session changed. Start again.");
+    await refuseDeletedAccount(ctx, args.userId);
     await ctx.db.patch(row!._id, { userId: args.userId, ...(args.sessionId ? { sessionId: args.sessionId } : {}) });
     return { bound: true };
   },

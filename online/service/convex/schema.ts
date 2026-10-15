@@ -344,9 +344,8 @@ export default defineSchema({
    */
   erasures: defineTable({
     kind: v.union(v.literal("board"), v.literal("account")),
-    /** A board: its id (reserved until the rows are gone), and the newest generation its rows can be in (generations are numbered globally). */
+    /** A board: its id, reserved until every row under it is gone. */
     boardId: v.optional(v.string()),
-    maxGeneration: v.optional(v.number()),
     /** An account: whose, the boards they owned, and whether their sign-in account (Clerk) is deleted. */
     userId: v.optional(v.string()),
     ownedBoards: v.optional(v.array(v.string())),
@@ -357,6 +356,12 @@ export default defineSchema({
     requestedAt: v.string(),
     doneAt: v.optional(v.string()),
   }).index("by_kind", ["kind"]).index("by_user", ["userId"]).index("by_board", ["boardId"]),
+
+  /**
+   * Accounts that have been deleted, kept only as a SHA-256 of the account id,
+   * so nothing can ever be created for one again (owner decision (b)).
+   */
+  retiredAccounts: defineTable({ userHash: v.string() }).index("by_hash", ["userHash"]),
 
   /** Counters shared across boards. Generations are numbered globally so rows of a deleted and re-created board never collide. */
   counters: defineTable({

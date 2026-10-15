@@ -272,3 +272,58 @@ test("other people's boards show a deleted account's changes as 'A deleted accou
   assert.equal(absentPerson(erasure.DELETED_ACCOUNT).name, "A deleted account");
   assert.equal(absentPerson("user_3KjNmCA4RC6B9pT7PIyRgMOdoUW").name, "Someone no longer on this board");
 });
+
+test("a deleted account stays deleted: it can't be added to a board or start a sign-in, even after its deletion record is gone", async () => {
+  await withServiceEnv(async () => {
+    const service = memoryService();
+    const host = await service.signIn("user_host", "Hal");
+    await service.signIn("user_gone", "Gwen");
+    const hostApi = as(service, host.token);
+    const boardId = await boardWithCard(hostApi, "Hal's board");
+    const clerk = fakeClerk({ "gwen@example.com": [{ id: "user_gone" }] });
+    try {
+      await requestAccount(service, "gwen@example.com");
+      await service.runJobs();
+      service.rows.find((row) => row._table === "erasures").doneAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      await service.call(internal.erasure.sweep, {});
+      await service.runJobs();
+      assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
+      assert.deepEqual(leftovers(service, "user_gone"), [], "only a hash of the id is kept");
+
+      const added = await hostApi("POST", `/api/v1/boards/${boardId}/members`, { userId: "user_gone", role: "editor" });
+      assert.equal(added.status, 404);
+      await assert.rejects(service.signIn("user_gone", "Gwen"), /has been deleted/);
+      const hex = "a".repeat(64);
+      await assert.rejects(service.call(internal.oauth.createRequest, {
+        requestHash: hex, browserHash: hex, csrfHash: hex, clientId: "planban-cli", clientName: "Planban CLI", redirectUri: "http://127.0.0.1/callback",
+        resource: "https://planban.example", scopes: ["planban:machine"], level: "complete", challenge: "c".repeat(43), state: "s",
+        purpose: "machine", userId: "user_gone", expiresAt: Date.now() + 60_000,
+      }), /has been deleted/);
+      assert.deepEqual(leftovers(service, "user_gone"), []);
+    } finally {
+      clerk.restore();
+    }
+  });
+});
+
+test("a board's deletion removes every generation under its id, however many uploads it had", async () => {
+  await withServiceEnv(async () => {
+    const service = memoryService();
+    const owner = await service.signIn("user_owner", "Owen");
+    const ownerApi = as(service, owner.token);
+    const boardId = await boardWithCard(ownerApi, "Many uploads");
+    await takeLocal(service, owner.connectionId, boardId, []);
+    // 120 abandoned uploads, each with rows in its own generation.
+    for (let i = 0; i < 120; i += 1) {
+      const generation = 1000 + i;
+      await service.ctx.db.insert("transfers", { transferId: `upload-${i}`, userId: "user_owner", boardId, generation, state: "aborted", previousRevision: 1, maxVersion: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      await service.ctx.db.insert("transferParts", { transferId: `upload-${i}`, seq: 0 });
+      await service.ctx.db.insert("boardSizes", { boardId, generation, bytes: 10 });
+    }
+    assert.equal((await ownerApi("POST", `/api/v1/boards/${boardId}/delete-copy`, { confirmTitle: "Many uploads" })).status, 200);
+    await service.runJobs(10_000);
+    assert.deepEqual([...new Set(service.rows.filter((row) => row.boardId === boardId).map((row) => row._table))].filter((table) => table !== "operations"), []);
+    assert.deepEqual(service.rows.filter((row) => row._table === "transferParts"), []);
+    assert.deepEqual(service.rows.filter((row) => row._table === "erasures"), []);
+  });
+});
