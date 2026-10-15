@@ -161,6 +161,8 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
     const body: Record<string, unknown> = { error: message };
     if (typeof data.code === "string") body.code = data.code;
     if (typeof data.currentRevision === "number") body.currentRevision = data.currentRevision;
+    // A refused edit: what changed, by whom, and the current value or document, so the page can show theirs beside yours.
+    if (data.conflict && typeof data.conflict === "object") body.conflict = data.conflict;
     // Invitations say why they can't be used, so the page can show the matching screen.
     if (typeof data.reason === "string") body.reason = data.reason;
     if (typeof data.sentTo === "string") body.sentTo = data.sentTo;

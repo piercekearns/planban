@@ -6224,3 +6224,12 @@ a.web-delete-account-email { display: inline-flex; align-items: center; justify-
   .web-invite-row { flex-wrap: wrap; padding: 12px; }
   .web-invite-row .web-row-main { flex: 1 1 100%; }
 }
+
+/* Someone else's version beside yours (Spec point 20). */
+.doc-conflict-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+.doc-conflict-side { min-width: 0; }
+.doc-conflict-label { margin: 0 0 6px; color: var(--text-muted); font: 600 11px/16px var(--font-sans); text-transform: uppercase; letter-spacing: .04em; }
+.doc-conflict-compare .doc-conflict-theirs { margin: 0; max-height: 60vh; overflow: auto; }
+.doc-conflict-choice { justify-content: flex-end; }
+@media (max-width: 720px) { .doc-conflict-compare { grid-template-columns: 1fr; } }
+.group-objective-theirs { margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); font: 400 13px/20px var(--font-sans); white-space: pre-wrap; }

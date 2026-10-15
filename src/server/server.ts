@@ -78,6 +78,7 @@ import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
 import { PlanbanActivityStore } from "../core/activity";
 import { collectStaleness } from "../core/stalenessSources";
 import { BoardOfAnotherAccountError } from "../core/online/accounts";
+import { PlanbanEditConflictError } from "../core/conflicts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
@@ -1752,10 +1753,12 @@ export async function startServer(options: ServeOptions) {
     // A missing or ended Online Board sign-in: the board page offers Sign in for this service.
     const signIn = error instanceof OnlineAuthenticationError ? error.signIn : undefined;
     // A board of another account than the one signed in here, from this computer's own records.
+    // A refused edit on an online board: what changed, by whom, and the current value, for the page.
+    const conflict = error instanceof PlanbanEditConflictError ? error.conflict : undefined;
     const otherAccount = error instanceof BoardOfAnotherAccountError
       ? { url: error.url, boardAccount: error.boardAccount.email ?? null, signedInAs: error.signedIn.email ?? null, signInCommand: `${planbanCommand()} online login ${error.url} --switch-account` }
       : undefined;
-    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}), ...(otherAccount ? { otherAccount } : {}) });
+    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}), ...(otherAccount ? { otherAccount } : {}), ...(conflict ? { conflict, currentRevision: conflict.currentRevision } : {}) });
   });
 
   try {

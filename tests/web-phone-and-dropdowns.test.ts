@@ -40,10 +40,11 @@ test("a conflicting save keeps the person's text, and a viewer gets no edit cont
   assert.match(save, /status === 409/u);
   assert.doesNotMatch(save, /setDraft\(payload\.markdown\);\s*\}\s*finally/u, "a failed save never replaces the draft");
   assert.match(web, /changed this \$\{docKindLabel\(activeTab\)\} while you were editing\./u);
-  // Saving over the other version is only possible once the person has opened it, and each new conflict asks again.
-  assert.match(web, /setConflict\(\{ theirs, who: await latestDocAuthor\(\), showing: false, seen: false \}\)/u);
-  assert.match(web, /\(conflict !== null && !conflict\.seen\)/u);
-  assert.match(web, /showing: !conflict\.showing, seen: true/u);
+  // Their version is shown beside yours at once, with a simple choice: keep theirs, edit, or use mine (Spec point 20).
+  assert.match(web, /setConflict\(\{ theirs, who: await latestDocAuthor\(\), showing: true, seen: true, choosing: true \}\)/u);
+  assert.match(web, />Keep theirs</u);
+  assert.match(web, /\n\s+Use mine\n/u);
+  assert.match(web, /choosing: false \}\)\}>Edit</u);
   // Viewers get no order controls in a Group either.
   assert.match(web, /readOnly=\{viewOnly\}/u);
   assert.match(web, /const viewOnly = state\.hosted\?\.role === "viewer";/u);

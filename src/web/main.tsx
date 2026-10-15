@@ -900,6 +900,10 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
         : `Request failed: ${response.status}`;
     const error = new Error(errorMessage);
     Object.assign(error, { status: response.status });
+    // A refused edit: what changed, by whom, and the current value or document (Spec point 20).
+    if (payload && typeof payload === "object" && "conflict" in payload && payload.conflict && typeof payload.conflict === "object") {
+      Object.assign(error, { conflict: payload.conflict });
+    }
     // A missing or ended Online Board sign-in names the service, so the page can offer Sign in.
     if (payload && typeof payload === "object" && "signInNeeded" in payload && typeof payload.signInNeeded === "string") {
       const reason = "signedOut" in payload && payload.signedOut === "expired" ? "expired" : "missing";
@@ -3749,9 +3753,12 @@ function DetailView({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   /** A save refused because the document changed meanwhile: the newer version, and who made it. */
-  const [conflict, setConflict] = useState<{ theirs: DocPayload; who: string | null; showing: boolean; seen: boolean } | null>(null);
+  // Someone else's version landed while editing (Spec point 20): shown beside yours, to keep theirs, use yours, or edit.
+  const [conflict, setConflict] = useState<{ theirs: DocPayload; who: string | null; showing: boolean; seen: boolean; choosing: boolean } | null>(null);
   const boardPeople = useContext(BoardPeopleContext);
   const [objectiveEditing, setObjectiveEditing] = useState(false);
+  // Someone else's objective landed while editing (Spec point 20): theirs beside yours, to keep theirs, use yours, or edit.
+  const [objectiveConflict, setObjectiveConflict] = useState<{ theirs: string | null; who: string | null; revision: number; choosing: boolean } | null>(null);
   const [objectiveDraft, setObjectiveDraft] = useState(item.summary ?? "");
   const [busy, setBusy] = useState(false);
   const [referenceCopied, showReferenceCopied] = useTransientConfirmation(`${boardId}:${item.id}`);
@@ -3902,12 +3909,20 @@ function DetailView({
         method: "PATCH",
         body: JSON.stringify({
           summary: objectiveDraft.trim() || null,
-          baseRevision: state.roadmap.revision,
+          // After seeing theirs, "use mine" saves over the version shown.
+          baseRevision: objectiveConflict?.revision ?? state.roadmap.revision,
         }),
       });
+      setObjectiveConflict(null);
       setObjectiveEditing(false);
       await onStateRefresh();
     } catch (error) {
+      const conflict = (error as { status?: number; conflict?: { currentRevision: number; card?: { summary?: string | null } | null; changes?: Array<{ by: string }> } } | null);
+      if (conflict?.status === 409 && conflict.conflict) {
+        // Theirs beside yours; the text you wrote stays.
+        setObjectiveConflict({ theirs: conflict.conflict.card?.summary ?? null, who: conflict.conflict.changes?.[0]?.by ?? null, revision: conflict.conflict.currentRevision, choosing: true });
+        return;
+      }
       window.alert(error instanceof Error ? error.message : "Group objective update failed");
       setObjectiveDraft(item.summary ?? "");
     } finally {
@@ -4144,8 +4159,8 @@ function DetailView({
         // Someone else saved first. Their version is fetched to look at; the person's text stays in the editor.
         const theirs = await api<DocPayload>(cardPath(boardId, item.id, `/docs/${activeTab}`)).catch(() => null);
         if (theirs) {
-          // A fresh conflict must be looked at again before saving over it.
-          setConflict({ theirs, who: await latestDocAuthor(), showing: false, seen: false });
+          // Theirs is shown beside yours, with a simple choice.
+          setConflict({ theirs, who: await latestDocAuthor(), showing: true, seen: true, choosing: true });
           return;
         }
       }
@@ -4351,17 +4366,51 @@ function DetailView({
           <span className="group-objective-label">Group objective</span>
           {objectiveEditing ? (
             <div className="editor-pane group-objective-editor">
-              <AutoSizingTextarea
-                autoFocus
-                aria-label="Group objective"
-                value={objectiveDraft}
-                disabled={busy}
-                onChange={(event) => setObjectiveDraft(event.target.value)}
-                placeholder="What larger outcome do these Items achieve together?"
-              />
+              {objectiveConflict ? (
+                <div className="doc-conflict-note" role="alert">
+                  <b>{objectiveConflict.who ? `${objectiveConflict.who} changed the objective while you were editing.` : "The objective changed while you were editing."}</b>{" "}
+                  {objectiveConflict.choosing ? "Theirs is beside yours. Keep theirs, use yours, or edit yours." : "Edit yours with theirs in view, then save."}
+                </div>
+              ) : null}
+              <div className={objectiveConflict ? "doc-conflict-compare" : undefined}>
+                {objectiveConflict ? (
+                  <section className="doc-conflict-side">
+                    <p className="doc-conflict-label">{objectiveConflict.who ? `${objectiveConflict.who}'s version` : "The new version"}</p>
+                    <p className="group-objective-theirs">{objectiveConflict.theirs || "No objective"}</p>
+                  </section>
+                ) : null}
+                <section className={objectiveConflict ? "doc-conflict-side" : undefined}>
+                  {objectiveConflict ? <p className="doc-conflict-label">Yours</p> : null}
+                  <AutoSizingTextarea
+                    autoFocus
+                    aria-label="Group objective"
+                    value={objectiveDraft}
+                    disabled={busy}
+                    readOnly={objectiveConflict?.choosing === true}
+                    onChange={(event) => setObjectiveDraft(event.target.value)}
+                    placeholder="What larger outcome do these Items achieve together?"
+                  />
+                </section>
+              </div>
+              {objectiveConflict?.choosing ? (
+                <div className="editor-actions group-objective-actions doc-conflict-choice">
+                  <button disabled={busy} onClick={() => {
+                    setObjectiveDraft(objectiveConflict.theirs ?? "");
+                    setObjectiveConflict(null);
+                    setObjectiveEditing(false);
+                    void onStateRefresh();
+                  }}>Keep theirs</button>
+                  <button disabled={busy} onClick={() => setObjectiveConflict({ ...objectiveConflict, choosing: false })}>Edit</button>
+                  <button className="primary" disabled={busy} onClick={() => void saveObjective()}>
+                    {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
+                    Use mine
+                  </button>
+                </div>
+              ) : (
               <div className="editor-actions group-objective-actions">
                 <button disabled={busy} onClick={() => {
                   setObjectiveDraft(item.summary ?? "");
+                  setObjectiveConflict(null);
                   setObjectiveEditing(false);
                 }}>Cancel</button>
                 <button
@@ -4373,6 +4422,7 @@ function DetailView({
                   Save objective
                 </button>
               </div>
+              )}
             </div>
           ) : item.summary ? (
             <div className="group-objective-body editable-content-region">
@@ -4587,32 +4637,57 @@ function DetailView({
               {conflict ? (
                 <div className="doc-conflict-note" role="alert">
                   <b>{conflict.who ? `${conflict.who} changed this ${docKindLabel(activeTab)} while you were editing.` : `This ${docKindLabel(activeTab)} changed while you were editing.`}</b>{" "}
-                  Your text is kept. Look at {conflict.who ? `${conflict.who}'s` : "the new"} version, then save again.
+                  {conflict.choosing ? "Theirs is beside yours. Keep theirs, use yours, or edit yours." : "Edit yours with theirs in view, then save."}
                 </div>
               ) : null}
-              {conflict?.showing ? (
-                <article className="markdown-body doc-conflict-theirs" aria-label={`${conflict.who ? `${conflict.who}'s` : "The new"} version`}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(conflict.theirs.markdown)}</ReactMarkdown>
-                </article>
-              ) : null}
-              <AutoSizingTextarea value={draft} onChange={(event) => setDraft(event.target.value)} />
-              <div className="editor-actions">
-                <button disabled={busy} onClick={() => {
-                  setDraft(doc.markdown);
-                  setConflict(null);
-                  setEditing(false);
-                }}>Cancel</button>
-                {conflict ? (
-                  <button disabled={busy} aria-pressed={conflict.showing} onClick={() => setConflict({ ...conflict, showing: !conflict.showing, seen: true })}>
-                    {conflict.showing ? "Hide" : "See"} {conflict.who ? `${conflict.who}'s` : "the new"} version
-                  </button>
+              <div className={conflict?.showing ? "doc-conflict-compare" : undefined}>
+                {conflict?.showing ? (
+                  <section className="doc-conflict-side">
+                    <p className="doc-conflict-label">{conflict.who ? `${conflict.who}'s version` : "The new version"}</p>
+                    <article className="markdown-body doc-conflict-theirs" aria-label={`${conflict.who ? `${conflict.who}'s` : "The new"} version`}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(conflict.theirs.markdown)}</ReactMarkdown>
+                    </article>
+                  </section>
                 ) : null}
-                <button className="primary" onClick={saveDoc} disabled={busy || draft === (conflict?.theirs.markdown ?? doc.markdown) || (conflict !== null && !conflict.seen)}
-                  title={conflict && !conflict.seen ? `Look at ${conflict.who ? `${conflict.who}'s` : "the new"} version first` : undefined}>
-                  {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
-                  Save {activeTab}
-                </button>
+                <section className={conflict?.showing ? "doc-conflict-side" : undefined}>
+                  {conflict?.showing ? <p className="doc-conflict-label">Yours</p> : null}
+                  <AutoSizingTextarea value={draft} readOnly={conflict?.choosing === true} onChange={(event) => setDraft(event.target.value)} />
+                </section>
               </div>
+              {conflict?.choosing ? (
+                <div className="editor-actions doc-conflict-choice">
+                  <button disabled={busy} onClick={() => {
+                    // Keep theirs: yours is set aside, and the document shows theirs.
+                    setDocsByKind((current) => ({ ...current, [activeTab]: conflict.theirs }));
+                    setDraft(conflict.theirs.markdown);
+                    setConflict(null);
+                    setEditing(false);
+                    onStateRefresh();
+                  }}>Keep theirs</button>
+                  <button disabled={busy} onClick={() => setConflict({ ...conflict, choosing: false })}>Edit</button>
+                  <button className="primary" disabled={busy} onClick={saveDoc}>
+                    {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
+                    Use mine
+                  </button>
+                </div>
+              ) : (
+                <div className="editor-actions">
+                  <button disabled={busy} onClick={() => {
+                    setDraft(doc.markdown);
+                    setConflict(null);
+                    setEditing(false);
+                  }}>Cancel</button>
+                  {conflict ? (
+                    <button disabled={busy} aria-pressed={conflict.showing} onClick={() => setConflict({ ...conflict, showing: !conflict.showing, seen: true })}>
+                      {conflict.showing ? "Hide" : "See"} {conflict.who ? `${conflict.who}'s` : "the new"} version
+                    </button>
+                  ) : null}
+                  <button className="primary" onClick={saveDoc} disabled={busy || draft === (conflict?.theirs.markdown ?? doc.markdown)}>
+                    {busy ? <Loader2 size={14} className="spin" /> : <Pencil size={14} />}
+                    Save {activeTab}
+                  </button>
+                </div>
+              )}
             </div>
           ) : doc.exists ? (
             <article className="markdown-body">
