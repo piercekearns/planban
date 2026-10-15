@@ -13,6 +13,7 @@
 // in or being added again, and keeps a deleted board's id from being reused
 // until all its rows are gone, so every row under that id is the deleted
 // board's, whatever its generation.
+import { addStored } from "./model/limits";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
@@ -330,7 +331,10 @@ const ACCOUNT_STEPS: Array<[string, Step]> = [
   }],
   ["unresolvedChanges", async (ctx, erasure) => {
     const rows = await ctx.db.query("unresolvedChanges").withIndex("by_user", (q) => q.eq("userId", erasure.userId!)).take(STEP);
-    for (const row of rows) await ctx.db.delete(row._id);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+      await addStored(ctx, { boardId: row.boardId, generation: row.generation }, -(row.bytes ?? 0));
+    }
     return rows.length ? "more" : "next";
   }],
   ["docs", async (ctx, erasure) => {

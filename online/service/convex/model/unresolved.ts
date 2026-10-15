@@ -7,8 +7,11 @@ import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { BoardRows } from "./history";
 
-/** At most this many kept per board; the oldest go first. */
-const MAX_PER_BOARD = 200;
+/**
+ * At most this many wait on a board. Beyond that a refused edit is not kept,
+ * and the refusal says so; nothing already waiting is ever removed to make room.
+ */
+export const MAX_PER_BOARD = 200;
 
 export interface UnresolvedChange {
   changeId: string;
@@ -26,13 +29,12 @@ export function publicUnresolved(row: Doc<"unresolvedChanges">): UnresolvedChang
   return { changeId: row.changeId, cardId: row.cardId, by: { userId: row.userId, app: row.clientName }, at: row.createdAt, op: row.op, proposed: row.proposed, fields: row.fields, refusedAtRevision: row.refusedAtRevision, message: row.message };
 }
 
+/** Keeps a refused edit; null when the board already has as many waiting as it may (the refusal then says it wasn't kept). */
 export async function recordUnresolved(ctx: MutationCtx, at: BoardRows, change: Omit<Doc<"unresolvedChanges">, "_id" | "_creationTime" | "boardId" | "generation" | "changeId">) {
+  const waiting = await ctx.db.query("unresolvedChanges").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).take(MAX_PER_BOARD);
+  if (waiting.length >= MAX_PER_BOARD) return null;
   const changeId = crypto.randomUUID();
   await ctx.db.insert("unresolvedChanges", { ...at, changeId, ...change });
-  const all = await ctx.db.query("unresolvedChanges").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).collect();
-  if (all.length > MAX_PER_BOARD) {
-    for (const row of all.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, all.length - MAX_PER_BOARD)) await ctx.db.delete(row._id);
-  }
   return changeId;
 }
 
@@ -49,12 +51,16 @@ export async function unresolvedOn(ctx: QueryCtx, at: BoardRows, cardId?: string
  * seen what changed).
  */
 export async function settledBy(ctx: QueryCtx, at: BoardRows, touched: Array<{ cardId: string; field: string }>, baseRevision: number | null) {
-  const settled: Doc<"unresolvedChanges">[] = [];
+  // Each settles only the fields this edit saved; the rest of it keeps waiting.
+  const settled: Array<{ row: Doc<"unresolvedChanges">; fieldsLeft: string[] }> = [];
   for (const cardId of new Set(touched.map((entry) => entry.cardId))) {
     const fields = new Set(touched.filter((entry) => entry.cardId === cardId).map((entry) => entry.field));
     for (const row of await unresolvedOn(ctx, at, cardId)) {
       if (baseRevision !== null && baseRevision < row.refusedAtRevision) continue;
-      if (fields.has("*") || row.fields.includes("*") || row.fields.some((field) => fields.has(field))) settled.push(row);
+      const covers = (field: string) => fields.has("*") || fields.has(field);
+      if (!row.fields.some(covers) && !(row.fields.includes("*") && fields.size)) continue;
+      const fieldsLeft = fields.has("*") || row.fields.includes("*") ? [] : row.fields.filter((field) => !covers(field));
+      settled.push({ row, fieldsLeft });
     }
   }
   return settled;

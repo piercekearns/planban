@@ -17,6 +17,8 @@ export interface ConflictChange {
   agent: boolean;
   summary: string;
   cards: string[];
+  /** Only the card's last change is known (history no longer shows the field's): it may have been another field. */
+  cardLevel?: true;
 }
 
 export interface ConflictDetails {
@@ -55,7 +57,9 @@ export function conflictMessage(subject: string, conflict: ConflictDetails, forA
   // Name who changed the thing this edit is about, never an unrelated change elsewhere on the board.
   const target = conflict.document?.cardId ?? conflict.clashes?.[0]?.cardId ?? conflict.card?.id;
   const latest = target ? conflict.changes.find((change) => change.cards.includes(target)) : conflict.changes[0];
-  const said = latest || !conflict.changes.length
+  const said = latest?.cardLevel
+    ? `Not saved: ${subject} changed since you read it (${latest.summary}, by ${latest.by}, ${latest.at}).`
+    : latest || !conflict.changes.length
     ? `Not saved: ${latest ? latest.by : "someone"} changed ${subject} since you read it${latest ? ` (${latest.summary}, ${latest.at})` : ""}.`
     : `Not saved: the board changed since you read it (latest: ${conflict.changes[0]!.by}, ${conflict.changes[0]!.summary}, ${conflict.changes[0]!.at}), though not ${subject}.`;
   // A person on the board page sees the plain sentence; the page shows them what changed.

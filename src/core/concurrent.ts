@@ -188,3 +188,19 @@ function reorderOnto(items: Array<{ id: string; status: PlanbanStatus }>, read: 
 export function touchedFields(op: string, input: Record<string, unknown>, roadmap: PlanbanRoadmap): TouchedField[] | null {
   return intended(op, input, roadmap)?.map(({ cardId, field }) => ({ cardId, field })) ?? null;
 }
+
+/**
+ * The fields an edit saves, for settling unresolved changes: like
+ * touchedFields, but every metadata key it states counts, even one it sets
+ * to the value it already has (a reconsidered "keep theirs").
+ */
+export function settlingFields(op: string, input: Record<string, unknown>, roadmap: PlanbanRoadmap): TouchedField[] | null {
+  const touched = touchedFields(op, input, roadmap);
+  if (!touched || op !== "updateCard" || input.metadata === undefined) return touched;
+  const cardId = String(input.cardId ?? "");
+  const card = roadmap.roadmapItems.find((item) => item.id === cardId);
+  const keys = input.metadata === null ? Object.keys(card?.metadata ?? {}) : Object.keys(input.metadata as Record<string, unknown>);
+  const stated = keys.map((key) => ({ cardId, field: `metadata.${key}` }));
+  const seen = new Set(touched.map((entry) => entry.field));
+  return [...touched, ...stated.filter((entry) => !seen.has(entry.field))];
+}

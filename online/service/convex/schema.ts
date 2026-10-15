@@ -102,6 +102,8 @@ export default defineSchema({
     refusedAtRevision: v.number(),
     /** Plain words for the clash, as the refusal said it. */
     message: v.string(),
+    /** Its stored size, counted toward the board's limit while it waits. */
+    bytes: v.optional(v.number()),
   }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_changeId", ["changeId"]).index("by_user", ["userId"]),
 
   docs: defineTable({
