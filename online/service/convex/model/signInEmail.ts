@@ -129,9 +129,9 @@ export function renderSignInEmail(email: SignInEmail) {
     case "verification_code": {
       subject = `${email.code} is your Planban code`;
       const code = `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 22px"><tr><td style="background:#f5f5f5;border:1px solid #e9e9e9;border-radius:8px;padding:14px 22px;font:600 30px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:8px;color:#0d0d0d">${escape(email.code)}</td></tr></table>`;
-      html = frame({ title: subject, eyebrow: "SIGN IN", heading: "Your Planban code", intro: "Enter this code on the Planban sign-in page. It works for 10 minutes.", middle: code,
+      html = frame({ title: subject, eyebrow: "YOUR CODE", heading: "Your Planban code", intro: "Use this code to continue with your Planban account. It works for 10 minutes.", middle: code,
         after: escape(email.requestedFrom ? `Requested from ${email.requestedFrom}.` : ""), footer: `Sent by Planban<br>${escape(IGNORE)} Planban never asks for this code by phone or chat.` });
-      plain = `Your Planban code\n\n${email.code}\n\nEnter this code on the Planban sign-in page. It works for 10 minutes.${email.requestedFrom ? `\nRequested from ${email.requestedFrom}.` : ""}\n\n${IGNORE} Planban never asks for this code by phone or chat.`;
+      plain = `Your Planban code\n\n${email.code}\n\nUse this code to continue with your Planban account. It works for 10 minutes.${email.requestedFrom ? `\nRequested from ${email.requestedFrom}.` : ""}\n\n${IGNORE} Planban never asks for this code by phone or chat.`;
       break;
     }
     case "new_device_sign_in": {
@@ -161,6 +161,28 @@ export function renderSignInEmail(email: SignInEmail) {
     attachments: [{ filename: "planban-wordmark.png", content: WORDMARK_EMAIL_PNG_BASE64, content_type: "image/png", content_id: "planban-wordmark" }] };
 }
 
+/** The request body, or null as soon as it passes `limit` bytes (nothing more is read). */
+async function boundedText(request: Request, limit: number): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
 /**
  * Clerk's webhook. Answers 2xx once the email is sent or rightly not sent,
  * and 503 when Clerk should try again (Svix retries for days), including
@@ -171,8 +193,8 @@ export async function clerkWebhookResponse(request: Request): Promise<Response> 
   if (!secret) return new Response("Webhook not set up.", { status: 503 });
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) return new Response("Too large.", { status: 413 });
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) return new Response("Too large.", { status: 413 });
+  const body = await boundedText(request, MAX_BODY_BYTES);
+  if (body === null) return new Response("Too large.", { status: 413 });
   if (!await verifySvix(secret, request.headers, body)) return new Response("Invalid signature.", { status: 400 });
   let event: unknown;
   try { event = JSON.parse(body); } catch { return new Response("Invalid body.", { status: 400 }); }
@@ -182,13 +204,23 @@ export async function clerkWebhookResponse(request: Request): Promise<Response> 
   const key = process.env.RESEND_API_KEY, from = process.env.PLANBAN_INVITE_FROM;
   if (!key || !from) return Response.json({ ok: false, reason: "sending isn't set up" }, { status: 503 });
   const message = renderSignInEmail(decision.send);
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    // Svix retries carry the same id, so one Clerk email is sent at most once.
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": `planban-clerk-${request.headers.get("svix-id")}` },
-    body: JSON.stringify({ from, to: [decision.send.to], ...message }),
-    signal: AbortSignal.timeout(10_000),
-  }).catch(() => null);
-  if (!response?.ok) return Response.json({ ok: false, reason: `the email service answered ${response?.status ?? "nothing"}` }, { status: 503 });
-  return Response.json({ ok: true, sent: decision.send.slug });
+  // A code only lasts 10 minutes, and Svix's own retries soon space out past that,
+  // so a passing hiccup is retried here first. The same key makes any repeat harmless.
+  let status: number | null = null;
+  // Three tries in under 13 seconds, inside Svix's 15-second wait for an answer.
+  for (const wait of [0, 700, 1_500]) {
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      // Svix retries carry the same id, so one Clerk email is sent at most once.
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": `planban-clerk-${request.headers.get("svix-id")}` },
+      body: JSON.stringify({ from, to: [decision.send.to], ...message }),
+      signal: AbortSignal.timeout(3_500),
+    }).catch(() => null);
+    if (response?.ok) return Response.json({ ok: true, sent: decision.send.slug });
+    status = response?.status ?? null;
+    // A refusal that won't change on retry (a bad address, a bad key) isn't retried here.
+    if (status !== null && status >= 400 && status < 500 && status !== 429) break;
+  }
+  return Response.json({ ok: false, reason: `the email service answered ${status ?? "nothing"}` }, { status: 503 });
 }

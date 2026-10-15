@@ -64,7 +64,7 @@ test("the emails read as Planban's and keep what Clerk sends as plain text", () 
   assert.match(code.html, /cid:planban-wordmark/);
   assert.match(code.html, /482913/);
   assert.doesNotMatch(code.html, /<script>/, "Clerk's text is escaped");
-  assert.match(code.text, /works for 10 minutes/);
+  assert.match(code.text, /continue with your Planban account/);
   const device = renderSignInEmail({ slug: "new_device_sign_in", to: "sam@example.com", device: "Safari on iOS", location: null, method: null, at: null });
   assert.match(device.text, /Cut off everything/);
   assert.doesNotMatch(device.html, /Where:/, "empty details are left out");
@@ -89,4 +89,22 @@ test("the webhook sends through Resend once per Clerk email, and asks Clerk to r
     assert.equal((await clerkWebhookResponse(signed(JSON.stringify(codeEvent())))).status, 503, "no sending key: Clerk retries, nothing is lost silently");
     assert.equal(sent.length, 0);
   }, {});
+});
+
+test("the webhook stops reading a body past 64 KB, whatever its declared length, and retries a passing email-service failure", async () => {
+  await withSending(async () => {
+    const big = new ReadableStream({ start(controller) { for (let i = 0; i < 100; i += 1) controller.enqueue(new Uint8Array(1024)); controller.close(); } });
+    const request = new Request("https://service.example/clerk/webhook", { method: "POST", body: big, duplex: "half" } as RequestInit);
+    assert.equal((await clerkWebhookResponse(request)).status, 413);
+  });
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  await withSending(async () => {
+    globalThis.fetch = (async () => { calls += 1; return calls < 2 ? new Response("busy", { status: 500 }) : Response.json({ id: "email_2" }); }) as typeof fetch;
+    try {
+      const response = await clerkWebhookResponse(signed(JSON.stringify(codeEvent())));
+      assert.equal(response.status, 200);
+      assert.equal(calls, 2, "sent on the second try, within the same request");
+    } finally { globalThis.fetch = realFetch; }
+  });
 });
