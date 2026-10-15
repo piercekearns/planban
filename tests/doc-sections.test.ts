@@ -66,3 +66,13 @@ test("a new section's returned version is the one the next read reports", () => 
   assert.ok(replaced.ok);
   assert.equal(replaced.section.version, sectionList(replaced.markdown).find((section) => section.heading === "C")!.version);
 });
+
+test("a heading underlined across lines starts at its first line; lists, tables and front matter are never headings", () => {
+  const md = "## A\n\nOne.\n\nFirst line\nsecond line\n---\n\nBody.\n";
+  const list = sectionList(md);
+  assert.deepEqual(list.map((section) => section.heading), ["A", "First line second line"]);
+  const edited = editSection(md, { heading: "A", expectedVersion: list[0]!.version, text: "## A\n\nOne, edited.\n" });
+  assert.ok(edited.ok && edited.markdown.includes("First line\nsecond line\n---"));
+  assert.deepEqual(sectionList("## A\n\n- item\n---\n\n| a | b |\n|---|---|\n| 1 | 2 |\n---\n").map((section) => section.heading), ["A"]);
+  assert.deepEqual(sectionList("---\ntitle: x\nstatus: draft\n---\n\n## Purpose\n\nWhy.\n").map((section) => section.heading), ["Purpose"]);
+});

@@ -31,17 +31,23 @@ const TOUCH_EVERY_MS = 60 * 1000;
  */
 export async function touchPresence(ctx: MutationCtx, at: BoardRows, entry: { cardId: string; connectionId: Id<"connections">; userId: string; app: string }, now = Date.now()) {
   const mine = await ctx.db.query("presence").withIndex("by_agent", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", entry.cardId).eq("connectionId", entry.connectionId).eq("app", entry.app)).first();
-  if (!mine) {
-    // One connection marks at most this many cards at once: invented card ids or app names can't pile up.
-    const live = await ctx.db.query("presence").withIndex("by_connection_active", (q) => q.eq("connectionId", entry.connectionId).gte("lastActiveAt", now - PRESENCE_MS)).take(MAX_LIVE_PER_CONNECTION);
-    if (live.length >= MAX_LIVE_PER_CONNECTION) return;
-    await ctx.db.insert("presence", { ...at, ...entry, startedAt: now, lastActiveAt: now });
-    return;
-  }
-  if (now - mine.lastActiveAt < TOUCH_EVERY_MS) return;
+  if (mine && now - mine.lastActiveAt < TOUCH_EVERY_MS) return;
   // A gap longer than the heads-up lasts starts a new stretch of work.
-  const fresh = now - mine.lastActiveAt > PRESENCE_MS;
-  await ctx.db.patch(mine._id, { lastActiveAt: now, ...(fresh ? { startedAt: now } : {}) });
+  const fresh = !mine || now - mine.lastActiveAt > PRESENCE_MS;
+  if (fresh) await makeRoom(ctx, entry.connectionId, now);
+  if (!mine) await ctx.db.insert("presence", { ...at, ...entry, startedAt: now, lastActiveAt: now });
+  else await ctx.db.patch(mine._id, { lastActiveAt: now, ...(fresh ? { startedAt: now } : {}) });
+}
+
+/**
+ * One connection shows as working on at most this many cards at once, so
+ * invented card ids or app names can't pile up. The current card always
+ * shows: the connection's least recent one makes way.
+ */
+async function makeRoom(ctx: MutationCtx, connectionId: Id<"connections">, now: number) {
+  const live = await ctx.db.query("presence").withIndex("by_connection_active", (q) => q.eq("connectionId", connectionId).gte("lastActiveAt", now - PRESENCE_MS)).take(MAX_LIVE_PER_CONNECTION);
+  if (live.length < MAX_LIVE_PER_CONNECTION) return;
+  for (const row of live.slice(0, live.length - MAX_LIVE_PER_CONNECTION + 1)) await ctx.db.patch(row._id, { lastActiveAt: now - PRESENCE_MS - 1 });
 }
 
 export interface Working {
@@ -54,9 +60,11 @@ export interface Working {
 
 /** Who is working on each card now (or on one card), leaving out `except` (the asker). */
 export async function workingOn(ctx: QueryCtx, at: BoardRows, options: { cardId?: string; except?: { connectionId: string; app: string } } = {}, now = Date.now()) {
-  // Only rows active in the last 15 minutes are read, however many old ones remain.
-  const rows = (await ctx.db.query("presence").withIndex("by_board_active", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).gte("lastActiveAt", now - PRESENCE_MS)).take(500))
-    .filter((row) => !options.cardId || row.cardId === options.cardId);
+  // One card: its own rows (a few per agent at most). The whole board: only rows active in the last
+  // 15 minutes, newest first, however many old ones remain.
+  const rows = options.cardId
+    ? (await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", options.cardId!)).take(200))
+    : await ctx.db.query("presence").withIndex("by_board_active", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).gte("lastActiveAt", now - PRESENCE_MS)).order("desc").take(500);
   const byCard: Record<string, Working[]> = {};
   for (const row of rows) {
     if (now - row.lastActiveAt > PRESENCE_MS || (row.connectionId === options.except?.connectionId && row.app === options.except.app)) continue;

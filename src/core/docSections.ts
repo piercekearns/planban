@@ -56,8 +56,16 @@ export function docSections(markdown: string): DocSection[] {
   }
   const headings: Array<{ line: number; level: number; heading: string }> = [];
   let fence: { char: string; length: number } | null = null;
-  let paragraph = false;
-  for (let index = 0; index < lines.length; index += 1) {
+  // The open paragraph's first line, or null; only a plain paragraph can be an underlined heading.
+  let paragraphStart: number | null = null;
+  // Front matter at the very top (between --- lines) is not part of any heading.
+  let index = 0;
+  if (/^---[ \t]*$/u.test(lines[0] ?? "")) {
+    const close = lines.findIndex((line, at) => at > 0 && /^(---|\.\.\.)[ \t]*$/u.test(line));
+    if (close > 0) index = close + 1;
+  }
+  const notParagraph = (line: string) => /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/u.test(line) || /^ {0,3}>/u.test(line) || line.includes("|") || /^(?: {4}|\t)/u.test(line);
+  for (; index < lines.length; index += 1) {
     const line = lines[index]!;
     const marker = FENCE.exec(line)?.[1];
     if (fence) {
@@ -67,23 +75,29 @@ export function docSections(markdown: string): DocSection[] {
     }
     if (marker) {
       fence = { char: marker[0]!, length: marker.length };
-      paragraph = false;
+      paragraphStart = null;
       continue;
     }
     const atx = ATX.exec(line);
     if (atx) {
       headings.push({ line: index, level: atx[1]!.length, heading: atxText(atx[2]) });
-      paragraph = false;
+      paragraphStart = null;
       continue;
     }
     const underline = SETEXT.exec(line);
-    if (underline && paragraph) {
-      // The paragraph's last line is the heading; its section starts there.
-      headings.push({ line: index - 1, level: underline[1]![0] === "=" ? 1 : 2, heading: lines[index - 1]!.trim() });
-      paragraph = false;
+    if (underline && paragraphStart !== null && paragraphStart >= 0) {
+      // The whole paragraph is the heading; its section starts at the paragraph's first line.
+      headings.push({ line: paragraphStart, level: underline[1]![0] === "=" ? 1 : 2, heading: lines.slice(paragraphStart, index).map((entry) => entry.trim()).join(" ") });
+      paragraphStart = null;
       continue;
     }
-    paragraph = line.trim() !== "" && !(paragraph === false && /^ {0,3}(?:[-*_][ \t]*){3,}$/u.test(line));
+    if (line.trim() === "" || notParagraph(line)) {
+      // A blank line ends a paragraph; lists, quotes, tables and indented code are never headings.
+      paragraphStart = line.trim() === "" ? null : -1;
+      continue;
+    }
+    if (paragraphStart === null) paragraphStart = index;
+    // A line after a list, quote or table continues that block, not a paragraph.
   }
   const seen = new Map<string, number>();
   return headings.map((entry, index) => {

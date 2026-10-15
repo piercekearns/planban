@@ -279,3 +279,12 @@ test("with two sections of the same name, editing one never settles a refused ed
   await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Same", occurrence: 1, expectedSectionVersion: second!.version, markdown: "## Same\n\nSecond, edited.", actor: agent });
   assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes.map((change) => change.fields), [["spec:Same#0"]]);
 });
+
+test("an agent's current card always shows, even after it has marked many others", async () => {
+  const cwd = await onlineBoard("Alpha");
+  for (let i = 0; i < 52; i += 1) await storage.notePresence({ cwd, cardId: `invented-${i}`, agentName: "claude-code" });
+  await storage.notePresence({ cwd, cardId: "alpha", agentName: "codex-mcp-client" });
+  const live = bridge.service.rows.filter((row) => row._table === "presence" && row.lastActiveAt >= Date.now() - 15 * 60 * 1000);
+  assert.ok(live.length <= 50, `at most 50 live (${live.length})`);
+  assert.deepEqual((await storage.workingOnCard({ cwd, cardId: "alpha", agentName: "claude-code" })).map((entry) => entry.who), ["Codex (Ana)"]);
+});
