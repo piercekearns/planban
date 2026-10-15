@@ -39,6 +39,7 @@ import type * as model_oauthClient from "../model/oauthClient.js";
 import type * as model_oauthConsent from "../model/oauthConsent.js";
 import type * as model_oauthConsentPage from "../model/oauthConsentPage.js";
 import type * as model_oauthHttp from "../model/oauthHttp.js";
+import type * as model_presence from "../model/presence.js";
 import type * as model_providerUsage from "../model/providerUsage.js";
 import type * as model_retired from "../model/retired.js";
 import type * as model_rows from "../model/rows.js";
@@ -93,6 +94,7 @@ declare const fullApi: ApiFromModules<{
   "model/oauthConsent": typeof model_oauthConsent;
   "model/oauthConsentPage": typeof model_oauthConsentPage;
   "model/oauthHttp": typeof model_oauthHttp;
+  "model/presence": typeof model_presence;
   "model/providerUsage": typeof model_providerUsage;
   "model/retired": typeof model_retired;
   "model/rows": typeof model_rows;

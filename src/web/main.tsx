@@ -99,7 +99,7 @@ import {
   type TutorialProgress,
 } from "./tutorialNavigation";
 import { OverflowMarqueeText } from "./OverflowMarqueeText";
-import { BoardPeopleContext, BoardSettingsModal, NewBoardModal, CardFace, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, SignedOutScreen, useBoardPeople, useOnlineStatus, type SignedOut } from "./onlineBoard";
+import { BoardPeopleContext, BoardSettingsModal, NewBoardModal, CardFace, CardWorking, ConnectionsModal, HistoryAuthor, InviteModal, PeopleModal, LocationPill, OlderCopyBanner, SignedOutScreen, useBoardPeople, useOnlineStatus, type SignedOut } from "./onlineBoard";
 import {
   activityLabIsEnabled,
   activityVariantForIndex,
@@ -1135,6 +1135,7 @@ function CardContent({ item, rollup, ancestry = [], expanded = false }: { item: 
           {item.title}
         </p>
         <span className="card-title-tail">
+          <CardWorking cardId={item.id} />
           <CardFace cardId={item.id} />
           {workItemRank(item) ? <span className="priority">P{workItemRank(item)}</span> : null}
         </span>

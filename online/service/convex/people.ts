@@ -2,6 +2,7 @@
 // card showing who last changed it, with a small robot when their agent did,
 // and the people list with what each person's agents may do. Names and
 // pictures come from the person's sign-in account at Clerk.
+import { workingOn } from "./model/presence";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
@@ -76,7 +77,12 @@ export const forBoard = internalQuery({
     for (const row of await ctx.db.query("cardChanges").withIndex("by_board_generation_card", (q) => q.eq("boardId", boardId).eq("generation", access.board.generation)).collect()) {
       cards[row.cardId] = { userId: row.userId, agent: row.agent, clientName: row.clientName, at: row.at, summary: row.summary };
     }
-    return { shared: members.length > 1, people, cards };
+    // Agents working on each card now: a quiet sign for people (Spec point 20).
+    const working: Record<string, Array<{ userId: string; app: string; startedAt: string }>> = {};
+    for (const [cardId, entries] of Object.entries(await workingOn(ctx, { boardId, generation: access.board.generation }))) {
+      working[cardId] = entries.map(({ userId, app, startedAt }) => ({ userId, app, startedAt }));
+    }
+    return { shared: members.length > 1, people, cards, working };
   },
 });
 

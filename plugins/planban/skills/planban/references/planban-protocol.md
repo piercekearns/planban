@@ -182,6 +182,11 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   version of the same fields from the current revision, or drop it with
   `planban_drop_change` (`drop-change`) and a reason. Both go in the card's history.
   These are for agents; people don't see them on the board.
+- **Working on a card.** On an online board, reading or editing a card marks you as
+  working on it until 15 minutes after your last activity. `planban_get_card` says
+  when someone else is ("Claude (Sam) is working on this card, started 4 minutes
+  ago"). It is a heads-up, not a lock: avoid duplicating their work, and tell the
+  person if you both need the same card. People see a small, quiet sign on it.
 - **Retries.** If an edit's reply was lost, resend it unchanged with the same
   `idempotencyKey` (`--idempotency-key`): it applies once, and the result says it was
   a replay. A revised edit, such as one merged after a conflict, gets a new key.

@@ -23,6 +23,7 @@ import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from 
 import { cardSubject, changesSince, clashSubject, conflictMessage, MAX_CONFLICT_CHANGES, MAX_CONFLICT_DOCUMENT_CHARS, type ConflictDetails } from "../../../src/core/conflicts";
 import { rebaseEdit, touchedFields } from "../../../src/core/concurrent";
 import { publicUnresolved, recordUnresolved, settledBy, unresolvedOn } from "./model/unresolved";
+import { appName, touchPresence, workingOn, workingSentence } from "./model/presence";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
@@ -786,6 +787,12 @@ export const run = internalMutation({
       throw refusal;
     }
     for (const row of settled) await ctx.db.delete(row._id);
+    // An agent editing a card is working on it (Spec point 20): a heads-up for others, not a lock.
+    if (attribution.actor === "agent") {
+      for (const cardId of editedCards(input, outcome.result)) {
+        await touchPresence(ctx, at, { cardId, connectionId: access.connection._id, userId: access.connection.userId, app: appName(typeof input.agentName === "string" ? input.agentName : access.connection.clientName) });
+      }
+    }
     if (idempotencyKey) {
       await ctx.db.insert("operations", {
         userId: access.connection.userId, key: idempotencyKey, requestHash: requestHash!, boardId,
@@ -794,6 +801,47 @@ export const run = internalMutation({
       });
     }
     return { roadmap: outcome.committed, result: outcome.result };
+  },
+});
+
+/** The cards an edit worked on: the card it names, or the ones it created. */
+function editedCards(input: Record<string, unknown>, result: unknown) {
+  const made = result as { createdCard?: { id: string }; createdGroup?: { id: string }; createdCards?: Array<{ id: string }> } | null;
+  const ids = [
+    ...(typeof input.cardId === "string" ? [input.cardId] : []),
+    ...(made?.createdCard ? [made.createdCard.id] : []), ...(made?.createdGroup ? [made.createdGroup.id] : []), ...(made?.createdCards ?? []).map((card) => card.id),
+  ];
+  return [...new Set(ids)].slice(0, 20);
+}
+
+/** An agent reading a card is working on it too. */
+export const notePresence = internalMutation({
+  args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.string(), agentName: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, cardId, agentName }) => {
+    const access = await readableBoard(ctx, connectionId, boardId);
+    const at = live(access.board);
+    if (!(await currentRoadmap(ctx, at)).roadmapItems.some((item) => item.id === cardId)) return { noted: false };
+    await touchPresence(ctx, at, { cardId, connectionId: access.connection._id, userId: access.connection.userId, app: appName(agentName ?? access.connection.clientName) });
+    return { noted: true };
+  },
+});
+
+/** Who else is working on a card, or on each card, in words for agents. */
+export const working = internalQuery({
+  args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, cardId }) => {
+    const access = await readableBoard(ctx, connectionId, boardId);
+    const byCard = await workingOn(ctx, live(access.board), { ...(cardId ? { cardId } : {}), except: access.connection._id });
+    const out: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> = {};
+    for (const [card, entries] of Object.entries(byCard)) {
+      out[card] = [];
+      for (const entry of entries) {
+        const person = await ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", entry.userId)).unique();
+        const who = `${entry.app} (${person?.name || person?.email || "someone on the board"})`;
+        out[card]!.push({ who, startedAt: entry.startedAt, lastActiveAt: entry.lastActiveAt, note: workingSentence(who, entry.startedAt) });
+      }
+    }
+    return { working: out };
   },
 });
 

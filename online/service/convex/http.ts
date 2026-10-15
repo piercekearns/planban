@@ -281,6 +281,14 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     if ("refused" in ran && ran.refused) return json({ error: ran.refused }, 409);
     return json(ran);
   }
+  if (rest[0] === "presence" && rest.length === 1 && method === "POST") {
+    const input = await body(request);
+    return json(await ctx.runMutation(internal.boards.notePresence, { connectionId, boardId, cardId: String(input.cardId ?? ""), ...(typeof input.agentName === "string" ? { agentName: input.agentName } : {}) }));
+  }
+  if (rest[0] === "presence" && rest.length === 1 && method === "GET") {
+    const cardId = url.searchParams.get("card") ?? undefined;
+    return json(await ctx.runQuery(internal.boards.working, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));
+  }
   if (rest[0] === "unresolved" && rest.length === 1 && method === "GET") {
     const cardId = url.searchParams.get("card") ?? undefined;
     return json(await ctx.runQuery(internal.boards.unresolved, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));

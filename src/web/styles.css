@@ -5904,6 +5904,9 @@ button.content-edit-action:hover {
 .person-face-agent { position: absolute; right: calc(100% + 2px); top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); }
 .person-face.has-agent { margin-left: 12px; }
 .card-face { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.card-working { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); opacity: .55; flex: 0 0 auto; animation: card-working 2.4s ease-in-out infinite; }
+@keyframes card-working { 0%, 100% { opacity: .35; } 50% { opacity: .75; } }
+@media (prefers-reduced-motion: reduce) { .card-working { animation: none; } }
 .card-title-tail { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .history-author { display: inline-flex; align-items: center; gap: 6px; }
 .history-author-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--text-muted); font-size: 10.5px; line-height: 16px; font-weight: 500; }

@@ -709,6 +709,8 @@ export interface BoardPeople {
   shared: boolean;
   people: BoardPerson[];
   cards: Record<string, CardChange>;
+  /** Agents working on each card now (Spec point 20): shown as a small, quiet sign. */
+  working?: Record<string, Array<{ userId: string; app: string; startedAt: string }>>;
 }
 
 /** People and card changes for an online board; refreshed when the board changes. */
@@ -724,6 +726,12 @@ export function useBoardPeople(repoId: string | null, online: boolean, refreshKe
   useEffect(() => {
     void load();
   }, [load, refreshKey]);
+  // Agents start and stop working on cards without changing the board: look again each minute.
+  useEffect(() => {
+    if (!repoId || !online) return;
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [load, repoId, online]);
   return { people, reload: load };
 }
 
@@ -763,6 +771,19 @@ function timeAgo(at: string) {
 }
 
 /** The face of whoever last changed a card, on shared boards only. */
+/** A small, quiet sign that an agent is working on this card now; a heads-up, not a lock. */
+export function CardWorking({ cardId }: { cardId: string }) {
+  const board = useContext(BoardPeopleContext);
+  const working = board?.working?.[cardId];
+  if (!working?.length) return null;
+  const names = working.map((entry) => {
+    const person = board!.people.find((candidate) => candidate.userId === entry.userId);
+    return person && !person.you ? `${entry.app} (${person.name})` : entry.app;
+  });
+  const label = `${names.join(" and ")} ${names.length === 1 ? "is" : "are"} working on this`;
+  return <span className="card-working" role="img" aria-label={label} title={label} />;
+}
+
 export function CardFace({ cardId }: { cardId: string }) {
   const board = useContext(BoardPeopleContext);
   if (!board?.shared) return null;

@@ -1011,6 +1011,25 @@ export async function unresolvedChanges(input: { cwd: string; cardId?: string | 
   return onlineRequest(online.storage.url, boardPath(online.storage.boardId, `/unresolved${query}`));
 }
 
+/**
+ * An agent on this computer is working on a card of an online board (Spec
+ * point 20): a heads-up for others that ends 15 minutes after its last
+ * activity. Never a lock; best effort, and nothing for a board on this computer.
+ */
+export async function notePresence(input: { cwd: string; cardId: string; agentName?: string | undefined }) {
+  const online = await onlineManifest(input.cwd);
+  if (!online || online.storage?.kind !== "online") return { noted: false };
+  return onlineRequest<{ noted: boolean }>(online.storage.url, boardPath(online.storage.boardId, "/presence"), { cardId: input.cardId, ...(input.agentName ? { agentName: input.agentName } : {}) }).catch(() => ({ noted: false }));
+}
+
+/** Who else is working on a card of an online board, in words: "Claude (Sam) is working on this card, started 4 minutes ago." */
+export async function workingOnCard(input: { cwd: string; cardId: string }): Promise<Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> {
+  const online = await onlineManifest(input.cwd);
+  if (!online || online.storage?.kind !== "online") return [];
+  const result = await onlineRequest<{ working: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> }>(online.storage.url, boardPath(online.storage.boardId, `/presence?card=${encodeURIComponent(input.cardId)}`)).catch(() => null);
+  return result?.working[input.cardId] ?? [];
+}
+
 /** Drops an unresolved change with a reason, into the card's history. */
 export async function dropChange(input: { cwd: string; changeId: string; reason: string; baseRevision?: number | undefined; actor?: PlanbanHistoryActor | undefined; idempotencyKey?: string | undefined }): Promise<PlanbanResolvedState> {
   const online = await onlineManifest(input.cwd);

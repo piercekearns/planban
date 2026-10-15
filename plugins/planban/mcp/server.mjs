@@ -24,7 +24,7 @@ const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_RO
 const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
 const errorReportModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/errorReport.ts")).href);
 
-const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, readDoc, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, writeDoc } = storageModule;
+const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, notePresence, readDoc, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, workingOnCard, writeDoc } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { queryWorkItems } = queryModule;
@@ -61,6 +61,7 @@ const PLANBAN_MCP_INSTRUCTIONS = [
   "Administration, recovery and legacy tools appear only through explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;
+let clientAgentName = null;
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -258,6 +259,13 @@ async function boardHandoff(repoId) {
       ? { urlRequired: true, url, markdown: `[Open the verified board](${url})` }
       : { urlRequired: true, url, markdown: `[Open the board](${url})`, verifyWith: "planban_launch_board" },
   };
+}
+
+/** Who else is working on a card, for get_card; this agent is now working on it too. */
+async function workingFor(cwd, cardId) {
+  await notePresence({ cwd, cardId, agentName: clientAgentName ?? undefined });
+  const others = await workingOnCard({ cwd, cardId }).catch(() => []);
+  return others.length ? { workingOn: others } : {};
 }
 
 /** A card's unresolved changes, for get_card; nothing when there are none or the service can't be asked. */
@@ -926,8 +934,9 @@ async function callToolImpl(name, args) {
       card,
       ancestry: cardAncestry(state.roadmap, cardId),
       staleness,
-      // Edits to this card that were refused and still wait (online boards; Spec point 20).
+      // Edits to this card that were refused and still wait, and who else is working on it (online boards; Spec point 20).
       ...await unresolvedFor(cwd, cardId),
+      ...await workingFor(cwd, cardId),
     });
   }
 
@@ -974,6 +983,7 @@ async function callToolImpl(name, args) {
       cardId: requireString(args.cardId, "cardId"),
       kind: requireDocKind(args.kind),
     });
+    void notePresence({ cwd, cardId: payload.cardId, agentName: clientAgentName ?? undefined });
     return textResult(
       payload.exists ? `Read ${payload.kind} document for ${payload.cardId}.` : `No ${payload.kind} document exists for ${payload.cardId}.`,
       payload,
@@ -1169,16 +1179,25 @@ async function callTool(name, rawArgs) {
     },
   });
   try {
-    return await callToolImpl(name, args);
+    const result = await callToolImpl(name, args);
+    // An agent editing a card is working on it: the app's own name, for "Claude (Sam) is working on this card".
+    if (CARD_EDIT_TOOLS.has(name) && typeof args.cardId === "string") {
+      void cwdFromArgs(args).then((cwd) => notePresence({ cwd, cardId: args.cardId, agentName: clientAgentName ?? undefined })).catch(() => undefined);
+    }
+    return result;
   } finally {
     await activity?.end();
   }
 }
 
+const CARD_EDIT_TOOLS = new Set(["planban_move_card", "planban_update_card", "planban_write_doc", "planban_set_card_parent"]);
+
 async function handleRequest(message) {
   const { id, method, params } = message;
 
   if (method === "initialize") {
+    // Which app this is ("claude-code", "codex-mcp-client"), for "Claude (Sam) is working on this card".
+    clientAgentName = typeof params?.clientInfo?.name === "string" ? params.clientInfo.name : null;
     sendResult(id, {
       protocolVersion: params?.protocolVersion ?? "2025-11-25",
       capabilities: { tools: {} },

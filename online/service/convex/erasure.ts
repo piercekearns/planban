@@ -34,6 +34,7 @@ const BOARD_ROWS = [
   ["historyDocs", "by_board_version"], ["historyPayloads", "by_board_version"], ["history", "by_board_version"],
   ["docs", "by_board_card_kind"], ["retiredIds", "by_board_card"], ["boardFingerprints", "by_board_generation"],
   ["cardChanges", "by_board_generation_card"], ["boardSizes", "by_board_generation"], ["boardState", "by_board_generation"],
+  ["presence", "by_board_card"], ["unresolvedChanges", "by_board_card"],
 ] as const;
 const LARGE_TABLES = new Set(["historyDocs", "historyPayloads", "docs", "boardState"]);
 
@@ -321,6 +322,17 @@ const ACCOUNT_STEPS: Array<[string, Step]> = [
     for (const row of rows) await ctx.db.patch(row._id, { userId: DELETED_ACCOUNT });
     return rows.length ? "more" : "next";
   }],
+  // Who is working on a card, and their refused edits waiting on other people's boards: theirs, so gone.
+  ["presence", async (ctx, erasure) => {
+    const rows = await ctx.db.query("presence").withIndex("by_user", (q) => q.eq("userId", erasure.userId!)).take(STEP);
+    for (const row of rows) await ctx.db.delete(row._id);
+    return rows.length ? "more" : "next";
+  }],
+  ["unresolvedChanges", async (ctx, erasure) => {
+    const rows = await ctx.db.query("unresolvedChanges").withIndex("by_user", (q) => q.eq("userId", erasure.userId!)).take(STEP);
+    for (const row of rows) await ctx.db.delete(row._id);
+    return rows.length ? "more" : "next";
+  }],
   ["docs", async (ctx, erasure) => {
     // Documents can be large: at most STEP_BYTES read. Each one patched leaves the index range.
     const page = await ctx.db.query("docs").withIndex("by_updatedBy", (q) => q.eq("updatedBy", erasure.userId!))
@@ -388,6 +400,8 @@ export const accountStatus = internalQuery({
       appRegistrations: await count(ctx.db.query("oauthRegistrations").withIndex("by_user", (q) => q.eq("userId", userId))),
       signInRequests: await count(ctx.db.query("oauthRequests").withIndex("by_user", (q) => q.eq("userId", userId))),
       cardFaces: await count(ctx.db.query("cardChanges").withIndex("by_user", (q) => q.eq("userId", userId))),
+      workingOn: await count(ctx.db.query("presence").withIndex("by_user", (q) => q.eq("userId", userId))),
+      unresolvedChanges: await count(ctx.db.query("unresolvedChanges").withIndex("by_user", (q) => q.eq("userId", userId))),
       documents: await count(ctx.db.query("docs").withIndex("by_updatedBy", (q) => q.eq("updatedBy", userId))),
       transfers: await count(ctx.db.query("transfers").withIndex("by_user", (q) => q.eq("userId", userId))),
       profile: await count(ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", userId))),

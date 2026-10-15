@@ -127,3 +127,33 @@ test("a clash older than the recent changes still names who made it", async () =
   const report = await refusal(storage.updateCard({ cwd, cardId: "alpha", summary: "The second agent's", baseRevision: read, actor: agent }));
   assert.match(report.message, /^Not saved: Ana's agent \(Planban CLI\) changed the summary of card "Alpha" since you read it \(Updated Alpha,/);
 });
+
+test("an agent reading or editing a card is seen as working on it, until 15 quiet minutes have passed", async () => {
+  const cwd = await onlineBoard("Alpha");
+  await bridge.service.ctx.db.insert("members", { boardId: "roadmap", userId: "ben", role: "editor" });
+  // Ana's agent reads the card.
+  await storage.notePresence({ cwd, cardId: "alpha", agentName: "claude-code" });
+  assert.deepEqual(await storage.workingOnCard({ cwd, cardId: "alpha" }), [], "an agent doesn't see itself");
+
+  // Ben's agent, on another computer's sign-in, sees it.
+  await onlineLogin(bridge.url, { devUser: "ben", switchAccount: true });
+  const seen = await storage.workingOnCard({ cwd, cardId: "alpha" });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.who, "Claude (Ana)");
+  assert.equal(seen[0]!.note, "Claude (Ana) is working on this card, started just now.");
+  // People get a quiet sign: the board's people data says who is working on which card.
+  const people = await (await import("../src/core/online/client")).onlineRequest<{ working: Record<string, Array<{ userId: string; app: string }>> }>(bridge.url, "/api/v1/boards/roadmap/people");
+  assert.deepEqual(people.working.alpha!.map((entry) => [entry.userId, entry.app]), [["ana", "Claude"]]);
+
+  // Fifteen minutes after its last activity it ends by itself.
+  for (const row of bridge.service.rows.filter((row) => row._table === "presence")) row.lastActiveAt = Date.now() - 15 * 60 * 1000 - 1000;
+  assert.deepEqual(await storage.workingOnCard({ cwd, cardId: "alpha" }), []);
+});
+
+test("an agent's edit marks it as working on the card too", async () => {
+  const cwd = await onlineBoard("Alpha");
+  await bridge.service.ctx.db.insert("members", { boardId: "roadmap", userId: "ben", role: "editor" });
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "Ana's agent", baseRevision: (await storage.loadState(cwd)).roadmap.revision, actor: agent });
+  await onlineLogin(bridge.url, { devUser: "ben", switchAccount: true });
+  assert.match((await storage.workingOnCard({ cwd, cardId: "alpha" }))[0]!.note, /^Planban CLI \(Ana\) is working on this card, started just now\.$/);
+});

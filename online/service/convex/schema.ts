@@ -68,6 +68,23 @@ export default defineSchema({
    * since they read it (Spec point 20). Each stays until an agent saves a
    * reconsidered version or drops it with a reason. Shown to agents only.
    */
+  /**
+   * Who is working on a card (Spec point 20): a heads-up, not a lock. An
+   * agent's reads and edits of a card mark it, until 15 minutes after its
+   * last activity.
+   */
+  presence: defineTable({
+    boardId: v.string(),
+    generation: v.number(),
+    cardId: v.string(),
+    connectionId: v.id("connections"),
+    userId: v.string(),
+    /** The app, as people know it: "Claude", "Codex", "ChatGPT". */
+    app: v.string(),
+    startedAt: v.number(),
+    lastActiveAt: v.number(),
+  }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_user", ["userId"]),
+
   unresolvedChanges: defineTable({
     boardId: v.string(),
     generation: v.number(),
@@ -85,7 +102,7 @@ export default defineSchema({
     refusedAtRevision: v.number(),
     /** Plain words for the clash, as the refusal said it. */
     message: v.string(),
-  }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_changeId", ["changeId"]),
+  }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_changeId", ["changeId"]).index("by_user", ["userId"]),
 
   docs: defineTable({
     boardId: v.string(),
