@@ -3,6 +3,7 @@ import { boardPath, boardWebAddress, cardIdFromHash, cardPath, linkedCardOnBoard
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
+import { stripFrontMatter } from "../core/frontMatter";
 import remarkGfm from "remark-gfm";
 import {
   Archive,
@@ -925,9 +926,8 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
   return payload as T;
 }
 
-function stripFrontmatter(markdown: string) {
-  return markdown.replace(/^---\n[\s\S]*?\n---\n?/, "");
-}
+/** One rule with section editing (src/core/frontMatter.ts), so they agree where the document starts. */
+const stripFrontmatter = stripFrontMatter;
 
 function formatHistoryTime(input: string) {
   const date = new Date(input);

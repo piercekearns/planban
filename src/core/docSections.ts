@@ -9,6 +9,7 @@ import { gfmFromMarkdown } from "mdast-util-gfm";
 import { toString } from "mdast-util-to-string";
 import { gfm } from "micromark-extension-gfm";
 import { PlanbanValidationError } from "./boardOperations";
+import { frontMatterEnd } from "./frontMatter";
 
 export interface DocSection {
   /** The heading's text, without the #s. */
@@ -35,12 +36,6 @@ export function sectionVersion(text: string) {
   return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
 }
 
-/** Where a document's front matter (between --- lines at the very top) ends, or 0. */
-function frontMatterEnd(markdown: string) {
-  const match = /^---[ \t]*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/u.exec(markdown);
-  return match ? match[0].length : 0;
-}
-
 /**
  * The sections of a document, in order, read by the same Markdown parser
  * (with GitHub tables and the like) that shows the document on the board:
@@ -51,7 +46,8 @@ export function docSections(markdown: string): DocSection[] {
   const tree = fromMarkdown(markdown.slice(offset), { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
   const headings = tree.children
     .filter((node): node is Heading => node.type === "heading" && typeof node.position?.start.offset === "number")
-    .map((node) => ({ start: offset + node.position!.start.offset!, level: node.depth, heading: toString(node).replace(/\s+/gu, " ").trim() }));
+    // A section starts at the beginning of its heading's line, indentation included.
+    .map((node) => ({ start: lineStart(markdown, offset + node.position!.start.offset!), level: node.depth, heading: toString(node).replace(/\s+/gu, " ").trim() }));
   const seen = new Map<string, number>();
   return headings.map((entry, index) => {
     const next = headings.slice(index + 1).find((other) => other.level <= entry.level);
@@ -114,4 +110,8 @@ export function editSection(markdown: string, input: { heading: string; occurren
 function sectionAt(markdown: string, start: number, heading: string) {
   const found = docSections(markdown).find((section) => section.start === start) ?? docSections(markdown).find((section) => section.heading === heading);
   return { heading: found?.heading ?? heading, version: found?.version ?? sectionVersion("") };
+}
+
+function lineStart(markdown: string, at: number) {
+  return markdown.lastIndexOf("\n", at - 1) + 1;
 }

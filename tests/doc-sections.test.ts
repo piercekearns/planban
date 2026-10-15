@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { docSections, editSection, sectionList } from "../src/core/docSections";
+import { stripFrontMatter } from "../src/core/frontMatter";
 
 const doc = "# Spec\n\n## Purpose\n\nWhy.\n\n## Current state\n\nNow.\n\n### Detail\n\nMore.\n\n## Agent reference\n\nLinks.\n";
 
@@ -92,4 +93,16 @@ test("tables and rules are read exactly as the board shows them", () => {
   assert.deepEqual(sectionList("Intro\nA | B\n--- | ---\n---\n").map((section) => section.heading), []);
   assert.deepEqual(sectionList("A | B\n| --- |\n---\n").map((section) => section.heading), ["A | B | --- |"]);
   assert.deepEqual(sectionList("Intro\n***\nHeading\n---\n").map((section) => section.heading), ["Heading"]);
+});
+
+test("indented headings keep their whole line, and empty front matter never swallows a section", () => {
+  const md = "  ## A\nOne.\n  ## B\nTwo.\n";
+  const [a, b] = docSections(md);
+  assert.equal(md.slice(a!.start, a!.end), "  ## A\nOne.\n");
+  assert.equal(md.slice(b!.start, b!.end), "  ## B\nTwo.\n");
+  assert.ok(editSection(md, { heading: "A", expectedVersion: a!.version, text: "  ## A\nnew\n" }).ok);
+  assert.deepEqual(sectionList("---\n---\n\n## A\n\n---\n\n## B\n").map((section) => section.heading), ["A", "B"]);
+  // The page strips the same front matter, with any line endings and either closing.
+  assert.equal(stripFrontMatter("---\r\ntitle: x\r\n...\r\n# Doc\r\n"), "# Doc\r\n");
+  assert.equal(stripFrontMatter("---\n---\n\n## A\n"), "\n## A\n");
 });
