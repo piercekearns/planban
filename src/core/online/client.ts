@@ -95,8 +95,9 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
       if (!retryable || options.signal?.aborted) throw error;
       // The pause before the retry ends early if the caller's time is up.
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 500);
-        options.signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+        const stop = () => { clearTimeout(timer); resolve(); };
+        const timer = setTimeout(() => { options.signal?.removeEventListener("abort", stop); resolve(); }, 500);
+        options.signal?.addEventListener("abort", stop, { once: true });
       });
       if (options.signal?.aborted) throw error;
       return send();

@@ -76,3 +76,12 @@ test("a heading underlined across lines starts at its first line; lists, tables 
   assert.deepEqual(sectionList("## A\n\n- item\n---\n\n| a | b |\n|---|---|\n| 1 | 2 |\n---\n").map((section) => section.heading), ["A"]);
   assert.deepEqual(sectionList("---\ntitle: x\nstatus: draft\n---\n\n## Purpose\n\nWhy.\n").map((section) => section.heading), ["Purpose"]);
 });
+
+test("a rule before a heading stays a rule, and prose with a | can be a heading", () => {
+  assert.deepEqual(sectionList("***\nHeading\n---\n\nBody.\n").map((section) => section.heading), ["Heading"]);
+  const md = "## A\n\nOne.\n\nA | B\n---\n\nTwo.\n";
+  const list = sectionList(md);
+  assert.deepEqual(list.map((section) => section.heading), ["A", "A | B"]);
+  const edited = editSection(md, { heading: "A", expectedVersion: list[0]!.version, text: "## A\n\nOne, edited.\n" });
+  assert.ok(edited.ok && edited.markdown.includes("A | B\n---\n\nTwo."));
+});

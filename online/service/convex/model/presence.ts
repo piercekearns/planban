@@ -63,7 +63,7 @@ export async function workingOn(ctx: QueryCtx, at: BoardRows, options: { cardId?
   // One card: its own rows (a few per agent at most). The whole board: only rows active in the last
   // 15 minutes, newest first, however many old ones remain.
   const rows = options.cardId
-    ? (await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", options.cardId!)).take(200))
+    ? await ctx.db.query("presence").withIndex("by_card_active", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", options.cardId!).gte("lastActiveAt", now - PRESENCE_MS)).order("desc").take(200)
     : await ctx.db.query("presence").withIndex("by_board_active", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).gte("lastActiveAt", now - PRESENCE_MS)).order("desc").take(500);
   const byCard: Record<string, Working[]> = {};
   for (const row of rows) {

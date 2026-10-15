@@ -64,7 +64,11 @@ export function docSections(markdown: string): DocSection[] {
     const close = lines.findIndex((line, at) => at > 0 && /^(---|\.\.\.)[ \t]*$/u.test(line));
     if (close > 0) index = close + 1;
   }
-  const notParagraph = (line: string) => /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/u.test(line) || /^ {0,3}>/u.test(line) || line.includes("|") || /^(?: {4}|\t)/u.test(line);
+  const THEMATIC = /^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/u;
+  const DELIMITER_ROW = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/u;
+  // A table starts with a row that has a | and a delimiter row (with a |) right under it; prose with a | is still prose.
+  const tableStart = (at: number) => (lines[at] ?? "").includes("|") && (lines[at + 1] ?? "").includes("|") && DELIMITER_ROW.test(lines[at + 1] ?? "");
+  const notParagraph = (line: string) => /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/u.test(line) || /^ {0,3}>/u.test(line) || /^(?: {4}|\t)/u.test(line);
   for (; index < lines.length; index += 1) {
     const line = lines[index]!;
     const marker = FENCE.exec(line)?.[1];
@@ -89,6 +93,14 @@ export function docSections(markdown: string): DocSection[] {
       // The whole paragraph is the heading; its section starts at the paragraph's first line.
       headings.push({ line: paragraphStart, level: underline[1]![0] === "=" ? 1 : 2, heading: lines.slice(paragraphStart, index).map((entry) => entry.trim()).join(" ") });
       paragraphStart = null;
+      continue;
+    }
+    if (paragraphStart === null && THEMATIC.test(line)) {
+      // A rule on its own is a separator, never part of a heading.
+      continue;
+    }
+    if (paragraphStart === null && tableStart(index)) {
+      paragraphStart = -1;
       continue;
     }
     if (line.trim() === "" || notParagraph(line)) {

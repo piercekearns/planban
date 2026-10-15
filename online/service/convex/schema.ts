@@ -84,7 +84,7 @@ export default defineSchema({
     startedAt: v.number(),
     lastActiveAt: v.number(),
   }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_agent", ["boardId", "generation", "cardId", "connectionId", "app"])
-    .index("by_board_active", ["boardId", "generation", "lastActiveAt"]).index("by_connection_active", ["connectionId", "lastActiveAt"]).index("by_active", ["lastActiveAt"]).index("by_user", ["userId"]),
+    .index("by_board_active", ["boardId", "generation", "lastActiveAt"]).index("by_card_active", ["boardId", "generation", "cardId", "lastActiveAt"]).index("by_connection_active", ["connectionId", "lastActiveAt"]).index("by_active", ["lastActiveAt"]).index("by_user", ["userId"]),
 
   unresolvedChanges: defineTable({
     boardId: v.string(),

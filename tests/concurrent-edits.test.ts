@@ -288,3 +288,12 @@ test("an agent's current card always shows, even after it has marked many others
   assert.ok(live.length <= 50, `at most 50 live (${live.length})`);
   assert.deepEqual((await storage.workingOnCard({ cwd, cardId: "alpha", agentName: "claude-code" })).map((entry) => entry.who), ["Codex (Ana)"]);
 });
+
+test("a card's current agent shows however many old markers the card has", async () => {
+  const cwd = await onlineBoard("Alpha");
+  const generation = bridge.service.rows.find((row) => row._table === "boards" && row.boardId === "roadmap").generation;
+  const connectionId = bridge.service.rows.find((row) => row._table === "connections" && row.userId === "ana")._id;
+  for (let i = 0; i < 201; i += 1) await bridge.service.ctx.db.insert("presence", { boardId: "roadmap", generation, cardId: "alpha", connectionId, userId: "ana", app: `Old ${i}`, startedAt: 1, lastActiveAt: 1 });
+  await storage.notePresence({ cwd, cardId: "alpha", agentName: "codex-mcp-client" });
+  assert.deepEqual((await storage.workingOnCard({ cwd, cardId: "alpha", agentName: "claude-code" })).map((entry) => entry.who), ["Codex (Ana)"]);
+});
