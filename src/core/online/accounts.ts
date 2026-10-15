@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { PlanbanConflictError } from "../boardOperations";
 import { OnlineAuthenticationError, onlineRequest, requireCredentials } from "./client";
-import { accountCredentials, chosenAccount, readCredentials, serviceUrl, setDefaultAccount, updateSignedIn, type OnlineCredentials } from "./credentials";
+import { accountCredentials, chosenAccount, chosenAccountEntry, readCredentials, serviceUrl, setDefaultAccount, updateSignedIn, type OnlineCredentials } from "./credentials";
 import { boardLinks, relinkBoards } from "./boardLinks";
 
 export interface OnlineAccount {
@@ -45,9 +45,9 @@ export async function rememberIdentity(url: string, attempts = 4): Promise<Me & 
     await new Promise((resolve) => setTimeout(resolve, 750));
     me = await ask();
   }
-  const updated = await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
-  // A sign-in filed under another id until now: its boards follow it.
-  if (updated && credentials.person && credentials.person !== me.userId) await relinkBoards(url, credentials.person, me.userId).catch(() => undefined);
+  const filedAs = await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
+  // A sign-in filed under another id until now (an old one may have had none of its own): its boards follow it.
+  if (filedAs && filedAs !== me.userId) await relinkBoards(url, filedAs, me.userId).catch(() => undefined);
   return { ...me, account: { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}), ...(me.person?.name ? { name: me.person.name } : {}) } };
 }
 
@@ -106,7 +106,7 @@ export async function recordBoardAccountAs(url: string, boardId: string, pinned:
  * later requests go straight to it; otherwise the "not found" stands.
  */
 export async function findBoardAccount<T>(url: string, boardId: string, path: string, error: unknown): Promise<T> {
-  if (await boardAccount(url, boardId).catch(() => null)) throw error;
+  if (await boardAccount(url, boardId)) throw error;
   const entry = (await readCredentials()).accounts[serviceUrl(url)];
   for (const [person, credentials] of Object.entries(entry?.accounts ?? {})) {
     if (person === entry!.default) continue;
@@ -148,7 +148,7 @@ export async function listAccounts() {
 
 /** Makes a signed-in account the default for boards taken online or attached from now on. */
 export async function switchAccount(url: string, account: string) {
-  const credentials = await chosenAccount(url, account);
-  await setDefaultAccount(url, credentials.person!);
+  const { id, credentials } = await chosenAccountEntry(url, account);
+  if (!await setDefaultAccount(url, id)) throw new PlanbanConflictError(`${account} was signed out meanwhile. Sign in as it again: planban online sign-in ${serviceUrl(url)}`);
   return { url: serviceUrl(url), default: credentials.email ?? null, note: "Boards already linked keep their own account; this changes only which account new boards use." };
 }

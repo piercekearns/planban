@@ -6,6 +6,7 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { PlanbanValidationError } from "../boardOperations";
 import { credentialsRoot, serviceUrl, withCredentialsLock } from "./credentials";
 
 export interface BoardLink {
@@ -23,13 +24,32 @@ interface BoardLinksFile {
 
 const boardLinksPath = () => join(credentialsRoot(), "board-accounts.json");
 
+/**
+ * A missing file means no board is linked yet. A damaged one is refused
+ * rather than read as empty: an empty list would let a board open as
+ * whichever account is the default.
+ */
 async function readBoardLinks(): Promise<BoardLinksFile> {
+  let text: string;
   try {
-    const file = JSON.parse(await readFile(boardLinksPath(), "utf8")) as BoardLinksFile;
-    return file.version === 1 && file.boards && typeof file.boards === "object" ? file : { version: 1, boards: {} };
-  } catch {
-    return { version: 1, boards: {} };
+    text = await readFile(boardLinksPath(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, boards: {} };
+    throw error;
   }
+  let file: BoardLinksFile | null = null;
+  try {
+    file = JSON.parse(text) as BoardLinksFile;
+  } catch {
+    // Damaged: refused below.
+  }
+  const valid = file?.version === 1 && !!file.boards && typeof file.boards === "object" && !Array.isArray(file.boards)
+    && Object.values(file.boards).every((link) => !!link && typeof link === "object" && typeof link.person === "string" && link.person.length > 0);
+  if (!valid) {
+    throw new PlanbanValidationError(`The list of which Planban account each online board uses on this computer is damaged (${boardLinksPath()}). `
+      + "Move it aside, then open each board once, signed in as its account, and Planban links it again.");
+  }
+  return file!;
 }
 
 /** Links a board to the account that took it online, attached it, or first opened it. */

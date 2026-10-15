@@ -12,7 +12,7 @@ import { loadState, pathExists, readDoc, readManifest, refreshAgentsBlock, resol
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
 import { boardAccount, recordBoardAccount, recordBoardAccountAs } from "./accounts";
-import { boardPath, onlineRequest, requireCredentials } from "./client";
+import { boardCredentials, boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, writeOnlineNote, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
 import { chosenAccount, serviceUrl, signedInAs, type OnlineCredentials } from "./credentials";
@@ -706,11 +706,12 @@ function confirmRemoving(others: Array<{ userId: string; role: string }>) {
   );
 }
 
-/** Everyone on an Online Board except the caller: who would lose access if it were taken local. */
+/** Everyone on an Online Board except the caller (the board's own account here): who would lose access if it were taken local. */
 export async function othersOnBoard(url: string, boardId: string) {
+  const credentials = await boardCredentials(url, boardId);
   const [{ members }, me] = await Promise.all([
-    onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members")),
-    onlineRequest<{ userId: string }>(url, "/api/v1/me"),
+    onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members"), undefined, { credentials }),
+    onlineRequest<{ userId: string }>(url, "/api/v1/me", undefined, { credentials }),
   ]);
   return members.filter((member) => member.userId !== me.userId);
 }
@@ -822,28 +823,32 @@ export async function attachOnline(urlInput: string, boardId: string, cwdInput: 
   const cwd = resolve(cwdInput);
   const existing = await readManifest(cwd);
   if (!boardId.trim()) throw new PlanbanValidationError("boardId is required.");
-  // The account this attach uses (chosen, or the default); the board is linked to it, before it is read.
-  const pinned = options.account ? await chosenAccount(url, options.account) : await requireCredentials(url).catch(() => null);
-  const earlierLink = await boardAccount(url, boardId).catch(() => null);
-  if (pinned?.person && (options.account || !earlierLink)) await recordBoardAccount(url, boardId, { person: pinned.person, ...(pinned.email ? { email: pinned.email } : {}) });
-  const undoLink = () => recordBoardAccount(url, boardId, earlierLink).catch(() => undefined);
+  // A folder holding another board is refused before anything changes, the board's account link included.
+  const replacing = !!existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId);
+  const planningRoot = replacing && existing.storage?.kind !== "online" ? resolvePlanningRoot(existing) : null;
+  const marker = planningRoot ? await readStaleMarker(planningRoot) : null;
+  if (replacing && (!options.replaceStaleCopy || !marker || marker.url !== url || marker.boardId !== boardId)) {
+    throw new PlanbanValidationError("This directory already has a different board. Use an empty directory or its existing board transfer command.");
+  }
+  // The account this attach uses: the one named, or the board's own if it is
+  // already linked here (it keeps it), or else the default, linked before the board is read.
+  const earlierLink = await boardAccount(url, boardId);
+  const relink = !!options.account || !earlierLink;
+  const pinned = options.account ? await chosenAccount(url, options.account) : earlierLink ? null : await requireCredentials(url).catch(() => null);
+  if (relink && pinned?.person) await recordBoardAccount(url, boardId, { person: pinned.person, ...(pinned.email ? { email: pinned.email } : {}) });
+  const undoLink = () => relink ? recordBoardAccount(url, boardId, earlierLink).catch(() => undefined) : Promise.resolve();
   let staleCopy: { snapshot: string; report: string; unsyncedChanges: StaleCopy["unsyncedChanges"] } | undefined;
-  if (existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId)) {
-    const planningRoot = existing.storage?.kind === "online" ? null : resolvePlanningRoot(existing);
-    const marker = planningRoot ? await readStaleMarker(planningRoot) : null;
-    if (!options.replaceStaleCopy || !marker || marker.url !== url || marker.boardId !== boardId) {
-      throw new PlanbanValidationError("This directory already has a different board. Use an empty directory or its existing board transfer command.");
-    }
+  if (replacing) {
     // Check the online board is reachable before setting the local copy aside.
     await loadOnlineState(cwd, { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } }).catch(async (error: unknown) => { await undoLink(); throw error; });
-    staleCopy = await setStaleCopyAside(planningRoot!, marker);
+    staleCopy = await setStaleCopyAside(planningRoot!, marker!);
   }
   const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } };
   const state = await loadOnlineState(cwd, manifest).catch(async (error: unknown) => { await undoLink(); throw error; });
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, state);
   const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: state.roadmap.project.title, onlineSince: new Date().toISOString() });
-  if (pinned) await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
+  if (relink && pinned) await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
   await refreshBackup(url, boardId, { force: true });
   return { boardId, url, cwd, onlineNote, ...(staleCopy ? { staleCopy } : {}) };
 }

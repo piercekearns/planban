@@ -136,13 +136,18 @@ export async function saveCredentials(url: string, credentials: OnlineCredential
   });
 }
 
-/** Removes one account's sign-in from this computer; the default moves to another if it was this one. */
-export async function removeAccount(url: string, person: string) {
+/**
+ * Removes one account's sign-in from this computer; the default moves to
+ * another if it was this one. Given the sign-in being signed out, it removes
+ * only that one: a newer sign-in of the same account meanwhile stays.
+ */
+export async function removeAccount(url: string, person: string, accessToken?: string) {
   const key = serviceUrl(url);
   let removed: OnlineCredentials | null = null;
   await changeStored((file) => {
     const entry = file.services[key];
     if (!entry?.accounts[person]) return false;
+    if (accessToken !== undefined && entry.accounts[person]!.accessToken !== accessToken) return false;
     removed = entry.accounts[person]!;
     delete entry.accounts[person];
     const rest = Object.keys(entry.accounts);
@@ -169,17 +174,21 @@ export async function setDefaultAccount(url: string, person: string) {
  */
 export async function updateSignedIn(url: string, accessToken: string, facts: Pick<OnlineCredentials, "person" | "email">) {
   const key = serviceUrl(url);
-  return changeStored((file) => {
+  // The id the sign-in was filed under until now (null if it is no longer saved), so its boards can follow it.
+  let filedAs: string | null = null;
+  await changeStored((file) => {
     const entry = file.services[key];
     const found = entry && Object.entries(entry.accounts).find(([, credentials]) => credentials.accessToken === accessToken);
     if (!entry || !found) return false;
     const [id, current] = found;
+    filedAs = id;
     const updated = { ...current, ...Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) } as OnlineCredentials;
     const newId = updated.person ?? id;
     delete entry.accounts[id];
     entry.accounts[newId] = updated;
     if (entry.default === id) entry.default = newId;
   });
+  return filedAs as string | null;
 }
 
 async function writeCredentialsFile(file: StoredFile) {
@@ -210,11 +219,16 @@ export async function onlineStatus() {
 
 /** A signed-in account on a service, by its email or id; refuses, saying how to sign in, if it isn't signed in here. */
 export async function chosenAccount(url: string, account: string): Promise<OnlineCredentials> {
+  return (await chosenAccountEntry(url, account)).credentials;
+}
+
+/** As chosenAccount, with the id the sign-in is filed under here (which an old sign-in may lack in its own record). */
+export async function chosenAccountEntry(url: string, account: string): Promise<{ id: string; credentials: OnlineCredentials }> {
   const entry = (await readStored()).services[serviceUrl(url)];
   const wanted = account.trim().toLowerCase();
   const found = Object.entries(entry?.accounts ?? {}).find(([id, credentials]) => id === account || credentials.email?.toLowerCase() === wanted);
   if (!found) throw new PlanbanValidationError(`${account} isn't signed in to ${serviceUrl(url)} on this computer. Sign in as it first: planban online sign-in ${serviceUrl(url)}`);
-  return found[1];
+  return { id: found[0], credentials: found[1] };
 }
 
 /** The sign-in of the account with this service id, if it is signed in here. */

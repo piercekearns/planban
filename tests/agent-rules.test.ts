@@ -48,7 +48,8 @@ async function sharedBoard(role: "editor" | "viewer", agentLevel?: "read" | "pla
   await bridge.service.ctx.db.insert("members", { boardId: "roadmap", userId: "ben", role, ...(agentLevel ? { agentLevel } : {}) });
   await onlineLogin(bridge.url, { devUser: "ben", switchAccount: true });
   const ben = join(root, "ben");
-  await attachOnline(bridge.url, "roadmap", ben);
+  // As Ben's own computer would: this test's one computer also has Ana's link to the board.
+  await attachOnline(bridge.url, "roadmap", ben, { account: "ben@example.com" });
   return ben;
 }
 

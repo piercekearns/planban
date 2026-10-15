@@ -27,14 +27,14 @@ export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManif
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
   const storage = manifest.storage;
   // A board not yet linked here is opened with the default account, pinned, and linked to that same account.
-  const linked = await boardAccount(storage.url, storage.boardId).catch(() => null);
+  const linked = await boardAccount(storage.url, storage.boardId);
   const pinned = linked ? undefined : (await readCredentials()).services[serviceUrl(storage.url)];
   const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(storage.url, boardPath(storage.boardId), undefined, pinned ? { credentials: pinned } : {}).catch(async (error: unknown) => {
     // "Not found" for a board not yet linked here may mean another signed-in account is the one.
     if (error instanceof PlanbanNotFoundError) return findBoardAccount<{ roadmap: PlanbanRoadmap }>(storage.url, storage.boardId, boardPath(storage.boardId), error);
     throw error;
   });
-  if (pinned?.person && !(await boardAccount(storage.url, storage.boardId).catch(() => null))) {
+  if (pinned?.person && !(await boardAccount(storage.url, storage.boardId))) {
     await recordBoardAccount(storage.url, storage.boardId, { person: pinned.person, ...(pinned.email ? { email: pinned.email } : {}) }).catch(() => undefined);
   }
   void refreshBackup(manifest.storage.url, manifest.storage.boardId);

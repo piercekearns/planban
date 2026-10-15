@@ -147,7 +147,8 @@ async function ask(planningRoot: string): Promise<{ stale: StaleCopy | null; unr
     const match = matches.find((candidate) => !ignored.has(`${url} ${candidate.boardId}`));
     if (!match) continue;
     // The account that can see the online board is the one this board uses from now on.
-    if (credentials.person && !(await boardAccount(url, match.boardId).catch(() => null))) {
+    // A damaged list of links is left for the board to report, never overwritten here.
+    if (credentials.person && !(await boardAccount(url, match.boardId).catch(() => true))) {
       await recordBoardAccount(url, match.boardId, { person: credentials.person, ...(credentials.email ? { email: credentials.email } : {}) }).catch(() => undefined);
     }
     const shared = match.matchedVersions.length ? Math.max(...match.matchedVersions) : 0;

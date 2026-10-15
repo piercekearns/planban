@@ -7,12 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as storage from "../src/core/storage";
-import { credentialsRoot, onlineStatus, readCredentials } from "../src/core/online/credentials";
+import { accountCredentials, credentialsRoot, onlineStatus, readCredentials } from "../src/core/online/credentials";
 import { onlineLogin } from "../src/core/online/login";
-import { listAccounts } from "../src/core/online/accounts";
+import { boardAccount, listAccounts, recordBoardAccount, rememberIdentity, switchAccount } from "../src/core/online/accounts";
+import { boardCredentials } from "../src/core/online/client";
+import { createKey, onlineLogout } from "../src/core/online/connections";
 import { refreshBackup } from "../src/core/online/backup";
 import { resetCopyChecks } from "../src/core/online/copyCheck";
-import { attachOnline, takeOnline } from "../src/core/online/transfers";
+import { attachOnline, othersOnBoard, takeLocal, takeOnline } from "../src/core/online/transfers";
 import { serviceBridge } from "./service-bridge";
 
 let root: string;
@@ -98,4 +100,100 @@ test("credentials kept in the old one-account form migrate on read, and the next
   assert.equal(stored.version, 2);
   assert.deepEqual(Object.keys(stored.services[bridge.url].accounts).sort(), ["ana", "ben"]);
   assert.equal(stored.services[bridge.url].default, "ben");
+});
+
+test("attaching an already-linked board elsewhere keeps its account; a refused attach changes nothing", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, revival);
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  await bridge.service.ctx.db.insert("members", { boardId: "revival", userId: "ben", role: "editor" });
+  // Ben is the default and a member, yet the second folder uses Ana's board as Ana.
+  await attachOnline(bridge.url, "revival", join(root, "second"));
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+  await storage.updateCard({ cwd: revival, cardId: "alpha", summary: "Still Ana", baseRevision: (await storage.loadState(revival)).roadmap.revision, actor: "agent" });
+  assert.equal(lastEditor("revival"), "ana");
+  // A folder holding another board is refused before the link changes.
+  const other = await project("other", "other");
+  await assert.rejects(attachOnline(bridge.url, "revival", other, { account: "ben@example.com" }), /already has a different board/);
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+});
+
+test("take-local and the board's People list know you as the board's account, not the default", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, revival);
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  assert.deepEqual(await othersOnBoard(bridge.url, "revival"), []);
+  await takeLocal(revival);
+  assert.equal((await storage.readManifest(revival))!.storage?.kind, "local");
+});
+
+test("a board called import is pinned to its account like any other", async () => {
+  const board = await project("import", "import");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, board);
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  await bridge.service.ctx.db.insert("members", { boardId: "import", userId: "ben", role: "editor" });
+  await storage.updateCard({ cwd: board, cardId: "alpha", summary: "As Ana", baseRevision: (await storage.loadState(board)).roadmap.revision, actor: "agent" });
+  assert.equal(lastEditor("import"), "ana");
+});
+
+test("a damaged list of board links is refused, never read as empty and never overwritten", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, revival);
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  await bridge.service.ctx.db.insert("members", { boardId: "revival", userId: "ben", role: "editor" });
+  const path = join(credentialsRoot(), "board-accounts.json");
+  for (const damaged of ["{not json", JSON.stringify({ version: 1, boards: { [`${bridge.url}|revival`]: { email: "x" } } })]) {
+    await writeFile(path, damaged);
+    await assert.rejects(storage.loadState(revival), /list of which Planban account each online board uses on this computer is damaged/);
+    assert.equal(await readFile(path, "utf8"), damaged);
+  }
+});
+
+test("an old sign-in with no account id of its own: its boards follow it once its id is known, and switch works", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const token = (await readCredentials()).services[bridge.url]!.accessToken;
+  await writeFile(join(credentialsRoot(), "credentials.json"), JSON.stringify({ version: 1, services: { [bridge.url]: { clientId: "machine", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z" } } }));
+  await recordBoardAccount(bridge.url, "revival", { person: "signed-in" });
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  assert.equal((await switchAccount(bridge.url, "signed-in")).url, bridge.url);
+  assert.equal((await readCredentials()).services[bridge.url]!.accessToken, token);
+  await rememberIdentity(bridge.url, 1);
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+  assert.equal((await accountCredentials(bridge.url, "ana"))!.accessToken, token);
+});
+
+test("signing out never removes a newer sign-in of the same account made meanwhile", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  let reached!: () => void;
+  const atRevoke = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  bridge.control.intercept = async (path) => {
+    if (path !== "/api/v1/connections/self/revoke") return;
+    reached();
+    await released;
+  };
+  const signingOut = onlineLogout(bridge.url);
+  await atRevoke;
+  bridge.control.intercept = undefined;
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const fresh = (await readCredentials()).services[bridge.url]!.accessToken;
+  release();
+  assert.match((await signingOut).note ?? "", /signed in again here while signing out/);
+  assert.equal((await accountCredentials(bridge.url, "ana"))?.accessToken, fresh);
+});
+
+test("requests about a board outside its own path (live updates, keys) use the board's account", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, revival);
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  assert.equal((await boardCredentials(bridge.url, "revival")).person, "ana");
+  assert.equal((await boardCredentials(bridge.url, "unlinked")).person, "ben");
+  const key = await createKey(bridge.url, { boardId: "revival", level: "read", name: "trial" });
+  assert.equal(key.boardId, "revival");
 });

@@ -39,14 +39,24 @@ function loginRequired(url: string, reason: "missing" | "expired", account?: str
  * A board linked to an account that isn't signed in here is refused, naming
  * that account; it never falls back to another account's sign-in.
  */
-async function linkedAccount(url: string, path: string): Promise<{ credentials: OnlineCredentials; email: string | null } | null> {
+async function linkedAccount(url: string, path: string, post = false): Promise<{ credentials: OnlineCredentials; email: string | null } | null> {
   const match = /^\/api\/v1\/boards\/([^/?]+)/u.exec(path);
-  if (!match || match[1] === "import") return null;
+  // POST /api/v1/boards/import makes a new board; any other path naming "import" is a board of that name.
+  if (!match || (post && path === "/api/v1/boards/import")) return null;
   const link = await boardAccount(url, decodeURIComponent(match[1]!));
   if (!link) return null;
   const credentials = await accountCredentials(url, link.person);
   if (!credentials) throw loginRequired(url, "missing", link.email ?? null);
   return { credentials, email: credentials.email ?? link.email ?? null };
+}
+
+/**
+ * The sign-in a board's requests use, for requests about the board that
+ * aren't under its own path (who am I, live updates, keys): its own
+ * account's, or the default's while it has no link here.
+ */
+export async function boardCredentials(url: string, boardId: string): Promise<OnlineCredentials> {
+  return (await linkedAccount(serviceUrl(url), `/api/v1/boards/${encodeURIComponent(boardId)}`))?.credentials ?? requireCredentials(url);
 }
 
 export async function requireCredentials(url: string): Promise<OnlineCredentials> {
@@ -96,7 +106,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
   // Machine sign-ins, keys and development sign-ins do not expire by time or
   // refresh; when the service stops accepting one, the person signs in again.
   // A board's requests use the account its link on this computer names, never another (several can be signed in).
-  const linked = options.credentials ? null : await linkedAccount(url, path);
+  const linked = options.credentials ? null : await linkedAccount(url, path, body !== undefined);
   const credentials = options.credentials ?? linked?.credentials ?? await requireCredentials(url);
   const raw = body instanceof RawBody;
   const payload = body === undefined ? undefined : raw ? new Blob([body.bytes as Uint8Array<ArrayBuffer>]) : JSON.stringify(body);

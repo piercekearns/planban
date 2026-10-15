@@ -1,6 +1,6 @@
 // Signing out, the connection list and personal access keys, from this machine.
 import { PlanbanValidationError } from "../boardOperations";
-import { onlineRequest } from "./client";
+import { boardCredentials, onlineRequest } from "./client";
 import { chosenAccount, readCredentials, removeAccount, serviceUrl } from "./credentials";
 import { planbanCommand } from "../command";
 
@@ -29,7 +29,9 @@ export async function onlineLogout(urlInput: string, options: { account?: string
   } catch (error) {
     note = `The service could not be reached (${error instanceof Error ? error.message : String(error)}). This machine's connection stays active until you revoke it with ${planbanCommand()} online revoke from another signed-in machine.`;
   }
-  await removeAccount(url, person);
+  // Only the sign-in that was revoked: if the account signed in again meanwhile, that newer one stays.
+  const removed = await removeAccount(url, person, credentials.accessToken);
+  if (!removed && !note) note = `${credentials.email ?? "This account"} signed in again here while signing out, so the newer sign-in stays.`;
   // Its boards stay linked to it, and say so if opened here, until it signs in again.
   return { url, signedOut: true, account: credentials.email ?? null, revoked, ...(note ? { note } : {}) };
 }
@@ -45,5 +47,7 @@ export async function revokeConnection(urlInput: string, connectionId: string) {
 
 /** Creates a personal access key. The key is in the result once and is never shown again. */
 export async function createKey(urlInput: string, input: { boardId: string; level: "read" | "plan" | "complete"; name: string; expiresInDays?: number | undefined }) {
-  return onlineRequest<{ id: string; key: string; name: string; boardId: string; level: string; expiresAt?: string }>(serviceUrl(urlInput), "/api/v1/keys", input);
+  // A key for a board is made by the board's own account.
+  const credentials = await boardCredentials(urlInput, input.boardId);
+  return onlineRequest<{ id: string; key: string; name: string; boardId: string; level: string; expiresAt?: string }>(serviceUrl(urlInput), "/api/v1/keys", input, { credentials });
 }

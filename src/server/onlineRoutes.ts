@@ -8,7 +8,7 @@ import type express from "express";
 import { PlanbanValidationError } from "../core/boardOperations";
 import { requestedMemberRole } from "../core/memberRoles";
 import { readManifest, resolvePlanningRoot } from "../core/storage";
-import { boardPath, onlineRequest, requireCredentials } from "../core/online/client";
+import { boardCredentials, boardPath, onlineRequest, requireCredentials } from "../core/online/client";
 import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { knownStaleCopy } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
@@ -128,10 +128,11 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       const { url, boardId } = manifest.storage;
       // People on the board, for Board settings. A failure here (signed out,
       // offline) still shows where the board lives.
-      const people = await Promise.all([
-        onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members")),
-        onlineRequest<{ userId: string }>(url, "/api/v1/me"),
-      ]).then(([{ members }, me]) => members.map((member) => ({ ...member, you: member.userId === me.userId })), () => null);
+      // "You" is the board's own account, which may not be this computer's default.
+      const people = await boardCredentials(url, boardId).then((credentials) => Promise.all([
+        onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members"), undefined, { credentials }),
+        onlineRequest<{ userId: string }>(url, "/api/v1/me", undefined, { credentials }),
+      ])).then(([{ members }, me]) => members.map((member) => ({ ...member, you: member.userId === me.userId })), () => null);
       res.json({ ...base, location: "online", url, boardId, people });
     } catch (error) {
       next(error);
