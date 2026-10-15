@@ -225,3 +225,26 @@ test("a reconsidered document write says so in the card's history", async () => 
   await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# First, and the second's point", expectedMtimeMs: current.mtimeMs, actor: agent });
   assert.match((await storage.historyPayload(cwd)).entries[0]!.summary, /\(reconsidered after an earlier clash\)$/);
 });
+
+test("two agents editing different sections of a Spec both land; the same section clashes and waits", async () => {
+  const cwd = await onlineBoard("Alpha");
+  const read0 = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Alpha\n\n## Purpose\n\nWhy.\n\n## Current state\n\nNow.\n", expectedMtimeMs: read0.mtimeMs, actor: agent });
+  const read = await storage.readDocSections({ cwd, cardId: "alpha", kind: "spec" });
+  const version = (heading: string) => read.sections.find((section) => section.heading === heading)!.version;
+  await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Purpose", expectedSectionVersion: version("Purpose"), markdown: "## Purpose\n\nWhy, sharper.", actor: agent });
+  await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Current state", expectedSectionVersion: version("Current state"), markdown: "## Current state\n\nNow, updated.", actor: agent });
+  const both = (await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" })).markdown;
+  assert.match(both, /Why, sharper\./);
+  assert.match(both, /Now, updated\./);
+
+  const report = await refusal(storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Purpose", expectedSectionVersion: version("Purpose"), markdown: "## Purpose\n\nWhy, my way.", actor: agent }));
+  assert.equal(report.category, "conflict");
+  assert.match(report.message, /changed the "Purpose" section of the Spec of card "Alpha" since you read it/);
+  assert.match((report.details as { conflict: { section: { text: string } } }).conflict.section.text, /Why, sharper\./);
+  assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes.map((change) => change.fields), [["spec:Purpose"]]);
+  // A reconsidered write of that section, from its current version, settles it.
+  const now = (await storage.readDocSections({ cwd, cardId: "alpha", kind: "spec" })).sections.find((section) => section.heading === "Purpose")!.version;
+  await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Purpose", expectedSectionVersion: now, markdown: "## Purpose\n\nWhy, sharper, and my point.", actor: agent });
+  assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes, []);
+});

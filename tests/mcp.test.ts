@@ -171,6 +171,7 @@ test("Planban MCP server registers focused tools", () => {
       "planban_move_card",
       "planban_update_card",
       "planban_write_doc",
+      "planban_write_doc_section",
       "planban_move_files_out",
       "planban_launch_board",
     ],

@@ -12,6 +12,8 @@ import {
   moveCard,
   unresolvedChanges,
   readDoc,
+  readDocSections,
+  writeDocSection,
   setCardParent,
   cardAncestry,
   writeDoc,
@@ -642,6 +644,29 @@ for (const [command, status] of [
 }
 
 program
+  .command("write-doc-section")
+  .description("replace one section of a Spec or Plan by its heading, or add one; only that section is checked, so edits to other sections never clash")
+  .argument("<cardId>")
+  .argument("<kind>")
+  .requiredOption("--heading <text>", "the section's heading text, without the #s")
+  .requiredOption("--expected-section-version <version|new>", "the section's version from read-doc (sections), or new for a new section")
+  .option("--occurrence <n>", "which section with this heading (0 for the first), when headings repeat", (value) => Number(value))
+  .option("--after <heading>", "for a new section: the heading to put it after")
+  .option("--file <path>", "read the section from a file instead of stdin (it starts with its heading line)")
+  .option("--idempotency-key <key>", "online boards: reuse only to retry the same edit after a lost reply")
+  .option("--cwd <path>", "project directory")
+  .option("-o, --output <format>", "output format")
+  .action(async (cardId, kind, options) => {
+    if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
+    const markdown = options.file ? readFileSync(options.file, "utf8") : await readStdin();
+    const expected = String(options.expectedSectionVersion).trim();
+    print(await writeDocSection({
+      cwd: cwdOption(options.cwd), cardId, kind, heading: options.heading, expectedSectionVersion: expected === "new" ? null : expected,
+      markdown, occurrence: options.occurrence, after: options.after, actor: "agent", idempotencyKey: options.idempotencyKey,
+    }), options);
+  });
+
+program
   .command("unresolved-changes")
   .description("on an online board: agents' edits refused because something they touched changed since, still waiting")
   .option("--card <cardId>", "only this card's")
@@ -668,7 +693,8 @@ program
   .option("-o, --output <format>", "output format")
   .action(async (cardId, kind, options) => {
     if (kind !== "spec" && kind !== "plan") throw new Error("kind must be spec or plan");
-    print(await readDoc({ cwd: cwdOption(options.cwd), cardId, kind }), options);
+    // With each section's own version, for write-doc-section.
+    print(await readDocSections({ cwd: cwdOption(options.cwd), cardId, kind }), options);
   });
 
 program

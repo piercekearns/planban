@@ -24,7 +24,7 @@ const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_RO
 const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
 const errorReportModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/errorReport.ts")).href);
 
-const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, notePresence, readDoc, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, workingOnCard, writeDoc } = storageModule;
+const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, notePresence, readDoc, readDocSections, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, workingOnCard, writeDoc, writeDocSection } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { queryWorkItems } = queryModule;
@@ -769,6 +769,23 @@ const tools = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   {
+    name: "planban_write_doc_section",
+    title: "Write One Section of a Planban Document",
+    description: "Replace one section of a card's Spec or Plan, by its heading, or add a new one. Pass the section's version from planban_read_doc (sections) as expectedSectionVersion, or null for a new section; only that section is checked, so edits to other sections never clash. markdown is the whole section, starting with its heading line. Follow the installed Planban house style. If refused because the section changed, the refusal includes the section as it is now: apply only what is still needed, and tell the person if you drop or change your edit.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      cardId: { type: "string", description: "Planban card id." },
+      kind: { type: "string", enum: ["spec", "plan"], description: "Document kind." },
+      heading: { type: "string", description: "The section's heading text, without the #s." },
+      occurrence: { type: "number", description: "Which section with this heading (0 for the first), when headings repeat." },
+      expectedSectionVersion: { type: ["string", "null"], description: "The section's version from planban_read_doc; null for a new section." },
+      markdown: { type: "string", description: "The whole section, starting with its heading line." },
+      after: { type: "string", description: "For a new section: the heading to put it after (else it goes at the end)." },
+      idempotencyKey: { type: "string", description: "Online boards: reuse only to retry the same edit after a lost reply." },
+    }, ["cardId", "kind", "heading", "expectedSectionVersion", "markdown"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "planban_move_files_out",
     title: "Move Files Out of a Planban Card",
     description:
@@ -978,7 +995,8 @@ async function callToolImpl(name, args) {
 
   if (name === "planban_read_doc") {
     const cwd = await cwdFromArgs(args);
-    const payload = await readDoc({
+    // With each section's own version, for planban_write_doc_section.
+    const payload = await readDocSections({
       cwd,
       cardId: requireString(args.cardId, "cardId"),
       kind: requireDocKind(args.kind),
@@ -1139,6 +1157,19 @@ async function callToolImpl(name, args) {
     return await boardResult(`Wrote ${payload.kind} document for ${payload.cardId}.`, repoIdFromCwd(cwd), { ...payload, doc: payload });
   }
 
+  if (name === "planban_write_doc_section") {
+    const cwd = await cwdFromArgs(args);
+    const expected = args.expectedSectionVersion;
+    if (expected !== null && typeof expected !== "string") throw new Error("expectedSectionVersion is the section's version from planban_read_doc, or null for a new section.");
+    const payload = await writeDocSection({
+      cwd, cardId: requireString(args.cardId, "cardId"), kind: requireDocKind(args.kind), heading: requireString(args.heading, "heading"),
+      occurrence: args.occurrence === undefined ? undefined : optionalNumber(args.occurrence, "occurrence"),
+      expectedSectionVersion: expected, markdown: requireText(args.markdown, "markdown"), after: optionalString(args.after, "after"),
+      actor: "agent", idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
+    });
+    return await boardResult(`Wrote the "${args.heading}" section of the ${payload.kind} for ${payload.cardId}.`, repoIdFromCwd(cwd), { ...payload, doc: payload });
+  }
+
   if (name === "planban_move_files_out") {
     const cwd = await cwdFromArgs(args);
     const result = await moveFilesOut({
@@ -1190,7 +1221,7 @@ async function callTool(name, rawArgs) {
   }
 }
 
-const CARD_EDIT_TOOLS = new Set(["planban_move_card", "planban_update_card", "planban_write_doc", "planban_set_card_parent"]);
+const CARD_EDIT_TOOLS = new Set(["planban_move_card", "planban_update_card", "planban_write_doc", "planban_write_doc_section", "planban_set_card_parent"]);
 
 async function handleRequest(message) {
   const { id, method, params } = message;

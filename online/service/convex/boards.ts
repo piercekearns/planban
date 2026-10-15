@@ -20,7 +20,8 @@ import {
   type PlannedChange,
 } from "../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from "../../../src/core/types";
-import { cardSubject, changesSince, clashSubject, conflictMessage, MAX_CONFLICT_CHANGES, MAX_CONFLICT_DOCUMENT_CHARS, type ConflictDetails } from "../../../src/core/conflicts";
+import { cardSubject, changesSince, clashSubject, conflictMessage, MAX_CONFLICT_CHANGES, MAX_CONFLICT_DOCUMENT_CHARS, RECONCILE, type ConflictDetails } from "../../../src/core/conflicts";
+import { editSection, type SectionEdit } from "../../../src/core/docSections";
 import { fieldValue, rebaseEdit, settlingFields, touchedFields, type FieldClash } from "../../../src/core/concurrent";
 import { MAX_PER_BOARD, publicUnresolved, recordUnresolved, settledBy, unresolvedOn } from "./model/unresolved";
 import { checkIndexValue, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "../../../src/core/contentRules";
@@ -39,7 +40,7 @@ import { reserveRetiredId } from "./model/retired";
 export const BOARD_OPERATIONS = [
   "createCard", "createCards", "createGroup", "updateCard", "moveCard",
   "setCardParent", "reorderCards", "deleteArchivedCard", "writeDoc",
-  "restoreBoard", "restoreCard", "restoreDoc", "dropChange",
+  "restoreBoard", "restoreCard", "restoreDoc", "dropChange", "writeDocSection",
 ] as const;
 export type BoardOperation = (typeof BOARD_OPERATIONS)[number];
 
@@ -717,6 +718,11 @@ export const run = internalMutation({
           settled = await settledBy(ctx, at, [{ cardId: input.cardId, field: input.kind }], null);
         }
         outcome = await writeDoc(ctx, access.board, current, input, now, attribution, settled.length ? " (reconsidered after an earlier clash)" : "");
+      } else if (op === "writeDocSection") {
+        if (attribution.actor === "agent" && typeof input.cardId === "string" && (input.kind === "spec" || input.kind === "plan")) {
+          settled = await settledBy(ctx, at, [{ cardId: input.cardId, field: `${input.kind}:${String(input.heading ?? "")}` }], null);
+        }
+        outcome = await writeDocSection(ctx, access.board, current, input, now, attribution, settled.length ? " (reconsidered after an earlier clash)" : "");
       } else if (op === "restoreBoard" || op === "restoreCard" || op === "restoreDoc") {
         // Restores state the revision they were based on, like any edit, and
         // pass the same completion and ownership checks.
@@ -918,7 +924,8 @@ async function keepRefused(ctx: MutationCtx, at: BoardRows, op: string, input: R
   const cardId = typeof input.cardId === "string" ? input.cardId : conflict.clashes?.[0]?.cardId ?? conflict.document?.cardId;
   if (!cardId) return null;
   const fields = conflict.clashes?.filter((clash) => clash.cardId === cardId).map((clash) => clash.field)
-    ?? (conflict.document ? [conflict.document.kind] : touchedFields(op, input, current)?.filter((entry) => entry.cardId === cardId).map((entry) => entry.field) ?? ["*"]);
+    ?? (conflict.section && conflict.document ? [`${conflict.document.kind}:${conflict.section.heading}`]
+      : conflict.document ? [conflict.document.kind] : touchedFields(op, input, current)?.filter((entry) => entry.cardId === cardId).map((entry) => entry.field) ?? ["*"]);
   const { baseRevision: _base, actor: _actor, idempotencyKey: _key, ...proposed } = input;
   // Kept text follows the same rules and limits as any write: text only, counted toward the day's writes and the board's size.
   try {
@@ -961,6 +968,54 @@ async function dropChange(ctx: MutationCtx, board: Doc<"boards">, current: Planb
   };
   const { committed, version } = await commit(ctx, board, current, change, attribution, now);
   return { committed, version, result: { dropped: changeId } };
+}
+
+/**
+ * One section of a Spec or Plan, by heading (Spec point 20): checked against
+ * that section's own version, so edits to other sections never clash.
+ */
+async function writeDocSection(ctx: MutationCtx, board: Doc<"boards">, current: PlanbanRoadmap, input: Record<string, unknown>, now: string, attribution: Attribution, note: string) {
+  const cardId = String(input.cardId ?? "");
+  const kind = input.kind as DocKind;
+  if (!DOC_KINDS.has(kind)) fail("validation", "kind must be spec or plan.");
+  const heading = typeof input.heading === "string" ? input.heading.trim() : "";
+  if (!heading) fail("validation", "heading is the section's heading text, without the #s.");
+  if (typeof input.markdown !== "string") fail("validation", "markdown is the whole section, starting with its heading line.");
+  if (input.expectedSectionVersion !== null && typeof input.expectedSectionVersion !== "string") {
+    fail("validation", "expectedSectionVersion is the section's version from read_doc (sections), or null for a new section.");
+  }
+  if (!current.roadmapItems.some((item) => item.id === cardId)) fail("not_found", `Card not found: ${cardId}`);
+  const existing = await docRow(ctx, live(board), cardId, kind);
+  const before = existing ? unpackText(existing.markdown) : "";
+  let edit: SectionEdit;
+  try {
+    edit = editSection(before, {
+      heading, expectedVersion: input.expectedSectionVersion as string | null, text: input.markdown as string,
+      ...(typeof input.occurrence === "number" ? { occurrence: input.occurrence } : {}), ...(typeof input.after === "string" ? { after: input.after } : {}),
+    });
+  } catch (error) {
+    throw asServiceError(error);
+  }
+  if (!edit.ok) {
+    const changes = existing ? [{
+      at: existing.updatedAt, by: await personName(ctx, existing.updatedBy, existing.updatedByAgent ? existing.updatedByClient ?? "" : null),
+      agent: existing.updatedByAgent === true, summary: existing.updateSummary ?? `Edited the ${kind === "spec" ? "Spec" : "Plan"}`, cards: [cardId],
+    }] : [];
+    const document = docPayload(existing, cardId, kind, null);
+    const conflict: ConflictDetails = {
+      currentRevision: current.revision, changes, section: edit.current,
+      document: document.markdown.length > MAX_CONFLICT_DOCUMENT_CHARS ? { ...document, markdown: "", markdownOmitted: true as const } : document,
+    };
+    const where = `the "${heading}" section of the ${kind === "spec" ? "Spec" : "Plan"} of ${cardSubject(current, cardId)}`;
+    const message = edit.reason === "changed"
+      ? conflictMessage(where, conflict, attribution.actor === "agent")
+      : edit.reason === "missing"
+        ? `Not saved: ${where} is no longer there (it was removed or renamed since you read it).${attribution.actor === "agent" ? ` ${RECONCILE}` : ""}`
+        : `Not saved: a section called "${heading}" was added since you read it.${attribution.actor === "agent" ? ` ${RECONCILE}` : ""}`;
+    fail("conflict", message, { currentRevision: current.revision, conflict: conflict as unknown as Value });
+  }
+  const written = await writeDoc(ctx, board, current, { cardId, kind, markdown: edit.markdown, expectedMtimeMs: existing?.stamp ?? null }, now, attribution, ` (the "${heading}" section)${note}`);
+  return { ...written, result: { ...(written.result as Record<string, unknown>), section: edit.section } };
 }
 
 async function writeDoc(ctx: MutationCtx, board: Doc<"boards">, current: PlanbanRoadmap, input: Record<string, unknown>, now: string, attribution: Attribution, note = "") {

@@ -43,7 +43,8 @@ import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { loadOnlineState, onlineCacheRoot, onlineOperation, onlineState, refuseOnline } from "./online/adapter";
 import { boardPath, onlineRequest } from "./online/client";
-import { cardSubject, changesSince, conflictMessage, lastDocChange, MAX_CONFLICT_DOCUMENT_CHARS, PlanbanEditConflictError, type ConflictDetails } from "./conflicts";
+import { cardSubject, changesSince, conflictMessage, lastDocChange, MAX_CONFLICT_DOCUMENT_CHARS, PlanbanEditConflictError, RECONCILE, type ConflictDetails } from "./conflicts";
+import { editSection, sectionList } from "./docSections";
 import { assertNotStaleCopy, checkInBackground, ONLINE_NOTE, STALE_MARKER } from "./online/copyCheck";
 import { credentialsPath } from "./online/credentials";
 import { ensureBoardIdentity } from "./boardIdentity";
@@ -1028,6 +1029,44 @@ export async function workingOnCard(input: { cwd: string; cardId: string }): Pro
   if (!online || online.storage?.kind !== "online") return [];
   const result = await onlineRequest<{ working: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> }>(online.storage.url, boardPath(online.storage.boardId, `/presence?card=${encodeURIComponent(input.cardId)}`)).catch(() => null);
   return result?.working[input.cardId] ?? [];
+}
+
+/**
+ * One section of a Spec or Plan, by heading (Spec point 20): checked against
+ * that section's own version (from readDocSections), so edits to other
+ * sections never clash. On a board on this computer, the same rules over the file.
+ */
+export async function writeDocSection(input: {
+  cwd: string;
+  cardId: string;
+  kind: "spec" | "plan";
+  heading: string;
+  occurrence?: number | undefined;
+  expectedSectionVersion: string | null;
+  markdown: string;
+  after?: string | undefined;
+  actor?: PlanbanHistoryActor | undefined;
+  idempotencyKey?: string | undefined;
+}): Promise<PlanbanDocPayload & { section?: { heading: string; version: string } }> {
+  const online = await onlineManifest(input.cwd);
+  if (online) {
+    const { state, result } = await onlineOperation<{ doc: PlanbanDocPayload; section: { heading: string; version: string } }>(resolveProjectCwd(input.cwd), online, "writeDocSection", input);
+    return { ...result.doc, section: result.section, ...(state.onlineReplay ?? {}) };
+  }
+  const doc = await readDoc(input);
+  const edit = editSection(doc.markdown, { heading: input.heading, expectedVersion: input.expectedSectionVersion, text: input.markdown, ...(input.occurrence === undefined ? {} : { occurrence: input.occurrence }), ...(input.after ? { after: input.after } : {}) });
+  if (!edit.ok) {
+    const conflict: ConflictDetails = { currentRevision: (await loadState(input.cwd)).roadmap.revision, changes: [], section: edit.current, document: doc };
+    throw new PlanbanEditConflictError(`Not saved: the "${input.heading}" section ${edit.reason === "missing" ? "is no longer there" : edit.reason === "exists" ? "was added since you read it" : "changed since you read it"}.${input.actor === "agent" ? ` ${RECONCILE}` : ""}`, conflict);
+  }
+  const written = await writeDoc({ cwd: input.cwd, cardId: input.cardId, kind: input.kind, markdown: edit.markdown, expectedMtimeMs: doc.exists ? doc.mtimeMs : null, actor: input.actor });
+  return { ...written, section: edit.section };
+}
+
+/** A document with each section's own version, for writeDocSection. */
+export async function readDocSections(input: { cwd: string; cardId: string; kind: "spec" | "plan" }) {
+  const doc = await readDoc(input);
+  return { ...doc, sections: sectionList(doc.markdown) };
 }
 
 /** Drops an unresolved change with a reason, into the card's history. */

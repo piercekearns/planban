@@ -32,6 +32,8 @@ export interface ConflictDetails {
   card?: PlanbanRoadmapItem | null;
   /** The fields this edit touches that changed since it read them: what it read, what they are now, and what it wanted. */
   clashes?: FieldClash[];
+  /** For one section of a Spec or Plan: the section as it is now, with its version (null when it is gone). */
+  section?: { heading: string; version: string | null; text: string };
   /** For a Spec or Plan: the document as it is now, with its version (mtimeMs). */
   document?: PlanbanDocPayload & { markdownOmitted?: true };
 }

@@ -6,6 +6,7 @@
 // goes through the same internal functions as the REST API, so the same
 // access rules, base versions and idempotency apply.
 import { ConvexError } from "convex/values";
+import { sectionList } from "../../../../src/core/docSections";
 import { PLANBAN_STATUSES, type PlanbanDocPayload, type PlanbanHistoryPayload, type PlanbanRoadmap } from "../../../../src/core/types";
 import { cardAncestry } from "../../../../src/core/boardOperations";
 import { queryWorkItems, type WorkItemQuery } from "../../../../src/core/workItemQuery";
@@ -41,6 +42,7 @@ const INSTRUCTIONS = [
   "After board access changes, request tools/list again. This stateless endpoint sends no tool-list change notifications; if your client caches discovery, reconnect or reload its MCP connection. Expanded OAuth scopes require new explicit authorization.",
   "Card and board edits pass baseRevision, the board revision you last read. Spec and Plan writes pass expectedMtimeMs instead: that document's mtimeMs from planban_read_doc (null for a new document).",
   "An edit is refused only if a field it touches (or the document it writes) changed since you read it; edits elsewhere go through, and moves never clash. A refused edit is kept as an unresolved change on its card: planban_get_card shows a card's, and planban_unresolved_changes lists the board's. Settle one by saving a reconsidered version of the same fields, or drop it with planban_drop_change and a reason.",
+  "To change one section of a Spec or Plan, use planban_write_doc_section with the section's heading and version from planban_read_doc: only that section is checked, so edits to other sections never clash.",
   "Reading or editing a card marks you as working on it for 15 minutes after your last activity; planban_get_card's workingOn says who else is. It is a heads-up, not a lock: avoid duplicating their work.",
   "If an edit is refused because someone changed things since you read them, the refusal says who and when, and includes what changed, the current card or document, and its new version. Read what changed. Decide whether your change is still needed, needs adjusting given theirs, or is already covered, and apply only what is still needed against the new version; for a document, write your change into the current text. If you drop or change your edit, tell the person. Never just resend it, and never give up silently.",
   "A pasted planban:<board>/<item> token is a Planban reference: <board> is the boardId and <item> is the cardId; any quoted title beside it is display context only.",
@@ -244,6 +246,23 @@ export const TOOLS: ToolDefinition[] = [
       expectedMtimeMs: { type: ["number", "null"], description: "The mtimeMs from planban_read_doc; null for a new document. Required." },
       idempotencyKey,
     }, ["boardId", "cardId", "kind", "markdown", "expectedMtimeMs"]),
+    annotations: write,
+  },
+  {
+    name: "planban_write_doc_section",
+    title: "Write One Section of a Planban Document",
+    description: "Replace one section of a card's Spec or Plan, by its heading, or add a new one. Pass the section's version from planban_read_doc (sections) as expectedSectionVersion, or null for a new section; only that section is checked, so edits to other sections never clash. markdown is the whole section, starting with its heading line. If refused because the section changed, the refusal includes the section as it is now and who changed the document: apply only what is still needed, and tell the person if you drop or change your edit.",
+    inputSchema: object({
+      boardId,
+      cardId: { type: "string" },
+      kind: { type: "string", enum: ["spec", "plan"] },
+      heading: { type: "string", description: "The section's heading text, without the #s." },
+      occurrence: { type: "number", description: "Which section with this heading (0 for the first), when headings repeat." },
+      expectedSectionVersion: { type: ["string", "null"], description: "The section's version from planban_read_doc; null for a new section. Required." },
+      markdown: { type: "string", description: "The whole section, starting with its heading line." },
+      after: { type: "string", description: "For a new section: the heading to put it after (else it goes at the end)." },
+      idempotencyKey,
+    }, ["boardId", "cardId", "kind", "heading", "expectedSectionVersion", "markdown"]),
     annotations: write,
   },
   // ChatGPT's company-knowledge and deep-research surfaces look for these two read-only tools.
@@ -451,7 +470,8 @@ async function callTool(service: McpService, origin: string, name: string, args:
     case "planban_read_doc": {
       const doc = await service.readDoc(stringArg(args, "boardId"), stringArg(args, "cardId"), args.kind === "plan" ? "plan" : "spec");
       await service.notePresence(stringArg(args, "boardId"), stringArg(args, "cardId"));
-      return doc;
+      // Each section's own version, for planban_write_doc_section.
+      return { ...doc, sections: sectionList(doc.markdown) };
     }
     case "planban_history": {
       const history = await service.history(stringArg(args, "boardId"));
@@ -463,6 +483,7 @@ async function callTool(service: McpService, origin: string, name: string, args:
     case "planban_create_cards":
     case "planban_create_group":
     case "planban_update_card":
+    case "planban_write_doc_section":
     case "planban_write_doc": {
       const op = {
         planban_create_card: "createCard",
@@ -471,6 +492,7 @@ async function callTool(service: McpService, origin: string, name: string, args:
         planban_update_card: "updateCard",
         planban_move_card: "moveCard",
         planban_write_doc: "writeDoc",
+        planban_write_doc_section: "writeDocSection",
       }[name]!;
       // Any tool whose effect completes a card needs explicit confirmation; the
       // board judges the effect, including status inherited by a new Group.

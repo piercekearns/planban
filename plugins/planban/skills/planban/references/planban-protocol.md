@@ -175,6 +175,11 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   other fields go through. Moves never clash: a card goes after the same neighbour, or
   to the end of the column if that neighbour has moved. A Spec or Plan is checked by
   its own version. Restoring the whole board still needs the current revision.
+- **One section at a time.** `planban_read_doc` (`read-doc`) lists each section of a
+  Spec or Plan with its own version. To change one section, use
+  `planban_write_doc_section` (`write-doc-section`) with its heading and version: only
+  that section is checked, so edits to other sections never clash. Prefer it on shared
+  documents; whole-document writes keep the document's own check.
 - **Unresolved changes.** On an online board, an agent's refused edit is kept as an
   unresolved change on its card, so it is never lost. `planban_get_card` shows the
   card's own, and `planban_unresolved_changes` (`unresolved-changes`) lists the

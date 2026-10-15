@@ -57,7 +57,8 @@ export async function settledBy(ctx: QueryCtx, at: BoardRows, touched: Array<{ c
     const fields = new Set(touched.filter((entry) => entry.cardId === cardId).map((entry) => entry.field));
     for (const row of await unresolvedOn(ctx, at, cardId)) {
       if (baseRevision !== null && baseRevision < row.refusedAtRevision) continue;
-      const covers = (field: string) => fields.has("*") || fields.has(field);
+      // A whole-document write also settles a refused edit to one of its sections ("spec:Heading").
+      const covers = (field: string) => fields.has("*") || fields.has(field) || fields.has(field.split(":")[0]!);
       if (!row.fields.some(covers) && !(row.fields.includes("*") && fields.size)) continue;
       const fieldsLeft = fields.has("*") || row.fields.includes("*") ? [] : row.fields.filter((field) => !covers(field));
       settled.push({ row, fieldsLeft });
