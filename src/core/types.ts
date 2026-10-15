@@ -89,6 +89,9 @@ export interface PlanbanDocPayload {
   exists: boolean;
   markdown: string;
   mtimeMs: number | null;
+  /** An online write retried with the same idempotency key: applied once, earlier. */
+  replayed?: true | undefined;
+  originalRevision?: number | undefined;
 }
 
 export type PlanbanHistoryActor = "user" | "agent" | "import" | "system";

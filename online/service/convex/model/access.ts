@@ -71,6 +71,24 @@ export interface BoardAccess {
   canComplete: boolean;
   /** What the person lets their agents do here, within this connection's level. */
   agentLevel: AgentLevel;
+  /** What this connection itself was given (a key or app connection); "complete" for the person's own sign-in. */
+  connectionLevel: AgentLevel;
+  /** The person's own setting for their agents on this board. */
+  personAgentLevel: AgentLevel;
+}
+
+/**
+ * Why this access can't reach `need`, said for the limit that applies and with
+ * its remedy: the person's role, the connection's own scope, or the person's
+ * setting for their agents.
+ */
+export function refusalFor(access: BoardAccess, need: "plan" | "complete"): string {
+  const doing = need === "plan" ? "change this board" : "mark cards complete on this board";
+  if (access.role === "viewer") return "You can only view this board, so you and your agents can't change it. Ask its owner to make you an editor.";
+  if (RANK[access.connectionLevel] < RANK[need]) {
+    return `This connection (an app or access key) was given ${access.connectionLevel === "read" ? "read-only" : "plan-only"} access, so it can't ${doing}. The person can make a new connection with more access from Connections.`;
+  }
+  return `Your agents may ${access.personAgentLevel === "read" ? "only read" : "plan but not complete"} on this board, so they can't ${doing}. The person can change what their agents may do in the board's People settings, or do it themselves.`;
 }
 
 /**
@@ -106,5 +124,7 @@ export async function boardAccess(ctx: QueryCtx, connectionId: Id<"connections">
     canAdminister: member!.role === "owner" && connection.canAdminister,
     canComplete: level === "complete",
     agentLevel: lowest(level, memberAgentLevel(member!)),
+    connectionLevel: connection.canAdminister ? "complete" : connection.level,
+    personAgentLevel: memberAgentLevel(member!),
   };
 }

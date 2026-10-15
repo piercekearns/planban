@@ -337,13 +337,14 @@ function stringArg(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
+/** A whole board, with the fields every Planban surface shares: boardId, title, revision, roadmapItems. */
 function compactBoard(roadmap: PlanbanRoadmap) {
   return {
     boardId: roadmap.project.id,
     title: roadmap.project.title,
     revision: roadmap.revision,
     updatedAt: roadmap.updatedAt,
-    cards: roadmap.roadmapItems,
+    roadmapItems: roadmap.roadmapItems,
   };
 }
 

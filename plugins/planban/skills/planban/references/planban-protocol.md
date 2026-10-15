@@ -136,9 +136,11 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   online board", or to keep the copy as a separate board.
 - **Roles and agent levels.** Each person is an owner, editor or viewer, and chooses
   what their own agents may do: read, plan, or plan and complete. An agent never does
-  more than its person, on any route, including Planban's tools and command line on
-  the person's own computer. A refusal says which of these applies; tell the person
-  and never work around it:
+  more than its person. Planban enforces this at the service for every remote agent.
+  On the person's own computer it relies on Planban's tools and command line saying
+  they act for an agent, which they always do: an agent there holds the person's
+  sign-in, so it must never act as the person. A refusal says which limit applies;
+  tell the person and never work around it:
   - **Viewer:** the person can only read the board, so their agents can't change it
     either. Only the owner can make them an editor.
   - **Agent level:** the person's agents are limited to read or plan. The person can
@@ -233,12 +235,14 @@ write_doc. Differences:
 
 Shared result contract, the same on both:
 
-- Reads return the board's `revision`; `query_cards` returns `matches` at the top
-  level, and `get_card` returns `card` and `ancestry`.
+- Reads return the board's `revision`. `get_board` returns `boardId`, `title`,
+  `revision` and `roadmapItems`; `query_cards` returns `matches` at the top level;
+  `get_card` returns `card` and `ancestry`. Each surface may add fields of its own.
 - Card and board edits return the new `revision` and what changed (`card`, `cards`
   or `group`); a Spec or Plan write returns `doc` with its new `mtimeMs`. Every edit
   also returns `boardUrl`, `boardUrlVerified` and `userReply`, with the link to give
-  the person. A retried edit adds `replayed: true`.
+  the person. A retried edit adds `replayed: true` (and `originalRevision` when the
+  board has changed since).
 - Failures keep their kind: `conflict` (with `currentRevision`), `validation`,
   `not_found`, `forbidden`, `signed_out`, `account_in_use`, `other_account` or
   `limit`. Local tools return them as a tool error with `structuredContent.error`;

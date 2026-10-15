@@ -287,7 +287,7 @@ Each person also chooses what their own agents may do: read, plan, or plan and c
 
 **Deleting your account.** Email hello@planban.ai (the web page's profile menu, Delete account). Within 30 days this removes the boards you own, for everyone on them; your edits on other people's boards stay, without your name.
 
-**For agents.** Agents follow the same rules on every route: an agent never does more than its person allows, completing a card needs `--completion-confirmed` (`completionConfirmed` in the tools), and `-o json` gives results and failures as JSON. The [Planban protocol](plugins/planban/skills/planban/references/planban-protocol.md) has the details.
+**For agents.** An agent never does more than its person allows. Planban's service enforces this for agents connected through ChatGPT, claude.ai and the web address. On your own computer it relies on Planban's tools and command line saying they act for an agent (they always do), because an agent there uses your sign-in. Completing a card needs `--completion-confirmed` (`completionConfirmed` in the tools), and `-o json` gives results and failures as JSON. The [Planban protocol](plugins/planban/skills/planban/references/planban-protocol.md) has the details.
 
 **Connect AI apps.** Codex and Claude Code with the Planban plugin already work with online boards once this computer is signed in. Other apps connect to `https://app.planban.ai/mcp` and ask you to sign in and click Allow:
 

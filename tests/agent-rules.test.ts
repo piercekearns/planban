@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as storage from "../src/core/storage";
+import { createHash, randomBytes } from "node:crypto";
 import { boardPath, onlineRequest } from "../src/core/online/client";
 import { onlineLogin } from "../src/core/online/login";
 import { resetCopyChecks } from "../src/core/online/copyCheck";
@@ -55,7 +56,7 @@ test("an editor whose agents may only read: their agents can't change the board 
   const ben = await sharedBoard("editor", "read");
   await assert.rejects(
     storage.updateCard({ cwd: ben, cardId: "alpha", summary: "By an agent", baseRevision: await revision(ben), actor: "agent" }),
-    /Your agents may only read this board\. The person can change what their agents may do/,
+    /Your agents may only read on this board, so they can't change this board\. The person can change what their agents may do in the board's People settings/,
   );
   // The board page (no actor: the person) still edits.
   await storage.updateCard({ cwd: ben, cardId: "alpha", summary: "By Ben", baseRevision: await revision(ben) });
@@ -67,7 +68,7 @@ test("an editor whose agents may plan: their agents can't complete even with con
   await storage.updateCard({ cwd: ben, cardId: "alpha", summary: "Planned by an agent", baseRevision: await revision(ben), actor: "agent" });
   await assert.rejects(
     storage.moveCard({ cwd: ben, cardId: "alpha", status: "complete", baseRevision: await revision(ben), actor: "agent", completionConfirmed: true }),
-    /Your agents may not mark cards complete on this board/,
+    /Your agents may plan but not complete on this board, so they can't mark cards complete/,
   );
   await storage.moveCard({ cwd: ben, cardId: "alpha", status: "complete", baseRevision: await revision(ben) });
   assert.equal(await statusOf(ben, "alpha"), "complete");
@@ -126,4 +127,19 @@ test("on a local board, an agent completes only with confirmation; the person ne
   assert.match(refused.stderr, /--completion-confirmed/);
   assert.equal(cli("complete-card", "beta", "--completion-confirmed").status, 0);
   assert.equal(await statusOf(cwd, "beta"), "complete");
+});
+
+test("a key given less access is told so, not sent to change the person's agent setting", async () => {
+  const ben = await sharedBoard("editor", "complete");
+  const token = `pbk_${randomBytes(24).toString("base64url")}`;
+  const now = new Date().toISOString();
+  await bridge.service.ctx.db.insert("connections", {
+    userId: "ben", kind: "key", name: "Read key", clientName: "Read key", tokenHash: createHash("sha256").update(token).digest("hex"),
+    boards: ["roadmap"], level: "read", canAdminister: false, createdAt: now, lastUsedAt: now, serviceOrigin: bridge.url,
+  });
+  const credentials = { clientId: "key", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z" };
+  await assert.rejects(
+    onlineRequest(bridge.url, boardPath("roadmap", "/ops/updateCard"), { cardId: "alpha", summary: "By a key", baseRevision: await revision(ben), actor: "agent" }, { credentials }),
+    /This connection \(an app or access key\) was given read-only access, so it can't change this board\. The person can make a new connection with more access from Connections\./,
+  );
 });

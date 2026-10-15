@@ -65,6 +65,11 @@ test("a retry with the same key applies the edit once; the board says it was a r
   assert.equal(first.roadmap.revision, base + 1);
   assert.equal(again.onlineReplay?.replayed, true);
   assert.equal((await storage.loadState(cwd)).roadmap.revision, base + 1, "applied once");
+  // Document writes say so too.
+  const doc = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+  const write = { cwd, cardId: "alpha", kind: "spec" as const, markdown: "# Once", expectedMtimeMs: doc.mtimeMs, actor: "agent" as const, idempotencyKey: "doc-key-00001" };
+  assert.equal((await storage.writeDoc(write)).replayed, undefined);
+  assert.equal((await storage.writeDoc(write)).replayed, true);
   // The same key for a different edit is refused, so a revised edit needs a new key.
   await assert.rejects(storage.updateCard({ ...edit, summary: "Revised" }), /already used for a different request/);
 
@@ -85,6 +90,11 @@ test("a JSON caller gets a failure as JSON, with its kind and the details to act
   assert.equal(report.category, "conflict");
   assert.equal(typeof report.details.currentRevision, "number");
   assert.match(stale.stderr, /Roadmap changed|revision/);
+
+  // A mistake in the command itself comes back as JSON as well.
+  const missing = await run(["online", "attach", "-o", "json"]);
+  assert.equal(missing.status, 1);
+  assert.deepEqual(JSON.parse(missing.stdout).error, { category: "validation", message: "required option '--cwd <path>' not specified" });
 
   // The online commands take -o json as well.
   const status = await run(["online", "status", "-o", "json"]);
@@ -108,4 +118,13 @@ test("an online board isn't deleted from a computer; it can only be removed from
   assert.equal(removed.removedFromThisComputerOnly, true);
   assert.equal((await listBoards()).some((board) => board.repoId === "roadmap"), false);
   assert.equal(bridge.service.rows.find((row) => row._table === "boards" && row.boardId === "roadmap").authority, "online", "the board is still online");
+});
+
+test("a document written by an agent is recorded as the agent's, on a local board too", async () => {
+  const cwd = join(root, "local");
+  await storage.initializeProject({ cwd, repoId: "local", title: "Local", updateAgents: false });
+  await storage.createCard({ cwd, title: "Alpha" });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# By an agent", actor: "agent" });
+  const latest = (await storage.historyPayload(cwd)).entries[0]!;
+  assert.equal(latest.actor, "agent");
 });

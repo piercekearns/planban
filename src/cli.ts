@@ -1,4 +1,4 @@
-import { Command, Option } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
@@ -741,7 +741,18 @@ function wantsJson(argv: string[]) {
   return argv.some((arg, index) => arg === "--output=json" || arg === "-ojson" || ((arg === "-o" || arg === "--output") && argv[index + 1] === "json"));
 }
 
+// Argument mistakes (a missing argument, an unknown option) reach the handler
+// below instead of exiting at once, so a JSON caller gets them as JSON too.
+for (const command of everyCommand(program)) command.exitOverride();
+
 program.parseAsync().catch((error: unknown) => {
+  if (error instanceof CommanderError) {
+    // Help and --version end here too, successfully. Commander has already printed its message.
+    if (error.exitCode === 0) return;
+    if (wantsJson(process.argv)) process.stdout.write(JSON.stringify({ error: { category: "validation", message: error.message.replace(/^error: /u, "") } }, null, 2) + "\n");
+    process.exitCode = error.exitCode;
+    return;
+  }
   // A JSON caller gets the failure as JSON too: its kind, message and details (agent-surface audit).
   if (wantsJson(process.argv)) process.stdout.write(JSON.stringify({ error: errorReport(error) }, null, 2) + "\n");
   process.stderr.write(`${error instanceof Error ? error.message : "Unknown error"}\n`);

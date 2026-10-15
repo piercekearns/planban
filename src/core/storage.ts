@@ -904,7 +904,9 @@ export async function writeDoc(input: {
   if (online) {
     const { history, ...rest } = input;
     const actor = input.actor ?? (history ? history.actor : undefined);
-    return (await onlineOperation<{ doc: PlanbanDocPayload }>(resolveProjectCwd(input.cwd), online, "writeDoc", { ...rest, ...(actor ? { actor } : {}) })).result.doc;
+    const { state, result } = await onlineOperation<{ doc: PlanbanDocPayload }>(resolveProjectCwd(input.cwd), online, "writeDoc", { ...rest, ...(actor ? { actor } : {}) });
+    // A retried write says so, as card edits do.
+    return { ...result.doc, ...(state.onlineReplay ?? {}) };
   }
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
@@ -939,7 +941,7 @@ export async function writeDoc(input: {
   });
   if (input.history !== false) {
     const latestState = await loadState(input.cwd);
-    await recordHistoryVersion(latestState, latestState.roadmap, input.history ?? planned.history);
+    await recordHistoryVersion(latestState, latestState.roadmap, input.history ?? { ...planned.history, ...(input.actor ? { actor: input.actor } : {}) });
   }
   return { cardId: input.cardId, kind: input.kind, path, exists: true, markdown: input.markdown, mtimeMs: stats.mtimeMs };
   });

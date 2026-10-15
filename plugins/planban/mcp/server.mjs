@@ -192,6 +192,9 @@ async function cwdFromArgs(args) {
 
 function summarizeBoard(state) {
   return {
+    // Shared with the remote tools: boardId, title, revision, roadmapItems.
+    boardId: state.manifest.repoId,
+    title: state.roadmap.project.title,
     cwd: state.cwd,
     manifestPath: state.manifestPath,
     planningRoot: state.planningRoot,
@@ -206,7 +209,8 @@ function summarizeBoard(state) {
 
 function compactBoardSummary(state) {
   const { roadmapItems, ...summary } = summarizeBoard(state);
-  return { ...summary, itemCount: roadmapItems.length };
+  // A retried online edit says so, and which revision it first produced.
+  return { ...summary, itemCount: roadmapItems.length, ...(state.onlineReplay ?? {}) };
 }
 
 const DEFAULT_BOARD_ORIGIN = "http://127.0.0.1:4317";

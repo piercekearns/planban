@@ -339,6 +339,10 @@ test("Planban MCP read tools inspect boards, cards, and docs", async () => {
     assert.equal(responses[1].result.structuredContent.initialized, true);
     assertUnverifiedBoardHandoff(responses[1].result, /^Planban is initialized for /u);
     assert.equal(Array.isArray(responses[4].result.structuredContent.roadmapItems), true, "get_board remains the deliberate full read");
+    // The fields every surface shares (the remote get_board has the same).
+    assert.equal(typeof responses[4].result.structuredContent.boardId, "string");
+    assert.equal(typeof responses[4].result.structuredContent.title, "string");
+    assert.equal(typeof responses[4].result.structuredContent.revision, "number");
     assert.equal(responses[4].result.structuredContent.roadmapItems[0].id, cardId);
     assertUnverifiedBoardHandoff(responses[4].result, /^Loaded Planban board mcp-test at revision \d+\.$/u);
     assert.equal("boardUrl" in responses[2].result.structuredContent, false, "get_card stays a focused read");

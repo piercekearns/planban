@@ -22,7 +22,7 @@ import {
 import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from "../../../src/core/types";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
-import { asAgent, boardAccess, liveConnection, reaches, type BoardAccess } from "./model/access";
+import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
 import { checkCards, checkDocuments } from "./model/indexRules";
@@ -50,12 +50,6 @@ export interface BoardBundle {
 }
 
 // ---- helpers ------------------------------------------------------------
-
-/** Why a connection may not change a board, said for who is asking. */
-function forbiddenToWrite(access: BoardAccess) {
-  if (access.role === "viewer") return "You can only view this board, so you and your agents can't change it. Ask its owner to make you an editor.";
-  return "Your agents may only read this board. The person can change what their agents may do in the board's People settings.";
-}
 
 export function attributionFor(connection: Doc<"connections">, actor: unknown): Attribution {
   return { userId: connection.userId, clientName: connection.clientName, actor: connection.canAdminister && actor === "user" ? "user" : "agent", connectionId: connection._id };
@@ -123,16 +117,12 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
  * Completing and deleting cards stay with the owner. Judged on the operation's
  * effect (current versus candidate roadmap), so every route is covered.
  */
-function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, access: { canAdminister: boolean; canComplete: boolean; role: string }, actor: "user" | "agent", completionConfirmed?: boolean) {
+function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, access: BoardAccess, actor: "user" | "agent", completionConfirmed?: boolean) {
   const remaining = new Set(after.roadmapItems.map((item) => item.id));
   const completes = newlyCompleted(before, after).length > 0;
   const deletes = before.roadmapItems.some((item) => !remaining.has(item.id));
   if (deletes && !access.canAdminister) fail("forbidden", "Deleting a card is kept for the board owner's own sign-in. Ask the owner to do it.");
-  if (completes && !access.canComplete) {
-    fail("forbidden", access.role === "viewer"
-      ? "You can only view this board, so you and your agents can't change it. Ask its owner to make you an editor."
-      : "Your agents may not mark cards complete on this board. Ask the person to complete it, or to change what their agents may do.");
-  }
+  if (completes && !access.canComplete) fail("forbidden", refusalFor(access, "complete"));
   // Complete is person-controlled: an agent's edit says a person confirmed it.
   if (completes && actor === "agent" && completionConfirmed !== true) fail("validation", COMPLETION_CONFIRMATION_MESSAGE);
 }
@@ -572,7 +562,7 @@ export const run = internalMutation({
     const attribution = attributionFor(access.connection, input.actor);
     // An agent's edit, even through the person's own computer sign-in, stays within what the person lets their agents do.
     const acting = attribution.actor === "agent" ? asAgent(access) : access;
-    if (!acting.canWrite) fail("forbidden", forbiddenToWrite(acting));
+    if (!acting.canWrite) fail("forbidden", refusalFor(acting, "plan"));
     const current = await currentRoadmap(ctx, at);
     const now = new Date().toISOString();
     let outcome: { committed: PlanbanRoadmap; version: number; result: unknown };

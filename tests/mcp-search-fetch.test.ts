@@ -29,6 +29,8 @@ test("search and fetch cite each card's address on the web page", async () => {
 });
 
 test("remote results have the local tools' shape: query matches at the top level, and every edit returns the link to give the person", async () => {
+  const board = (await call("planban_get_board", { boardId: "deadleg" })).structuredContent;
+  assert.deepEqual([board.boardId, board.title, board.revision, board.roadmapItems.length], ["deadleg", "Deadleg", 3, 1]);
   const query = await call("planban_query_cards", { boardId: "deadleg", search: "vest" });
   assert.equal(query.structuredContent.boardId, "deadleg");
   assert.equal(query.structuredContent.revision, 3);
