@@ -111,7 +111,7 @@ async function runSample(options, mode, sampleNumber, sharedNpmCache) {
     await run("codex", ["plugin", "marketplace", "add", options.sourceUrl,
       "--ref", options.fromRef ?? `v${options.fromVersion}`], { env });
     const root = await marketplaceRoot(codexHome, env);
-    await run("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, env });
+    await run("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, env, timeoutMs: 300000 });
     await run("node", ["--import", "tsx/esm", "src/cli.ts", "init", "--cwd", projectRoot,
       "--repo-id", "update-performance-rehearsal", "--title", "Update performance rehearsal", "--no-agents"], {
       cwd: root,

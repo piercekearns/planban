@@ -212,7 +212,9 @@ async function preserveDependencies(root, paths, marker, disableReuse) {
 }
 
 async function installDependencies(root, execute) {
-  const result = await execute("npm", ["install"], { cwd: root, timeoutMs: 180000 });
+  // Windows runners and slower machines take up to about two minutes here; this
+  // leaves room inside the update step's five minutes (updateRunner.ts).
+  const result = await execute("npm", ["install"], { cwd: root, timeoutMs: 240000 });
   if (result.exitCode !== 0) throw commandFailure("npm", ["install"], result);
   return result;
 }
