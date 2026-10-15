@@ -197,3 +197,74 @@ test("requests about a board outside its own path (live updates, keys) use the b
   const key = await createKey(bridge.url, { boardId: "revival", level: "read", name: "trial" });
   assert.equal(key.boardId, "revival");
 });
+
+/** Holds the first request whose path starts with `prefix` until released. */
+function hold(prefix: string) {
+  let reached!: () => void;
+  const atRequest = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  bridge.control.intercept = async (path) => {
+    if (held || !path.startsWith(prefix)) return;
+    held = true;
+    reached();
+    await released;
+  };
+  return { atRequest, release: () => { bridge.control.intercept = undefined; release(); } };
+}
+
+const oldSignIn = async () => {
+  // As an older Planban saved it: one account, no id or email of its own.
+  const token = (await readCredentials()).services[bridge.url]!.accessToken;
+  await writeFile(join(credentialsRoot(), "credentials.json"), JSON.stringify({ version: 1, services: { [bridge.url]: { clientId: "machine", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z" } } }));
+  return token;
+};
+
+test("signing in again, and another account becoming the default, while a board goes online: it is still linked to the account that took it", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const paused = hold("/api/v1/transfers");
+  const moving = takeOnline(bridge.url, revival);
+  await paused.atRequest;
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  paused.release();
+  await moving;
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+  await bridge.service.ctx.db.insert("members", { boardId: "revival", userId: "ben", role: "editor" });
+  await storage.updateCard({ cwd: revival, cardId: "alpha", summary: "As Ana", baseRevision: (await storage.loadState(revival)).roadmap.revision, actor: "agent" });
+  assert.equal(lastEditor("revival"), "ana");
+});
+
+test("an old sign-in with no id of its own, named for attach or take-online, links the board to that account", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  await takeOnline(bridge.url, revival);
+  await bridge.service.ctx.db.insert("members", { boardId: "revival", userId: "ana", role: "editor" });
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  // Ana's sign-in as an older Planban saved it, with no id or email of its own; Ben's beside it, the default.
+  const { accounts } = await readCredentials();
+  const { person: _person, email: _email, ...anaOld } = accounts[bridge.url]!.accounts.ana!;
+  await writeFile(join(credentialsRoot(), "credentials.json"), JSON.stringify({ version: 2, services: { [bridge.url]: { default: "ben", accounts: { "signed-in": anaOld, ben: accounts[bridge.url]!.accounts.ben } } } }));
+  await attachOnline(bridge.url, "revival", join(root, "second"), { account: "signed-in" });
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+  const other = await project("other", "other");
+  await takeOnline(bridge.url, other, { account: "ana@example.com" });
+  assert.equal(owner("other"), "ana");
+  assert.equal((await boardAccount(bridge.url, "other"))!.person, "ana");
+});
+
+test("a slow answer about who an old sign-in is never replaces a newer sign-in of that account", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await oldSignIn();
+  const paused = hold("/api/v1/me");
+  const slow = rememberIdentity(bridge.url, 1);
+  await paused.atRequest;
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const fresh = (await accountCredentials(bridge.url, "ana"))!.accessToken;
+  paused.release();
+  await slow;
+  assert.equal((await accountCredentials(bridge.url, "ana"))!.accessToken, fresh);
+  assert.deepEqual(Object.keys((await readCredentials()).accounts[bridge.url]!.accounts), ["ana"]);
+});

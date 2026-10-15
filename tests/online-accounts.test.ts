@@ -214,15 +214,14 @@ test("signing out names the account when several are signed in, and leaves the o
   assert.equal((await onlineStatus())[0]!.signedInAs, "ana@example.com");
   await assert.rejects(switchAccount(url, "nobody@example.com"), /nobody@example\.com isn't signed in/);
 });
-test("a board is never noted under an account that has signed out since it was opened", async () => {
+test("a board opened by an account that has signed out since stays that account's board, never another's", async () => {
   await onlineLogin(url, { devUser: "ana" });
   const pinned = Object.values((await readCredentials()).services)[0]!;
   await onlineLogin(url, { devUser: "ben" });
   await onlineLogout(url, { account: "ana@example.com" });
   await recordBoardAccountAs(url, "roadmap", pinned);
-  assert.equal(await boardAccount(url, "roadmap"), null);
-  await recordBoardAccountAs(url, "roadmap", Object.values((await readCredentials()).services)[0]!);
-  assert.equal((await boardAccount(url, "roadmap"))?.email, "ben@example.com");
+  // Linked to Ana, so it says Ana isn't signed in rather than opening as Ben.
+  assert.equal((await boardAccount(url, "roadmap"))?.email, "ana@example.com");
 });
 test("a sign-in from before emails were kept gets its email on the board page", async () => {
   const { cwd } = await anasOnlineBoard();

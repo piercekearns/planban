@@ -45,10 +45,27 @@ export async function rememberIdentity(url: string, attempts = 4): Promise<Me & 
     await new Promise((resolve) => setTimeout(resolve, 750));
     me = await ask();
   }
-  const filedAs = await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
-  // A sign-in filed under another id until now (an old one may have had none of its own): its boards follow it.
-  if (filedAs && filedAs !== me.userId) await relinkBoards(url, filedAs, me.userId).catch(() => undefined);
+  await fileUnder(url, credentials, me);
   return { ...me, account: { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}), ...(me.person?.name ? { name: me.person.name } : {}) } };
+}
+
+/** Files a sign-in under the account the service says it is; boards linked to its earlier id follow it. */
+async function fileUnder(url: string, credentials: OnlineCredentials, me: Me) {
+  const filedAs = await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
+  // An old sign-in may have had no id of its own until now.
+  if (filedAs && filedAs !== me.userId) await relinkBoards(url, filedAs, me.userId).catch(() => undefined);
+}
+
+/**
+ * A sign-in pinned for an operation, with its account id: one saved by an
+ * older Planban without its id asks the service first, so the board can be
+ * linked to the account it really is.
+ */
+export async function withIdentity(url: string, credentials: OnlineCredentials): Promise<OnlineCredentials> {
+  if (credentials.person) return credentials;
+  const me = await onlineRequest<Me>(url, "/api/v1/me", undefined, { credentials });
+  await fileUnder(url, credentials, me);
+  return { ...credentials, person: me.userId, ...(me.person?.email ? { email: me.person.email } : credentials.email ? { email: credentials.email } : {}) };
 }
 
 /**
@@ -85,15 +102,14 @@ import { boardAccount, recordBoardAccount } from "./boardLinks";
 
 /**
  * Notes the board under the account that used it: the sign-in `pinned` at the
- * start of the operation. If another account has signed in since, nothing is
- * recorded rather than naming an account that never opened the board.
+ * start of the operation (see withIdentity). It is that account's board even
+ * if the account signed in again or out meanwhile; signed out, the board says
+ * so rather than opening as another account.
  */
 export async function recordBoardAccountAs(url: string, boardId: string, pinned: OnlineCredentials) {
-  // Several accounts can be signed in at once: record the pinned one, if it is still signed in here.
-  if (!pinned.person) return;
-  const now = await accountCredentials(url, pinned.person);
-  if (!now || now.accessToken !== pinned.accessToken) return;
-  await recordBoardAccount(url, boardId, { person: now.person!, ...(now.email ? { email: now.email } : {}) });
+  if (!pinned.person) throw new Error("A board's account is linked only once its id is known.");
+  const email = (await accountCredentials(url, pinned.person))?.email ?? pinned.email;
+  await recordBoardAccount(url, boardId, { person: pinned.person, ...(email ? { email } : {}) });
 }
 
 

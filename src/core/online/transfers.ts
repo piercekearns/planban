@@ -11,7 +11,7 @@ import { roadmapSchema } from "../schema";
 import { loadState, pathExists, readDoc, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
-import { boardAccount, recordBoardAccount, recordBoardAccountAs } from "./accounts";
+import { boardAccount, recordBoardAccount, recordBoardAccountAs, withIdentity } from "./accounts";
 import { boardCredentials, boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, writeOnlineNote, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
@@ -355,7 +355,7 @@ export class PlanbanConfirmationNeeded extends PlanbanValidationError {
 export async function takeOnline(urlInput: string, cwdInput: string, options: MoveOptions = {}) {
   const url = serviceUrl(urlInput);
   // The account this move runs as, for every request it makes; the board is linked to it.
-  let pinned = options.account ? await chosenAccount(url, options.account) : await requireCredentials(url);
+  let pinned = await withIdentity(url, options.account ? await chosenAccount(url, options.account) : await requireCredentials(url));
   const cwd = resolveProjectCwd(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest?.enabled) throw new PlanbanValidationError(`Planban is not initialized in ${cwd}`);
@@ -834,8 +834,9 @@ export async function attachOnline(urlInput: string, boardId: string, cwdInput: 
   // already linked here (it keeps it), or else the default, linked before the board is read.
   const earlierLink = await boardAccount(url, boardId);
   const relink = !!options.account || !earlierLink;
-  const pinned = options.account ? await chosenAccount(url, options.account) : earlierLink ? null : await requireCredentials(url).catch(() => null);
-  if (relink && pinned?.person) await recordBoardAccount(url, boardId, { person: pinned.person, ...(pinned.email ? { email: pinned.email } : {}) });
+  const chosen = options.account ? await chosenAccount(url, options.account) : earlierLink ? null : await requireCredentials(url).catch(() => null);
+  const pinned = chosen ? await withIdentity(url, chosen) : null;
+  if (relink && pinned) await recordBoardAccountAs(url, boardId, pinned);
   const undoLink = () => relink ? recordBoardAccount(url, boardId, earlierLink).catch(() => undefined) : Promise.resolve();
   let staleCopy: { snapshot: string; report: string; unsyncedChanges: StaleCopy["unsyncedChanges"] } | undefined;
   if (replacing) {

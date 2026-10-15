@@ -185,7 +185,9 @@ export async function updateSignedIn(url: string, accessToken: string, facts: Pi
     const updated = { ...current, ...Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) } as OnlineCredentials;
     const newId = updated.person ?? id;
     delete entry.accounts[id];
-    entry.accounts[newId] = updated;
+    // A newer sign-in of the same account saved meanwhile is kept; this older one just goes.
+    const newer = newId !== id ? entry.accounts[newId] : undefined;
+    if (!newer || newer.accessToken === accessToken) entry.accounts[newId] = updated;
     if (entry.default === id) entry.default = newId;
   });
   return filedAs as string | null;
