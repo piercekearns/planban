@@ -73,6 +73,10 @@ export default defineSchema({
     stamp: v.number(),
     updatedAt: v.string(),
     updatedBy: v.string(),
+    /** The last write, for a conflict answer: by an agent, which app, and what it did. */
+    updatedByAgent: v.optional(v.boolean()),
+    updatedByClient: v.optional(v.string()),
+    updateSummary: v.optional(v.string()),
   }).index("by_board_card_kind", ["boardId", "generation", "cardId", "kind"]).index("by_updatedBy", ["updatedBy"]),
 
   /**

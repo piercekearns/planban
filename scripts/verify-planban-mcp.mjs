@@ -49,6 +49,8 @@ function listenerPids(port) {
   const result = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], {
     encoding: "utf8",
   });
+  // Without lsof (Windows), there is nothing to look up; the launched server is stopped by its own process.
+  if (result.error || typeof result.stdout !== "string") return [];
   if (result.status !== 0 && !result.stdout.trim()) return [];
   return result.stdout
     .split(/\s+/u)

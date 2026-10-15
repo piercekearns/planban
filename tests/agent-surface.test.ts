@@ -139,7 +139,8 @@ test("a refused edit says who changed what since it was read, with the current c
   assert.equal(refused.status, 1);
   const report = JSON.parse(refused.stdout).error;
   assert.equal(report.category, "conflict");
-  assert.match(report.message, /^Not saved: Ana changed card "Alpha" since you read it \(Updated Alpha/);
+  assert.match(report.message, /^Not saved: Ana changed the summary of card "Alpha" since you read it \(Updated Alpha/);
+  assert.deepEqual(report.details.conflict.clashes, [{ cardId: "alpha", field: "summary", read: null, current: "Ana's change", yours: "Agent's change" }]);
   assert.match(report.message, /Decide whether your change is still needed, needs adjusting given theirs, or is already covered/);
   assert.match(report.message, /Never just resend it, and never give up silently\./);
   const conflict = report.details.conflict;
@@ -174,4 +175,14 @@ test("on a local board, a refused edit carries the same details", async () => {
   const conflict = (report.details as { conflict: { card: { summary: string }; changes: unknown[] } }).conflict;
   assert.equal(conflict.card.summary, "Changed by an agent");
   assert.equal(conflict.changes.length, 1);
+});
+
+test("a refusal never blames the card for a change made elsewhere on the board", async () => {
+  const cwd = join(root, "local-elsewhere");
+  await storage.initializeProject({ cwd, repoId: "elsewhere", title: "Elsewhere", updateAgents: false });
+  await storage.createCard({ cwd, title: "Alpha" });
+  const stale = (await storage.loadState(cwd)).roadmap.revision;
+  await storage.createCard({ cwd, title: "Beta", actor: "agent" });
+  const refused = await storage.updateCard({ cwd, cardId: "alpha", summary: "Mine", baseRevision: stale, actor: "agent" }).then(() => null, (error: unknown) => error);
+  assert.match(errorReport(refused).message, /^Not saved: the board changed since you read it \(latest: an agent on this computer, Created Beta, [^)]+\), though not card "Alpha"\./);
 });

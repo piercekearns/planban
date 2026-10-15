@@ -72,24 +72,29 @@ test("edits carry the revision the person saw; a stale one is a conflict that na
     assert.equal(moved.status, 200, JSON.stringify(moved.body));
     assert.equal(moved.body.roadmap.roadmapItems.find((item: Json) => item.id === cardId).status, "in-progress");
 
-    const stale = await page(adapter, cardPath(boardId, cardId), { method: "PATCH", body: { title: "Renamed from an old view", baseRevision: 2 } });
+    // From an older view: renaming touches only the title, which nobody changed since, so it applies (Spec point 20).
+    const elsewhere = await page(adapter, cardPath(boardId, cardId), { method: "PATCH", body: { title: "Renamed from an old view", baseRevision: 2 } });
+    assert.equal(elsewhere.status, 200, JSON.stringify(elsewhere.body));
+    assert.equal(elsewhere.body.roadmap.roadmapItems.find((item: Json) => item.id === cardId).status, "in-progress", "the move stays");
+    // Renaming again from that same older view clashes on the title someone changed since.
+    const stale = await page(adapter, cardPath(boardId, cardId), { method: "PATCH", body: { title: "Another name from the old view", baseRevision: 2 } });
     assert.equal(stale.status, 409);
     assert.equal(typeof stale.body.error, "string");
-    assert.equal(stale.body.currentRevision, 3);
+    assert.equal(stale.body.currentRevision, 4);
     const missing = await page(adapter, cardPath(boardId, cardId), { method: "PATCH", body: { title: "No revision" } });
     assert.equal(missing.status, 422, "a service validation error is the page's 422");
     assert.match(missing.body.error, /baseRevision/);
 
-    const updated = await page(adapter, cardPath(boardId, cardId), { method: "PATCH", body: { title: "Renamed", baseRevision: 3 } });
+    const updated = await page(adapter, cardPath(boardId, cardId), { method: "PATCH", body: { title: "Renamed", baseRevision: 4 } });
     assert.equal(updated.status, 200);
-    const group = await page(adapter, boardPath(boardId, "/groups"), { method: "POST", body: { title: "Launch", itemIds: [cardId], baseRevision: 4 } });
+    const group = await page(adapter, boardPath(boardId, "/groups"), { method: "POST", body: { title: "Launch", itemIds: [cardId], baseRevision: 5 } });
     assert.equal(group.status, 200, JSON.stringify(group.body));
     assert.equal(group.body.createdGroup.title, "Launch");
-    const parent = await page(adapter, cardPath(boardId, cardId, "/parent"), { method: "POST", body: { parentId: null, baseRevision: 5 } });
+    const parent = await page(adapter, cardPath(boardId, cardId, "/parent"), { method: "POST", body: { parentId: null, baseRevision: 6 } });
     assert.equal(parent.status, 200, JSON.stringify(parent.body));
-    const archived = await page(adapter, cardPath(boardId, cardId, "/archive"), { method: "POST", body: { baseRevision: 6 } });
+    const archived = await page(adapter, cardPath(boardId, cardId, "/archive"), { method: "POST", body: { baseRevision: 7 } });
     assert.equal(archived.status, 200, JSON.stringify(archived.body));
-    const deleted = await page(adapter, cardPath(boardId, cardId), { method: "DELETE", body: { baseRevision: 7 } });
+    const deleted = await page(adapter, cardPath(boardId, cardId), { method: "DELETE", body: { baseRevision: 8 } });
     assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
     assert.equal(deleted.body.roadmap.roadmapItems.some((item: Json) => item.id === cardId), false);
   });
@@ -158,6 +163,7 @@ test("every restore type, from History, with the revision the person saw", async
     assert.ok(history.body.entries.some((entry: Json) => entry.version === original));
 
     let revision = (await page(adapter, boardPath(boardId, "/state"))).body.roadmap.revision as number;
+    const beforeTitle = revision;
     revision = (await page(adapter, cardPath(boardId, card), { method: "PATCH", body: { title: "Changed title", baseRevision: revision } })).body.roadmap.revision;
     const spec = (await page(adapter, cardPath(boardId, card, "/docs/spec"))).body;
     await page(adapter, cardPath(boardId, card, "/docs/spec"), { method: "PUT", body: { markdown: "# Spec\n\nChanged.", expectedMtimeMs: spec.mtimeMs } });
@@ -172,8 +178,8 @@ test("every restore type, from History, with the revision the person saw", async
     assert.equal(oldSpec.body.markdown, "# Spec\n\nOriginal.");
     assert.equal((await page(adapter, boardPath(boardId, "/history/0"))).status, 422);
 
-    // A restore from an old view is refused like any edit.
-    const stale = await page(adapter, cardPath(boardId, card, "/restore", original), { method: "POST", body: { actor: "user", baseRevision: revision - 1 } });
+    // Restoring a card from a view older than a change to that card is refused like any clashing edit.
+    const stale = await page(adapter, cardPath(boardId, card, "/restore", original), { method: "POST", body: { actor: "user", baseRevision: beforeTitle } });
     assert.equal(stale.status, 409);
 
     const restoredCard = await page(adapter, cardPath(boardId, card, "/restore", original), { method: "POST", body: { actor: "user", baseRevision: revision } });

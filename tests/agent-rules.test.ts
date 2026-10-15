@@ -143,3 +143,20 @@ test("a key given less access is told so, not sent to change the person's agent 
     /This connection \(an app or access key\) was given read-only access, so it can't change this board\. The person can make a new connection with more access from Connections\./,
   );
 });
+
+test("an app connection that says it is the person still gets the agent's guidance on a clash", async () => {
+  const ben = await sharedBoard("editor", "complete");
+  const token = `pbk_${randomBytes(24).toString("base64url")}`;
+  const now = new Date().toISOString();
+  await bridge.service.ctx.db.insert("connections", {
+    userId: "ben", kind: "key", name: "Key", clientName: "Key", tokenHash: createHash("sha256").update(token).digest("hex"),
+    boards: ["roadmap"], level: "complete", canAdminister: false, createdAt: now, lastUsedAt: now, serviceOrigin: bridge.url,
+  });
+  const credentials = { clientId: "key", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z" };
+  const stale = await revision(ben);
+  await storage.updateCard({ cwd: ben, cardId: "alpha", summary: "Ben's", baseRevision: stale });
+  await assert.rejects(
+    onlineRequest(bridge.url, boardPath("roadmap", "/ops/updateCard"), { cardId: "alpha", summary: "Claimed", baseRevision: stale, actor: "user" }, { credentials }),
+    /Never just resend it, and never give up silently/,
+  );
+});

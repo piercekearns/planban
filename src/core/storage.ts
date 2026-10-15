@@ -43,7 +43,7 @@ import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { loadOnlineState, onlineCacheRoot, onlineOperation, onlineState, refuseOnline } from "./online/adapter";
 import { boardPath, onlineRequest } from "./online/client";
-import { cardSubject, changesSince, conflictMessage, lastDocChange, PlanbanEditConflictError, type ConflictDetails } from "./conflicts";
+import { cardSubject, changesSince, conflictMessage, lastDocChange, MAX_CONFLICT_DOCUMENT_CHARS, PlanbanEditConflictError, type ConflictDetails } from "./conflicts";
 import { assertNotStaleCopy, checkInBackground, ONLINE_NOTE, STALE_MARKER } from "./online/copyCheck";
 import { credentialsPath } from "./online/credentials";
 import { ensureBoardIdentity } from "./boardIdentity";
@@ -113,7 +113,7 @@ async function assertBaseRevision(state: PlanbanResolvedState, baseRevision?: nu
 }
 
 /** A Spec or Plan changed since it was read: the document as it is now, and who last changed it. */
-async function documentConflict(state: PlanbanResolvedState, cardId: string, kind: "spec" | "plan", document: PlanbanDocPayload, actor?: string) {
+async function documentConflict(state: PlanbanResolvedState, cardId: string, kind: "spec" | "plan", document: NonNullable<ConflictDetails["document"]>, actor?: string) {
   const { listHistory } = await import("./history");
   const entries = (await listHistory(state).catch(() => null))?.entries ?? [];
   const conflict: ConflictDetails = { currentRevision: state.roadmap.revision, changes: changesSince(lastDocChange(entries, cardId, kind), undefined, localAuthor), document };
@@ -951,7 +951,12 @@ export async function writeDoc(input: {
     if (existsBeforeWrite) {
       const currentStats = await stat(path);
       if (input.expectedMtimeMs === null || currentStats.mtimeMs !== input.expectedMtimeMs) {
-        throw await documentConflict(state, input.cardId, input.kind, { cardId: input.cardId, kind: input.kind, path, exists: true, markdown: await readFile(path, "utf8"), mtimeMs: currentStats.mtimeMs }, input.actor ?? (input.history ? input.history.actor : undefined));
+        const markdown = await readFile(path, "utf8");
+        // A very long document is left out of the answer, as online; its version is always there.
+        const document = markdown.length > MAX_CONFLICT_DOCUMENT_CHARS
+          ? { cardId: input.cardId, kind: input.kind, path, exists: true, markdown: "", mtimeMs: currentStats.mtimeMs, markdownOmitted: true as const }
+          : { cardId: input.cardId, kind: input.kind, path, exists: true, markdown, mtimeMs: currentStats.mtimeMs };
+        throw await documentConflict(state, input.cardId, input.kind, document, input.actor ?? (input.history ? input.history.actor : undefined));
       }
     } else if (input.expectedMtimeMs !== null) {
       throw await documentConflict(state, input.cardId, input.kind, { cardId: input.cardId, kind: input.kind, path, exists: false, markdown: "", mtimeMs: null }, input.actor ?? (input.history ? input.history.actor : undefined));
