@@ -151,8 +151,9 @@ export async function removeAccount(url: string, person: string, accessToken?: s
   let removed: OnlineCredentials | null = null;
   await changeStored((file) => {
     const entry = file.services[key];
+    // By the sign-in itself when given, wherever it is filed now (an old one may have moved under its real id meanwhile).
+    if (accessToken !== undefined) person = Object.entries(entry?.accounts ?? {}).find(([, saved]) => saved.accessToken === accessToken)?.[0] ?? "";
     if (!entry?.accounts[person]) return false;
-    if (accessToken !== undefined && entry.accounts[person]!.accessToken !== accessToken) return false;
     removed = entry.accounts[person]!;
     delete entry.accounts[person];
     const rest = Object.keys(entry.accounts);
@@ -179,25 +180,25 @@ export async function setDefaultAccount(url: string, person: string) {
  */
 export async function updateSignedIn(url: string, accessToken: string, facts: Pick<OnlineCredentials, "person" | "email">) {
   const key = serviceUrl(url);
-  // The id the sign-in was filed under until now (null if it is no longer saved), so its boards can follow it.
-  let filedAs: string | null = null;
+  // Every id the sign-in was filed under until now (none if it is no longer saved), so its boards can follow it.
+  let filedAs: string[] = [];
   await changeStored((file) => {
     const entry = file.services[key];
     const found = entry && Object.entries(entry.accounts).find(([, credentials]) => credentials.accessToken === accessToken);
     if (!entry || !found) return false;
     const [id, current] = found;
-    filedAs = id;
     const updated = { ...current, ...Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) } as OnlineCredentials;
     const newId = updated.person ?? id;
     // Every entry holding this same sign-in becomes the one.
     const merged = Object.entries(entry.accounts).filter(([, saved]) => saved.accessToken === accessToken).map(([other]) => other);
     for (const other of merged) delete entry.accounts[other];
+    filedAs = merged;
     // Of two sign-ins for one account, the one saved later is kept (one with no time saved is the older).
     const other = entry.accounts[newId];
     if (!other || (other.savedAt ?? "") <= (updated.savedAt ?? "")) entry.accounts[newId] = updated;
     if (merged.includes(entry.default)) entry.default = newId;
   });
-  return filedAs as string | null;
+  return filedAs;
 }
 
 async function writeCredentialsFile(file: StoredFile) {

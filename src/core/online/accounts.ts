@@ -52,8 +52,8 @@ export async function rememberIdentity(url: string, attempts = 4): Promise<Me & 
 /** Files a sign-in under the account the service says it is; boards linked to its earlier id follow it. */
 async function fileUnder(url: string, credentials: OnlineCredentials, me: Me) {
   const filedAs = await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
-  // An old sign-in may have had no id of its own until now.
-  if (filedAs && filedAs !== me.userId) await relinkBoards(url, filedAs, me.userId).catch(() => undefined);
+  // An old sign-in may have had no id of its own until now, or been saved twice.
+  for (const id of filedAs) if (id !== me.userId) await relinkBoards(url, id, me.userId).catch(() => undefined);
 }
 
 /**

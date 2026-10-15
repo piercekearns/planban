@@ -331,3 +331,26 @@ test("the same sign-in saved twice stays one account", async () => {
   await onlineLogout(bridge.url);
   assert.equal((await readCredentials()).accounts[bridge.url], undefined);
 });
+
+test("signing out an old sign-in that learns its account id meanwhile still removes it", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await oldSignIn();
+  const paused = hold("/api/v1/connections/self/revoke");
+  const signingOut = onlineLogout(bridge.url);
+  await paused.atRequest;
+  await rememberIdentity(bridge.url, 1);
+  paused.release();
+  assert.equal((await signingOut).note, undefined);
+  assert.equal((await readCredentials()).accounts[bridge.url], undefined);
+});
+
+test("one sign-in saved under two ids: both ids' boards follow it to its account", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const ana = (await accountCredentials(bridge.url, "ana"))!;
+  const { person: _person, ...unnamed } = ana;
+  await writeFile(join(credentialsRoot(), "credentials.json"), JSON.stringify({ version: 2, services: { [bridge.url]: { default: "ana", accounts: { ana, "signed-in": unnamed } } } }));
+  await recordBoardAccount(bridge.url, "revival", { person: "signed-in" });
+  await rememberIdentity(bridge.url, 1);
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+  assert.deepEqual(Object.keys((await readCredentials()).accounts[bridge.url]!.accounts), ["ana"]);
+});
