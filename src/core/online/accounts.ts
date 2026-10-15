@@ -8,8 +8,8 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { PlanbanConflictError } from "../boardOperations";
-import { onlineRequest } from "./client";
-import { credentialsRoot, readCredentials, saveCredentials, serviceUrl, withCredentialsLock } from "./credentials";
+import { OnlineAuthenticationError, onlineRequest, requireCredentials } from "./client";
+import { credentialsRoot, readCredentials, serviceUrl, updateSignedIn, withCredentialsLock, type OnlineCredentials } from "./credentials";
 
 export interface OnlineAccount {
   /** The account's id at the service. */
@@ -33,33 +33,37 @@ export async function signedInAccount(url: string): Promise<OnlineAccount | null
 /**
  * After signing in: asks the service who this is and keeps the email beside
  * the sign-in. The profile is filled in just after sign-in, so the email may
- * take a moment to appear.
+ * take a moment to appear. Every request uses the sign-in as it was when this
+ * started, and the answer is kept only if that sign-in is still the saved one.
  */
 export async function rememberIdentity(url: string, attempts = 4): Promise<Me & { account: OnlineAccount }> {
-  let me = await onlineRequest<Me>(url, "/api/v1/me");
+  const credentials = await requireCredentials(url);
+  const ask = () => onlineRequest<Me>(url, "/api/v1/me", undefined, { credentials });
+  let me = await ask();
   for (let attempt = 1; attempt < attempts && !me.person?.email; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 750));
-    me = await onlineRequest<Me>(url, "/api/v1/me");
+    me = await ask();
   }
-  const key = serviceUrl(url);
-  const credentials = (await readCredentials()).services[key];
-  if (credentials) await saveCredentials(key, { ...credentials, person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
+  await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
   return { ...me, account: { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}), ...(me.person?.name ? { name: me.person.name } : {}) } };
 }
 
 /**
- * The account still signed in to `url`, checked with the service: null when
- * nothing is signed in or the sign-in has ended (so nothing is lost by
- * signing in again).
+ * The account signed in to `url` here, or null when nothing is signed in or
+ * the service says that sign-in has ended (so nothing is lost by signing in
+ * again). When the service can't be asked, the saved sign-in still counts:
+ * a passing failure must not let a new sign-in replace it unannounced.
  */
 export async function liveAccount(url: string): Promise<OnlineAccount | null> {
   const stored = (await readCredentials()).services[serviceUrl(url)];
   if (!stored) return null;
+  const saved: OnlineAccount = { person: stored.person ?? "unknown", ...(stored.email ? { email: stored.email } : {}) };
   try {
-    const me = await onlineRequest<Me>(url, "/api/v1/me");
+    const me = await onlineRequest<Me>(url, "/api/v1/me", undefined, { credentials: stored });
     return { person: me.userId, ...(me.person?.email ?? stored.email ? { email: me.person?.email ?? stored.email } : {}) };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof OnlineAuthenticationError) return null;
+    return saved;
   }
 }
 
@@ -111,10 +115,15 @@ export async function recordBoardAccount(url: string, boardId: string, account: 
   });
 }
 
-/** Notes the board under the account signed in now, if there is one. */
-export async function recordBoardAccountNow(url: string, boardId: string) {
-  const account = await signedInAccount(url);
-  if (account) await recordBoardAccount(url, boardId, account);
+/**
+ * Notes the board under the account that used it: the sign-in `pinned` at the
+ * start of the operation. If another account has signed in since, nothing is
+ * recorded rather than naming an account that never opened the board.
+ */
+export async function recordBoardAccountAs(url: string, boardId: string, pinned: OnlineCredentials) {
+  const now = (await readCredentials()).services[serviceUrl(url)];
+  if (!now || now.accessToken !== pinned.accessToken || !now.person) return;
+  await recordBoardAccount(url, boardId, { person: now.person, ...(now.email ? { email: now.email } : {}) });
 }
 
 export async function boardAccount(url: string, boardId: string): Promise<OnlineAccount | null> {

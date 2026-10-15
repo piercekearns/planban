@@ -4,7 +4,6 @@
 // board belongs to another account" message, and that a second account can't
 // take the first account's online board online by any route.
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
 import { cp, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -15,71 +14,34 @@ import { manifestPath } from "../src/core/paths";
 import { startServer } from "../src/server/server";
 import { PlanbanNotFoundError } from "../src/core/boardOperations";
 import { onlineRequest } from "../src/core/online/client";
-import { onlineStatus } from "../src/core/online/credentials";
+import { onlineStatus, readCredentials, saveCredentials } from "../src/core/online/credentials";
 import { onlineLogin } from "../src/core/online/login";
-import { AccountInUseError, BoardOfAnotherAccountError } from "../src/core/online/accounts";
+import { AccountInUseError, BoardOfAnotherAccountError, boardAccount, recordBoardAccountAs, rememberIdentity } from "../src/core/online/accounts";
 import { backupRoot } from "../src/core/online/backup";
 import { resetCopyChecks } from "../src/core/online/copyCheck";
 import { restoreBackup, takeOnline } from "../src/core/online/transfers";
-import { apiResponse } from "../online/service/convex/http";
-import * as connections from "../online/service/convex/connections";
-import { memoryService } from "./hosted-harness";
+import { serviceBridge } from "./service-bridge";
 
-const ENV = ["PLANBAN_HOME", "PLANBAN_PUBLIC_URL", "CONVEX_SITE_URL", "PLANBAN_EDGE_PROOF_SHA256", "PLANBAN_DEV_AUTH"] as const;
-let saved: Record<string, string | undefined>;
 let root: string;
 let url: string;
-let service: ReturnType<typeof memoryService>;
+let service: Awaited<ReturnType<typeof serviceBridge>>["service"];
 let close: () => Promise<void>;
+let control: Awaited<ReturnType<typeof serviceBridge>>["control"];
+const savedHome = process.env.PLANBAN_HOME;
 
 test.beforeEach(async () => {
-  saved = Object.fromEntries(ENV.map((name) => [name, process.env[name]]));
   root = await mkdtemp(join(tmpdir(), "planban-accounts-"));
   process.env.PLANBAN_HOME = join(root, "home");
-  service = memoryService();
-  // The service at one local address, as a development backend runs.
-  const server = createServer(async (req, res) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(Buffer.from(chunk));
-    const body = Buffer.concat(chunks);
-    if (req.url === "/dev/token") {
-      // Development sign-in, as the service's /dev/token makes it.
-      const { userId } = JSON.parse(body.toString("utf8"));
-      const token = `pbd_${randomBytes(24).toString("base64url")}`;
-      await (connections.createDevConnection as any)._handler(service.ctx, {
-        tokenHash: createHash("sha256").update(token).digest("hex"), userId, clientName: "Planban CLI", boards: "all", level: "complete",
-      });
-      res.writeHead(201, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({ token }));
-    }
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(name, value);
-    const response = await apiResponse(service.actionCtx, new Request(`${url}${req.url}`, { method: req.method!, headers, ...(body.length ? { body } : {}) }));
-    await service.runJobs();
-    res.writeHead(response.status, Object.fromEntries(response.headers));
-    res.end(Buffer.from(await response.arrayBuffer()));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  url = `http://127.0.0.1:${(server.address() as any).port}`;
-  Object.assign(process.env, { PLANBAN_PUBLIC_URL: url, CONVEX_SITE_URL: url, PLANBAN_DEV_AUTH: "1" });
-  delete process.env.PLANBAN_EDGE_PROOF_SHA256;
-  for (const [userId, name] of [["ana", "Ana"], ["ben", "Ben"]]) {
-    await service.ctx.db.insert("people", { userId, name, email: `${userId}@example.com`, updatedAt: new Date().toISOString() });
-  }
-  close = async () => {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  };
+  const bridge = await serviceBridge();
+  ({ url, service, close, control } = bridge);
   resetCopyChecks();
 });
 
 test.afterEach(async () => {
   await close();
   await rm(root, { recursive: true, force: true });
-  for (const name of ENV) {
-    if (saved[name] === undefined) delete process.env[name];
-    else process.env[name] = saved[name];
-  }
+  if (savedHome === undefined) delete process.env.PLANBAN_HOME;
+  else process.env.PLANBAN_HOME = savedHome;
 });
 
 /** A's board, online, with a copy of its planning folder from before it went online. */
@@ -145,8 +107,9 @@ test("a second account can't take the first account's online board online by any
   // 1. The project folder that now points online.
   await assert.rejects(takeOnline(url, cwd), /already online/);
 
-  // 2. The copy kept from before it went online: an old checkout still pointing at it refuses,
-  await assert.rejects(takeOnline(url, await localProject("old-checkout", planningRoot)));
+  // 2. The copy kept from before it went online: an old checkout still pointing at it has no
+  // live board left to take online (its roadmap was set aside when the board went online),
+  await assert.rejects(takeOnline(url, await localProject("old-checkout", planningRoot)), /Planban roadmap is missing/);
   // and so does that copy put back as a live board, in a folder of its own.
   const revived = join(root, "revived-planning");
   await cp(planningRoot, revived, { recursive: true });
@@ -211,5 +174,62 @@ test("the board page names the account, asks before switching, and explains anot
     assert.match(body.error, /^This board belongs to another Planban account/);
     assert.deepEqual({ ...body.otherAccount, signInCommand: undefined }, { url, boardAccount: "ana@example.com", signedInAs: "ben@example.com", signInCommand: undefined });
     assert.match(body.otherAccount.signInCommand, /online login .* --switch-account$/);
+  } finally { await server.close(); }
+});
+
+test("a slow answer about an earlier sign-in never lands on a newer one", async () => {
+  await onlineLogin(url, { devUser: "ana" });
+  let reached!: () => void;
+  const atMe = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  control.intercept = async (path) => {
+    if (path !== "/api/v1/me" || held) return;
+    held = true;
+    reached();
+    await released;
+  };
+  const slow = rememberIdentity(url, 1);
+  await atMe;
+  await onlineLogin(url, { devUser: "ben", switchAccount: true });
+  release();
+  await slow;
+  assert.deepEqual((await onlineStatus()).map((entry) => entry.signedInAs), ["ben@example.com"]);
+  assert.equal(Object.values((await readCredentials()).services)[0]!.person, "ben");
+});
+
+test("when the service can't be asked, the saved sign-in still needs --switch-account", async () => {
+  await onlineLogin(url, { devUser: "ana" });
+  control.intercept = async (path) => path === "/api/v1/me" ? { status: 500, body: { error: { code: "internal", message: "down" } } } : undefined;
+  await assert.rejects(onlineLogin(url, { devUser: "ben" }), (error: unknown) => error instanceof AccountInUseError && error.message.includes("ana@example.com"));
+  // An ended sign-in, though, is nothing to lose.
+  control.intercept = async (path) => path === "/api/v1/me" ? { status: 401, body: { error: { code: "unauthorized", message: "ended" } } } : undefined;
+  await assert.doesNotReject(onlineLogin(url, { devUser: "ben" }).catch((error) => { if (error instanceof AccountInUseError) throw error; }));
+});
+
+test("a board is never noted under an account that signed in after it was opened", async () => {
+  await onlineLogin(url, { devUser: "ana" });
+  const pinned = Object.values((await readCredentials()).services)[0]!;
+  await onlineLogin(url, { devUser: "ben", switchAccount: true });
+  await recordBoardAccountAs(url, "roadmap", pinned);
+  assert.equal(await boardAccount(url, "roadmap"), null);
+  await recordBoardAccountAs(url, "roadmap", Object.values((await readCredentials()).services)[0]!);
+  assert.equal((await boardAccount(url, "roadmap"))?.email, "ben@example.com");
+});
+
+test("a sign-in from before emails were kept gets its email on the board page", async () => {
+  const { cwd } = await anasOnlineBoard();
+  const [key, credentials] = Object.entries((await readCredentials()).services)[0]!;
+  const { email: _email, ...older } = credentials;
+  await saveCredentials(key, older);
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  try {
+    const status = await (await fetch(`${server.url}/api/boards/roadmap/online`)).json();
+    assert.deepEqual(status.accounts, { [url]: "ana@example.com" });
   } finally { await server.close(); }
 });

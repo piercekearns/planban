@@ -11,11 +11,11 @@ import { roadmapSchema } from "../schema";
 import { loadState, pathExists, readDoc, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
-import { recordBoardAccountNow } from "./accounts";
+import { recordBoardAccountAs } from "./accounts";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, writeOnlineNote, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
-import { serviceUrl } from "./credentials";
+import { serviceUrl, type OnlineCredentials } from "./credentials";
 import { checkBoardIsIndex, machineName, type IndexReport } from "../indexCheck";
 import { checkIndexCard, checkIndexDocument, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, withoutEmbeddedFiles, withoutEmbeddedValue } from "../contentRules";
 import { buildAgentContext } from "../protocol";
@@ -352,7 +352,8 @@ export class PlanbanConfirmationNeeded extends PlanbanValidationError {
  */
 export async function takeOnline(urlInput: string, cwdInput: string, options: MoveOptions = {}) {
   const url = serviceUrl(urlInput);
-  await requireCredentials(url);
+  // The sign-in this move runs as, so the board is noted under that account only.
+  const pinned = await requireCredentials(url);
   const cwd = resolveProjectCwd(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest?.enabled) throw new PlanbanValidationError(`Planban is not initialized in ${cwd}`);
@@ -380,7 +381,7 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: Mo
       }
     }
     options.onProgress?.({ step: "switch", message: "Switching this project to the online board" });
-    const result = await finishTakeOnline(cwd, manifest, planningRoot, journal!);
+    const result = await finishTakeOnline(cwd, manifest, planningRoot, journal!, pinned);
     options.onProgress?.({ step: "done", message: "The board is online" });
     return result;
   });
@@ -532,7 +533,7 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
 }
 
 /** Switches the project to the online board once the upload has committed. Safe to repeat. */
-async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, planningRoot: string, journal: TransferJournal) {
+async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, planningRoot: string, journal: TransferJournal, pinned: OnlineCredentials) {
   const { url, boardId } = journal;
   const snapshot = journal.snapshot!;
   let unsyncedLocalChanges = journal.unsyncedLocalChanges ?? [];
@@ -557,7 +558,7 @@ async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, p
   await rm(transferJournalPath(planningRoot), { force: true });
   await refreshBackup(url, boardId, { force: true });
   // Which account this board went online under, kept on this computer only.
-  await recordBoardAccountNow(url, boardId).catch(() => undefined);
+  await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
   return { boardId, url, localSnapshot: snapshot, onlineNote, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
 }
 
@@ -810,6 +811,8 @@ export async function attachOnline(urlInput: string, boardId: string, cwdInput: 
   const cwd = resolve(cwdInput);
   const existing = await readManifest(cwd);
   if (!boardId.trim()) throw new PlanbanValidationError("boardId is required.");
+  // The sign-in this attach runs as, so the board is noted under that account only.
+  const pinned = await requireCredentials(url).catch(() => null);
   let staleCopy: { snapshot: string; report: string; unsyncedChanges: StaleCopy["unsyncedChanges"] } | undefined;
   if (existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId)) {
     const planningRoot = existing.storage?.kind === "online" ? null : resolvePlanningRoot(existing);
@@ -826,7 +829,7 @@ export async function attachOnline(urlInput: string, boardId: string, cwdInput: 
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, state);
   const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: state.roadmap.project.title, onlineSince: new Date().toISOString() });
-  await recordBoardAccountNow(url, boardId).catch(() => undefined);
+  if (pinned) await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
   await refreshBackup(url, boardId, { force: true });
   return { boardId, url, cwd, onlineNote, ...(staleCopy ? { staleCopy } : {}) };
 }

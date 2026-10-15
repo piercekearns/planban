@@ -271,8 +271,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
       return json({ error: { code: "validation", message: "The request body must be JSON." } }, 400);
     }
     const idempotencyKey = request.headers.get("Idempotency-Key");
+    // Completing a card states that a person confirmed it, in the body as on MCP.
+    const completionConfirmed: boolean = typeof input === "object" && input !== null && (input as { completionConfirmed?: unknown }).completionConfirmed === true;
     return json(await ctx.runMutation(internal.boards.run, {
-      connectionId, boardId, op: rest[1]!, input,
+      connectionId, boardId, op: rest[1]!, input, ...(completionConfirmed ? { completionConfirmed } : {}),
       ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
     }));
   }

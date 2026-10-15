@@ -10,7 +10,6 @@ import {
   loadState,
   moveCard,
   readDoc,
-  setCardStatus,
   setCardParent,
   cardAncestry,
   writeDoc,
@@ -427,6 +426,7 @@ program
   .option("--board", "move to the main board")
   .option("--after <cardId>", "place after a sibling in the target status")
   .option("--first", "place first in the target ownership and status scope")
+  .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
@@ -444,6 +444,8 @@ program
         parentId: options.parent ? options.parent : options.board ? null : undefined,
         afterId: options.after ? options.after : options.first ? null : undefined,
         baseRevision: options.baseRevision,
+        actor: "agent",
+        completionConfirmed: options.completionConfirmed === true,
       }),
       options,
     );
@@ -510,6 +512,7 @@ program
       cardId,
       parentId: options.board ? null : options.parent,
       baseRevision: options.baseRevision,
+      actor: "agent",
     }), options);
   });
 
@@ -526,6 +529,7 @@ program
   .option("--position <position>", "insert at top or bottom of the target status column")
   .option("--after <cardId>", "insert after another card in the target status column")
   .option("--parent <cardId>", "create inside a Group")
+  .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
@@ -545,6 +549,8 @@ program
         afterId: options.after,
         parentId: options.parent,
         baseRevision: options.baseRevision,
+        actor: "agent",
+        completionConfirmed: options.completionConfirmed === true,
       }),
       options,
     );
@@ -561,6 +567,7 @@ function configureCreateGroupCommand(command: Command) {
     .option("--anchor <cardId>", "initial Item whose Main Board position the Group takes")
     .option("--spec-file <path>", "read initial Group spec markdown from a file")
     .option("--plan-file <path>", "read initial Group plan markdown from a file")
+    .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
     .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
@@ -576,6 +583,8 @@ function configureCreateGroupCommand(command: Command) {
         specMarkdown: options.specFile ? readFileSync(resolve(options.specFile), "utf8") : undefined,
         planMarkdown: options.planFile ? readFileSync(resolve(options.planFile), "utf8") : undefined,
         baseRevision: options.baseRevision,
+        actor: "agent",
+        completionConfirmed: options.completionConfirmed === true,
       }), options);
     });
 }
@@ -588,6 +597,7 @@ program
   .requiredOption("--title <title>", "title to create; repeat for multiple cards", collectOption, [])
   .option("--status <status>", "initial status")
   .option("--parent <cardId>", "create inside a Group")
+  .option("--completion-confirmed", "a person on the board asked for, confirmed or waived review of completing this card (required to put a card in complete)")
   .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
@@ -596,6 +606,7 @@ program
       cwd: cwdOption(options.cwd), titles: options.title,
       status: options.status ? requireStatus(options.status) : undefined,
       parentId: options.parent, baseRevision: options.baseRevision,
+      actor: "agent", completionConfirmed: options.completionConfirmed === true,
     }), options);
   });
 
@@ -608,10 +619,14 @@ for (const [command, status] of [
     .command(command)
     .argument("<cardId>")
     .option("--base-revision <revision>", "roadmap revision for stale-write protection (required for Online Boards)", parseRevisionOption)
+    .option("--completion-confirmed", "for complete-card: a person on the board asked for, confirmed or waived review of completing it")
     .option("--cwd <path>", "project directory")
     .option("-o, --output <format>", "output format")
     .action(async (cardId, options) => {
-      print(await setCardStatus(cwdOption(options.cwd), cardId, status, options.baseRevision), options);
+      print(await moveCard({
+        cwd: cwdOption(options.cwd), cardId, status, baseRevision: options.baseRevision,
+        actor: "agent", completionConfirmed: options.completionConfirmed === true,
+      }), options);
     });
 }
 

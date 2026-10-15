@@ -5,6 +5,8 @@ import { v } from "convex/values";
 import {
   assertBaseRevision,
   assertCommittable,
+  COMPLETION_CONFIRMATION_MESSAGE,
+  newlyCompleted,
   committedRoadmap,
   planCreateCard,
   planCreateCards,
@@ -20,7 +22,7 @@ import {
 import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from "../../../src/core/types";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
-import { boardAccess, liveConnection, reaches } from "./model/access";
+import { asAgent, boardAccess, liveConnection, reaches, type BoardAccess } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
 import { checkCards, checkDocuments } from "./model/indexRules";
@@ -48,6 +50,12 @@ export interface BoardBundle {
 }
 
 // ---- helpers ------------------------------------------------------------
+
+/** Why a connection may not change a board, said for who is asking. */
+function forbiddenToWrite(access: BoardAccess) {
+  if (access.role === "viewer") return "You can only view this board, so you and your agents can't change it. Ask its owner to make you an editor.";
+  return "Your agents may only read this board. The person can change what their agents may do in the board's People settings.";
+}
 
 export function attributionFor(connection: Doc<"connections">, actor: unknown): Attribution {
   return { userId: connection.userId, clientName: connection.clientName, actor: connection.canAdminister && actor === "user" ? "user" : "agent", connectionId: connection._id };
@@ -115,16 +123,18 @@ async function commit(ctx: MutationCtx, board: Doc<"boards">, previous: PlanbanR
  * Completing and deleting cards stay with the owner. Judged on the operation's
  * effect (current versus candidate roadmap), so every route is covered.
  */
-function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, access: { canAdminister: boolean; canComplete: boolean }, completionConfirmed?: boolean) {
-  const previous = new Map(before.roadmapItems.map((item) => [item.id, item]));
+function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, access: { canAdminister: boolean; canComplete: boolean; role: string }, actor: "user" | "agent", completionConfirmed?: boolean) {
   const remaining = new Set(after.roadmapItems.map((item) => item.id));
-  const completes = after.roadmapItems.some((item) => item.status === "complete" && previous.get(item.id)?.status !== "complete");
+  const completes = newlyCompleted(before, after).length > 0;
   const deletes = before.roadmapItems.some((item) => !remaining.has(item.id));
-  if (deletes && !access.canAdminister) fail("forbidden", "Deleting a card is kept for the board owner's own connection. Ask the owner to do it.");
-  if (completes && !access.canComplete) fail("forbidden", "This connection may not mark cards complete on this board. Ask someone who can, or change what your agents may do.");
-  if (completes && completionConfirmed === false) {
-    fail("validation", "completionConfirmed must be true when this would move a card to complete. Only do this only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review.");
+  if (deletes && !access.canAdminister) fail("forbidden", "Deleting a card is kept for the board owner's own sign-in. Ask the owner to do it.");
+  if (completes && !access.canComplete) {
+    fail("forbidden", access.role === "viewer"
+      ? "You can only view this board, so you and your agents can't change it. Ask its owner to make you an editor."
+      : "Your agents may not mark cards complete on this board. Ask the person to complete it, or to change what their agents may do.");
   }
+  // Complete is person-controlled: an agent's edit says a person confirmed it.
+  if (completes && actor === "agent" && completionConfirmed !== true) fail("validation", COMPLETION_CONFIRMATION_MESSAGE);
 }
 
 /** Every hosted edit states the revision it was based on (owner decision 10). */
@@ -558,11 +568,13 @@ export const run = internalMutation({
     }
     if (!BOARD_OPERATIONS.includes(op as BoardOperation)) fail("not_found", `Unknown operation: ${op}`);
     if (access.board.authority !== "online") fail("conflict", "This board was taken back to Local Mode, so it is read-only online.");
-    if (!access.canWrite) fail("forbidden", "This connection can only read this board.");
     let input = (rawInput && typeof rawInput === "object" ? rawInput : {}) as Record<string, unknown>;
+    const attribution = attributionFor(access.connection, input.actor);
+    // An agent's edit, even through the person's own computer sign-in, stays within what the person lets their agents do.
+    const acting = attribution.actor === "agent" ? asAgent(access) : access;
+    if (!acting.canWrite) fail("forbidden", forbiddenToWrite(acting));
     const current = await currentRoadmap(ctx, at);
     const now = new Date().toISOString();
-    const attribution = attributionFor(access.connection, input.actor);
     let outcome: { committed: PlanbanRoadmap; version: number; result: unknown };
     try {
       if (op === "writeDoc") {
@@ -590,7 +602,7 @@ export const run = internalMutation({
           if (!snapshot) fail("not_found", `History version not found: v${version}`);
           if (op === "restoreBoard") {
             // The whole board can change at once, so only the person's own sign-in may do it.
-            if (!access.connection.canAdminister) fail("forbidden", "Only your own sign-in can restore the whole board.");
+            if (!acting.connection.canAdminister || attribution.actor !== "user") fail("forbidden", "Only the person themselves can restore the whole board, from their own sign-in, not an agent.");
             change = {
               roadmap: { ...snapshot!, revision: current.revision, roadmapItems: await keepLiveDocRefs(ctx, at, current, snapshot!.roadmapItems) },
               history: { actor: attribution.actor, operation: "history.restore.board", summary: `Restored board from v${version}`, affectedCards: snapshot!.roadmapItems.map((item) => item.id) },
@@ -610,7 +622,7 @@ export const run = internalMutation({
             };
           }
         }
-        checkOwnerControlled(current, change.roadmap, access, completionConfirmed);
+        checkOwnerControlled(current, change.roadmap, acting, attribution.actor, completionConfirmed);
         const { committed, version: written } = await commit(ctx, access.board, current, change, attribution, now);
         outcome = { committed, version: written, result: {} };
       } else {
@@ -660,7 +672,7 @@ export const run = internalMutation({
           default:
             fail("not_found", `Unknown operation: ${op}`);
         }
-        checkOwnerControlled(current, change.roadmap, access, completionConfirmed);
+        checkOwnerControlled(current, change.roadmap, acting, attribution.actor, completionConfirmed);
         const { committed, version } = await commit(ctx, access.board, current, change, attribution, now);
         outcome = { committed, version, result: result(committed) };
       }

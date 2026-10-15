@@ -268,10 +268,29 @@ function useEscape(onClose: () => void) {
 export function Modal({ eyebrow, title, onClose, children, footer, className }: { eyebrow: string; title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; className?: string }) {
   useEscape(onClose);
   const ref = useRef<HTMLElement>(null);
-  useEffect(() => ref.current?.focus(), []);
+  useEffect(() => {
+    // Focus goes into the dialog, and back to where it was when the dialog closes.
+    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    ref.current?.focus();
+    return () => { if (before?.isConnected) before.focus(); };
+  }, []);
+  // Tab stays inside the dialog while it is open.
+  const keepFocus = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab" || !ref.current) return;
+    const focusable = [...ref.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    if (!focusable.length) return;
+    const first = focusable[0]!, last = focusable.at(-1)!;
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   return createPortal(
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section ref={ref} className={`feedback-modal online-board-modal ${className ?? ""}`} role="dialog" aria-modal="true" aria-labelledby="online-board-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={ref} className={`feedback-modal online-board-modal ${className ?? ""}`} role="dialog" aria-modal="true" aria-labelledby="online-board-title" tabIndex={-1} onKeyDown={keepFocus} onMouseDown={(event) => event.stopPropagation()}>
         <header className="feedback-modal-header">
           <div><p className="eyebrow">{eyebrow}</p><h2 id="online-board-title">{title}</h2></div>
           <button aria-label="Close" className="toolbar-icon-button" onClick={onClose}><X size={14} /></button>

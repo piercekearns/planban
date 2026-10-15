@@ -50,7 +50,7 @@ import type { PlanbanHistoryPayload } from "./types";
 import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
 import { checkIndexCard, checkIndexDocument, checkIndexText, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
 
-import {
+import { assertCompletionConfirmed,
   assertBaseRevision as assertRoadmapBaseRevision,
   assertCommittable,
   committedRoadmap,
@@ -446,6 +446,7 @@ export async function moveCard(input: {
   afterId?: string | null | undefined;
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
+  completionConfirmed?: boolean | undefined;
 }): Promise<PlanbanResolvedState> {
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "moveCard", input)).state;
@@ -456,6 +457,7 @@ export async function moveCard(input: {
   if (!item) throw new PlanbanNotFoundError(`Card not found: ${input.cardId}`);
   await assertCardsHoldNoFiles(state.planningRoot, [item]);
   const change = planMoveCard(state.roadmap, input, { now: nowIso() });
+  assertCompletionConfirmed(state.roadmap, change.roadmap, input.actor, input.completionConfirmed);
   const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   return { ...state, roadmap };
   });
@@ -520,6 +522,8 @@ export async function reorderCards(input: {
   cwd: string;
   items: Array<{ id: string; status: PlanbanStatus }>;
   baseRevision?: number | undefined;
+  actor?: PlanbanHistoryActor | undefined;
+  completionConfirmed?: boolean | undefined;
 }): Promise<PlanbanResolvedState> {
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "reorderCards", input)).state;
@@ -527,6 +531,7 @@ export async function reorderCards(input: {
   const state = await loadState(input.cwd);
   assertBaseRevision(state, input.baseRevision);
   const change = planReorderCards(state.roadmap, input, { now: nowIso() });
+  assertCompletionConfirmed(state.roadmap, change.roadmap, input.actor, input.completionConfirmed);
   const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   return { ...state, roadmap };
   });
@@ -547,6 +552,7 @@ export async function createCard(input: {
   actor?: PlanbanHistoryActor | undefined;
   parentId?: string | null | undefined;
   baseRevision?: number | undefined;
+  completionConfirmed?: boolean | undefined;
 }): Promise<PlanbanResolvedState & { createdCard: PlanbanRoadmapItem }> {
   const online = await onlineManifest(input.cwd);
   if (online) {
@@ -560,6 +566,7 @@ export async function createCard(input: {
     now: nowIso(),
     isIdReserved: await reservedItemIds(state.planningRoot),
   });
+  assertCompletionConfirmed(state.roadmap, change.roadmap, input.actor, input.completionConfirmed);
   if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, input.title.trim(), "spec");
   if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, input.title.trim(), "plan");
   await mkdir(itemRoot(state.planningRoot, change.cardId), { recursive: true });
@@ -581,6 +588,7 @@ export async function createGroup(input: {
   planMarkdown?: string | undefined;
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
+  completionConfirmed?: boolean | undefined;
 }): Promise<PlanbanResolvedState & { createdGroup: PlanbanRoadmapItem }> {
   const online = await onlineManifest(input.cwd);
   if (online) {
@@ -594,6 +602,7 @@ export async function createGroup(input: {
       now: nowIso(),
       isIdReserved: await reservedItemIds(state.planningRoot),
     });
+    assertCompletionConfirmed(state.roadmap, change.roadmap, input.actor, input.completionConfirmed);
     if (input.specMarkdown !== undefined) checkIndexDocument(input.specMarkdown, input.title.trim(), "spec");
     if (input.planMarkdown !== undefined) checkIndexDocument(input.planMarkdown, input.title.trim(), "plan");
     await mkdir(itemRoot(state.planningRoot, change.groupId), { recursive: true });
@@ -610,6 +619,7 @@ export async function createCards(input: {
   parentId?: string | null | undefined;
   baseRevision?: number | undefined;
   actor?: PlanbanHistoryActor | undefined;
+  completionConfirmed?: boolean | undefined;
   writeSpecFile?: ((path: string, markdown: string) => Promise<void>) | undefined;
 }): Promise<PlanbanResolvedState & { createdCards: PlanbanRoadmapItem[] }> {
   const online = await onlineManifest(input.cwd);
@@ -625,6 +635,7 @@ export async function createCards(input: {
       now: nowIso(),
       isIdReserved: await reservedItemIds(state.planningRoot),
     });
+    assertCompletionConfirmed(state.roadmap, change.roadmap, input.actor, input.completionConfirmed);
     const transactionRoot = join(state.planningRoot, ".transactions", `create-cards-${randomUUID()}`);
     const publishedRoots: string[] = [];
     const writeSpecFile = input.writeSpecFile ?? atomicWriteFile;
@@ -948,12 +959,14 @@ export async function restoreBoardVersion(input: {
   version: number;
   actor?: PlanbanHistoryActor | undefined;
   baseRevision?: number | undefined;
+  completionConfirmed?: boolean | undefined;
 }): Promise<PlanbanResolvedState> {
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreBoard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
   const restored = await restoreRoadmapFromHistory({ state, version: input.version, actor: input.actor });
+  assertCompletionConfirmed(state.roadmap, restored, input.actor, input.completionConfirmed);
   const roadmap = await saveRoadmap(state, restored, {
     actor: input.actor ?? "user",
     operation: "history.restore.board",
@@ -970,6 +983,7 @@ export async function restoreCardVersion(input: {
   cardId: string;
   actor?: PlanbanHistoryActor | undefined;
   baseRevision?: number | undefined;
+  completionConfirmed?: boolean | undefined;
 }): Promise<PlanbanResolvedState> {
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "restoreCard", input)).state;
@@ -980,10 +994,9 @@ export async function restoreCardVersion(input: {
   const roadmapItems = existing
     ? state.roadmap.roadmapItems.map((item) => (item.id === input.cardId ? restoredCard : item))
     : [...state.roadmap.roadmapItems, restoredCard];
-  const roadmap = await saveRoadmap(state, {
-    ...state.roadmap,
-    roadmapItems: normalizeColumnPriorities(roadmapItems),
-  }, {
+  const candidate = { ...state.roadmap, roadmapItems: normalizeColumnPriorities(roadmapItems) };
+  assertCompletionConfirmed(state.roadmap, candidate, input.actor, input.completionConfirmed);
+  const roadmap = await saveRoadmap(state, candidate, {
     actor: input.actor ?? "user",
     operation: "history.restore.card",
     summary: `Restored ${restoredCard.title} from v${input.version}`,

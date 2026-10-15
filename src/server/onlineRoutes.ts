@@ -12,7 +12,10 @@ import { boardPath, onlineRequest, requireCredentials } from "../core/online/cli
 import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { knownStaleCopy } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
-import { AccountInUseError, liveAccount } from "../core/online/accounts";
+import { AccountInUseError, liveAccount, rememberIdentity } from "../core/online/accounts";
+
+/** Services this server has already asked for a missing email. */
+const askedWho = new Set<string>();
 import {
   attachOnline, keepSeparateBoard, moveState, previewTakeOnline, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
 } from "../core/online/transfers";
@@ -101,7 +104,15 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       const repoId = req.params.repoId;
       const cwd = await deps.resolveBoardCwd(repoId);
       const manifest = await readManifest(cwd);
-      const services = (await readCredentials()).services;
+      let services = (await readCredentials()).services;
+      // A sign-in from before emails were kept: for an online board (a local
+      // board never contacts the service), ask once per run of this server.
+      const online = manifest?.storage?.kind === "online" ? manifest.storage.url : null;
+      if (online && services[online] && !services[online].email && !askedWho.has(online)) {
+        askedWho.add(online);
+        await rememberIdentity(online, 1).catch(() => undefined);
+        services = (await readCredentials()).services;
+      }
       const signedIn = Object.keys(services);
       const job = [...jobs.values()].filter((entry) => entry.repoId === repoId).at(-1);
       // Who each service is signed in as here, for "Signed in as" (owner request, 15 October 2026).

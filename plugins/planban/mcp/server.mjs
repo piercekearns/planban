@@ -607,6 +607,7 @@ const tools = [
       position: { type: "string", enum: ["top", "bottom"], description: "Insert at top or bottom of the target status column." },
       afterId: { type: "string", description: "Optional card id to insert after in the target status column." },
       parentId: { type: "string", description: "Optional existing Group id. Creates an owned Item." },
+      completionConfirmed: { type: "boolean", description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["title"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -625,6 +626,7 @@ const tools = [
       anchorId: { type: "string", description: "Initial Item whose Main Board position the Group takes." },
       specMarkdown: { type: "string", description: "Optional initial Group spec markdown." },
       planMarkdown: { type: "string", description: "Optional initial Group plan markdown." },
+      completionConfirmed: { type: "boolean", description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["title"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -638,6 +640,7 @@ const tools = [
       titles: { type: "array", items: { type: "string" }, description: "One or more Work Item titles." },
       status: { type: "string", enum: [...PLANBAN_STATUSES], description: "Initial status. Defaults to pending." },
       parentId: { type: "string", description: "Optional parent Group id." },
+      completionConfirmed: { type: "boolean", description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review." },
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
     }, ["titles"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -667,7 +670,7 @@ const tools = [
       baseRevision: { type: "number", description: "Roadmap revision you last read, for stale-write protection. Optional on local boards; required on Online Boards." },
       completionConfirmed: {
         type: "boolean",
-        description: "Required true when moving a card to complete.",
+        description: "Required true when this would put a card in complete: only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review.",
       },
     }, ["cardId"]),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -932,6 +935,7 @@ async function callToolImpl(name, args) {
       parentId: optionalString(args.parentId, "parentId"),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
+      completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     const notes = metadataNotes(state.createdCard);
     return await boardResult(withLine(`Created Planban card ${state.createdCard.id}.`, notes[0]), state.manifest.repoId, {
@@ -949,6 +953,7 @@ async function callToolImpl(name, args) {
       status: optionalStatus(args.status, "status"),
       parentId: optionalString(args.parentId, "parentId"),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent",
+      completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     return await boardResult(`Created ${state.createdCards.length} Planban cards.`, state.manifest.repoId, { ...compactBoardSummary(state), cards: state.createdCards });
   }
@@ -969,6 +974,7 @@ async function callToolImpl(name, args) {
       planMarkdown: args.planMarkdown === undefined ? undefined : requireText(args.planMarkdown, "planMarkdown"),
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
+      completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     return await boardResult(`Created Group ${state.createdGroup.id} with ${itemIds.length} Items.`, state.manifest.repoId, {
       ...compactBoardSummary(state),
@@ -983,9 +989,6 @@ async function callToolImpl(name, args) {
     if (status === undefined && parentId === undefined && afterId === undefined) {
       throw new Error("Provide status, parentId, or afterId.");
     }
-    if (status === "complete" && !optionalBoolean(args.completionConfirmed, "completionConfirmed")) {
-      throw new Error("completionConfirmed must be true when moving a card to complete.");
-    }
     const state = await moveCard({
       cwd: await cwdFromArgs(args),
       cardId: requireString(args.cardId, "cardId"),
@@ -994,6 +997,7 @@ async function callToolImpl(name, args) {
       afterId,
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"),
       actor: "agent",
+      completionConfirmed: optionalBoolean(args.completionConfirmed, "completionConfirmed") === true,
     });
     const card = findCard(state, requireString(args.cardId, "cardId"));
     return await boardResult(`Moved Planban card ${card.id} to ${card.status}.`, state.manifest.repoId, {

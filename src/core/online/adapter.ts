@@ -36,7 +36,11 @@ export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManif
 
 export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectManifest, op: string, input: { cwd: string; idempotencyKey?: string | undefined }) {
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
-  const { cwd: _cwd, idempotencyKey, ...body } = input;
+  const { cwd: _cwd, idempotencyKey, ...rest } = input as { cwd: string; idempotencyKey?: string | undefined; actor?: unknown };
+  // As on a local board, an edit that doesn't say who made it is the person's
+  // own (the board page); agent tools always say "agent", so the service
+  // applies the person's agent setting and the completion rule to them.
+  const body = { ...rest, actor: rest.actor ?? "user" };
   // One key per logical edit: a retry after a lost response cannot apply it twice.
   const response = await onlineRequest<{ roadmap: PlanbanRoadmap; result: T; replayed?: boolean; originalRevision?: number }>(manifest.storage.url, boardPath(manifest.storage.boardId, `/ops/${op}`), body,
     { idempotencyKey: idempotencyKey ?? randomUUID() });

@@ -81,6 +81,24 @@ export function assertBaseRevision(roadmap: PlanbanRoadmap, baseRevision?: numbe
   }
 }
 
+/** Cards an edit would newly put in complete (current versus candidate roadmap). */
+export function newlyCompleted(before: PlanbanRoadmap, after: PlanbanRoadmap) {
+  const previous = new Map(before.roadmapItems.map((item) => [item.id, item.status]));
+  return after.roadmapItems.filter((item) => item.status === "complete" && previous.get(item.id) !== "complete");
+}
+
+export const COMPLETION_CONFIRMATION_MESSAGE = "completionConfirmed must be true when this would put a card in complete (on the command line, --completion-confirmed). Only do this when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review.";
+
+/**
+ * Complete is person-controlled: an agent's edit that would complete a card,
+ * by any route (move, create, reorder, restore), states that a person
+ * confirmed it. A person's own edits need no confirmation.
+ */
+export function assertCompletionConfirmed(before: PlanbanRoadmap, after: PlanbanRoadmap, actor: string | undefined, completionConfirmed: unknown) {
+  if (actor !== "agent" || completionConfirmed === true) return;
+  if (newlyCompleted(before, after).length) throw new PlanbanValidationError(COMPLETION_CONFIRMATION_MESSAGE);
+}
+
 export function defaultColumns() {
   return PLANBAN_STATUSES.map((id) => ({ id, label: STATUS_LABELS[id] }));
 }

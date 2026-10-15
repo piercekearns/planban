@@ -58,17 +58,37 @@ export async function saveCredentials(url: string, credentials: OnlineCredential
     const key = serviceUrl(url);
     if (credentials) file.services[key] = credentials;
     else delete file.services[key];
-    const root = credentialsRoot();
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    const temp = join(root, `.credentials-${randomUUID()}.tmp`);
-    try {
-      await writeFile(temp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-      await chmod(temp, 0o600);
-      await rename(temp, join(root, "credentials.json"));
-    } finally {
-      await rm(temp, { force: true });
-    }
+    await writeCredentialsFile(file);
   });
+}
+
+/**
+ * Adds facts about a sign-in (who it is) only if that same sign-in is still
+ * the one saved: a slow answer about an earlier sign-in never lands on a newer one.
+ */
+export async function updateSignedIn(url: string, accessToken: string, facts: Pick<OnlineCredentials, "person" | "email">) {
+  return withCredentialsLock(async () => {
+    const file = await readCredentials();
+    const key = serviceUrl(url);
+    const current = file.services[key];
+    if (!current || current.accessToken !== accessToken) return false;
+    file.services[key] = { ...current, ...Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) };
+    await writeCredentialsFile(file);
+    return true;
+  });
+}
+
+async function writeCredentialsFile(file: CredentialsFile) {
+  const root = credentialsRoot();
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const temp = join(root, `.credentials-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    await chmod(temp, 0o600);
+    await rename(temp, join(root, "credentials.json"));
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 
 export async function onlineStatus() {
