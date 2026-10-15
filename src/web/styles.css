@@ -6071,7 +6071,20 @@ button.web-step-box { cursor: pointer; }
 .web-account-who b { display: block; color: var(--text); font-size: 13px; font-weight: 600; }
 .web-signed-in { margin: 14px 0 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); padding: 9px 12px; font-size: 13px; overflow-wrap: anywhere; }
 .web-toast { position: fixed; left: 50%; bottom: 24px; z-index: 60; transform: translateX(-50%); border-radius: 999px; background: var(--text); color: var(--bg); padding: 8px 16px; font-size: 13px; box-shadow: 0 8px 24px rgba(0, 0, 0, .14); }
-.web-wrap.narrow.web-signin { max-width: 444px; margin-top: 40px; }
+/* Signed out (owner feedback, 15 October 2026): what Planban online is beside the form; stacked on a phone. */
+.web-signin-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 56px; align-items: start; max-width: 940px; margin: 0 auto; padding: 64px 28px 48px; }
+.web-signin-intro { padding-top: 6px; }
+.web-signin-mark { display: block; margin: 0 0 18px; }
+@media (prefers-color-scheme: dark) { .web-signin-mark { filter: invert(1); } }
+.web-signin-intro h2 { margin: 0 0 12px; font-size: 34px; line-height: 1.12; font-weight: 650; letter-spacing: -.8px; }
+.web-signin-intro > p { margin: 0 0 22px; max-width: 440px; color: var(--text-muted); font-size: 15.5px; line-height: 1.6; }
+.web-signin-intro ul { display: grid; gap: 10px; margin: 0 0 26px; padding: 0; list-style: none; font-size: 14px; }
+.web-signin-intro li { display: flex; align-items: center; gap: 10px; }
+.web-signin-intro li svg { flex: none; color: var(--text-muted); }
+.web-signin-intro .web-signin-local { margin: 0; padding-top: 18px; border-top: 1px solid var(--border); font-size: 13px; }
+.web-signin-intro a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.web-signin { min-width: 0; }
+.web-signin-reason { margin: 0 0 14px; }
 .web-signin-note { margin: 12px 0 0; color: var(--text-muted); font-size: 12.5px; text-align: center; }
 .web-signin-note + .web-signin-note { margin-top: 4px; }
 .web-code-compare { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); padding: 10px 12px; font-size: 12.5px; color: var(--text-muted); }
@@ -6079,7 +6092,7 @@ button.web-step-box { cursor: pointer; }
 @media (max-width: 640px) {
   .web-apphead { padding: 10px 12px; }
   .web-wrap { margin: 12px auto; padding: 0 12px 32px; }
-  .web-wrap.narrow.web-signin { margin-top: 24px; }
+
   .web-h { font-size: 17px; }
   .web-row { padding: 11px 12px; }
   .web-row-arrow, .web-needs { display: none; }
@@ -6145,3 +6158,11 @@ button.web-step-box { cursor: pointer; }
   .new-board-modal .new-board-cancel { display: none; }
 }
 .online-board-button.danger-text { color: var(--red-500); }
+@media (max-width: 860px) {
+  .web-signin-layout { grid-template-columns: minmax(0, 1fr); gap: 22px; max-width: 460px; padding: 24px 16px 40px; }
+  .web-signin-mark { width: 30px; height: 30px; margin-bottom: 12px; }
+  .web-signin-intro h2 { font-size: 25px; letter-spacing: -.5px; }
+  .web-signin-intro > p { margin-bottom: 0; font-size: 14.5px; }
+  /* On a phone the form comes straight after the one line; the points wait below it. */
+  .web-signin-intro ul, .web-signin-intro .web-signin-local { display: none; }
+}

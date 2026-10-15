@@ -17,6 +17,7 @@ import { webConfigResponse, authorizationResponse, registrationResponse, consent
 import { MACHINE_CLIENT_ID } from "./oauth";
 import { authenticateApiRequest, webSessionResponse, webSignOutResponse } from "./model/webAuth";
 import { deviceAuthorizationResponse, deviceDecision, devicePreview } from "./model/deviceFlow";
+import { clerkWebhookResponse } from "./model/signInEmail";
 
 const STATUS_FOR: Record<ServiceErrorData["code"], number> = {
   rate_limited: 429,
@@ -505,6 +506,8 @@ http.route({ path: "/oauth/machine/launch", method: "GET", handler: httpAction(a
 http.route({ path: "/oauth/machine/cancel", method: "POST", handler: httpAction(atServiceOnly(machineCancelResponse)) });
 http.route({ path: "/oauth/validity", method: "POST", handler: httpAction(atServiceOnly(consentValidityResponse)) });
 http.route({ path: "/oauth/approve", method: "POST", handler: httpAction(atServiceOnly(approvalResponse)) });
+// Clerk's email.created webhook, straight to the service (signed through Svix): Planban's own sign-in emails.
+http.route({ path: "/clerk/webhook", method: "POST", handler: httpAction(async (_ctx, request) => clerkWebhookResponse(request)) });
 http.route({ path: "/.well-known/planban.json", method: "GET", handler: serviceDiscovery });
 http.route({ path: "/.well-known/oauth-authorization-server", method: "GET", handler: authorizationServerDiscovery });
 http.route({ pathPrefix: "/invite/", method: "GET", handler: httpAction(atServiceOnly(invitePageResponse)) });

@@ -3,7 +3,7 @@
 // first-run checklist and waiting invitations, invitations, one-tap approval
 // of an agent's sign-in, and the account menu.
 import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronRight, Copy, Loader2, Plus } from "lucide-react";
+import { Bot, Check, ChevronRight, Copy, Loader2, Plus, Smartphone, Users } from "lucide-react";
 import { ConnectionsModal, NewBoardModal } from "./onlineBoard";
 import { pageFetch } from "./transport";
 import { Wordmark } from "./Wordmark";
@@ -129,6 +129,10 @@ function AppHeader() {
 /** Log in or sign up (approved mockup section 5): Clerk's own sign-in, then this browser's Planban session. */
 export function SignInPage() {
   const next = safeNext(new URLSearchParams(window.location.search).get("next"));
+  // Why the person is here, when it isn't simply arriving: their sign-in ended, or a link to a board.
+  const reason = new URLSearchParams(window.location.search).get("ended") === "1"
+    ? "Your sign-in ended after 7 days. Log in again to carry on where you were."
+    : next.startsWith("/boards/") ? "Log in to open the board you followed a link to." : null;
   const mountRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "finishing" | "unavailable" | "error">("loading");
   const [message, setMessage] = useState<string | null>(null);
@@ -212,7 +216,20 @@ export function SignInPage() {
         <a href="https://planban.ai" aria-label="Planban"><Wordmark /></a>
         <span className="web-apphead-right"><a className="web-apphead-link" href="https://planban.ai">planban.ai</a></span>
       </header>
-      <div className="web-wrap narrow web-signin">
+      <div className="web-signin-layout">
+      {/* What Planban online is, beside the form (owner feedback, 15 October 2026: the bare form felt "v bare bones"). */}
+      <section className="web-signin-intro" aria-labelledby="signin-pitch">
+        <img className="web-signin-mark" src="/assets/card-stack-black.svg" alt="" width="40" height="40" />
+        <h2 id="signin-pitch">One board for you and your agents.</h2>
+        <p>Planban online keeps a board where everyone can reach it: the people you work with, your phone, and ChatGPT and Claude.</p>
+        <ul>
+          <li><Users size={15} aria-hidden="true" /> Share a board, and choose who can edit it</li>
+          <li><Smartphone size={15} aria-hidden="true" /> Open it in any browser, on any device</li>
+          <li><Bot size={15} aria-hidden="true" /> Your agents read it and keep it up to date</li>
+        </ul>
+        <p className="web-signin-local">Planban on your computer stays free, with no account. <a href="https://planban.ai">See how it works</a></p>
+      </section>
+      <div className="web-signin">
         {/* Clerk shows each step's own title once it's ready (see clerkLook.ts). */}
         {status === "ready" ? null : (
           <>
@@ -220,6 +237,7 @@ export function SignInPage() {
             <p className="web-sub">Free. Your boards stay private until you share them.</p>
           </>
         )}
+        {reason && firstStep ? <p className="web-note web-signin-reason">{reason}</p> : null}
         {status === "unavailable" ? <p className="web-note" role="alert">Sign-in isn't available here yet.</p> : null}
         <div ref={mountRef} className="web-clerk" hidden={status !== "ready"} />
         {status === "ready" && checking ? <p className="web-muted" role="status"><Loader2 size={14} className="spin" /> Checking this browser before creating your account…</p> : null}
@@ -236,6 +254,7 @@ export function SignInPage() {
             <p className="web-signin-note">New here? The same steps create your account.</p>
           </>
         ) : null}
+      </div>
       </div>
     </main>
   );

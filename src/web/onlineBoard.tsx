@@ -8,7 +8,6 @@ import { Bot, Check, Cloud, Copy, Globe, Info, KeyRound, Laptop, Link, Loader2, 
 import { capabilities } from "./capabilities";
 import { pageFetch } from "./transport";
 import { Dropdown } from "./Dropdown";
-import { Wordmark } from "./Wordmark";
 
 export interface MoveProgress {
   step: "prepare" | "copy" | "switch" | "files" | "done";
@@ -102,22 +101,16 @@ export function webSignInPath(returnTo = `${window.location.pathname}${window.lo
   return `/sign-in?next=${encodeURIComponent(returnTo)}`;
 }
 
-/** On the web: no error and no command, just Log in, which returns to this board. */
+/**
+ * On the web, signed out means the sign-in page, straight away (owner
+ * feedback, 15 October 2026): it comes back here afterwards, and says why
+ * when a sign-in has ended.
+ */
 function WebSignedOutScreen({ signedOut }: { signedOut: SignedOut }) {
-  return (
-    <main className="web-screen">
-      <header className="web-apphead">
-        <a href="https://planban.ai" aria-label="Planban"><Wordmark /></a>
-      </header>
-      <div className="web-wrap narrow">
-        <div className="web-panel web-card">
-          <h1 className="web-h">{signedOut.reason === "expired" ? "Your Planban sign-in has ended." : "You're signed out of Planban."}</h1>
-          <p className="web-sub">Log in to open this board.</p>
-          <button className="web-button dark" onClick={() => window.location.assign(webSignInPath())}>Log in</button>
-        </div>
-      </div>
-    </main>
-  );
+  useEffect(() => {
+    window.location.replace(`${webSignInPath()}${signedOut.reason === "expired" ? "&ended=1" : ""}`);
+  }, [signedOut.reason]);
+  return null;
 }
 
 function ComputerSignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedOut; onSignedIn: () => void }) {
