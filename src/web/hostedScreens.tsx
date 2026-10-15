@@ -110,7 +110,9 @@ export function AccountMenu() {
           <button role="menuitem" tabIndex={-1} onClick={() => { close(false); setConnections(true); }}>Connections</button>
           <button role="menuitem" tabIndex={-1} onClick={() => void signOut()}>Sign out</button>
           {error ? <p className="web-account-note" role="alert">{error}</p> : null}
-          <button role="menuitem" tabIndex={-1} className="web-account-quiet" onClick={() => { close(false); setDeleting(true); }}>Delete account</button>
+          {/* Destructive, so set apart: last, below a divider, in red (owner feedback, 15 October 2026). */}
+          <div className="web-account-divider" role="separator" />
+          <button role="menuitem" tabIndex={-1} className="web-account-danger" onClick={() => { close(false); setDeleting(true); }}>Delete account</button>
         </div>
       ) : null}
       {connections ? <ConnectionsModal onClose={() => { setConnections(false); triggerRef.current?.focus(); }} /> : null}
@@ -131,7 +133,7 @@ export function deleteAccountMailto(email: string | null) {
 function DeleteAccountDialog({ email, onClose }: { email: string | null; onClose: () => void }) {
   return (
     <Modal eyebrow="Your account" title="Delete your account" onClose={onClose} className="web-delete-account"
-      footer={<><button onClick={onClose}>Cancel</button><a className="primary update-now-action web-delete-account-email" href={deleteAccountMailto(email)} onClick={onClose}>Email hello@planban.ai</a></>}>
+      footer={<><button onClick={onClose}>Cancel</button><a className="web-danger-primary web-delete-account-email" href={deleteAccountMailto(email)} onClick={onClose}>Email hello@planban.ai</a></>}>
       <div className="online-board-section">
         <p className="web-delete-account-text">Deleting your account removes the boards you own, for everyone on them. Your edits on other people's boards stay, without your name. Email us and it's done within 30 days.</p>
       </div>

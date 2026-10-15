@@ -17,7 +17,9 @@ test("the email goes to hello@planban.ai with the subject and the account's addr
 test("the profile menu has the quiet link, not the old paragraph, and the dialog says what goes", async () => {
   const source = await readFile(new URL("../src/web/hostedScreens.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /To delete your account, email/);
-  assert.match(source, /className="web-account-quiet".*>Delete account<\/button>/);
+  // Last, below a divider, after Sign out, in the destructive style.
+  assert.match(source, />Sign out<\/button>[\s\S]*web-account-divider[\s\S]*className="web-account-danger".*>Delete account<\/button>\s*<\/div>/);
+  assert.match(source, /className="web-danger-primary web-delete-account-email"/);
   assert.match(source, /removes the boards you own, for everyone on them\. Your edits on other people's boards stay, without your name\. Email us and it's done within 30 days\./);
   assert.match(source, />Email hello@planban\.ai</);
   assert.match(source, />Cancel</);

@@ -6072,8 +6072,15 @@ button.web-step-box { cursor: pointer; }
 .web-account-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 220px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 5px; box-shadow: 0 8px 24px rgba(0, 0, 0, .08); }
 .web-account-menu button { display: block; width: 100%; border: 0; border-radius: 6px; background: none; padding: 7px 9px; color: var(--text); font: 13px var(--font-sans); text-align: left; cursor: pointer; }
 .web-account-menu button:hover, .web-account-menu button:focus-visible { background: var(--surface-subtle); }
-.web-account-menu button.web-account-quiet { margin-top: 2px; color: var(--text-muted); font-size: 11.5px; padding: 5px 9px; }
+/* Destructive actions: red text and hover, a red confirm button; checked for contrast in light and dark. */
+:root { --danger-text: #b42318; --danger-tint: rgba(180, 35, 24, .08); --danger-fill: #b42318; --danger-fill-hover: #912018; --danger-on-fill: #ffffff; }
+@media (prefers-color-scheme: dark) { :root { --danger-text: #ff8a80; --danger-tint: rgba(255, 138, 128, .14); --danger-fill: #c62828; --danger-fill-hover: #a51f1f; } }
+.web-account-divider { height: 1px; margin: 4px 0; background: var(--border); }
+.web-account-menu button.web-account-danger { color: var(--danger-text); }
+.web-account-menu button.web-account-danger:hover, .web-account-menu button.web-account-danger:focus-visible { background: var(--danger-tint); color: var(--danger-text); }
 .web-delete-account-text { margin: 0; font: 400 13px/20px var(--font-sans); }
+a.web-danger-primary { background: var(--danger-fill); color: var(--danger-on-fill); }
+a.web-danger-primary:hover, a.web-danger-primary:focus-visible { background: var(--danger-fill-hover); color: var(--danger-on-fill); }
 a.web-delete-account-email { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; border: 1px solid transparent; border-radius: 7px; padding: 6px 12px; font-size: 12px; font-weight: 500; line-height: 16px; text-decoration: none; white-space: nowrap; }
 .web-account-who, .web-account-note { margin: 6px 9px; color: var(--text-muted); font-size: 11.5px; overflow-wrap: anywhere; }
 /* Who is signed in, above a line (approved mockup section 7, account menu). */
