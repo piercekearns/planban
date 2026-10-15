@@ -18,19 +18,25 @@ export function appName(raw: string | undefined | null) {
   return name.slice(0, 40) || "An agent";
 }
 
+/** Within this long, another touch by the same agent writes nothing: reads stay cheap and don't contend. */
+const TOUCH_EVERY_MS = 60 * 1000;
+
+/**
+ * One row per agent (its sign-in and app) per card: two apps on one
+ * computer's sign-in are two agents. Only the agent's own row is read and
+ * written, and at most once a minute.
+ */
 export async function touchPresence(ctx: MutationCtx, at: BoardRows, entry: { cardId: string; connectionId: Id<"connections">; userId: string; app: string }, now = Date.now()) {
-  const rows = await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", entry.cardId)).collect();
-  for (const row of rows) {
-    if (row.connectionId !== entry.connectionId && now - row.lastActiveAt > PRESENCE_MS) await ctx.db.delete(row._id);
-  }
-  const mine = rows.find((row) => row.connectionId === entry.connectionId);
+  const mine = (await ctx.db.query("presence").withIndex("by_agent", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", entry.cardId).eq("connectionId", entry.connectionId)).collect())
+    .find((row) => row.app === entry.app);
   if (!mine) {
     await ctx.db.insert("presence", { ...at, ...entry, startedAt: now, lastActiveAt: now });
-  } else {
-    // A gap longer than the heads-up lasts starts a new stretch of work.
-    const fresh = now - mine.lastActiveAt > PRESENCE_MS;
-    await ctx.db.patch(mine._id, { app: entry.app, lastActiveAt: now, ...(fresh ? { startedAt: now } : {}) });
+    return;
   }
+  if (now - mine.lastActiveAt < TOUCH_EVERY_MS) return;
+  // A gap longer than the heads-up lasts starts a new stretch of work.
+  const fresh = now - mine.lastActiveAt > PRESENCE_MS;
+  await ctx.db.patch(mine._id, { lastActiveAt: now, ...(fresh ? { startedAt: now } : {}) });
 }
 
 export interface Working {
@@ -42,13 +48,13 @@ export interface Working {
 }
 
 /** Who is working on each card now (or on one card), leaving out `except` (the asker). */
-export async function workingOn(ctx: QueryCtx, at: BoardRows, options: { cardId?: string; except?: string } = {}, now = Date.now()) {
+export async function workingOn(ctx: QueryCtx, at: BoardRows, options: { cardId?: string; except?: { connectionId: string; app: string } } = {}, now = Date.now()) {
   const rows = options.cardId
     ? await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", options.cardId!)).collect()
     : await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).collect();
   const byCard: Record<string, Working[]> = {};
   for (const row of rows) {
-    if (now - row.lastActiveAt > PRESENCE_MS || row.connectionId === options.except) continue;
+    if (now - row.lastActiveAt > PRESENCE_MS || (row.connectionId === options.except?.connectionId && row.app === options.except.app)) continue;
     (byCard[row.cardId] ??= []).push({ userId: row.userId, app: row.app, startedAt: new Date(row.startedAt).toISOString(), lastActiveAt: new Date(row.lastActiveAt).toISOString(), connectionId: row.connectionId });
   }
   return byCard;

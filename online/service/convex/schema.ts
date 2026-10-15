@@ -83,7 +83,7 @@ export default defineSchema({
     app: v.string(),
     startedAt: v.number(),
     lastActiveAt: v.number(),
-  }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_user", ["userId"]),
+  }).index("by_board_card", ["boardId", "generation", "cardId"]).index("by_agent", ["boardId", "generation", "cardId", "connectionId"]).index("by_user", ["userId"]),
 
   unresolvedChanges: defineTable({
     boardId: v.string(),

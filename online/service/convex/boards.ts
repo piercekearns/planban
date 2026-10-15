@@ -161,16 +161,18 @@ async function requireBaseRevision(ctx: QueryCtx, at: BoardRows, current: Planba
   const changes = await describeChanges(ctx, await recentEntries(ctx, at, (entry) => entry.roadmapRevision <= base), base);
   const clashes = rebased && "clashes" in rebased ? rebased.clashes : undefined;
   const clashCards = new Set(clashes?.map((clash) => clash.cardId));
-  // Who changed the very field that clashes comes first (never someone who changed another field of the card).
-  if (clashes && read) {
-    const authors = await fieldAuthors(ctx, at, read, base, clashes);
-    const listed = new Set(changes.map((change) => change.version));
-    changes.unshift(...authors.filter((change) => !listed.has(change.version)));
-    changes.sort((a, b) => (authors.some((author) => author.version === b.version) ? 1 : 0) - (authors.some((author) => author.version === a.version) ? 1 : 0));
+  // Who changed the very field that clashes is named, never someone who changed another field of the card.
+  const authors = clashes && read ? await fieldAuthors(ctx, at, read, base, clashes, (await ctx.db.query("boards").withIndex("by_boardId", (q) => q.eq("boardId", at.boardId)).unique())?.historyVersion ?? 0) : [];
+  if (clashes) {
+    // Recent changes to the clashing cards that aren't the field's own author are context, not blame.
+    for (let index = changes.length - 1; index >= 0; index -= 1) {
+      if (changes[index]!.cards.some((id) => clashCards.has(id))) changes.splice(index, 1);
+    }
+    changes.unshift(...authors);
   }
   for (const clashCard of clashCards) {
-    // An older change to the clashing card, beyond the recent ones listed: from the card's own last-change record.
-    if (changes.some((change) => change.cards.includes(clashCard))) continue;
+    // Beyond the window history is read in: the card's own last-change record, said as that.
+    if (authors.some((change) => change.cards.includes(clashCard))) continue;
     const last = await ctx.db.query("cardChanges").withIndex("by_board_generation_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", clashCard)).unique();
     // Beyond what history still shows: the card's last change, said as that (it may have been another field).
     if (last) changes.unshift({ at: last.at, by: await personName(ctx, last.userId, last.agent ? last.clientName ?? "" : null), agent: last.agent, summary: `the card's last change: ${last.summary.slice(0, 200)}`, cards: [clashCard], cardLevel: true });
@@ -205,12 +207,15 @@ async function roadmapAtRevision(ctx: QueryCtx, at: BoardRows, revision: number)
  * Who last changed each clashing field since the edit's read: the latest
  * version, among the next 50, whose board shows that field changing.
  */
-async function fieldAuthors(ctx: QueryCtx, at: BoardRows, read: PlanbanRoadmap, base: number, clashes: FieldClash[]) {
+async function fieldAuthors(ctx: QueryCtx, at: BoardRows, read: PlanbanRoadmap, base: number, clashes: FieldClash[], latestVersion: number) {
   const baseVersion = await versionAtRevision(ctx, at, base);
   if (baseVersion === null) return [];
+  // The latest 50 versions since the read: the most recent change to each field is what counts.
+  const from = Math.max(baseVersion, latestVersion - 50);
   const latest = new Map<string, PlanbanHistoryEntry>();
-  let previous = read;
-  for (const { entry, roadmap } of await historyPage(ctx, at, baseVersion, 50)) {
+  let previous = from === baseVersion ? read : await roadmapAtVersion(ctx, at, from);
+  if (!previous) return [];
+  for (const { entry, roadmap } of await historyPage(ctx, at, from, 50)) {
     for (const clash of clashes) {
       const before = previous.roadmapItems.find((item) => item.id === clash.cardId);
       const after = roadmap.roadmapItems.find((item) => item.id === clash.cardId);
@@ -851,7 +856,8 @@ export const run = internalMutation({
       }
     }
     // An agent editing a card is working on it (Spec point 20): a heads-up for others, not a lock.
-    if (attribution.actor === "agent") {
+    // Agents on a computer say so themselves, with their app's name; this covers apps connected to the service.
+    if (attribution.actor === "agent" && !access.connection.canAdminister) {
       for (const cardId of editedCards(input, outcome.result)) {
         await touchPresence(ctx, at, { cardId, connectionId: access.connection._id, userId: access.connection.userId, app: appName(typeof input.agentName === "string" ? input.agentName : access.connection.clientName) });
       }
@@ -882,19 +888,20 @@ export const notePresence = internalMutation({
   args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.string(), agentName: v.optional(v.string()) },
   handler: async (ctx, { connectionId, boardId, cardId, agentName }) => {
     const access = await readableBoard(ctx, connectionId, boardId);
-    const at = live(access.board);
-    if (!(await currentRoadmap(ctx, at)).roadmapItems.some((item) => item.id === cardId)) return { noted: false };
-    await touchPresence(ctx, at, { cardId, connectionId: access.connection._id, userId: access.connection.userId, app: appName(agentName ?? access.connection.clientName) });
+    // A card id's shape only: reading the board here would make every board edit retry this.
+    if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(cardId)) return { noted: false };
+    await touchPresence(ctx, live(access.board), { cardId, connectionId: access.connection._id, userId: access.connection.userId, app: appName(agentName ?? access.connection.clientName) });
     return { noted: true };
   },
 });
 
 /** Who else is working on a card, or on each card, in words for agents. */
 export const working = internalQuery({
-  args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.optional(v.string()) },
-  handler: async (ctx, { connectionId, boardId, cardId }) => {
+  args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.optional(v.string()), agentName: v.optional(v.string()) },
+  handler: async (ctx, { connectionId, boardId, cardId, agentName }) => {
     const access = await readableBoard(ctx, connectionId, boardId);
-    const byCard = await workingOn(ctx, live(access.board), { ...(cardId ? { cardId } : {}), except: access.connection._id });
+    // Leaves out only the asking agent itself: another app on the same sign-in is someone else.
+    const byCard = await workingOn(ctx, live(access.board), { ...(cardId ? { cardId } : {}), except: { connectionId: access.connection._id, app: appName(agentName ?? access.connection.clientName) } });
     const out: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> = {};
     for (const [card, entries] of Object.entries(byCard)) {
       out[card] = [];
@@ -923,9 +930,12 @@ async function keepRefused(ctx: MutationCtx, at: BoardRows, op: string, input: R
   const conflict = data.conflict as unknown as ConflictDetails;
   const cardId = typeof input.cardId === "string" ? input.cardId : conflict.clashes?.[0]?.cardId ?? conflict.document?.cardId;
   if (!cardId) return null;
-  const fields = conflict.clashes?.filter((clash) => clash.cardId === cardId).map((clash) => clash.field)
-    ?? (conflict.section && conflict.document ? [`${conflict.document.kind}:${conflict.section.heading}`]
-      : conflict.document ? [conflict.document.kind] : touchedFields(op, input, current)?.filter((entry) => entry.cardId === cardId).map((entry) => entry.field) ?? ["*"]);
+  // Every field the refused edit wanted is unapplied, not only the ones that clashed.
+  const wanted = touchedFields(op, input, current)?.filter((entry) => entry.cardId === cardId).map((entry) => entry.field) ?? [];
+  const clashing = conflict.clashes?.filter((clash) => clash.cardId === cardId).map((clash) => clash.field) ?? [];
+  const fields = conflict.section && conflict.document ? [`${conflict.document.kind}:${conflict.section.heading}`]
+    : conflict.document ? [conflict.document.kind]
+    : [...new Set([...clashing, ...wanted])];
   const { baseRevision: _base, actor: _actor, idempotencyKey: _key, ...proposed } = input;
   // Kept text follows the same rules and limits as any write: text only, counted toward the day's writes and the board's size.
   try {

@@ -264,7 +264,7 @@ async function boardHandoff(repoId) {
 /** Who else is working on a card, for get_card; this agent is now working on it too. */
 async function workingFor(cwd, cardId) {
   await notePresence({ cwd, cardId, agentName: clientAgentName ?? undefined });
-  const others = await workingOnCard({ cwd, cardId }).catch(() => []);
+  const others = await workingOnCard({ cwd, cardId, agentName: clientAgentName ?? undefined }).catch(() => []);
   return others.length ? { workingOn: others } : {};
 }
 
@@ -1001,7 +1001,7 @@ async function callToolImpl(name, args) {
       cardId: requireString(args.cardId, "cardId"),
       kind: requireDocKind(args.kind),
     });
-    void notePresence({ cwd, cardId: payload.cardId, agentName: clientAgentName ?? undefined });
+    void notePresence({ cwd, cardId: payload.cardId, agentName: clientAgentName ?? undefined }).catch(() => undefined);
     return textResult(
       payload.exists ? `Read ${payload.kind} document for ${payload.cardId}.` : `No ${payload.kind} document exists for ${payload.cardId}.`,
       payload,

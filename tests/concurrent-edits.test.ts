@@ -133,7 +133,7 @@ test("an agent reading or editing a card is seen as working on it, until 15 quie
   await bridge.service.ctx.db.insert("members", { boardId: "roadmap", userId: "ben", role: "editor" });
   // Ana's agent reads the card.
   await storage.notePresence({ cwd, cardId: "alpha", agentName: "claude-code" });
-  assert.deepEqual(await storage.workingOnCard({ cwd, cardId: "alpha" }), [], "an agent doesn't see itself");
+  assert.deepEqual(await storage.workingOnCard({ cwd, cardId: "alpha", agentName: "claude-code" }), [], "an agent doesn't see itself");
 
   // Ben's agent, on another computer's sign-in, sees it.
   await onlineLogin(bridge.url, { devUser: "ben", switchAccount: true });
@@ -150,12 +150,21 @@ test("an agent reading or editing a card is seen as working on it, until 15 quie
   assert.deepEqual(await storage.workingOnCard({ cwd, cardId: "alpha" }), []);
 });
 
-test("an agent's edit marks it as working on the card too", async () => {
+test("two apps on one computer's sign-in see each other working on a card, each not itself", async () => {
   const cwd = await onlineBoard("Alpha");
-  await bridge.service.ctx.db.insert("members", { boardId: "roadmap", userId: "ben", role: "editor" });
-  await storage.updateCard({ cwd, cardId: "alpha", summary: "Ana's agent", baseRevision: (await storage.loadState(cwd)).roadmap.revision, actor: agent });
-  await onlineLogin(bridge.url, { devUser: "ben", switchAccount: true });
-  assert.match((await storage.workingOnCard({ cwd, cardId: "alpha" }))[0]!.note, /^Planban CLI \(Ana\) is working on this card, started just now\.$/);
+  await storage.notePresence({ cwd, cardId: "alpha", agentName: "claude-code" });
+  await storage.notePresence({ cwd, cardId: "alpha", agentName: "codex-mcp-client" });
+  assert.deepEqual((await storage.workingOnCard({ cwd, cardId: "alpha", agentName: "claude-code" })).map((entry) => entry.who), ["Codex (Ana)"]);
+  assert.deepEqual((await storage.workingOnCard({ cwd, cardId: "alpha", agentName: "codex-mcp-client" })).map((entry) => entry.who), ["Claude (Ana)"]);
+});
+
+test("a refused edit keeps every field it wanted, not only the one that clashed", async () => {
+  const cwd = await onlineBoard("Alpha");
+  const read = await revisionOf(cwd);
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "Theirs", baseRevision: read, actor: agent });
+  await refusal(storage.updateCard({ cwd, cardId: "alpha", summary: "Mine", nextAction: "Also mine", baseRevision: read, actor: agent }));
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "Reconsidered", baseRevision: await revisionOf(cwd), actor: agent });
+  assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes.map((change) => change.fields), [["nextAction"]], "the next action it wanted still waits");
 });
 
 const changeIdOf = (report: { details?: unknown }) => (report.details as { conflict: { unresolvedChange: string } }).conflict.unresolvedChange;
@@ -247,4 +256,14 @@ test("two agents editing different sections of a Spec both land; the same sectio
   const now = (await storage.readDocSections({ cwd, cardId: "alpha", kind: "spec" })).sections.find((section) => section.heading === "Purpose")!.version;
   await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Purpose", expectedSectionVersion: now, markdown: "## Purpose\n\nWhy, sharper, and my point.", actor: agent });
   assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes, []);
+});
+
+test("after many unrelated changes, a clash still never blames whoever changed another field of the card", async () => {
+  const cwd = await onlineBoard("Alpha", "Beta");
+  const read = await revisionOf(cwd);
+  for (let i = 0; i < 51; i += 1) await storage.updateCard({ cwd, cardId: "beta", summary: `Beta ${i}`, baseRevision: await revisionOf(cwd), actor: agent });
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "The agent's", baseRevision: await revisionOf(cwd), actor: agent });
+  await storage.updateCard({ cwd, cardId: "alpha", nextAction: "Ana's", baseRevision: await revisionOf(cwd) });
+  const report = await refusal(storage.updateCard({ cwd, cardId: "alpha", summary: "Mine", baseRevision: read, actor: agent }));
+  assert.match(report.message, /^Not saved: Ana's agent \(Planban CLI\) changed the summary of card "Alpha"/);
 });

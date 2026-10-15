@@ -1018,17 +1018,27 @@ export async function unresolvedChanges(input: { cwd: string; cardId?: string | 
  * activity. Never a lock; best effort, and nothing for a board on this computer.
  */
 export async function notePresence(input: { cwd: string; cardId: string; agentName?: string | undefined }) {
-  const online = await onlineManifest(input.cwd);
-  if (!online || online.storage?.kind !== "online") return { noted: false };
-  return onlineRequest<{ noted: boolean }>(online.storage.url, boardPath(online.storage.boardId, "/presence"), { cardId: input.cardId, ...(input.agentName ? { agentName: input.agentName } : {}) }).catch(() => ({ noted: false }));
+  // Best effort from start to finish: a heads-up must never break or stall the agent's work.
+  try {
+    const online = await onlineManifest(input.cwd);
+    if (!online || online.storage?.kind !== "online") return { noted: false };
+    return await onlineRequest<{ noted: boolean }>(online.storage.url, boardPath(online.storage.boardId, "/presence"), { cardId: input.cardId, ...(input.agentName ? { agentName: input.agentName } : {}) }, { timeoutMs: 5_000 });
+  } catch {
+    return { noted: false };
+  }
 }
 
 /** Who else is working on a card of an online board, in words: "Claude (Sam) is working on this card, started 4 minutes ago." */
-export async function workingOnCard(input: { cwd: string; cardId: string }): Promise<Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> {
-  const online = await onlineManifest(input.cwd);
-  if (!online || online.storage?.kind !== "online") return [];
-  const result = await onlineRequest<{ working: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> }>(online.storage.url, boardPath(online.storage.boardId, `/presence?card=${encodeURIComponent(input.cardId)}`)).catch(() => null);
-  return result?.working[input.cardId] ?? [];
+export async function workingOnCard(input: { cwd: string; cardId: string; agentName?: string | undefined }): Promise<Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> {
+  try {
+    const online = await onlineManifest(input.cwd);
+    if (!online || online.storage?.kind !== "online") return [];
+    const agent = input.agentName ? `&agent=${encodeURIComponent(input.agentName)}` : "";
+    const result = await onlineRequest<{ working: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> }>(online.storage.url, boardPath(online.storage.boardId, `/presence?card=${encodeURIComponent(input.cardId)}${agent}`), undefined, { timeoutMs: 5_000 });
+    return result.working[input.cardId] ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /**
