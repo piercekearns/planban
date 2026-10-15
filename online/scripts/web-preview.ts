@@ -71,7 +71,7 @@ async function seed() {
   const { boardId } = await asPerson(owner.token, "POST", "/api/v1/boards", { title: "Northfold" });
   let revision = 1;
   const card = async (title: string, status: string, nextAction?: string) => {
-    const result = await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title, status, ...(nextAction ? { nextAction } : {}), baseRevision: revision });
+    const result = await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/ops/createCard`, { title, status, ...(nextAction ? { nextAction } : {}), baseRevision: revision, actor: "user" });
     revision = result.roadmap.revision;
     return result.result.createdCard.id as string;
   };
@@ -85,10 +85,17 @@ async function seed() {
   await card("Price the first 300 units", "pending");
   await card("Pick the fabric colourways", "complete");
   await card("Sketch the first vest", "complete");
+  const sessions: Record<string, { connectionId: string }> = {};
   for (const role of ["editor", "viewer"] as const) {
-    await service.signIn(PEOPLE[role].userId, PEOPLE[role].name);
+    sessions[role] = await service.signIn(PEOPLE[role].userId, PEOPLE[role].name);
     await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/members`, { userId: PEOPLE[role].userId, role });
   }
+  // Maya's Claude is working on the pattern grading (Spec point 20): the quiet sign on that card. It stays for the preview.
+  const generation = service.rows.find((row) => row._table === "boards" && row.boardId === boardId).generation;
+  await service.ctx.db.insert("presence", {
+    boardId, generation, cardId: "finish-the-size-2-pattern-grading", connectionId: sessions.editor!.connectionId, userId: PEOPLE.editor.userId,
+    app: "Claude", startedAt: Date.now() - 4 * 60 * 1000, lastActiveAt: Date.now() + 365 * 24 * 60 * 60 * 1000,
+  });
   // Nia has no boards yet, and an email invitation waiting.
   await service.signIn(PEOPLE.newcomer.userId, PEOPLE.newcomer.name);
   await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { email: emailOf(PEOPLE.newcomer.userId), role: "editor" });
