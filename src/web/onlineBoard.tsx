@@ -190,13 +190,13 @@ function useEscape(onClose: () => void) {
   }, [onClose]);
 }
 
-function Modal({ eyebrow, title, onClose, children, footer }: { eyebrow: string; title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode }) {
+function Modal({ eyebrow, title, onClose, children, footer, className }: { eyebrow: string; title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; className?: string }) {
   useEscape(onClose);
   const ref = useRef<HTMLElement>(null);
   useEffect(() => ref.current?.focus(), []);
   return createPortal(
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section ref={ref} className="feedback-modal online-board-modal" role="dialog" aria-modal="true" aria-labelledby="online-board-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={ref} className={`feedback-modal online-board-modal ${className ?? ""}`} role="dialog" aria-modal="true" aria-labelledby="online-board-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <header className="feedback-modal-header">
           <div><p className="eyebrow">{eyebrow}</p><h2 id="online-board-title">{title}</h2></div>
           <button aria-label="Close" className="toolbar-icon-button" onClick={onClose}><X size={14} /></button>
@@ -958,8 +958,8 @@ export function NewBoardModal({ onCreated, onClose }: { onCreated: (repoId: stri
     }
   }
   return (
-    <Modal eyebrow="Your boards" title="New board" onClose={onClose}
-      footer={<><button onClick={onClose}>Cancel</button><button className="primary update-now-action" disabled={busy || !title.trim()} onClick={() => void create()}>{busy ? <Loader2 size={14} className="spin" /> : null} Create board</button></>}>
+    <Modal className="new-board-modal" eyebrow="Your boards" title="New board" onClose={onClose}
+      footer={<><button className="new-board-cancel" onClick={onClose}>Cancel</button><button className="primary update-now-action" disabled={busy || !title.trim()} onClick={() => void create()}>{busy ? <Loader2 size={14} className="spin" /> : null} Create board</button></>}>
       <div className="online-board-body">
         <label className="online-board-label" htmlFor="new-board-name">Name</label>
         <input id="new-board-name" className="online-board-input" value={title} maxLength={120} autoFocus

@@ -6137,3 +6137,10 @@ button.web-step-box { cursor: pointer; }
   /* The invitation sits on the page, with only who is signed in boxed (approved mockup section 9). */
   .web-invite.web-panel { border: 0; background: none; padding: 6px 2px 0; }
 }
+/* New board on a phone is a page of its own (approved mockup section 8): the form at the top and one full-width Create board; the close button leaves. */
+@media (max-width: 640px) {
+  .modal-backdrop:has(> .new-board-modal) { padding: env(safe-area-inset-top) 0 0; background: var(--bg); }
+  .modal-backdrop > .new-board-modal { height: 100%; border: 0; border-radius: 0; box-shadow: none; }
+  .modal-backdrop > .new-board-modal::before { content: none; }
+  .new-board-modal .new-board-cancel { display: none; }
+}
