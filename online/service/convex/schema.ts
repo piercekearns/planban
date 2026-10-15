@@ -177,7 +177,7 @@ export default defineSchema({
     imageUrl: v.optional(v.string()),
     email: v.optional(v.string()),
     updatedAt: v.string(),
-  }).index("by_userId", ["userId"]),
+  }).index("by_userId", ["userId"]).index("by_email", ["email"]),
 
   /**
    * Every credential (a machine sign-in, a remote agent's OAuth grant, a
@@ -247,7 +247,7 @@ export default defineSchema({
   oauthRefresh: defineTable({
     tokenHash: v.string(), connectionId: v.id("connections"), clientId: v.string(), resource: v.string(),
     scopes: v.array(v.string()), expiresAt: v.number(), usedAt: v.optional(v.number()),
-  }).index("by_tokenHash", ["tokenHash"]),
+  }).index("by_tokenHash", ["tokenHash"]).index("by_connection", ["connectionId"]),
 
   /**
    * A reviewed client's metadata document, already validated, kept for an
@@ -336,6 +336,26 @@ export default defineSchema({
     outcome: v.bytes(),
     createdAt: v.string(),
   }).index("by_user_key", ["userId", "key"]).index("by_createdAt", ["createdAt"]),
+
+  /**
+   * Deletions still being carried out (owner decisions, 15 October 2026): a
+   * board's online copy, or a whole account. Removed once nothing is left;
+   * a daily sweep finishes any that stalled. See erasure.ts.
+   */
+  erasures: defineTable({
+    kind: v.union(v.literal("board"), v.literal("account")),
+    /** A board: its id, and the newest generation its rows can be in (generations are numbered globally). */
+    boardId: v.optional(v.string()),
+    maxGeneration: v.optional(v.number()),
+    /** An account: whose, the boards where their name is still to be taken off history, and how far that has got. */
+    userId: v.optional(v.string()),
+    scrubBoards: v.optional(v.array(v.string())),
+    /** The boards they owned, all deleted with the account; it is finished once their rows are gone. */
+    ownedBoards: v.optional(v.array(v.string())),
+    stage: v.optional(v.string()),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    requestedAt: v.string(),
+  }).index("by_kind", ["kind"]),
 
   /** Counters shared across boards. Generations are numbered globally so rows of a deleted and re-created board never collide. */
   counters: defineTable({

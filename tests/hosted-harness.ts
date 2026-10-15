@@ -11,6 +11,7 @@ import { EDGE_PROOF_HEADER } from "../online/service/convex/model/auth";
 import { webCookieName } from "../online/service/convex/model/webSession";
 import * as boards from "../online/service/convex/boards";
 import * as connections from "../online/service/convex/connections";
+import * as erasure from "../online/service/convex/erasure";
 import * as invites from "../online/service/convex/invites";
 import * as live from "../online/service/convex/live";
 import * as members from "../online/service/convex/members";
@@ -137,7 +138,7 @@ export function memoryService() {
   };
   const scheduler = { runAfter: async (_delay: number, ref: any, args: any) => { jobs.push({ name: getFunctionName(ref), args }); } };
   const ctx: any = { db, scheduler };
-  const modules: Record<string, Record<string, any>> = { boards, connections, invites, live, members, oauth, people, transfers, webSessions };
+  const modules: Record<string, Record<string, any>> = { boards, connections, erasure, invites, live, members, oauth, people, transfers, webSessions };
   const byName = new Map<string, any>();
   for (const [module, exports] of Object.entries(modules)) {
     for (const [name, fn] of Object.entries(exports)) if (fn && (typeof fn === "object" || typeof fn === "function") && "_handler" in fn) byName.set(`${module}:${name}`, fn);
@@ -186,5 +187,15 @@ export function memoryService() {
     return live.revision._handler({ db, auth: { getUserIdentity: async () => ({ subject: connectionId }) } } as any, { boardId } as any);
   }
 
-  return { rows, jobs, ctx, actionCtx, signIn, browserSend, adapterFor, liveRevision };
+  /** Runs scheduled work, and what it schedules in turn, until none is left (or a job isn't one of the modules above). */
+  async function runJobs(limit = 1000) {
+    for (let ran = 0; jobs.length && ran < limit; ran += 1) {
+      const job = jobs.shift()!;
+      const fn = byName.get(job.name);
+      if (!fn) continue;
+      await fn._handler(fn.isAction ? actionCtx : ctx, job.args);
+    }
+  }
+
+  return { rows, jobs, ctx, actionCtx, signIn, browserSend, adapterFor, liveRevision, runJobs, call };
 }

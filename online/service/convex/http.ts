@@ -244,6 +244,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     if (!role) return json({ error: { code: "validation", message: "role must be viewer or editor." } }, 400);
     return json({ members: await ctx.runMutation(internal.members.add, { connectionId, boardId, userId: String(input.userId ?? ""), role }) });
   }
+  if (rest[0] === "delete-copy" && rest.length === 1 && method === "POST") {
+    const input = await body(request);
+    return json(await ctx.runMutation(internal.erasure.deleteBoardCopy, { connectionId, boardId, confirmTitle: String(input.confirmTitle ?? "") }));
+  }
   if (rest[0] === "take-local" && rest[1] === "fence" && method === "POST") {
     const input = await body(request);
     return json(await ctx.runMutation(internal.boards.fence, {

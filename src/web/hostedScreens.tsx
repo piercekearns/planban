@@ -109,7 +109,7 @@ export function AccountMenu() {
           <button role="menuitem" tabIndex={-1} onClick={() => { close(false); setConnections(true); }}>Connections</button>
           <button role="menuitem" tabIndex={-1} onClick={() => void signOut()}>Sign out</button>
           {error ? <p className="web-account-note" role="alert">{error}</p> : null}
-          <p className="web-account-note">To delete your account, email hello@planban.ai.</p>
+          <p className="web-account-note">To delete your account and everything in it, email hello@planban.ai. It's done within 30 days.</p>
         </div>
       ) : null}
       {connections ? <ConnectionsModal onClose={() => { setConnections(false); triggerRef.current?.focus(); }} /> : null}

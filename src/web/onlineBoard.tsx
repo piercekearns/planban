@@ -37,6 +37,8 @@ export interface OnlineStatus {
   boardId?: string;
   people?: Array<{ userId: string; role: string; you: boolean }> | null;
   stale?: { title: string; onlineSince: string; url: string; boardId: string; signInNeeded?: boolean } | null;
+  /** On the web: this is the read-only online copy of a board its owner took back to a computer. */
+  readOnlyCopy?: boolean;
 }
 
 class RequestError extends Error {
@@ -209,7 +211,7 @@ function Modal({ eyebrow, title, onClose, children, footer, className }: { eyebr
   );
 }
 
-type View = "settings" | "confirm-online" | "confirm-local" | "progress" | "failed" | "sign-in";
+type View = "settings" | "confirm-online" | "confirm-local" | "confirm-delete-copy" | "progress" | "failed" | "sign-in";
 
 const peopleSentence = (names: string[]) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
@@ -341,6 +343,10 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
     );
   }
 
+  if (view === "confirm-delete-copy") {
+    return <DeleteCopyConfirm repoId={repoId} boardTitle={boardTitle} onBack={() => setView("settings")} onClose={onClose} />;
+  }
+
   if (view === "confirm-local") {
     const names = (losing.length ? losing : others).map((person) => person.userId);
     return (
@@ -398,7 +404,11 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
     );
   }
 
-  const where = capabilities.hosted
+  const owner = (status.people ?? []).some((person) => person.you && person.role === "owner");
+  const where = capabilities.hosted && status.readOnlyCopy
+    ? <div className="online-board-row"><div className="grow"><b><Laptop size={14} /> On its owner's computer</b><small>This board was taken back to a computer. This read-only online copy stays until {owner ? "you delete it" : "its owner deletes it"}.</small></div>
+        {owner ? <button className="online-board-button danger-text" disabled={busy} onClick={() => setView("confirm-delete-copy")}>Delete online copy…</button> : null}</div>
+    : capabilities.hosted
     ? <div className="online-board-row"><div className="grow"><b><Cloud size={14} /> Online</b><small>Stored in your Planban account, so you can open it from any device and invite people.</small></div></div>
     : status.location === "online"
     ? <div className="online-board-row"><div className="grow"><b><Cloud size={14} /> Online</b><small>Stored in your Planban account, so you can open it from any device and invite people. This Mac keeps an automatic backup copy.</small></div>
@@ -407,7 +417,9 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
     : status.location === "moving"
       ? <div className="online-board-row"><div className="grow"><b><Loader2 size={14} className="spin" /> Moving online…</b><small>{job?.progress?.message ?? "Starting…"}</small></div><button className="online-board-button" onClick={() => setView("progress")}>Show progress</button></div>
       : <div className="online-board-row"><div className="grow"><b><Laptop size={14} /> On this Mac</b><small>Stored only on this Mac. You and the agents on this Mac can use it; nobody else can see it.</small></div><button className="online-board-button" disabled={busy || Boolean(status.stale)} onClick={() => setView(status.signedIn.length ? "confirm-online" : "sign-in")}><Cloud size={13} /> Take online…</button></div>;
-  const people = status.location === "online"
+  const people = status.readOnlyCopy
+    ? <div className="online-board-row"><div className="grow"><b><Users size={14} /> Only you</b><small>To share it again, take it online from the computer it's on.</small></div></div>
+    : status.location === "online"
     ? <div className="online-board-row"><div className="grow"><b><Users size={14} /> {others.length ? `You and ${others.length} other ${others.length === 1 ? "person" : "people"}` : "Only you"}</b><small>Invite people, choose their roles and what their agents may do.</small></div><button className="online-board-button" onClick={onManagePeople}>Manage people</button></div>
     : <div className="online-board-row"><div className="grow"><b><Users size={14} /> Only you</b><small>Take the board online to invite people.</small></div></div>;
   return (
@@ -427,6 +439,45 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
       <div className="online-board-section"><h3>Where this board lives</h3>{where}</div>
       <div className="online-board-section"><h3>People</h3>{people}</div>
       {errorLine ? <div className="online-board-section">{errorLine}</div> : null}
+    </Modal>
+  );
+}
+
+/**
+ * Deleting a board's read-only online copy (owner decision (a), 15 October
+ * 2026). The person types the board's name; the board on their computer is
+ * not touched.
+ */
+function DeleteCopyConfirm({ repoId, boardTitle, onBack, onClose }: { repoId: string; boardTitle: string; onBack: () => void; onClose: () => void }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const matches = typed.trim() === boardTitle.trim();
+  async function remove() {
+    setBusy(true);
+    setError(null);
+    try {
+      await request(`/api/boards/${encodeURIComponent(repoId)}/online/delete-copy`, { confirmTitle: typed });
+      window.location.assign("/");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal eyebrow="Board settings" title={`Delete the online copy of ${boardTitle}?`} onClose={onClose}
+      footer={<><button onClick={onBack}>Cancel</button><button className="danger primary" disabled={busy || !matches} onClick={() => void remove()}>{busy ? <Loader2 size={14} className="spin" /> : null} Delete online copy</button></>}>
+      <div className="online-board-body">
+        <ul>
+          <li>The read-only copy online is deleted: its cards, Specs, Plans and history.</li>
+          <li>The board on your computer isn't changed.</li>
+          <li>This can't be undone. You can take the board online again later as a new online board.</li>
+        </ul>
+        <label className="online-board-label" htmlFor="delete-copy-name">Type the board's name to confirm</label>
+        <input id="delete-copy-name" className="online-board-input" value={typed} autoComplete="off" spellCheck={false} placeholder={boardTitle}
+          onChange={(event) => setTyped(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && matches && !busy) void remove(); }} />
+        {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+      </div>
     </Modal>
   );
 }

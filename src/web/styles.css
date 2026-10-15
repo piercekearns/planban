@@ -6144,3 +6144,4 @@ button.web-step-box { cursor: pointer; }
   .modal-backdrop > .new-board-modal::before { content: none; }
   .new-board-modal .new-board-cancel { display: none; }
 }
+.online-board-button.danger-text { color: var(--red-500); }

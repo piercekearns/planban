@@ -57,7 +57,7 @@ export function webRequestTrusted(request: Request, origin = publicOrigin()): bo
 /**
  * The only /api/v1 routes a browser session may reach: the board page's own
  * reads and edits, history and restores, people, invitations and members,
- * connections, invitation acceptance, live updates, new boards and access
+ * deleting a board's read-only online copy, connections, invitation acceptance, live updates, new boards and access
  * keys. Everything else, including transfers, import, export, take-local,
  * copy checks and every future route, needs a bearer credential. "*" matches
  * exactly one path segment.
@@ -84,6 +84,7 @@ const WEB_ROUTES: ReadonlyArray<readonly [string, string]> = [
   ["POST", "boards/*/members/*/role"],
   ["POST", "boards/*/members/*/remove"],
   ["POST", "boards/*/people/me/agents"],
+  ["POST", "boards/*/delete-copy"],
   ["POST", "connections/revoke-others"],
   ["POST", "connections/*/revoke"],
   ["POST", "connections/*/access"],

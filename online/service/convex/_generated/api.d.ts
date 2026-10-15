@@ -11,6 +11,7 @@
 import type * as boards from "../boards.js";
 import type * as connections from "../connections.js";
 import type * as copies from "../copies.js";
+import type * as erasure from "../erasure.js";
 import type * as crons from "../crons.js";
 import type * as historyMaintenance from "../historyMaintenance.js";
 import type * as http from "../http.js";
@@ -63,6 +64,7 @@ declare const fullApi: ApiFromModules<{
   boards: typeof boards;
   connections: typeof connections;
   copies: typeof copies;
+  erasure: typeof erasure;
   crons: typeof crons;
   historyMaintenance: typeof historyMaintenance;
   http: typeof http;

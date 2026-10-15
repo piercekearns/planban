@@ -364,9 +364,12 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
         if (!members.ok) return members.reply;
         if (!me.ok) return me.reply;
         const people = members.value.members.map((member) => ({ ...member, you: member.userId === me.value.userId }));
-        return reply({ location: "online", signedIn: [origin], defaultService: origin, job: null, url: origin, boardId: board, people });
+        const readOnlyCopy = roles.get(board!)?.authority === "returned-local";
+        return reply({ location: "online", signedIn: [origin], defaultService: origin, job: null, url: origin, boardId: board, people, ...(readOnlyCopy ? { readOnlyCopy } : {}) });
       },
     },
+    // The owner deletes a board's read-only online copy (owner decision (a), 15 October 2026).
+    { method: "POST", pattern: ["boards", ":board", "online", "delete-copy"], handle: async ({ board }, request) => passPost(serviceBoard(board!, "/delete-copy"), { confirmTitle: String(request.body.confirmTitle ?? "") }, request) },
     { method: "GET", pattern: ["boards", ":board", "online", "people"], handle: async ({ board }, request) => passGet(serviceBoard(board!, "/people"), request) },
     { method: "POST", pattern: ["boards", ":board", "online", "people", "me", "agents"], handle: async ({ board }, request) => passPost(serviceBoard(board!, "/people/me/agents"), { level: request.body.level }, request) },
     { method: "GET", pattern: ["boards", ":board", "online", "invites"], handle: async ({ board }, request) => passGet(serviceBoard(board!, "/invites"), request) },
