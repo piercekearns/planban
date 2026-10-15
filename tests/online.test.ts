@@ -411,7 +411,7 @@ test.beforeEach(async () => {
   fake = await fakeService();
   await storage.initializeProject({ cwd, repoId: "demo", title: "Demo board", updateAgents: false });
   await storage.createCard({ cwd, title: "Alpha", specMarkdown: "# Original spec", planMarkdown: "# Original plan" });
-  await saveCredentials(fake.url, { clientId: "cli", accessToken: "access-0", refreshToken: "refresh-0", expiresAt: new Date(Date.now() + 3600_000).toISOString(), person: "owner" });
+  await saveCredentials(fake.url, { clientId: "cli", accessToken: "access-0", refreshToken: "refresh-0", expiresAt: new Date(Date.now() + 3600_000).toISOString(), person: "dev-owner" });
 });
 
 test.afterEach(async () => {

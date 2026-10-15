@@ -13,6 +13,8 @@ export interface OnlineCredentials {
   person?: string | undefined;
   /** The signed-in account's email, as the service last said (for showing who is signed in). */
   email?: string | undefined;
+  /** When this computer saved the sign-in: of two for one account, the later is kept. */
+  savedAt?: string | undefined;
 }
 
 /**
@@ -124,7 +126,7 @@ export async function saveCredentials(url: string, credentials: OnlineCredential
     const entry = file.services[key] ?? { default: "", accounts: {} };
     if (credentials) {
       const id = accountKey(credentials);
-      entry.accounts[id] = credentials;
+      entry.accounts[id] = { ...credentials, savedAt: new Date().toISOString() };
       entry.default = id;
       file.services[key] = entry;
     } else {
@@ -185,9 +187,9 @@ export async function updateSignedIn(url: string, accessToken: string, facts: Pi
     const updated = { ...current, ...Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) } as OnlineCredentials;
     const newId = updated.person ?? id;
     delete entry.accounts[id];
-    // A newer sign-in of the same account saved meanwhile is kept; this older one just goes.
-    const newer = newId !== id ? entry.accounts[newId] : undefined;
-    if (!newer || newer.accessToken === accessToken) entry.accounts[newId] = updated;
+    // Of two sign-ins for one account, the one saved later is kept (one with no time saved is the older).
+    const other = newId !== id ? entry.accounts[newId] : undefined;
+    if (!other || (other.savedAt ?? "") <= (updated.savedAt ?? "")) entry.accounts[newId] = updated;
     if (entry.default === id) entry.default = newId;
   });
   return filedAs as string | null;

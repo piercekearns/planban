@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as storage from "../src/core/storage";
-import { accountCredentials, credentialsRoot, onlineStatus, readCredentials } from "../src/core/online/credentials";
+import { accountCredentials, credentialsRoot, onlineStatus, readCredentials, removeAccount, saveCredentials } from "../src/core/online/credentials";
 import { onlineLogin } from "../src/core/online/login";
 import { boardAccount, listAccounts, recordBoardAccount, rememberIdentity, switchAccount } from "../src/core/online/accounts";
 import { boardCredentials } from "../src/core/online/client";
@@ -266,5 +266,43 @@ test("a slow answer about who an old sign-in is never replaces a newer sign-in o
   paused.release();
   await slow;
   assert.equal((await accountCredentials(bridge.url, "ana"))!.accessToken, fresh);
+  assert.deepEqual(Object.keys((await readCredentials()).accounts[bridge.url]!.accounts), ["ana"]);
+});
+
+test("a move online interrupted after it committed resumes only as the account that started it", async () => {
+  const revival = await project("revival", "revival");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  // The board is committed online, then reading it back fails: the move stops before this project switches.
+  let committed = false;
+  bridge.control.intercept = async (path) => {
+    if (path.includes("/commit")) committed = true;
+    else if (committed && path === "/api/v1/boards/revival") return { status: 503, body: { error: { message: "Unavailable" } } };
+  };
+  await assert.rejects(takeOnline(bridge.url, revival));
+  bridge.control.intercept = undefined;
+  assert.equal(owner("revival"), "ana");
+  await onlineLogin(bridge.url, { devUser: "ben" });
+  await onlineLogout(bridge.url, { account: "ana@example.com" });
+  await bridge.service.ctx.db.insert("members", { boardId: "revival", userId: "ben", role: "editor" });
+  await assert.rejects(takeOnline(bridge.url, revival), /started while signed in to .* as ana@example\.com, which isn't signed in here now\. Sign in as that account/);
+  assert.notEqual((await boardAccount(bridge.url, "revival"))?.person, "ben");
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  await takeOnline(bridge.url, revival);
+  assert.equal((await boardAccount(bridge.url, "revival"))!.person, "ana");
+});
+
+test("of two sign-ins for one account, the one saved later is kept, whichever learns its id first", async () => {
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const older = (await accountCredentials(bridge.url, "ana"))!.accessToken;
+  // A key signed in later is saved before the service says whose it is.
+  await onlineLogin(bridge.url, { devUser: "ana" });
+  const newer = (await accountCredentials(bridge.url, "ana"))!;
+  await removeAccount(bridge.url, "ana");
+  await saveCredentials(bridge.url, { ...newer, person: undefined, email: undefined });
+  const stored = JSON.parse(await readFile(join(credentialsRoot(), "credentials.json"), "utf8"));
+  stored.services[bridge.url].accounts.ana = { clientId: "machine", accessToken: older, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", person: "ana", email: "ana@example.com", savedAt: "2026-01-01T00:00:00.000Z" };
+  await writeFile(join(credentialsRoot(), "credentials.json"), JSON.stringify(stored));
+  await rememberIdentity(bridge.url, 1);
+  assert.equal((await accountCredentials(bridge.url, "ana"))!.accessToken, newer.accessToken);
   assert.deepEqual(Object.keys((await readCredentials()).accounts[bridge.url]!.accounts), ["ana"]);
 });

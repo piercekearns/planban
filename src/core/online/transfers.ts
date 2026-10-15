@@ -77,6 +77,8 @@ const journalSchema = z.object({
   startedAt: z.string(),
   /** Take Online: the account that started the upload. Only it can see, finish or cancel that upload. */
   userId: z.string().optional(),
+  /** The email of the account that started it, to name it if it has to sign in again. */
+  email: z.string().optional(),
   /** Take Online: a fingerprint of everything the upload sends, so a resumed upload sends exactly the same. */
   textDigest: z.string().optional(),
 });
@@ -375,10 +377,11 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: Mo
       const report = await indexReport(await buildLocalBundle(cwd), planningRoot);
       if (!report.clean) throw new PlanbanNotReadyForOnline(report);
     }
-    // Resuming continues as the account that started the upload.
+    // Resuming continues as the account that started the upload, and only as it.
     if (journal?.userId && journal.userId !== pinned.person) {
       const starter = await signedInAs(url, journal.userId);
-      if (starter) pinned = starter;
+      if (!starter) throw new PlanbanValidationError(otherAccountMessage(journal));
+      pinned = starter;
     }
     if (journal?.phase !== "committed") {
       try {
@@ -431,7 +434,7 @@ async function cancelUpload(url: string, journal: TransferJournal): Promise<Canc
 }
 
 const otherAccountMessage = (journal: TransferJournal) =>
-  `This board's move online was started while signed in to ${journal.url} as another account (${journal.userId}). Sign in as that account to finish or stop it; nothing has been changed.`;
+  `This board's move online was started while signed in to ${journal.url} as ${journal.email ?? `another account (${journal.userId})`}, which isn't signed in here now. Sign in as that account to finish or stop it: ${planbanCommand()} online sign-in ${journal.url}. Nothing has been changed.`;
 
 /**
  * After a failed upload: cancel it on the service, which removes the
@@ -504,8 +507,9 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
     else if (outcome === "uncertain") throw new PlanbanValidationError("Planban could not reach the online service to replace an earlier unfinished upload of this board. Nothing has changed; try again when online.");
   }
   if (!journal) {
-    const me = await onlineRequest<{ userId: string }>(url, "/api/v1/me", undefined, as);
-    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId, textDigest };
+    const me = await onlineRequest<{ userId: string; person?: { email?: string } }>(url, "/api/v1/me", undefined, as);
+    const email = me.person?.email ?? as.credentials?.email;
+    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId, ...(email ? { email } : {}), textDigest };
     await writeJournal(planningRoot, journal);
   }
   crashPoint("take-online:after-journal");
