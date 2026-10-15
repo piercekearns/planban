@@ -94,6 +94,9 @@ async function seed() {
   await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { email: emailOf(PEOPLE.newcomer.userId), role: "editor" });
   const link = await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { role: "viewer" });
   process.stdout.write(`A viewer invitation link: ${String(link.link).replace(/^https?:\/\/[^/]+/, PUBLIC)}\n`);
+  // A second invitation for Nia, on another board, so the welcome can show several.
+  const { boardId: allotment } = await asPerson(owner.token, "POST", "/api/v1/boards", { title: "Allotment plan" });
+  await asPerson(owner.token, "POST", `/api/v1/boards/${allotment}/invites`, { email: emailOf(PEOPLE.newcomer.userId), role: "viewer" });
   // Signed-in computers and an AI app, as the welcome sees them.
   const now = new Date().toISOString();
   const connection = (userId: string, kind: "machine" | "oauth", name: string) => service.ctx.db.insert("connections", {

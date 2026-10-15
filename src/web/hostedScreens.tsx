@@ -363,8 +363,8 @@ function Choice({ icon, title, body, onClick }: { icon: React.ReactNode; title: 
 }
 
 /** The welcome a new account sees (approved 15 October 2026), in place of Your boards until they move on. */
-function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNow, onSelectBoard, onCreated, onDone }: {
-  view: WelcomeView; setView: (view: WelcomeView | null) => void; signals: WelcomeSignals; owned: ListedBoard[]; invites: WaitingInvite[]; busy: string | null;
+function Welcome({ view, setView, signals, owned, invites, putOff, busy, onJoin, onNotNow, onSelectBoard, onCreated, onDone }: {
+  view: WelcomeView; setView: (view: WelcomeView | null) => void; signals: WelcomeSignals; owned: ListedBoard[]; invites: WaitingInvite[]; putOff: string[]; busy: string | null;
   onJoin: (invite: WaitingInvite) => void; onNotNow: (invite: WaitingInvite) => void; onSelectBoard: (repoId: string) => void; onCreated: (repoId: string) => void; onDone: () => void;
 }) {
   const account = rememberedAccount();
@@ -380,9 +380,12 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
   const seen = useRef({ computer: signals.computer?.name ?? null, boards: owned.length, invites: invites.length });
   useEffect(() => {
     const before = seen.current;
-    if (signals.computer && !before.computer) setAnnouncement(`${signals.computer.name} is signed in.`);
-    else if (owned.length > before.boards) setAnnouncement(`${owned[owned.length - 1]?.title ?? "A board"} is online.`);
-    else if (invites.length > before.invites) setAnnouncement("A new invitation arrived.");
+    const news = [
+      signals.computer && !before.computer ? `${signals.computer.name} is signed in.` : "",
+      owned.length > before.boards ? (owned.length - before.boards === 1 ? `${owned[owned.length - 1]?.title ?? "A board"} is online.` : `${owned.length - before.boards} boards are online.`) : "",
+      invites.length > before.invites ? (invites.length - before.invites === 1 ? "A new invitation arrived." : `${invites.length - before.invites} new invitations arrived.`) : "",
+    ].filter(Boolean).join(" ");
+    if (news) setAnnouncement(news);
     seen.current = { computer: signals.computer?.name ?? null, boards: owned.length, invites: invites.length };
   }, [signals.computer, owned, invites.length]);
   const live = <p className="visually-hidden" aria-live="polite">{announcement}</p>;
@@ -411,9 +414,12 @@ function Welcome({ view, setView, signals, owned, invites, busy, onJoin, onNotNo
           <div className="web-panel">
             {invites.map((invite) => (
               <div className="web-invite-row" key={invite.id}>
-                <span className="web-row-main"><b>{invite.boardTitle}</b><small>{invite.inviterName} invited you as {invite.role === "editor" ? "an editor" : "a viewer"}</small></span>
+                <span className="web-row-main"><b>{invite.boardTitle}</b><small>{invite.inviterName} invited you as {invite.role === "editor" ? "an editor" : "a viewer"}{putOff.includes(invite.id) ? " · put off for now" : ""}</small></span>
                 <button className="web-button dark" disabled={busy !== null} onClick={() => onJoin(invite)}>{busy === invite.id ? <Loader2 size={13} className="spin" /> : null}Join</button>
-                <button className="web-button ghost" disabled={busy !== null} onClick={() => { onNotNow(invite); if (invites.length === 1) setView(null); }}>Not now</button>
+                {putOff.includes(invite.id) ? null : (
+                  // Putting off the last one still waiting moves on to where they'd otherwise start.
+                  <button className="web-button ghost" disabled={busy !== null} onClick={() => { onNotNow(invite); if (signals.invites <= 1) setView(null); }}>Not now</button>
+                )}
               </div>
             ))}
           </div>
@@ -651,7 +657,7 @@ export function HostedDashboard({ boards, onSelectBoard, onBoardsChanged }: { bo
       <div className="web-wrap">
         {welcoming ? (
           connections === null ? <p className="web-muted" role="status"><Loader2 size={14} className="spin" /> One moment…</p> : (
-            <Welcome view={view} setView={setChosen} signals={signals} owned={owned} invites={invites} busy={busy}
+            <Welcome view={view} setView={setChosen} signals={signals} owned={owned} invites={invites} putOff={dismissed} busy={busy}
               onJoin={(invite) => void join(invite)} onNotNow={notNow} onSelectBoard={onSelectBoard} onDone={finishWelcome}
               onCreated={(repoId) => { finishWelcome(); void onBoardsChanged().then(() => onSelectBoard(repoId)); }} />
           )
