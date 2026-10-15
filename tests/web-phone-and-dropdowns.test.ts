@@ -43,7 +43,7 @@ test("a conflicting save keeps the person's text, and a viewer gets no edit cont
   // Their version is shown beside yours at once, with a simple choice: keep theirs, edit, or use mine (Spec point 20).
   assert.match(web, /setConflict\(\{ theirs, who: await latestDocAuthor\(\), showing: true, seen: true, choosing: true \}\)/u);
   assert.match(web, />Keep theirs</u);
-  assert.match(web, /\n\s+Use mine\n/u);
+  assert.match(web, /\n\s+Use mine\r?\n/u);
   assert.match(web, /choosing: false \}\)\}>Edit</u);
   // Viewers get no order controls in a Group either.
   assert.match(web, /readOnly=\{viewOnly\}/u);
