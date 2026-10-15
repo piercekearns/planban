@@ -4,7 +4,7 @@
 // of an agent's sign-in, and the account menu.
 import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronRight, Copy, Laptop, Loader2, Mail, Plus, Smartphone, Sparkles, Users } from "lucide-react";
-import { ConnectionsModal, NewBoardModal } from "./onlineBoard";
+import { ConnectionsModal, Modal, NewBoardModal } from "./onlineBoard";
 import { pageFetch } from "./transport";
 import { Wordmark } from "./Wordmark";
 import {
@@ -51,6 +51,7 @@ function initials(account: { email: string | null; name: string | null } | null)
 export function AccountMenu() {
   const [open, setOpen] = useState(false);
   const [connections, setConnections] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const account = rememberedAccount();
   const ref = useRef<HTMLDivElement>(null);
@@ -109,11 +110,32 @@ export function AccountMenu() {
           <button role="menuitem" tabIndex={-1} onClick={() => { close(false); setConnections(true); }}>Connections</button>
           <button role="menuitem" tabIndex={-1} onClick={() => void signOut()}>Sign out</button>
           {error ? <p className="web-account-note" role="alert">{error}</p> : null}
-          <p className="web-account-note">To delete your account, email hello@planban.ai. Within 30 days everything goes, including boards you own, for everyone on them. Your changes on other people's boards stay, without your name.</p>
+          <button role="menuitem" tabIndex={-1} className="web-account-quiet" onClick={() => { close(false); setDeleting(true); }}>Delete account</button>
         </div>
       ) : null}
       {connections ? <ConnectionsModal onClose={() => { setConnections(false); triggerRef.current?.focus(); }} /> : null}
+      {deleting ? <DeleteAccountDialog email={account?.email ?? null} onClose={() => { setDeleting(false); triggerRef.current?.focus(); }} /> : null}
     </div>
+  );
+}
+
+/**
+ * Deleting an account is by email for 2.0 (owner request, 15 October 2026):
+ * one quiet link in the profile menu, and this short dialog saying what goes.
+ */
+export function deleteAccountMailto(email: string | null) {
+  const body = `Please delete my Planban account${email ? `: ${email}` : "."}\n`;
+  return `mailto:hello@planban.ai?subject=${encodeURIComponent("Delete my Planban account")}&body=${encodeURIComponent(body)}`;
+}
+
+function DeleteAccountDialog({ email, onClose }: { email: string | null; onClose: () => void }) {
+  return (
+    <Modal eyebrow="Your account" title="Delete your account" onClose={onClose} className="web-delete-account"
+      footer={<><button onClick={onClose}>Cancel</button><a className="primary update-now-action web-delete-account-email" href={deleteAccountMailto(email)} onClick={onClose}>Email hello@planban.ai</a></>}>
+      <div className="online-board-section">
+        <p className="web-delete-account-text">Deleting your account removes the boards you own, for everyone on them. Your edits on other people's boards stay, without your name. Email us and it's done within 30 days.</p>
+      </div>
+    </Modal>
   );
 }
 

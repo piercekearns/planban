@@ -4,6 +4,7 @@
 // ever ask the local Planban server, which answers from files on this machine.
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { Bot, Check, Cloud, Copy, Globe, Info, KeyRound, Laptop, Link, Loader2, Mail, Users, X } from "lucide-react";
 import { capabilities } from "./capabilities";
 import { pageFetch } from "./transport";
@@ -30,6 +31,8 @@ export interface MoveJob {
 export interface OnlineStatus {
   location: "local" | "moving" | "online";
   signedIn: string[];
+  /** The email each signed-in service knows this computer by, when known. */
+  accounts?: Record<string, string | null>;
   defaultService: string;
   job: MoveJob | null;
   url?: string;
@@ -63,12 +66,22 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
  * await, while the click still counts, so the browser does not block it; if it
  * is blocked anyway, onBlocked receives the link to show instead.
  */
-export async function browserSignIn(url: string | undefined, onBlocked: (link: string) => void): Promise<void> {
-  const tab = window.open("", "_blank");
+export async function browserSignIn(url: string | undefined, onBlocked: (link: string) => void, options: { as?: string | null } = {}): Promise<void> {
+  let tab = window.open("", "_blank");
   if (tab) tab.opener = null;
-  const started = await request<{ id: string; link: string }>("/api/online/sign-in", url ? { url } : {}).catch((error) => {
+  const begin = (switchAccount: boolean) => request<{ id: string; link: string }>("/api/online/sign-in", { ...(url ? { url } : {}), ...(switchAccount ? { switchAccount } : {}) });
+  const started = await begin(false).catch(async (error) => {
     tab?.close();
-    throw error;
+    // Another account is signed in here: say what changes, and go ahead only if asked (owner request, 15 October 2026).
+    const inUse = error instanceof RequestError ? error.body.accountInUse as { email?: string | null } | undefined : undefined;
+    if (!inUse) throw error;
+    if (!await askToSwitchAccount(inUse.email ?? null, options.as ?? null)) throw new SignInCancelled();
+    tab = window.open("", "_blank");
+    if (tab) tab.opener = null;
+    return begin(true).catch((retry) => {
+      tab?.close();
+      throw retry;
+    });
   });
   if (tab) tab.location.href = started.link;
   else onBlocked(started.link);
@@ -80,10 +93,53 @@ export async function browserSignIn(url: string | undefined, onBlocked: (link: s
   }
 }
 
-/** Why an Online Board can't open: this computer was never signed in, or its sign-in ended. */
+/** Signing in as another account was declined: nothing changed. */
+export class SignInCancelled extends Error {
+  constructor() {
+    super("Sign-in cancelled. This computer is still signed in as before.");
+    this.name = "SignInCancelled";
+  }
+}
+
+/** The warning before signing in as a different account; resolves true for Continue. */
+function askToSwitchAccount(current: string | null, next: string | null): Promise<boolean> {
+  return new Promise((resolve) => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const answer = (value: boolean) => {
+      root.unmount();
+      host.remove();
+      resolve(value);
+    };
+    root.render(<SwitchAccountDialog current={current} next={next} onAnswer={answer} />);
+  });
+}
+
+function SwitchAccountDialog({ current, next, onAnswer }: { current: string | null; next: string | null; onAnswer: (value: boolean) => void }) {
+  const b = next ?? "a different account";
+  const text = current
+    ? `This computer is signed in as ${current}. Signing in as ${b} signs ${current} out here. ${current}'s online boards stay online but won't open here until you sign back in as ${current}.`
+    : `This computer is already signed in to Planban. Signing in as ${b} signs that account out here. Its online boards stay online but won't open here until you sign back in as it.`;
+  return (
+    <Modal eyebrow="Planban sign-in" title="Sign in as a different account?" onClose={() => onAnswer(false)}
+      footer={<><button onClick={() => onAnswer(false)}>Cancel</button><button className="primary update-now-action" onClick={() => onAnswer(true)}>Continue</button></>}>
+      <div className="online-board-section">
+        <p className="switch-account-text">{text}</p>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Why an Online Board can't open: this computer was never signed in, its
+ * sign-in ended, or it is signed in as an account the board doesn't belong to.
+ */
 export interface SignedOut {
   url: string;
-  reason: "missing" | "expired";
+  reason: "missing" | "expired" | "other-account";
+  /** For "other-account": from this computer's own records, never from the service. */
+  otherAccount?: { boardAccount: string | null; signedInAs: string | null };
   /** The sign-in command as this computer runs it. */
   command?: string;
 }
@@ -122,14 +178,31 @@ function ComputerSignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedO
     setError(null);
     setBlockedLink(null);
     try {
-      await browserSignIn(signedOut.url, setBlockedLink);
+      await browserSignIn(signedOut.url, setBlockedLink, { as: signedOut.otherAccount?.boardAccount ?? null });
       // The page decides whether this board is still the one on screen.
       onSignedIn();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      if (!(failure instanceof SignInCancelled)) setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
       setBusy(false);
     }
+  }
+  const other = signedOut.reason === "other-account" ? signedOut.otherAccount : undefined;
+  if (other) {
+    return (
+      <main className="error-screen">
+        <div className="load-error-card signed-out-card">
+          <h1>This board belongs to another Planban account.</h1>
+          <p>Sign in as that account, or ask its owner to invite {other.signedInAs ?? "the account signed in here"}.</p>
+          {other.boardAccount ? <p className="muted">This computer last opened it as {other.boardAccount}.</p> : null}
+          <button className="primary" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} {other.boardAccount ? `Sign in as ${other.boardAccount}` : "Sign in as that account"}</button>
+          {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
+          {blockedLink ? <p>Your browser blocked the sign-in tab. <a href={blockedLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
+          {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+          <p className="muted signed-out-hint">For agents and terminals: <code>{signedOut.command ?? `planban online login ${signedOut.url} --switch-account`}</code></p>
+        </div>
+      </main>
+    );
   }
   return (
     <main className="error-screen">
@@ -164,15 +237,22 @@ export function useOnlineStatus(repoId: string | null, refreshKey: unknown) {
   return { status, reload: load };
 }
 
+/** Who this computer is signed in as for the board's service (or the usual one), when known. */
+export function signedInEmail(status: OnlineStatus | null) {
+  if (!status?.accounts || capabilities.hosted) return null;
+  return status.accounts[status.url ?? status.defaultService] ?? null;
+}
+
 export function LocationPill({ status }: { status: OnlineStatus | null }) {
   if (!status) return null;
+  const email = status.location === "online" ? signedInEmail(status) : null;
   const older = status.location === "local" && status.stale;
   const [icon, text] = status.location === "moving"
     ? [<Loader2 key="i" size={12} className="spin" />, "Moving online…"]
     : status.location === "online"
       ? [<Cloud key="i" size={12} />, "Online"]
       : [<Laptop key="i" size={12} />, older ? "On this Mac · older copy" : "On this Mac"];
-  return <span className={`board-location-pill ${status.location === "moving" ? "busy" : ""}`}>{icon}<span>{text}</span></span>;
+  return <span className={`board-location-pill ${status.location === "moving" ? "busy" : ""}`} title={email ? `Signed in as ${email}` : undefined}>{icon}<span>{text}</span>{email ? <span className="board-location-account">· Signed in as {email}</span> : null}</span>;
 }
 
 function useEscape(onClose: () => void) {
@@ -185,7 +265,7 @@ function useEscape(onClose: () => void) {
   }, [onClose]);
 }
 
-function Modal({ eyebrow, title, onClose, children, footer, className }: { eyebrow: string; title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; className?: string }) {
+export function Modal({ eyebrow, title, onClose, children, footer, className }: { eyebrow: string; title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; className?: string }) {
   useEscape(onClose);
   const ref = useRef<HTMLElement>(null);
   useEffect(() => ref.current?.focus(), []);
@@ -398,6 +478,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
   }
 
   const owner = (status.people ?? []).some((person) => person.you && person.role === "owner");
+  const email = signedInEmail(status);
   const where = capabilities.hosted && status.readOnlyCopy
     ? <div className="online-board-row"><div className="grow"><b><Laptop size={14} /> On its owner's computer</b><small>This board was taken back to a computer. This read-only online copy stays until {owner ? "you delete it" : "its owner deletes it"}.</small></div>
         {owner ? <button className="online-board-button danger-text" disabled={busy} onClick={() => setView("confirm-delete-copy")}>Delete online copy…</button> : null}</div>
@@ -429,7 +510,7 @@ export function BoardSettingsModal({ repoId, boardTitle, status, reload, onManag
           <input className="online-board-input" readOnly value={job.noteCommit.replace(/^.*?: (?=git )/, "")} onFocus={(event) => event.target.select()} aria-label="Command to commit the note" />
         </div>
       ) : null}
-      <div className="online-board-section"><h3>Where this board lives</h3>{where}</div>
+      <div className="online-board-section"><h3>Where this board lives</h3>{where}{email ? <p className="online-board-account">Signed in as {email}</p> : null}</div>
       <div className="online-board-section"><h3>People</h3>{people}</div>
       {errorLine ? <div className="online-board-section">{errorLine}</div> : null}
     </Modal>

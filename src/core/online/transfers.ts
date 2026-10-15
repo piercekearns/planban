@@ -11,6 +11,7 @@ import { roadmapSchema } from "../schema";
 import { loadState, pathExists, readDoc, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
+import { recordBoardAccountNow } from "./accounts";
 import { boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, writeOnlineNote, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
@@ -555,6 +556,8 @@ async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, p
   crashPoint("take-online:after-publish");
   await rm(transferJournalPath(planningRoot), { force: true });
   await refreshBackup(url, boardId, { force: true });
+  // Which account this board went online under, kept on this computer only.
+  await recordBoardAccountNow(url, boardId).catch(() => undefined);
   return { boardId, url, localSnapshot: snapshot, onlineNote, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
 }
 
@@ -823,6 +826,7 @@ export async function attachOnline(urlInput: string, boardId: string, cwdInput: 
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, state);
   const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: state.roadmap.project.title, onlineSince: new Date().toISOString() });
+  await recordBoardAccountNow(url, boardId).catch(() => undefined);
   await refreshBackup(url, boardId, { force: true });
   return { boardId, url, cwd, onlineNote, ...(staleCopy ? { staleCopy } : {}) };
 }
@@ -957,15 +961,25 @@ export async function restoreBackup(folder: string, cwdInput: string, repoId: st
   const cwd = resolve(cwdInput);
   if (await readManifest(cwd)) throw new PlanbanValidationError("This directory already has a board. Restore into an empty directory.");
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(repoId)) throw new PlanbanValidationError("Choose a board id: lowercase letters, digits and dashes.");
+  const { roadmap, docs } = await readBackup(folder);
+  // A restored board is a separate copy, never the online board itself
+  // (owner request, 15 October 2026): it takes a new id, so taking it online
+  // makes a second board, and its name says where it came from.
+  if (repoId === roadmap.project.id) throw new PlanbanValidationError(`The restored copy needs its own id, not ${repoId}, the id of the online board it was backed up from. Choose another id.`);
   const root = join(defaultPlanbanRoot(), "repos", repoId);
   if (await pathExists(root)) throw new PlanbanValidationError(`A local board folder already exists at ${root}. Choose another id.`);
-  const { roadmap, docs } = await readBackup(folder);
+  const savedAt = await readFile(join(folder, "backup.json"), "utf8").then((text) => String(JSON.parse(text).savedAt ?? ""), () => "");
+  const day = /^\d{4}-\d{2}-\d{2}/.exec(savedAt)?.[0] ?? /^\d{4}-\d{2}-\d{2}$/.exec(basename(resolve(folder)))?.[0];
+  const title = `${roadmap.project.title} (copy restored from a backup${day ? ` of ${day}` : ""})`;
   const restored = await stageBundle(root, bundleSchema.parse({
-    format: "planban-board-bundle", version: 1, roadmap: { ...roadmap, project: { ...roadmap.project, id: repoId } }, docs, history: [],
+    format: "planban-board-bundle", version: 1, roadmap: { ...roadmap, project: { ...roadmap.project, id: repoId, title } }, docs, history: [],
   }));
   const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId, storage: { kind: "local", root } };
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, { cwd, manifest, manifestPath: manifestPath(cwd), agentContextPath: agentContextPath(cwd), planningRoot: root, roadmapPath: join(root, "roadmap.json"), roadmap: restored });
-  return { repoId, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length };
+  return {
+    repoId, title, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length,
+    message: `Made "${title}", a separate local board (${repoId}) copied from a backup of the online board ${roadmap.project.id}. It is not linked to that board; taking it online makes a second, separate board.`,
+  };
 }
 

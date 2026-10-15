@@ -11,6 +11,7 @@ import { EDGE_PROOF_HEADER } from "../online/service/convex/model/auth";
 import { webCookieName } from "../online/service/convex/model/webSession";
 import * as boards from "../online/service/convex/boards";
 import * as connections from "../online/service/convex/connections";
+import * as copies from "../online/service/convex/copies";
 import * as erasure from "../online/service/convex/erasure";
 import * as invites from "../online/service/convex/invites";
 import * as live from "../online/service/convex/live";
@@ -138,7 +139,7 @@ export function memoryService() {
   };
   const scheduler = { runAfter: async (_delay: number, ref: any, args: any) => { jobs.push({ name: getFunctionName(ref), args }); } };
   const ctx: any = { db, scheduler };
-  const modules: Record<string, Record<string, any>> = { boards, connections, erasure, invites, live, members, oauth, people, transfers, webSessions };
+  const modules: Record<string, Record<string, any>> = { boards, connections, copies, erasure, invites, live, members, oauth, people, transfers, webSessions };
   const byName = new Map<string, any>();
   for (const [module, exports] of Object.entries(modules)) {
     for (const [name, fn] of Object.entries(exports)) if (fn && (typeof fn === "object" || typeof fn === "function") && "_handler" in fn) byName.set(`${module}:${name}`, fn);

@@ -472,7 +472,7 @@ test("machine wait closes a hanging opener and sends PKCE-owned cancellation wit
 test("failed credential save invokes real machine revocation and preserves existing file and independent machine", async () => {
   const file = join(credentialsRoot(), "credentials.json"), original = "malformed existing private fixture file";
   await writeFile(file, original);
-  await assert.rejects(onlineLogin(fake.url, { openBrowser: async (url) => { await fetch((await fetch(url, { redirect: "manual" })).headers.get("location")!); } }));
+  await assert.rejects(onlineLogin(fake.url, { switchAccount: true, openBrowser: async (url) => { await fetch((await fetch(url, { redirect: "manual" })).headers.get("location")!); } }));
   assert.equal(await readFile(file, "utf8"), original);
   assert.ok(fake.issuedMachines.find(r => r._id === "issued").revokedAt);
   assert.equal(fake.issuedMachines.find(r => r._id === "unrelated").revokedAt, undefined);
@@ -483,7 +483,7 @@ test("actual hung browser-opening child does not keep the CLI process alive afte
   const pidFile = join(root, "owned-opener.pid");
   const script = `import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module'; import {writeFileSync} from 'node:fs';
     const actualSpawn=cp.spawn; cp.spawn=()=>{ const child=actualSpawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); writeFileSync(process.env.OPENER_PID_FILE,String(child.pid)); return child; }; syncBuiltinESMExports();
-    const {onlineLogin}=await import('./src/core/online/login.ts'); try { await onlineLogin(process.env.FIXTURE_URL); process.exitCode=3; } catch(error) { if(!String(error).includes('timed out')) throw error; }`;
+    const {onlineLogin}=await import('./src/core/online/login.ts'); try { await onlineLogin(process.env.FIXTURE_URL, { switchAccount: true }); process.exitCode=3; } catch(error) { if(!String(error).includes('timed out')) throw error; }`;
   try {
     await execFileAsync(process.execPath, ["--import", "tsx/esm", "--input-type=module", "-e", script], { env: { ...process.env, FIXTURE_URL: fake.url, OPENER_PID_FILE: pidFile }, timeout: 4000 });
     const pid = Number(await readFile(pidFile, "utf8"));
@@ -496,7 +496,7 @@ test("actual hung browser-opening child does not keep the CLI process alive afte
 
 test("malformed machine lease fails before browser opening and leaves existing credentials untouched", async () => {
   const before = await readCredentials(); fake.setMachineLease(300001);
-  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("invalid lease opened browser") }), /valid bounded/);
+  await assert.rejects(onlineLogin(fake.url, { switchAccount: true, openBrowser: async () => assert.fail("invalid lease opened browser") }), /valid bounded/);
   assert.deepEqual(await readCredentials(), before);
 });
 
@@ -522,7 +522,7 @@ test("CLI refuses provider, wrong-purpose or refreshing tokens before saving cre
 
 test("the sign-in server's endpoints must belong to it", async () => {
   fake.setMetadataOrigin("https://other.example");
-  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("no browser should open") }), /must belong to it/);
+  await assert.rejects(onlineLogin(fake.url, { switchAccount: true, openBrowser: async () => assert.fail("no browser should open") }), /must belong to it/);
   assert.equal(fake.requests.some((req) => req.path === "/oauth/token"), false);
 });
 
@@ -1128,7 +1128,7 @@ test("signing in checks the machine's local boards for stale copies", async () =
   // On the second machine, its own registry lists its local copy.
   await registerBoardFromCwd(second);
   resetCopyChecks();
-  const result: any = await onlineLogin(fake.url, { openBrowser: async (authorizeUrl) => {
+  const result: any = await onlineLogin(fake.url, { switchAccount: true, openBrowser: async (authorizeUrl) => {
     await fetch((await fetch(authorizeUrl, { redirect: "manual" })).headers.get("location")!);
   } });
   assert.ok(result.staleLocalCopies?.some((copy: { repoId: string; onlineBoard: string }) => copy.repoId === "demo" && copy.onlineBoard === "demo"));

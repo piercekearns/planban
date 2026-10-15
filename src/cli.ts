@@ -31,6 +31,7 @@ import { buildUpdateCommandPlan, runPlanbanUpdate } from "./core/updateRunner";
 import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
+import { rememberIdentity } from "./core/online/accounts";
 import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
 import { createKey, listConnections, onlineLogout, revokeConnection } from "./core/online/connections";
@@ -121,6 +122,7 @@ online.command("login <url>").description("sign this computer in to Planban Onli
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
   .option("--device", "sign in by approving a link on any signed-in device, computer or phone")
   .option("--no-browser", "print the approval link instead of opening a browser (for remote or headless machines)")
+  .option("--switch-account", "sign in as a different account than the one signed in here, which signs that one out on this computer")
   .action(async (url, options) => print(await onlineLogin(url, {
     ...options,
     // Without a browser here, approve by link on any device: a loopback callback can't reach a remote machine.
@@ -142,7 +144,12 @@ keys.command("create <url>").requiredOption("--board <id>", "the one board the k
     process.stderr.write("Copy this key now. Planban keeps only a fingerprint of it and cannot show it again.\n");
     print(created, {});
   });
-online.command("status").description("which Planban Online services this computer is signed in to").action(async () => print(await onlineStatus(), {}));
+online.command("status").description("which Planban Online services this computer is signed in to, and as whom").action(async () => {
+  // Sign-ins from before emails were kept: ask the service once, quietly.
+  const before = await onlineStatus();
+  for (const service of before) if (!service.signedInAs) await rememberIdentity(service.url, 1).catch(() => undefined);
+  print(await onlineStatus(), {});
+});
 online.command("take-online <url>").description("take this project's board online, for example to https://app.planban.ai; it must hold no files").option("--cwd <path>", "project directory")
   .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
 online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")

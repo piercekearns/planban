@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { agentContextPath, defaultPlanbanRoot, manifestPath } from "../paths";
-import { normalizeRoadmap, PlanbanValidationError } from "../boardOperations";
+import { normalizeRoadmap, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
+import { explainMissingBoard } from "./accounts";
 import type { PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap } from "../types";
 import { refreshBackup } from "./backup";
 import { boardPath, onlineRequest } from "./client";
@@ -23,7 +24,12 @@ export function onlineState(cwd: string, manifest: PlanbanProjectManifest, roadm
 
 export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManifest) {
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
-  const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(manifest.storage.url, boardPath(manifest.storage.boardId));
+  const storage = manifest.storage;
+  const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(storage.url, boardPath(storage.boardId)).catch(async (error: unknown) => {
+    // "Not found" may only mean another account is signed in here: this computer's own records can tell.
+    if (error instanceof PlanbanNotFoundError) return explainMissingBoard(storage.url, storage.boardId, error);
+    throw error;
+  });
   void refreshBackup(manifest.storage.url, manifest.storage.boardId);
   return onlineState(cwd, manifest, roadmap);
 }

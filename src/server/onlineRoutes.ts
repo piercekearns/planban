@@ -12,6 +12,7 @@ import { boardPath, onlineRequest, requireCredentials } from "../core/online/cli
 import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { knownStaleCopy } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
+import { AccountInUseError, liveAccount } from "../core/online/accounts";
 import {
   attachOnline, keepSeparateBoard, moveState, previewTakeOnline, othersOnBoard, PlanbanConfirmationNeeded, PlanbanTakeOnlineStopped, takeLocal, takeOnline, type MoveProgress,
 } from "../core/online/transfers";
@@ -100,9 +101,12 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       const repoId = req.params.repoId;
       const cwd = await deps.resolveBoardCwd(repoId);
       const manifest = await readManifest(cwd);
-      const signedIn = Object.keys((await readCredentials()).services);
+      const services = (await readCredentials()).services;
+      const signedIn = Object.keys(services);
       const job = [...jobs.values()].filter((entry) => entry.repoId === repoId).at(-1);
-      const base = { signedIn, defaultService: await defaultService(), job: job ? publicJob(job) : null };
+      // Who each service is signed in as here, for "Signed in as" (owner request, 15 October 2026).
+      const accounts = Object.fromEntries(Object.entries(services).map(([url, credentials]) => [url, credentials.email ?? null]));
+      const base = { signedIn, accounts, defaultService: await defaultService(), job: job ? publicJob(job) : null };
       if (manifest?.storage?.kind !== "online") {
         const stale = manifest?.enabled ? await knownStaleCopy(resolvePlanningRoot(manifest), cwd, manifest.repoId) : null;
         res.json({ ...base, location: running(repoId)?.kind === "take-online" ? "moving" : "local", stale });
@@ -401,11 +405,21 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
         throw new PlanbanValidationError(`This board is on ${new URL(requested).host}, which this computer hasn't signed in to before. If you trust it, sign in from a terminal: ${planbanCommand()} online login ${requested}`);
       }
       const url = requested ?? await defaultService();
+      // Another account still signed in here: the page asks first (owner request, 15 October 2026).
+      if (req.body?.switchAccount !== true) {
+        const current = await liveAccount(url);
+        if (current) {
+          const refusal = new AccountInUseError(url, current);
+          res.status(409).json({ error: refusal.message, accountInUse: { url, email: current.email ?? null } });
+          return;
+        }
+      }
       const id = randomUUID();
       const entry = { link: null as string | null, done: false, error: null as string | null };
       signIns.set(id, entry);
       const linkReady = new Promise<void>((resolve) => {
         void onlineLogin(url, {
+          switchAccount: true,
           openBrowser: async (link) => {
             entry.link = link;
             resolve();

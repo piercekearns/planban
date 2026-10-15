@@ -906,6 +906,15 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
       const command = "signInCommand" in payload && typeof payload.signInCommand === "string" ? payload.signInCommand : undefined;
       Object.assign(error, { signedOut: { url: payload.signInNeeded, reason, ...(command ? { command } : {}) } satisfies SignedOut });
     }
+    // A board of another account than the one signed in on this computer (from its own records).
+    if (payload && typeof payload === "object" && "otherAccount" in payload && payload.otherAccount && typeof payload.otherAccount === "object") {
+      const other = payload.otherAccount as { url?: unknown; boardAccount?: unknown; signedInAs?: unknown; signInCommand?: unknown };
+      if (typeof other.url === "string") Object.assign(error, { signedOut: {
+        url: other.url, reason: "other-account",
+        otherAccount: { boardAccount: typeof other.boardAccount === "string" ? other.boardAccount : null, signedInAs: typeof other.signedInAs === "string" ? other.signedInAs : null },
+        ...(typeof other.signInCommand === "string" ? { command: other.signInCommand } : {}),
+      } satisfies SignedOut });
+    }
     throw error;
   }
   if (payload === null) throw new Error(`Empty response from ${path}`);
@@ -6355,8 +6364,9 @@ function App() {
     } catch (loadError) {
       if (preserveCurrentOnError) return;
       // Signed out on the web: the board address stays, and the signed-out screen offers Log in.
+      // On a computer too, when the address names a board (its project's board needs a sign-in, or another account's).
       const needed = (loadError as { signedOut?: SignedOut } | null)?.signedOut;
-      if (needed && capabilities.hosted) {
+      if (needed && (capabilities.hosted || repoIdFromPath())) {
         const routeRepoId = repoIdFromPath();
         selectedRepoIdRef.current = routeRepoId;
         setSelectedRepoId(routeRepoId);
@@ -6487,6 +6497,8 @@ function App() {
     return <SignedOutScreen key={repoId} signedOut={signedOut} onSignedIn={() => {
       if (selectedRepoIdRef.current !== repoId) return;
       setSignedOut(null);
+      // Start-up may have stopped at this board, before the list of boards loaded.
+      if (initialized === null) void load(true);
       void loadSelectedBoard(repoId);
     }} />;
   }

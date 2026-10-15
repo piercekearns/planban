@@ -141,8 +141,11 @@ export const me = internalQuery({
   args: { connectionId: v.id("connections") },
   handler: async (ctx, { connectionId }) => {
     const connection = await liveConnection(ctx, connectionId);
+    // A person's own sign-in (a computer, a browser) learns who it is signed in as; agents and keys don't need to.
+    const profile = connection.canAdminister ? await ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", connection.userId)).unique() : null;
     return {
       userId: connection.userId,
+      ...(profile ? { person: { name: profile.name, ...(profile.email ? { email: profile.email } : {}) } } : {}),
       connectionId: connection._id,
       kind: connection.kind,
       name: connection.name,

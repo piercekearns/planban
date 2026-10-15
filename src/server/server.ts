@@ -77,6 +77,7 @@ import { updatePreflight } from "../core/updatePreflight";
 import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
 import { PlanbanActivityStore } from "../core/activity";
 import { collectStaleness } from "../core/stalenessSources";
+import { BoardOfAnotherAccountError } from "../core/online/accounts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
@@ -1750,7 +1751,11 @@ export async function startServer(options: ServeOptions) {
           : 500;
     // A missing or ended Online Board sign-in: the board page offers Sign in for this service.
     const signIn = error instanceof OnlineAuthenticationError ? error.signIn : undefined;
-    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}) });
+    // A board of another account than the one signed in here, from this computer's own records.
+    const otherAccount = error instanceof BoardOfAnotherAccountError
+      ? { url: error.url, boardAccount: error.boardAccount.email ?? null, signedInAs: error.signedIn.email ?? null, signInCommand: `${planbanCommand()} online login ${error.url} --switch-account` }
+      : undefined;
+    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}), ...(otherAccount ? { otherAccount } : {}) });
   });
 
   try {

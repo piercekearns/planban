@@ -11,6 +11,8 @@ export interface OnlineCredentials {
   refreshToken: string;
   expiresAt: string;
   person?: string | undefined;
+  /** The signed-in account's email, as the service last said (for showing who is signed in). */
+  email?: string | undefined;
 }
 
 interface CredentialsFile {
@@ -72,6 +74,7 @@ export async function saveCredentials(url: string, credentials: OnlineCredential
 export async function onlineStatus() {
   const { services } = await readCredentials();
   return Object.entries(services).map(([url, credentials]) => ({
-    url, person: credentials.person ?? null, expiresAt: credentials.expiresAt,
+    // The email a person recognises, not the service's id for them (owner request, 15 October 2026).
+    url, signedInAs: credentials.email ?? null, expiresAt: credentials.expiresAt,
   }));
 }

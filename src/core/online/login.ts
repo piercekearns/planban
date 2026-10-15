@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { urlOpener } from "../openUrl";
 import { serviceUrl, saveCredentials } from "./credentials";
 import { onlineRequest } from "./client";
+import { AccountInUseError, liveAccount, rememberIdentity } from "./accounts";
 import { PlanbanValidationError } from "../boardOperations";
 
 export interface LoginOptions {
@@ -25,6 +26,11 @@ export interface LoginOptions {
    */
   device?: boolean | undefined;
   printOnly?: boolean | undefined;
+  /**
+   * Sign in even though another account is signed in to this service on this
+   * computer: that account is signed out here (owner request, 15 October 2026).
+   */
+  switchAccount?: boolean | undefined;
   /** Tests only: how long to wait between checks, instead of the service's interval (at least 5 seconds). */
   pollIntervalMs?: number | undefined;
 }
@@ -35,7 +41,7 @@ async function keyLogin(url: string, variable: string) {
   if (!/^pbk_[A-Za-z0-9_-]{20,}$/.test(key)) throw new PlanbanValidationError(`Environment variable ${variable} does not hold a Planban personal access key.`);
   // Keys do not refresh; they last until revoked or until their expiry.
   await saveCredentials(url, { clientId: "key", accessToken: key, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z" });
-  return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me") };
+  return { url, signedIn: true, identity: await rememberIdentity(url) };
 }
 
 /**
@@ -77,7 +83,7 @@ async function devLogin(url: string, options: LoginOptions) {
   const { token } = await response.json() as { token: string };
   // Development tokens do not expire or refresh; signing out revokes them.
   await saveCredentials(url, { clientId: "dev", accessToken: token, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", person: options.devUser });
-  return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
+  return { url, signedIn: true, identity: await rememberIdentity(url), ...await staleCopiesAfterSignIn() };
 }
 
 async function openBrowser(url: string, signal: AbortSignal) {
@@ -200,6 +206,11 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
   if (!options.devUser && (options.access === "board" || options.boards)) {
     throw new PlanbanValidationError("--access board and --boards apply only to development sign-in (--dev-user). Signing in through the browser gives this machine your full access; limit AI apps and keys from your connections instead.");
   }
+  // One account per service on a computer: say so before replacing a sign-in that still works.
+  if (!options.switchAccount) {
+    const current = await liveAccount(url);
+    if (current) throw new AccountInUseError(url, current, `To go ahead, run: planban online login ${url} --switch-account`);
+  }
   if (options.devUser) return devLogin(url, options);
   if (options.keyEnv) return keyLogin(url, options.keyEnv);
   const server = await signInEndpoints(url);
@@ -246,7 +257,7 @@ export async function onlineLogin(urlInput: string, options: LoginOptions = {}) 
     checkDeadline();
     await saveCredentials(url, { clientId: "machine", accessToken: redeemedToken, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(tokens.user_id ? { person: tokens.user_id } : {}) });
     saved = true;
-    return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
+    return { url, signedIn: true, identity: await rememberIdentity(url), ...await staleCopiesAfterSignIn() };
   } finally {
     clearTimeout(timeout);
     controller.abort(new Error("The sign-in attempt ended."));
@@ -299,7 +310,7 @@ async function deviceLogin(url: string, server: Awaited<ReturnType<typeof signIn
     if (tokens.error === "access_denied") throw new Error("The sign-in was denied.");
     if (!polled.ok || !/^pbm_[A-Za-z0-9_-]{43}$/.test(tokens.access_token ?? "") || tokens.token_type !== "Bearer" || tokens.scope !== "planban:machine") throw new Error("The sign-in link expired or failed. Run login again.");
     await saveCredentials(url, { clientId: "machine", accessToken: tokens.access_token!, refreshToken: "", expiresAt: "9999-12-31T00:00:00.000Z", ...(tokens.user_id ? { person: tokens.user_id } : {}) });
-    return { url, signedIn: true, identity: await onlineRequest<unknown>(url, "/api/v1/me"), ...await staleCopiesAfterSignIn() };
+    return { url, signedIn: true, identity: await rememberIdentity(url), ...await staleCopiesAfterSignIn() };
   }
   throw new Error("The sign-in link expired before anyone approved it. Run login again.");
 }
