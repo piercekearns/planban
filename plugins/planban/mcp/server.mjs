@@ -23,6 +23,7 @@ const stalenessSourcesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIM
 const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/contentRules.ts")).href);
 const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
 const errorReportModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/errorReport.ts")).href);
+const accountsModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/online/accounts.ts")).href);
 
 const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, notePresence, readDoc, readDocSections, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, workingOnCard, writeDoc, writeDocSection } = storageModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
@@ -855,7 +856,8 @@ async function callToolImpl(name, args) {
     return await boardResult(
       withLine(status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`, attention && stalenessLine(attention)),
       status.initialized ? status.repoId : null,
-      attention ? { ...status, attention } : status,
+      // The Planban accounts signed in on this computer and which boards use each (emails only).
+      { ...status, ...(attention ? { attention } : {}), onlineAccounts: await accountsModule.listAccounts().catch(() => []) },
     );
   }
 

@@ -1,7 +1,7 @@
 // Signing out, the connection list and personal access keys, from this machine.
 import { PlanbanValidationError } from "../boardOperations";
 import { onlineRequest } from "./client";
-import { readCredentials, saveCredentials, serviceUrl } from "./credentials";
+import { chosenAccount, readCredentials, removeAccount, serviceUrl } from "./credentials";
 import { planbanCommand } from "../command";
 
 /**
@@ -10,19 +10,28 @@ import { planbanCommand } from "../command";
  * local sign-in is still removed and the result says the hosted connection
  * remains until it is revoked from another signed-in machine.
  */
-export async function onlineLogout(urlInput: string) {
+export async function onlineLogout(urlInput: string, options: { account?: string | undefined } = {}) {
   const url = serviceUrl(urlInput);
-  if (!(await readCredentials()).services[url]) return { url, signedOut: true, revoked: false, note: "This machine was not signed in." };
+  const entry = (await readCredentials()).accounts[url];
+  if (!entry) return { url, signedOut: true, revoked: false, note: "This machine was not signed in." };
+  // Several accounts can be signed in: signing out is of one, named when there is more than one.
+  const signedIn = Object.entries(entry.accounts);
+  if (!options.account && signedIn.length > 1) {
+    throw new PlanbanValidationError(`Several accounts are signed in to ${url} here (${signedIn.map(([, credentials]) => credentials.email ?? "an account").join(", ")}). Say which to sign out: --account <email>.`);
+  }
+  const credentials = options.account ? await chosenAccount(url, options.account) : signedIn[0]![1];
+  const person = signedIn.find(([, candidate]) => candidate.accessToken === credentials.accessToken)![0];
   let revoked = false;
   let note: string | undefined;
   try {
-    await onlineRequest(url, "/api/v1/connections/self/revoke", {}, { signal: AbortSignal.timeout(10_000) });
+    await onlineRequest(url, "/api/v1/connections/self/revoke", {}, { signal: AbortSignal.timeout(10_000), credentials });
     revoked = true;
   } catch (error) {
     note = `The service could not be reached (${error instanceof Error ? error.message : String(error)}). This machine's connection stays active until you revoke it with ${planbanCommand()} online revoke from another signed-in machine.`;
   }
-  await saveCredentials(url, null);
-  return { url, signedOut: true, revoked, ...(note ? { note } : {}) };
+  await removeAccount(url, person);
+  // Its boards stay linked to it, and say so if opened here, until it signs in again.
+  return { url, signedOut: true, account: credentials.email ?? null, revoked, ...(note ? { note } : {}) };
 }
 
 export async function listConnections(urlInput: string) {

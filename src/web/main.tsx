@@ -909,7 +909,9 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs?: number): Pro
     if (payload && typeof payload === "object" && "signInNeeded" in payload && typeof payload.signInNeeded === "string") {
       const reason = "signedOut" in payload && payload.signedOut === "expired" ? "expired" : "missing";
       const command = "signInCommand" in payload && typeof payload.signInCommand === "string" ? payload.signInCommand : undefined;
-      Object.assign(error, { signedOut: { url: payload.signInNeeded, reason, ...(command ? { command } : {}) } satisfies SignedOut });
+      // A board linked to an account that isn't signed in here names that account.
+      const account = "signInAccount" in payload ? (typeof payload.signInAccount === "string" ? payload.signInAccount : null) : undefined;
+      Object.assign(error, { signedOut: { url: payload.signInNeeded, reason, ...(command ? { command } : {}), ...(account !== undefined ? { account } : {}) } satisfies SignedOut });
     }
     // A board of another account than the one signed in on this computer (from its own records).
     if (payload && typeof payload === "object" && "otherAccount" in payload && payload.otherAccount && typeof payload.otherAccount === "object") {

@@ -737,8 +737,9 @@ test("an Online Board without a sign-in tells the page which service to sign in 
     const missingBody = await missing.json();
     assert.deepEqual([missingBody.signInNeeded, missingBody.signedOut], [serviceUrl(fake.url), "missing"]);
     // Agents and terminals still get the command in the message.
-    assert.match(missingBody.error, /online login/);
-    assert.equal(missingBody.signInCommand, `${planbanCommand()} online login ${serviceUrl(fake.url)}`);
+    // The board names the account it uses (here one whose email this test sign-in never learned).
+    assert.match(missingBody.error, /online sign-in/);
+    assert.equal(missingBody.signInCommand, `${planbanCommand()} online sign-in ${serviceUrl(fake.url)}`);
     // The page can only start sign-in for a service this computer already trusts, never one a board's files name.
     const untrusted = await fetch(`${server.url}/api/online/sign-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: "https://planban-login.example" }) });
     assert.equal(untrusted.status, 422);
@@ -1593,6 +1594,6 @@ test("taking a shared board local says who loses access, and only goes ahead whe
 
 test("a sign-in the service no longer accepts asks the person to sign in again", async () => {
   fake.rejectAccess();
-  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), (error: any) => error instanceof OnlineAuthenticationError && error.message.includes("online login"));
+  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), (error: any) => error instanceof OnlineAuthenticationError && error.message.includes("online sign-in"));
   assert.equal(fake.requests.filter((req) => req.path === "/api/v1/me").length, 1, "no retry loop");
 });

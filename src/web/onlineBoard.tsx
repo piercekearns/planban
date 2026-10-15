@@ -31,8 +31,10 @@ export interface MoveJob {
 export interface OnlineStatus {
   location: "local" | "moving" | "online";
   signedIn: string[];
-  /** The email each signed-in service knows this computer by, when known. */
+  /** The email each signed-in service knows this computer by, when known (its default account). */
   accounts?: Record<string, string | null>;
+  /** An online board's own account here, from its link (several accounts can be signed in). */
+  account?: string | null;
   defaultService: string;
   job: MoveJob | null;
   url?: string;
@@ -117,12 +119,13 @@ function askToSwitchAccount(current: string | null, next: string | null): Promis
 }
 
 function SwitchAccountDialog({ current, next, onAnswer }: { current: string | null; next: string | null; onAnswer: (value: boolean) => void }) {
-  const b = next ?? "a different account";
+  const b = next ?? "another account";
+  // Several accounts can be signed in at once: signing in adds one (owner decision, 15 October 2026).
   const text = current
-    ? `This computer is signed in as ${current}. Signing in as ${b} signs ${current} out here. ${current}'s online boards stay online but won't open here until you sign back in as ${current}.`
-    : `This computer is already signed in to Planban. Signing in as ${b} signs that account out here. Its online boards stay online but won't open here until you sign back in as it.`;
+    ? `This computer is signed in as ${current}. Signing in as ${b} adds it: ${current} stays signed in, and boards that use ${current} keep using it. Boards you take online or attach from now on use ${b}.`
+    : `This computer is already signed in to Planban. Signing in as ${b} adds it beside that account, which stays signed in. Boards you take online or attach from now on use ${b}.`;
   return (
-    <Modal eyebrow="Planban sign-in" title="Sign in as a different account?" onClose={() => onAnswer(false)}
+    <Modal eyebrow="Planban sign-in" title="Sign in another account?" onClose={() => onAnswer(false)}
       footer={<><button onClick={() => onAnswer(false)}>Cancel</button><button className="primary update-now-action" onClick={() => onAnswer(true)}>Continue</button></>}>
       <div className="online-board-section">
         <p className="switch-account-text">{text}</p>
@@ -142,6 +145,8 @@ export interface SignedOut {
   otherAccount?: { boardAccount: string | null; signedInAs: string | null };
   /** The sign-in command as this computer runs it. */
   command?: string;
+  /** The board's own account, when it is linked to one that isn't signed in here (null: its email isn't known). */
+  account?: string | null;
 }
 
 const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url; } };
@@ -178,7 +183,7 @@ function ComputerSignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedO
     setError(null);
     setBlockedLink(null);
     try {
-      await browserSignIn(signedOut.url, setBlockedLink, { as: signedOut.otherAccount?.boardAccount ?? null });
+      await browserSignIn(signedOut.url, setBlockedLink, { as: signedOut.otherAccount?.boardAccount ?? signedOut.account ?? null });
       // The page decides whether this board is still the one on screen.
       onSignedIn();
     } catch (failure) {
@@ -200,6 +205,23 @@ function ComputerSignedOutScreen({ signedOut, onSignedIn }: { signedOut: SignedO
           {blockedLink ? <p>Your browser blocked the sign-in tab. <a href={blockedLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
           {error ? <p className="online-board-error" role="alert">{error}</p> : null}
           <p className="muted signed-out-hint">For agents and terminals: <code>{signedOut.command ?? `planban online login ${signedOut.url} --switch-account`}</code></p>
+        </div>
+      </main>
+    );
+  }
+  if (signedOut.account !== undefined) {
+    // A board linked to one of several accounts, which isn't signed in here (owner decision, 15 October 2026).
+    const who = signedOut.account ?? "the Planban account it uses";
+    return (
+      <main className="error-screen">
+        <div className="load-error-card signed-out-card">
+          <h1>{signedOut.reason === "expired" ? `This board uses ${who}, whose sign-in on this computer has ended.` : `This board uses ${who}, which isn't signed in on this computer.`}</h1>
+          <p>Sign in as {who} to open it here. Other accounts signed in here stay signed in.</p>
+          <button className="primary" disabled={busy} onClick={() => void signIn()}>{busy ? <Loader2 size={14} className="spin" /> : null} {signedOut.account ? `Sign in as ${signedOut.account}` : "Sign in"}</button>
+          {busy ? <p className="muted">Waiting for you to finish signing in…</p> : null}
+          {blockedLink ? <p>Your browser blocked the sign-in tab. <a href={blockedLink} target="_blank" rel="noopener noreferrer">Open the sign-in page</a>; this finishes once you have signed in.</p> : null}
+          {error ? <p className="online-board-error" role="alert">{error}</p> : null}
+          <p className="muted signed-out-hint">For agents and terminals: <code>{signedOut.command ?? `planban online sign-in ${signedOut.url}`}</code></p>
         </div>
       </main>
     );
@@ -240,6 +262,8 @@ export function useOnlineStatus(repoId: string | null, refreshKey: unknown) {
 /** Who this computer is signed in as for the board's service (or the usual one), when known. */
 export function signedInEmail(status: OnlineStatus | null) {
   if (!status?.accounts || capabilities.hosted) return null;
+  // An online board shows its own account; otherwise the default for new boards.
+  if (status.account !== undefined) return status.account;
   return status.accounts[status.url ?? status.defaultService] ?? null;
 }
 

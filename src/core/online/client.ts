@@ -1,5 +1,6 @@
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
-import { readCredentials, serviceUrl, type OnlineCredentials } from "./credentials";
+import { accountCredentials, readCredentials, serviceUrl, type OnlineCredentials } from "./credentials";
+import { boardAccount } from "./boardLinks";
 import { planbanCommand } from "../command";
 import { PlanbanEditConflictError, type ConflictDetails } from "../conflicts";
 
@@ -8,7 +9,7 @@ export class OnlineAuthenticationError extends Error {
     message: string,
     public readonly statusCode = 401,
     /** For a missing or ended sign-in: the service to sign in to, and which of the two it was. */
-    public readonly signIn?: { url: string; reason: "missing" | "expired" },
+    public readonly signIn?: { url: string; reason: "missing" | "expired"; account?: string | null },
   ) {
     super(message);
     this.name = "OnlineAuthenticationError";
@@ -24,8 +25,28 @@ export class PlanbanForbiddenError extends Error {
   }
 }
 
-function loginRequired(url: string, reason: "missing" | "expired") {
-  return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run ${planbanCommand()} online login ${url}.`, 401, { url, reason });
+function loginRequired(url: string, reason: "missing" | "expired", account?: string | null) {
+  if (account !== undefined) {
+    const who = account ?? "the Planban account it was linked to";
+    const state = reason === "expired" ? "whose sign-in on this computer has ended" : "which isn't signed in on this computer";
+    return new OnlineAuthenticationError(`This board uses ${who}, ${state}. Sign in as ${who}: ${planbanCommand()} online sign-in ${url}`, 401, { url, reason, account: account ?? null });
+  }
+  return new OnlineAuthenticationError(`Online Board sign-in expired or is missing. Run ${planbanCommand()} online sign-in ${url}.`, 401, { url, reason });
+}
+
+/**
+ * The sign-in for a board's own account, for /api/v1/boards/<id>/… requests.
+ * A board linked to an account that isn't signed in here is refused, naming
+ * that account; it never falls back to another account's sign-in.
+ */
+async function linkedAccount(url: string, path: string): Promise<{ credentials: OnlineCredentials; email: string | null } | null> {
+  const match = /^\/api\/v1\/boards\/([^/?]+)/u.exec(path);
+  if (!match || match[1] === "import") return null;
+  const link = await boardAccount(url, decodeURIComponent(match[1]!));
+  if (!link) return null;
+  const credentials = await accountCredentials(url, link.person);
+  if (!credentials) throw loginRequired(url, "missing", link.email ?? null);
+  return { credentials, email: credentials.email ?? link.email ?? null };
 }
 
 export async function requireCredentials(url: string): Promise<OnlineCredentials> {
@@ -74,7 +95,9 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
   const url = serviceUrl(urlInput);
   // Machine sign-ins, keys and development sign-ins do not expire by time or
   // refresh; when the service stops accepting one, the person signs in again.
-  const credentials = options.credentials ?? await requireCredentials(url);
+  // A board's requests use the account its link on this computer names, never another (several can be signed in).
+  const linked = options.credentials ? null : await linkedAccount(url, path);
+  const credentials = options.credentials ?? linked?.credentials ?? await requireCredentials(url);
   const raw = body instanceof RawBody;
   const payload = body === undefined ? undefined : raw ? new Blob([body.bytes as Uint8Array<ArrayBuffer>]) : JSON.stringify(body);
   const send = () => fetch(`${url}${path}`, {
@@ -116,7 +139,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     }
     if (response.status === 400) throw new PlanbanValidationError(message);
     if (response.status === 404) throw new PlanbanNotFoundError(message);
-    if (response.status === 401) throw loginRequired(url, "expired");
+    if (response.status === 401) throw loginRequired(url, "expired", linked?.email);
     if (response.status === 403) throw new PlanbanForbiddenError(message);
     // A daily limit (owner decision 18): kept as 429 so the board page and agents see a limit, not a failure.
     if (response.status === 429) throw Object.assign(new Error(message), { name: "OnlineLimitError", statusCode: 429 });

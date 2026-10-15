@@ -207,15 +207,19 @@ owner chooses, with a free Planban account at https://app.planban.ai.
 - **Signed out.** If Planban says this computer's sign-in is missing or has ended,
   ask the person to sign in again (the board page offers Sign in, or the printed
   `online login` command). Do not use local files instead.
-- **One account per computer.** A computer is signed in to one Planban account at a
-  time; `planban online status` shows its email, and the board page shows "Signed in
-  as". Signing in as a different account needs `--switch-account` and signs the first
-  one out here; its boards stay online but won't open here until it signs back in.
-  Never switch accounts unless the person asks.
-- **Another account's board.** If Planban says a board belongs to another Planban
-  account, ask the person which they want: sign in as that account here (`planban
-  online login <url> --switch-account`), or ask the board's owner to invite the
-  account that is signed in. Don't retry, and don't use local files.
+- **Several accounts on one computer.** Several Planban accounts can be signed in at
+  once, like the GitHub CLI. Each online board is linked on this computer to the
+  account it uses, and every request for it uses that account, automatically, so
+  agents in each project just work. `planban online accounts` lists the accounts, the
+  default for new boards, and which boards use each. `planban online sign-in <url>`
+  adds an account and makes it the default; others stay signed in. `planban online
+  switch <url> --account <email>` changes only the default for new boards.
+  `take-online` and `attach` take `--account <email>`. Never sign accounts in, out or
+  switch them unless the person asks.
+- **A board whose account isn't signed in.** If Planban says a board uses an account
+  that isn't signed in on this computer, it names the account: ask the person to sign
+  in as it (`planban online sign-in <url>`). Planban never uses another account's
+  sign-in for that board. Don't retry, and don't use local files.
 - **Never edit an online board's files.** Under `~/.planban`, an online board has a
   cache, automatic backups and the copy kept from before it went online. None of
   them is the board. Read and edit it only through Planban's tools or command line.
@@ -224,8 +228,9 @@ owner chooses, with a free Planban account at https://app.planban.ai.
 
 Do any of these only when the person asks.
 
-- **Sign out:** `planban online logout <url>` ends this computer's sign-in and cuts off
-  its connection. `planban online connections <url>` lists computers, apps and keys;
+- **Sign out:** `planban online sign-out <url> --account <email>` signs one account out
+  here and cuts off its connection; the others stay. Its boards say so until it signs
+  in again. `planban online connections <url>` lists computers, apps and keys;
   `planban online revoke <url> <id>` cuts one off.
 - **Invite and join:** the owner invites with Board settings, People, or
   `planban online invite --email <address> --role editor|viewer` (links last 7 days).

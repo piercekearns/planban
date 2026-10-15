@@ -6,7 +6,7 @@
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 import { planbanCommand } from "./command";
 import { PlanbanEditConflictError } from "./conflicts";
-import { AccountInUseError, BoardOfAnotherAccountError } from "./online/accounts";
+import { AccountInUseError } from "./online/accounts";
 import { OnlineAuthenticationError, PlanbanForbiddenError } from "./online/client";
 
 export type ErrorCategory =
@@ -24,11 +24,8 @@ export function errorReport(error: unknown): ErrorReport {
   if (error instanceof AccountInUseError) {
     return { category: "account_in_use", message, details: { url: error.url, signedInAs: error.account.email ?? null, retryWith: "--switch-account" } };
   }
-  if (error instanceof BoardOfAnotherAccountError) {
-    return { category: "other_account", message, details: { url: error.url, boardId: error.boardId, boardAccount: error.boardAccount.email ?? null, signedInAs: error.signedIn.email ?? null } };
-  }
   if (error instanceof OnlineAuthenticationError && error.signIn) {
-    return { category: "signed_out", message, details: { url: error.signIn.url, reason: error.signIn.reason, signInCommand: `${planbanCommand()} online login ${error.signIn.url}` } };
+    return { category: "signed_out", message, details: { url: error.signIn.url, reason: error.signIn.reason, ...(error.signIn.account !== undefined ? { account: error.signIn.account } : {}), signInCommand: `${planbanCommand()} online sign-in ${error.signIn.url}` } };
   }
   if (error instanceof PlanbanForbiddenError) return { category: "forbidden", message };
   if (error instanceof PlanbanEditConflictError) {

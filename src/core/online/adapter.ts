@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { agentContextPath, defaultPlanbanRoot, manifestPath } from "../paths";
 import { normalizeRoadmap, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
-import { explainMissingBoard } from "./accounts";
+import { boardAccount, findBoardAccount, recordBoardAccount } from "./accounts";
+import { readCredentials } from "./credentials";
 import type { PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap } from "../types";
 import { refreshBackup } from "./backup";
 import { boardPath, onlineRequest } from "./client";
@@ -25,11 +26,17 @@ export function onlineState(cwd: string, manifest: PlanbanProjectManifest, roadm
 export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManifest) {
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
   const storage = manifest.storage;
-  const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(storage.url, boardPath(storage.boardId)).catch(async (error: unknown) => {
-    // "Not found" may only mean another account is signed in here: this computer's own records can tell.
-    if (error instanceof PlanbanNotFoundError) return explainMissingBoard(storage.url, storage.boardId, error);
+  // A board not yet linked here is opened with the default account, pinned, and linked to that same account.
+  const linked = await boardAccount(storage.url, storage.boardId).catch(() => null);
+  const pinned = linked ? undefined : (await readCredentials()).services[serviceUrl(storage.url)];
+  const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(storage.url, boardPath(storage.boardId), undefined, pinned ? { credentials: pinned } : {}).catch(async (error: unknown) => {
+    // "Not found" for a board not yet linked here may mean another signed-in account is the one.
+    if (error instanceof PlanbanNotFoundError) return findBoardAccount<{ roadmap: PlanbanRoadmap }>(storage.url, storage.boardId, boardPath(storage.boardId), error);
     throw error;
   });
+  if (pinned?.person && !(await boardAccount(storage.url, storage.boardId).catch(() => null))) {
+    await recordBoardAccount(storage.url, storage.boardId, { person: pinned.person, ...(pinned.email ? { email: pinned.email } : {}) }).catch(() => undefined);
+  }
   void refreshBackup(manifest.storage.url, manifest.storage.boardId);
   return onlineState(cwd, manifest, roadmap);
 }
@@ -54,3 +61,4 @@ export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectMa
 export function refuseOnline(operation: string): never {
   throw new PlanbanValidationError(`${operation} is not yet available for Online Boards.`);
 }
+

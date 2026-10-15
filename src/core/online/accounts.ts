@@ -9,7 +9,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { PlanbanConflictError } from "../boardOperations";
 import { OnlineAuthenticationError, onlineRequest, requireCredentials } from "./client";
-import { credentialsRoot, readCredentials, serviceUrl, updateSignedIn, withCredentialsLock, type OnlineCredentials } from "./credentials";
+import { accountCredentials, chosenAccount, readCredentials, serviceUrl, setDefaultAccount, updateSignedIn, type OnlineCredentials } from "./credentials";
+import { boardLinks, relinkBoards } from "./boardLinks";
 
 export interface OnlineAccount {
   /** The account's id at the service. */
@@ -44,7 +45,9 @@ export async function rememberIdentity(url: string, attempts = 4): Promise<Me & 
     await new Promise((resolve) => setTimeout(resolve, 750));
     me = await ask();
   }
-  await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
+  const updated = await updateSignedIn(url, credentials.accessToken, { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}) });
+  // A sign-in filed under another id until now: its boards follow it.
+  if (updated && credentials.person && credentials.person !== me.userId) await relinkBoards(url, credentials.person, me.userId).catch(() => undefined);
   return { ...me, account: { person: me.userId, ...(me.person?.email ? { email: me.person.email } : {}), ...(me.person?.name ? { name: me.person.name } : {}) } };
 }
 
@@ -67,53 +70,18 @@ export async function liveAccount(url: string): Promise<OnlineAccount | null> {
   }
 }
 
+/** Signing in while another account is signed in adds one: the page asks first, saying so. */
 export class AccountInUseError extends PlanbanConflictError {
   constructor(readonly url: string, readonly account: OnlineAccount, howToContinue?: string) {
-    const who = account.email ?? account.name;
-    super((who
-      ? `This computer is signed in as ${who}. Signing in as a different account signs ${who} out here. ${who}'s online boards stay online but won't open here until you sign back in as ${who}.`
-      : "This computer is already signed in to Planban. Signing in as a different account signs that account out here. Its online boards stay online but won't open here until you sign back in as it.")
-      + (howToContinue ? ` ${howToContinue}` : ""));
+    const who = account.email ?? account.name ?? "another account";
+    super(`This computer is signed in as ${who}. Signing in another account adds it: ${who} stays signed in, and boards that use ${who} keep using it. Boards you take online or attach from now on use the new account.${howToContinue ? ` ${howToContinue}` : ""}`);
     this.name = "AccountInUseError";
   }
 }
 
-// --- which account each online board belongs to -------------------------------
-
-interface BoardAccountsFile {
-  version: 1;
-  /** Keyed "<service>|<board id>". */
-  boards: Record<string, OnlineAccount & { at: string }>;
-}
-
-const boardAccountsPath = () => join(credentialsRoot(), "board-accounts.json");
-
-async function readBoardAccounts(): Promise<BoardAccountsFile> {
-  try {
-    const file = JSON.parse(await readFile(boardAccountsPath(), "utf8")) as BoardAccountsFile;
-    return file.version === 1 && file.boards && typeof file.boards === "object" ? file : { version: 1, boards: {} };
-  } catch {
-    return { version: 1, boards: {} };
-  }
-}
-
-/** Notes the account this computer used for a board: when it took it online, or attached to it. */
-export async function recordBoardAccount(url: string, boardId: string, account: OnlineAccount) {
-  await withCredentialsLock(async () => {
-    const file = await readBoardAccounts();
-    file.boards[`${serviceUrl(url)}|${boardId}`] = { ...account, at: new Date().toISOString() };
-    const root = credentialsRoot();
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    const temp = join(root, `.board-accounts-${randomUUID()}.tmp`);
-    try {
-      await writeFile(temp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-      await chmod(temp, 0o600);
-      await rename(temp, boardAccountsPath());
-    } finally {
-      await rm(temp, { force: true });
-    }
-  });
-}
+// --- which account each online board uses: boardLinks.ts ---------------------
+export { boardAccount, recordBoardAccount } from "./boardLinks";
+import { boardAccount, recordBoardAccount } from "./boardLinks";
 
 /**
  * Notes the board under the account that used it: the sign-in `pinned` at the
@@ -121,31 +89,66 @@ export async function recordBoardAccount(url: string, boardId: string, account: 
  * recorded rather than naming an account that never opened the board.
  */
 export async function recordBoardAccountAs(url: string, boardId: string, pinned: OnlineCredentials) {
-  const now = (await readCredentials()).services[serviceUrl(url)];
-  if (!now || now.accessToken !== pinned.accessToken || !now.person) return;
-  await recordBoardAccount(url, boardId, { person: now.person, ...(now.email ? { email: now.email } : {}) });
+  // Several accounts can be signed in at once: record the pinned one, if it is still signed in here.
+  if (!pinned.person) return;
+  const now = await accountCredentials(url, pinned.person);
+  if (!now || now.accessToken !== pinned.accessToken) return;
+  await recordBoardAccount(url, boardId, { person: now.person!, ...(now.email ? { email: now.email } : {}) });
 }
 
-export async function boardAccount(url: string, boardId: string): Promise<OnlineAccount | null> {
-  return (await readBoardAccounts()).boards[`${serviceUrl(url)}|${boardId}`] ?? null;
+
+
+/** Turns "not found" into "another account's board" when this computer's own records say so. */
+/**
+ * A board with no link on this computer that the default account can't
+ * open: another signed-in account may be the one (a board attached before
+ * several accounts existed). The first that opens it is linked to it, so
+ * later requests go straight to it; otherwise the "not found" stands.
+ */
+export async function findBoardAccount<T>(url: string, boardId: string, path: string, error: unknown): Promise<T> {
+  if (await boardAccount(url, boardId).catch(() => null)) throw error;
+  const entry = (await readCredentials()).accounts[serviceUrl(url)];
+  for (const [person, credentials] of Object.entries(entry?.accounts ?? {})) {
+    if (person === entry!.default) continue;
+    try {
+      const found = await onlineRequest<T>(url, path, undefined, { credentials });
+      await recordBoardAccount(url, boardId, { person, ...(credentials.email ? { email: credentials.email } : {}) });
+      return found;
+    } catch {
+      // Not this account's board either.
+    }
+  }
+  throw error;
 }
 
 /**
- * A board the service says it can't find, but that this computer used under
- * a different account than the one signed in now: it belongs to that account.
+ * Every account signed in here, per service, with the default marked and the
+ * boards that use each (from this computer's links; emails, never tokens).
  */
-export class BoardOfAnotherAccountError extends PlanbanConflictError {
-  readonly statusCode = 403;
-  constructor(readonly url: string, readonly boardId: string, readonly boardAccount: OnlineAccount, readonly signedIn: OnlineAccount) {
-    const board = boardAccount.email ?? boardAccount.name;
-    super(`This board belongs to another Planban account${board ? ` (${board})` : ""}. Sign in as that account, or ask its owner to invite ${signedIn.email ?? signedIn.name ?? "the account signed in here"}.`);
-    this.name = "BoardOfAnotherAccountError";
+export async function listAccounts() {
+  const { accounts } = await readCredentials();
+  const links = await boardLinks();
+  const { listBoards } = await import("../registry");
+  const { readManifest } = await import("../storage");
+  // A linked board's name here, from the projects registered on this computer.
+  const names = new Map<string, string>();
+  for (const board of await listBoards().catch(() => [])) {
+    const manifest = await readManifest(board.cwd).catch(() => null);
+    if (manifest?.storage?.kind === "online") names.set(`${manifest.storage.url}|${manifest.storage.boardId}`, board.title);
   }
+  return Object.entries(accounts).map(([url, entry]) => ({
+    url,
+    accounts: Object.entries(entry.accounts).map(([person, credentials]) => ({
+      email: credentials.email ?? null,
+      default: person === entry.default,
+      boards: links.filter((link) => link.url === url && link.person === person).map((link) => ({ boardId: link.boardId, title: names.get(`${url}|${link.boardId}`) ?? null })),
+    })),
+  }));
 }
 
-/** Turns "not found" into "another account's board" when this computer's own records say so. */
-export async function explainMissingBoard(url: string, boardId: string, error: unknown): Promise<never> {
-  const [board, signedIn] = await Promise.all([boardAccount(url, boardId).catch(() => null), signedInAccount(url).catch(() => null)]);
-  if (board && signedIn && board.person !== signedIn.person) throw new BoardOfAnotherAccountError(url, boardId, board, signedIn);
-  throw error;
+/** Makes a signed-in account the default for boards taken online or attached from now on. */
+export async function switchAccount(url: string, account: string) {
+  const credentials = await chosenAccount(url, account);
+  await setDefaultAccount(url, credentials.person!);
+  return { url: serviceUrl(url), default: credentials.email ?? null, note: "Boards already linked keep their own account; this changes only which account new boards use." };
 }

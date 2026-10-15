@@ -13,10 +13,11 @@ import * as storage from "../src/core/storage";
 import { manifestPath } from "../src/core/paths";
 import { startServer } from "../src/server/server";
 import { PlanbanNotFoundError } from "../src/core/boardOperations";
-import { onlineRequest } from "../src/core/online/client";
 import { onlineStatus, readCredentials, saveCredentials } from "../src/core/online/credentials";
 import { onlineLogin } from "../src/core/online/login";
-import { AccountInUseError, BoardOfAnotherAccountError, boardAccount, recordBoardAccountAs, rememberIdentity } from "../src/core/online/accounts";
+import { boardAccount, recordBoardAccountAs, rememberIdentity, switchAccount } from "../src/core/online/accounts";
+import { onlineLogout } from "../src/core/online/connections";
+import { OnlineAuthenticationError, onlineRequest } from "../src/core/online/client";
 import { backupRoot } from "../src/core/online/backup";
 import { resetCopyChecks } from "../src/core/online/copyCheck";
 import { restoreBackup, takeOnline } from "../src/core/online/transfers";
@@ -70,34 +71,34 @@ async function localProject(name: string, planningRoot: string, repoId = "roadma
   return cwd;
 }
 
-test("the sign-in shows its email, and signing in as someone else asks first", async () => {
+test("several accounts can be signed in at once: signing in adds one beside the others and makes it the default", async () => {
   await onlineLogin(url, { devUser: "ana" });
-  const status = await onlineStatus();
-  assert.deepEqual(status.map((entry) => entry.signedInAs), ["ana@example.com"]);
-  assert.equal(JSON.stringify(status).includes("\"ana\""), false, "status names the email, not the service's id");
-
-  await assert.rejects(onlineLogin(url, { devUser: "ben" }), (error: unknown) => error instanceof AccountInUseError
-    && error.message.startsWith("This computer is signed in as ana@example.com. Signing in as a different account signs ana@example.com out here.")
-    && error.message.includes("won't open here until you sign back in as ana@example.com")
-    && error.message.includes("--switch-account"));
-  assert.deepEqual((await onlineStatus()).map((entry) => entry.signedInAs), ["ana@example.com"], "nothing changed");
-
-  await onlineLogin(url, { devUser: "ben", switchAccount: true });
-  assert.deepEqual((await onlineStatus()).map((entry) => entry.signedInAs), ["ben@example.com"]);
+  const added = await onlineLogin(url, { devUser: "ben" }) as { note?: string };
+  assert.match(added.note ?? "", /^Added ben@example\.com beside ana@example\.com, which stays signed in here\. Boards linked to it keep using it; boards you take online or attach from now on use ben@example\.com/);
+  const [status] = await onlineStatus();
+  assert.equal(status!.signedInAs, "ben@example.com");
+  assert.deepEqual(status!.accounts, [{ email: "ana@example.com", default: false }, { email: "ben@example.com", default: true }]);
+  assert.equal(JSON.stringify(await onlineStatus()).includes("\"ana\""), false, "status names emails, not the service's ids");
+  // Signing in again as an account already here replaces only that account's sign-in.
+  await onlineLogin(url, { devUser: "ana" });
+  assert.deepEqual((await onlineStatus())[0]!.accounts.map((account) => account.email).sort(), ["ana@example.com", "ben@example.com"]);
 });
-
-test("a board of another account says so plainly here, while the service still answers only not found", async () => {
+test("each board uses its own account; one whose account signs out says so, naming it, and never uses another", async () => {
   const { cwd } = await anasOnlineBoard();
-  await onlineLogin(url, { devUser: "ben", switchAccount: true });
-  await assert.rejects(storage.loadState(cwd), (error: unknown) => error instanceof BoardOfAnotherAccountError
-    && error.message === "This board belongs to another Planban account (ana@example.com). Sign in as that account, or ask its owner to invite ben@example.com.");
-  await assert.rejects(onlineRequest(url, "/api/v1/boards/roadmap"), PlanbanNotFoundError, "the service reveals nothing");
-
+  await onlineLogin(url, { devUser: "ben" });
+  // Ben is the default now, but Ana's board still opens as Ana.
+  assert.equal((await storage.loadState(cwd)).roadmap.roadmapItems[0]!.title, "Alpha");
+  assert.equal(service.rows.filter((row) => row._table === "connections" && row.userId === "ben").length, 1);
+  await onlineLogout(url, { account: "ana@example.com" });
+  await assert.rejects(storage.loadState(cwd), (error: unknown) => error instanceof OnlineAuthenticationError
+    && error.message.startsWith("This board uses ana@example.com, which isn't signed in on this computer. Sign in as ana@example.com:")
+    && error.signIn?.account === "ana@example.com");
+  // Ben's sign-in was never tried for it, and the service still says only "not found" to Ben.
+  await assert.rejects(onlineRequest(url, "/api/v1/boards/roadmap", undefined, { credentials: (await readCredentials()).services[url]! }), PlanbanNotFoundError);
   // Signing back in as Ana opens it again.
-  await onlineLogin(url, { devUser: "ana", switchAccount: true });
+  await onlineLogin(url, { devUser: "ana" });
   assert.equal((await storage.loadState(cwd)).roadmap.roadmapItems[0]!.title, "Alpha");
 });
-
 test("a second account can't take the first account's online board online by any route", async () => {
   const { cwd, planningRoot, staleRoot } = await anasOnlineBoard();
   const before = structuredClone(anasBoardRow());
@@ -144,7 +145,7 @@ test("a second account can't take the first account's online board online by any
   assert.equal(service.rows.filter((row) => row._table === "transfers" && row.userId === "ben" && row.boardId === "roadmap").length, 0);
 });
 
-test("the board page names the account, asks before switching, and explains another account's board", async () => {
+test("the board page shows the board's own account, asks before adding one, and names a signed-out board's account", async () => {
   const { cwd } = await anasOnlineBoard();
   const reservation = createServer();
   await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
@@ -152,31 +153,31 @@ test("the board page names the account, asks before switching, and explains anot
   await new Promise<void>((resolve) => reservation.close(() => resolve()));
   const server = await startServer({ cwd, port, useVite: false });
   try {
-    const status = await (await fetch(`${server.url}/api/boards/roadmap/online`)).json();
-    assert.deepEqual(status.accounts, { [url]: "ana@example.com" });
-
-    // Sign-in from the page while Ana is still signed in: the page must ask first, and nothing starts.
+    // Sign-in from the page while Ana is signed in: the page asks first, and nothing starts.
     const signIn = (body: Record<string, unknown>) => fetch(`${server.url}/api/online/sign-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, ...body }) });
-    const refused = await signIn({});
-    assert.equal(refused.status, 409);
-    assert.deepEqual((await refused.json()).accountInUse, { url, email: "ana@example.com" });
-    // Continue: the page asks again with switchAccount and the sign-in goes ahead (this test
-    // service has no browser sign-in, so it stops there, past the account check).
+    const asked = await signIn({});
+    assert.equal(asked.status, 409);
+    const answer = await asked.json();
+    assert.deepEqual(answer.accountInUse, { url, email: "ana@example.com" });
+    assert.match(answer.error, /Signing in another account adds it: ana@example\.com stays signed in/);
     const started = await signIn({ switchAccount: true });
     assert.notEqual(started.status, 409);
-    assert.doesNotMatch((await started.json()).error ?? "", /signed in as/);
 
-    // Signed in as Ben (as Continue would, through the browser), the board says whose it is.
-    await onlineLogin(url, { devUser: "ben", switchAccount: true });
+    // With Ben added (the default now), the board shows its own account, Ana.
+    await onlineLogin(url, { devUser: "ben" });
+    const status = await (await fetch(`${server.url}/api/boards/roadmap/online`)).json();
+    assert.equal(status.account, "ana@example.com");
+    assert.equal((await fetch(`${server.url}/api/boards/roadmap/state`)).status, 200);
+
+    // Ana signs out: the board says so, naming her, for the page to offer "Sign in as ana@example.com".
+    await onlineLogout(url, { account: "ana@example.com" });
     const state = await fetch(`${server.url}/api/boards/roadmap/state`);
-    assert.equal(state.status, 403);
+    assert.equal(state.status, 401);
     const body = await state.json();
-    assert.match(body.error, /^This board belongs to another Planban account/);
-    assert.deepEqual({ ...body.otherAccount, signInCommand: undefined }, { url, boardAccount: "ana@example.com", signedInAs: "ben@example.com", signInCommand: undefined });
-    assert.match(body.otherAccount.signInCommand, /online login .* --switch-account$/);
+    assert.equal(body.signInAccount, "ana@example.com");
+    assert.match(body.signInCommand, /online sign-in /);
   } finally { await server.close(); }
 });
-
 test("a slow answer about an earlier sign-in never lands on a newer one", async () => {
   await onlineLogin(url, { devUser: "ana" });
   let reached!: () => void;
@@ -192,32 +193,37 @@ test("a slow answer about an earlier sign-in never lands on a newer one", async 
   };
   const slow = rememberIdentity(url, 1);
   await atMe;
-  await onlineLogin(url, { devUser: "ben", switchAccount: true });
+  await onlineLogin(url, { devUser: "ben" });
   release();
   await slow;
-  assert.deepEqual((await onlineStatus()).map((entry) => entry.signedInAs), ["ben@example.com"]);
+  // Ben is the default; Ana's sign-in kept Ana's own identity.
+  assert.equal((await onlineStatus())[0]!.signedInAs, "ben@example.com");
   assert.equal(Object.values((await readCredentials()).services)[0]!.person, "ben");
+  assert.equal((await readCredentials()).accounts[url]!.accounts.ana!.email, "ana@example.com");
 });
 
-test("when the service can't be asked, the saved sign-in still needs --switch-account", async () => {
+test("signing out names the account when several are signed in, and leaves the others", async () => {
   await onlineLogin(url, { devUser: "ana" });
-  control.intercept = async (path) => path === "/api/v1/me" ? { status: 500, body: { error: { code: "internal", message: "down" } } } : undefined;
-  await assert.rejects(onlineLogin(url, { devUser: "ben" }), (error: unknown) => error instanceof AccountInUseError && error.message.includes("ana@example.com"));
-  // An ended sign-in, though, is nothing to lose.
-  control.intercept = async (path) => path === "/api/v1/me" ? { status: 401, body: { error: { code: "unauthorized", message: "ended" } } } : undefined;
-  await assert.doesNotReject(onlineLogin(url, { devUser: "ben" }).catch((error) => { if (error instanceof AccountInUseError) throw error; }));
+  await onlineLogin(url, { devUser: "ben" });
+  await assert.rejects(onlineLogout(url), /Several accounts are signed in .*ana@example\.com, ben@example\.com.*--account <email>/);
+  await onlineLogout(url, { account: "ben@example.com" });
+  assert.deepEqual((await onlineStatus())[0]!.accounts, [{ email: "ana@example.com", default: true }]);
+  // Switching only changes the default for new boards.
+  await onlineLogin(url, { devUser: "ben" });
+  await switchAccount(url, "ana@example.com");
+  assert.equal((await onlineStatus())[0]!.signedInAs, "ana@example.com");
+  await assert.rejects(switchAccount(url, "nobody@example.com"), /nobody@example\.com isn't signed in/);
 });
-
-test("a board is never noted under an account that signed in after it was opened", async () => {
+test("a board is never noted under an account that has signed out since it was opened", async () => {
   await onlineLogin(url, { devUser: "ana" });
   const pinned = Object.values((await readCredentials()).services)[0]!;
-  await onlineLogin(url, { devUser: "ben", switchAccount: true });
+  await onlineLogin(url, { devUser: "ben" });
+  await onlineLogout(url, { account: "ana@example.com" });
   await recordBoardAccountAs(url, "roadmap", pinned);
   assert.equal(await boardAccount(url, "roadmap"), null);
   await recordBoardAccountAs(url, "roadmap", Object.values((await readCredentials()).services)[0]!);
   assert.equal((await boardAccount(url, "roadmap"))?.email, "ben@example.com");
 });
-
 test("a sign-in from before emails were kept gets its email on the board page", async () => {
   const { cwd } = await anasOnlineBoard();
   const [key, credentials] = Object.entries((await readCredentials()).services)[0]!;

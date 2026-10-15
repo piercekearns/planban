@@ -20,6 +20,8 @@ const OTHER_PROGRAMS = new Set(["--transport", "--url", "--help", "--version"]);
 test("every flag and online command the guides name exists in the command line", async () => {
   const cli = await read("src/cli.ts");
   const commands = new Set([...cli.matchAll(/command\("([a-z-]+)/gu)].map((match) => match[1]));
+  // Commands defined together, such as sign-out and logout.
+  for (const [, names] of cli.matchAll(/for \(const name of \[([^\]]+)\]\)/gu)) for (const [, name] of names!.matchAll(/"([a-z-]+)"/gu)) commands.add(name);
   for (const path of GUIDES) {
     const text = await read(path);
     // Flags on lines that run Planban's command line (not its launcher script or other programs).

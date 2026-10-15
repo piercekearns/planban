@@ -34,7 +34,7 @@ import { buildUpdateCommandPlan, runPlanbanUpdate } from "./core/updateRunner";
 import { updatePreflight } from "./core/updatePreflight";
 import { PLANBAN_VERSION } from "./core/version";
 import { startServer } from "./server/server";
-import { rememberIdentity } from "./core/online/accounts";
+import { listAccounts, rememberIdentity, switchAccount } from "./core/online/accounts";
 import { errorReport } from "./core/errorReport";
 import { onlineLogin } from "./core/online/login";
 import { onlineStatus } from "./core/online/credentials";
@@ -118,7 +118,7 @@ const program = new Command();
 program.name("planban").description("Agent-native planning board for Codex and Claude Code: local by default, online when you share a board").version(PLANBAN_VERSION);
 
 const online = program.command("online").description("Sign in and move boards between local and online authority");
-online.command("login <url>").description("sign this computer in to Planban Online, for example: login https://app.planban.ai")
+online.command("sign-in <url>").description("add a Planban account on this computer, for example: sign-in https://app.planban.ai; other accounts stay signed in, and this one becomes the default for new boards")
   // Development-only sign-in on a local backend; hidden from help.
   .addOption(new Option("--access <scope>", "with --dev-user: connection access").choices(["all", "board"]).default("all").hideHelp())
   .addOption(new Option("--boards <id>", "with --dev-user: the one board the connection reaches").hideHelp())
@@ -126,14 +126,38 @@ online.command("login <url>").description("sign this computer in to Planban Onli
   .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
   .option("--device", "sign in by approving a link on any signed-in device, computer or phone")
   .option("--no-browser", "print the approval link instead of opening a browser (for remote or headless machines)")
-  .option("--switch-account", "sign in as a different account than the one signed in here, which signs that one out on this computer")
+  // Kept so older scripts still run: adding an account no longer replaces another.
+  .addOption(new Option("--switch-account", "no longer needed: signing in adds an account").hideHelp())
   .action(async (url, options) => print(await onlineLogin(url, {
     ...options,
     // Without a browser here, approve by link on any device: a loopback callback can't reach a remote machine.
     ...(options.browser === false ? { printOnly: true } : {}),
   }), {}));
-online.command("logout <url>").description("sign out on this machine and revoke its connection")
-  .action(async (url) => print(await onlineLogout(url), {}));
+online.command("login <url>").description("same as sign-in")
+  // Development-only sign-in on a local backend; hidden from help.
+  .addOption(new Option("--access <scope>", "with --dev-user: connection access").choices(["all", "board"]).default("all").hideHelp())
+  .addOption(new Option("--boards <id>", "with --dev-user: the one board the connection reaches").hideHelp())
+  .addOption(new Option("--dev-user <id>", "development sign-in on a local Online Board backend").hideHelp())
+  .option("--key-env <name>", "sign in with a personal access key held in this environment variable")
+  .option("--device", "sign in by approving a link on any signed-in device, computer or phone")
+  .option("--no-browser", "print the approval link instead of opening a browser (for remote or headless machines)")
+  // Kept so older scripts still run: adding an account no longer replaces another.
+  .addOption(new Option("--switch-account", "no longer needed: signing in adds an account").hideHelp())
+  .action(async (url, options) => print(await onlineLogin(url, {
+    ...options,
+    // Without a browser here, approve by link on any device: a loopback callback can't reach a remote machine.
+    ...(options.browser === false ? { printOnly: true } : {}),
+  }), {}));
+for (const name of ["sign-out", "logout"]) {
+  online.command(`${name} <url>`).description(name === "logout" ? "same as sign-out" : "sign one account out on this computer and revoke its connection; its boards say so until it signs in again")
+    .option("--account <email>", "which account, when several are signed in")
+    .action(async (url, options) => print(await onlineLogout(url, { account: options.account }), options));
+}
+online.command("accounts").description("the accounts signed in on this computer, the default for new boards, and which boards use each")
+  .action(async (options) => print(await listAccounts(), options));
+online.command("switch <url>").description("change the default account for boards taken online or attached from now on; boards already linked keep theirs")
+  .requiredOption("--account <email>", "a signed-in account")
+  .action(async (url, options) => print(await switchAccount(url, options.account), options));
 online.command("connections <url>").description("list this person's machines, agents and keys")
   .action(async (url) => print(await listConnections(url), {}));
 online.command("revoke <url> <connectionId>").description("cut off a machine, agent or key at once")
@@ -155,7 +179,8 @@ online.command("status").description("which Planban Online services this compute
   print(await onlineStatus(), {});
 });
 online.command("take-online <url>").description("take this project's board online, for example to https://app.planban.ai; it must hold no files").option("--cwd <path>", "project directory")
-  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd)), {}));
+  .option("--account <email>", "as this signed-in account (the default otherwise); the board uses it from now on")
+  .action(async (url, options) => print(await takeOnline(url, cwdOption(options.cwd), { account: options.account }), options));
 online.command("stop-take-online").description("stop an unfinished take-online; the board stays on this machine").option("--cwd <path>", "project directory")
   .action(async (options) => print(await stopTakeOnline(cwdOption(options.cwd)), {}));
 const onlineBoardOf = async (cwd: string) => {
@@ -173,7 +198,8 @@ online.command("take-local").description("bring this project's online board back
   .action(async (options) => print(await takeLocal(cwdOption(options.cwd), { removeOthers: !!options.removeOthers }), {}));
 online.command("attach <url> <boardId>").description("use an online board in this project folder on this computer").requiredOption("--cwd <path>", "project directory")
   .option("--replace-stale-copy", "set aside this project's out-of-date local copy of the board")
-  .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd), { replaceStaleCopy: !!options.replaceStaleCopy }), {}));
+  .option("--account <email>", "use the board as this signed-in account (the default otherwise)")
+  .action(async (url, boardId, options) => print(await attachOnline(url, boardId, cwdOption(options.cwd), { replaceStaleCopy: !!options.replaceStaleCopy, account: options.account }), options));
 online.command("restore-backup").description("make a new local board from a backup this computer kept of an online board").requiredOption("--from <folder>", "backup folder: .../latest or .../daily/<date>")
   .requiredOption("--cwd <path>", "empty project directory").requiredOption("--repo-id <id>", "id for the restored local board")
   .action(async (options) => print(await restoreBackup(options.from, cwdOption(options.cwd), options.repoId), {}));

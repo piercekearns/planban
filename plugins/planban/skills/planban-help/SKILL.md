@@ -63,7 +63,7 @@ Then list common actions:
 - invite someone to an online board, see who is on it, or join a board from an invitation link
 - open an online board in any browser or on a phone at app.planban.ai/boards/<board>
 - sign this computer in without a browser here: approve a link on your phone instead
-- see which Planban account this computer is signed in as, sign out, or switch accounts (one account per computer at a time)
+- see which Planban accounts are signed in here and which boards use each, add one, sign one out, or change the default for new boards (several can be signed in at once)
 - restore a board from this computer's automatic backup of an online board, as a separate copy
 - check whether Planban has updates
 - archive or delete a local board (an online board is deleted by its owner at app.planban.ai, after taking it local)

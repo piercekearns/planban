@@ -7,7 +7,8 @@ import { spawn } from "node:child_process";
 import { urlOpener } from "../openUrl";
 import { serviceUrl, saveCredentials } from "./credentials";
 import { onlineRequest } from "./client";
-import { AccountInUseError, liveAccount, rememberIdentity } from "./accounts";
+import { rememberIdentity } from "./accounts";
+import { readCredentials } from "./credentials";
 import { PlanbanValidationError } from "../boardOperations";
 
 export interface LoginOptions {
@@ -200,16 +201,31 @@ async function callbackListener(ports: number[], state: string, issuer: string, 
  * independently revoked on sign-out or after 90 days unused. No provider
  * access or refresh credentials are exchanged or retained.
  */
+/**
+ * Signs this computer in as an account. Several accounts can be signed in at
+ * once (owner decision, 15 October 2026): a new one is added beside the
+ * others and becomes the default for boards taken online or attached from
+ * now on; boards already linked keep their own account.
+ */
 export async function onlineLogin(urlInput: string, options: LoginOptions = {}) {
+  const url = serviceUrl(urlInput);
+  // Only for the note below; a damaged credentials file is reported by the sign-in itself.
+  const before = (await readCredentials().catch(() => null))?.accounts[url];
+  const result = await signIn(url, options) as { identity?: { account?: { email?: string; person?: string } } } & Record<string, unknown>;
+  const added = result.identity?.account;
+  const others = Object.entries(before?.accounts ?? {}).filter(([id]) => id !== added?.person).map(([, credentials]) => credentials.email ?? "another account");
+  if (!others.length) return result;
+  return {
+    ...result,
+    note: `Added ${added?.email ?? "this account"} beside ${others.join(", ")}, which ${others.length === 1 ? "stays" : "stay"} signed in here. Boards linked to ${others.length === 1 ? "it" : "them"} keep using ${others.length === 1 ? "it" : "them"}; boards you take online or attach from now on use ${added?.email ?? "this account"} (change with planban online switch).`,
+  };
+}
+
+async function signIn(urlInput: string, options: LoginOptions) {
   const url = serviceUrl(urlInput);
   if (options.access === "board" && !options.boards?.trim()) throw new PlanbanValidationError("Board access requires --boards.");
   if (!options.devUser && (options.access === "board" || options.boards)) {
     throw new PlanbanValidationError("--access board and --boards apply only to development sign-in (--dev-user). Signing in through the browser gives this machine your full access; limit AI apps and keys from your connections instead.");
-  }
-  // One account per service on a computer: say so before replacing a sign-in that still works.
-  if (!options.switchAccount) {
-    const current = await liveAccount(url);
-    if (current) throw new AccountInUseError(url, current, `To go ahead, run: planban online login ${url} --switch-account`);
   }
   if (options.devUser) return devLogin(url, options);
   if (options.keyEnv) return keyLogin(url, options.keyEnv);

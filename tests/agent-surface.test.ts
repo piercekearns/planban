@@ -100,9 +100,10 @@ test("a JSON caller gets a failure as JSON, with its kind and the details to act
   const status = await run(["online", "status", "-o", "json"]);
   assert.equal(status.status, 0, status.stderr);
   assert.deepEqual(JSON.parse(status.stdout).map((entry: { signedInAs: string }) => entry.signedInAs), ["ana@example.com"]);
-  const another = await run(["online", "login", bridge.url, "--dev-user", "ben", "-o", "json"]);
-  assert.equal(another.status, 1);
-  assert.deepEqual(JSON.parse(another.stdout).error.details, { url: bridge.url, signedInAs: "ana@example.com", retryWith: "--switch-account" });
+  // Signing in another account adds it, and says so.
+  const another = await run(["online", "sign-in", bridge.url, "--dev-user", "ben", "-o", "json"]);
+  assert.equal(another.status, 0, another.stderr);
+  assert.match(JSON.parse(another.stdout).note, /^Added ben@example\.com beside ana@example\.com/);
 });
 
 test("an online board isn't deleted from a computer; it can only be removed from this one", async () => {

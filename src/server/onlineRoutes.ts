@@ -12,7 +12,7 @@ import { boardPath, onlineRequest, requireCredentials } from "../core/online/cli
 import { readCredentials, serviceUrl } from "../core/online/credentials";
 import { knownStaleCopy } from "../core/online/copyCheck";
 import { onlineLogin } from "../core/online/login";
-import { AccountInUseError, liveAccount, rememberIdentity } from "../core/online/accounts";
+import { AccountInUseError, boardAccount, liveAccount, rememberIdentity } from "../core/online/accounts";
 
 /** Services this server has already asked for a missing email. */
 const askedWho = new Set<string>();
@@ -117,7 +117,9 @@ export function registerOnlineRoutes(app: express.Express, deps: Deps) {
       const job = [...jobs.values()].filter((entry) => entry.repoId === repoId).at(-1);
       // Who each service is signed in as here, for "Signed in as" (owner request, 15 October 2026).
       const accounts = Object.fromEntries(Object.entries(services).map(([url, credentials]) => [url, credentials.email ?? null]));
-      const base = { signedIn, accounts, defaultService: await defaultService(), job: job ? publicJob(job) : null };
+      // An online board's own account (several can be signed in), from its link on this computer.
+      const link = manifest?.storage?.kind === "online" ? await boardAccount(manifest.storage.url, manifest.storage.boardId).catch(() => null) : null;
+      const base = { signedIn, accounts, ...(link ? { account: link.email ?? null } : {}), defaultService: await defaultService(), job: job ? publicJob(job) : null };
       if (manifest?.storage?.kind !== "online") {
         const stale = manifest?.enabled ? await knownStaleCopy(resolvePlanningRoot(manifest), cwd, manifest.repoId) : null;
         res.json({ ...base, location: running(repoId)?.kind === "take-online" ? "moving" : "local", stale });
