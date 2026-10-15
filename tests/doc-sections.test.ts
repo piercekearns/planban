@@ -118,3 +118,13 @@ test("old Mac line endings split sections too, and no section edit ever changes 
   const first = docSections(doc)[0]!;
   assert.throws(() => editSection(doc, { heading: "A", expectedVersion: first.version, text: "## A\n\nOne\n\n```\n" }), /would change other sections too/);
 });
+
+test("a section edit can't turn the document's opening into hidden front matter", () => {
+  const md = "---\n\nPreamble that must stay visible.\n\n## A\n\nOld.\n\n## B\n\nKeep.\n";
+  const a = docSections(md).find((section) => section.heading === "A")!;
+  assert.throws(() => editSection(md, { heading: "A", expectedVersion: a.version, text: "## A\n\n---\n\nNew.\n" }), /would change other sections too/);
+  // An ordinary rule inside a section is fine when nothing above could become front matter.
+  const plain = "# Doc\n\n## A\n\nOld.\n\n## B\n\nKeep.\n";
+  const pa = docSections(plain).find((section) => section.heading === "A")!;
+  assert.ok(editSection(plain, { heading: "A", expectedVersion: pa.version, text: "## A\n\n---\n\nNew.\n" }).ok);
+});

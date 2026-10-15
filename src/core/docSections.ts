@@ -92,7 +92,7 @@ export function editSection(markdown: string, input: { heading: string; occurren
     const body = after && !text.endsWith("\n\n") ? `${text}\n` : text;
     const joined = `${before}${separator}${body}${after}`;
     const at2 = before.length + separator.length;
-    assertOthersUnchanged(markdown, [at, at], joined, [at2, at2 + body.length]);
+    assertOthersUnchanged(markdown, [at, at], joined, [at2, at2 + body.length], opening.heading);
     return { ok: true, markdown: joined, section: sectionAt(joined, at2, input.heading) };
   }
   if (!target) return { ok: false, reason: "missing", current: { heading: input.heading, version: null, text: "" } };
@@ -105,7 +105,7 @@ export function editSection(markdown: string, input: { heading: string; occurren
   const trailing = /\n\s*$/u.exec(current)?.[0] ?? "";
   const replacement = trailing.length > 1 && !text.endsWith("\n\n") ? `${text}\n` : text;
   const result = `${markdown.slice(0, target.start)}${replacement}${markdown.slice(target.end)}`;
-  assertOthersUnchanged(markdown, [target.start, target.end], result, [target.start, target.start + replacement.length]);
+  assertOthersUnchanged(markdown, [target.start, target.end], result, [target.start, target.start + replacement.length], opening.heading);
   return { ok: true, markdown: result, section: sectionAt(result, target.start, input.heading) };
 }
 
@@ -138,10 +138,15 @@ function outside(markdown: string, start: number, end: number) {
  * were. If they aren't (a document the reader can't split cleanly), nothing
  * is written and the whole-document write is the way.
  */
-function assertOthersUnchanged(before: string, beforeRange: [number, number], after: string, afterRange: [number, number]) {
+function assertOthersUnchanged(before: string, beforeRange: [number, number], after: string, afterRange: [number, number], heading: string) {
   const was = outside(before, ...beforeRange);
   const is = outside(after, ...afterRange);
-  if (was.length !== is.length || was.some((entry, index) => entry !== is[index])) {
+  // The opening (front matter and anything before the first heading) is as it was, and still opening.
+  const opening = (markdown: string) => `${frontMatterEnd(markdown)}\u0000${markdown.slice(0, docSections(markdown)[0]?.start ?? markdown.length)}`;
+  const openingKept = opening(before) === opening(after) || (docSections(before).length === 0 && after.startsWith(before.replace(/\s+$/u, "")) && frontMatterEnd(after) === frontMatterEnd(before));
+  // And the edited or added section is still there, where it was written.
+  const edited = docSections(after).some((section) => section.start === afterRange[0] && section.heading === heading);
+  if (!openingKept || !edited || was.length !== is.length || was.some((entry, index) => entry !== is[index])) {
     throw new PlanbanValidationError("This edit would change other sections too, so it wasn't made. Write the whole document instead (planban_write_doc).");
   }
 }
