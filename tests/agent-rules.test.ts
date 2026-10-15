@@ -30,7 +30,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   await bridge.close();
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   if (savedHome === undefined) delete process.env.PLANBAN_HOME;
   else process.env.PLANBAN_HOME = savedHome;
 });

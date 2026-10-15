@@ -52,7 +52,7 @@ async function withHome(run: () => Promise<void>) {
   const printed: string[] = [];
   (process.stderr as any).write = (chunk: any) => { printed.push(String(chunk)); return true; };
   try { await run.call({ printed }); return printed; }
-  finally { (process.stderr as any).write = write; process.env.PLANBAN_HOME = prior; await rm(root, { recursive: true, force: true }); }
+  finally { (process.stderr as any).write = write; process.env.PLANBAN_HOME = prior; await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }
 
 test("on this computer: opens the approval link in the browser, prints it with the code, waits, and saves the sign-in", async () => {

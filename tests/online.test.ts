@@ -416,7 +416,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   await fake.close();
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   process.env.PLANBAN_HOME = originalHome;
   delete process.env.PLANBAN_ONLINE_TEST_PASSWORD;
   assert.deepEqual(fake.errors, []);

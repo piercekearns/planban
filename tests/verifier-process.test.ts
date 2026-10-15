@@ -19,7 +19,7 @@ test("verifier stages deliver stdin EOF, retain both output streams and report o
     await assert.rejects(runVerifierStage("spawn control", fixture, [], { cwd: join(root, "absent") }), /spawn control[\s\S]*ENOENT/);
     await writeFile(fixture, 'console.log("x".repeat(10000));');
     await assert.rejects(runVerifierStage("output control", fixture, [], { maxBuffer: 100 }), /output control[\s\S]*Output exceeds/);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 
 test("failed launch recovers and terminates its recorded detached fixture server before directory cleanup", async () => {
@@ -34,7 +34,7 @@ test("failed launch recovers and terminates its recorded detached fixture server
     await closed;
   } finally {
     if (server.exitCode === null && server.signalCode === null) server.kill("SIGKILL");
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -55,7 +55,7 @@ test("verifier timeout terminates its live fixture tree and leaves an unrelated 
     if (ownedPid) { try { process.kill(ownedPid, "SIGKILL"); } catch {} }
     sentinel.kill("SIGKILL");
     await new Promise<void>((resolve) => sentinel.once("close", () => resolve()));
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -65,7 +65,7 @@ test("parent exit with descendant-held pipes stays bounded and is cleaned as an 
   try {
     await writeFile(fixture, `import {spawn} from 'node:child_process';spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});console.log('parent exiting');setTimeout(()=>process.exit(0),50);`);
     await assert.rejects(runVerifierStage("held pipes", fixture, [], { timeoutMs: 500 }), /held pipes[\s\S]*Timed out[\s\S]*parent exiting/);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 
 test("every cleanup runs, primary failure is preserved, and cleanup-only failure cannot report success", async () => {
@@ -91,5 +91,5 @@ test("known parent failure survives a later descendant pipe-drain timeout", { sk
       assert.equal(error.cause.message, "Parent exited with code 7, signal none");
       return true;
     });
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
