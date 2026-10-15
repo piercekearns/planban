@@ -196,10 +196,10 @@ test("permissions: a viewer reads everything and changes nothing; an editor edit
     const card = (await page(adapter, boardPath(boardId, "/cards"), { method: "POST", body: { title: "Shared card", baseRevision: 1 } })).body.createdCard.id as string;
     const skeleton = (await page(adapter, cardPath(boardId, card, "/docs/spec"))).body;
     assert.equal((await page(adapter, cardPath(boardId, card, "/docs/spec"), { method: "PUT", body: { markdown: "# Spec", expectedMtimeMs: skeleton.mtimeMs } })).status, 200);
-    await addMember(service, owner.token, boardId, "user_viewer", "viewer");
-    await addMember(service, owner.token, boardId, "user_editor", "editor");
     const viewer = service.adapterFor((await service.signIn("user_viewer")).token);
     const editor = service.adapterFor((await service.signIn("user_editor")).token);
+    await addMember(service, owner.token, boardId, "user_viewer", "viewer");
+    await addMember(service, owner.token, boardId, "user_editor", "editor");
 
     const seen = await page(viewer, boardPath(boardId, "/state"));
     assert.equal(seen.status, 200);

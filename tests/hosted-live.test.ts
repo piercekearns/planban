@@ -226,8 +226,9 @@ test("a committed change arrives as the board's new revision, once, over the ser
 test("removed from the board: the subscription ends, and reloading shows the board is gone", async () => {
   await withServiceEnv(() => withLiveTokens(async () => {
     const { service, owner, boardId, adapter } = await ownerWithBoard();
-    await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/members`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "user_editor", role: "editor" }) });
+    // People join after they've signed in to Planban.
     const editor = slow(service.adapterFor((await service.signIn("user_editor")).token));
+    await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/members`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "user_editor", role: "editor" }) });
     const convex = fakeConvex(service);
     const { lost } = watch(editor, boardId, convex, { timers: manualTimers().timers, visibility: manualVisibility().visibility });
     await until(() => convex.fake.urls.length >= 1, "the live connection");
@@ -347,8 +348,9 @@ test("fallback checks start only after the socket stays down, back off, pause in
 test("without live updates configured, the page checks every 15 seconds; a removal found by a check ends watching", async () => {
   await withServiceEnv(async () => {
     const { service, owner, boardId, adapter } = await ownerWithBoard();
-    await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/members`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "user_viewer", role: "viewer" }) });
+    // People join after they've signed in to Planban.
     const viewer = slow(service.adapterFor((await service.signIn("user_viewer")).token));
+    await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/members`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ userId: "user_viewer", role: "viewer" }) });
     assert.equal(await viewer.liveToken(), null);
     const convex = fakeConvex(service);
     const clock = manualTimers();
