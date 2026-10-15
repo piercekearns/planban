@@ -106,3 +106,15 @@ test("indented headings keep their whole line, and empty front matter never swal
   assert.equal(stripFrontMatter("---\r\ntitle: x\r\n...\r\n# Doc\r\n"), "# Doc\r\n");
   assert.equal(stripFrontMatter("---\n---\n\n## A\n"), "\n## A\n");
 });
+
+test("old Mac line endings split sections too, and no section edit ever changes another section", () => {
+  const md = "## A\rOne.\r## B\rTwo.\r";
+  const [a, b] = docSections(md);
+  assert.deepEqual([a!.start, b!.start], [0, 10]);
+  const edited = editSection(md, { heading: "B", expectedVersion: b!.version, text: "## B\rTwo, edited.\r" });
+  assert.ok(edited.ok && edited.markdown.startsWith("## A\rOne.\r"));
+  // A replacement that would itself break the next section's heading is refused, not written.
+  const doc = "## A\n\nOne.\n\n## B\n\nTwo.\n";
+  const first = docSections(doc)[0]!;
+  assert.throws(() => editSection(doc, { heading: "A", expectedVersion: first.version, text: "## A\n\nOne\n\n```\n" }), /would change other sections too/);
+});

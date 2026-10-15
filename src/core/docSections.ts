@@ -91,7 +91,9 @@ export function editSection(markdown: string, input: { heading: string; occurren
     const separator = !before ? "" : before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
     const body = after && !text.endsWith("\n\n") ? `${text}\n` : text;
     const joined = `${before}${separator}${body}${after}`;
-    return { ok: true, markdown: joined, section: sectionAt(joined, before.length + separator.length, input.heading) };
+    const at2 = before.length + separator.length;
+    assertOthersUnchanged(markdown, [at, at], joined, [at2, at2 + body.length]);
+    return { ok: true, markdown: joined, section: sectionAt(joined, at2, input.heading) };
   }
   if (!target) return { ok: false, reason: "missing", current: { heading: input.heading, version: null, text: "" } };
   if (matching.length > 1 && input.occurrence === undefined) {
@@ -103,6 +105,7 @@ export function editSection(markdown: string, input: { heading: string; occurren
   const trailing = /\n\s*$/u.exec(current)?.[0] ?? "";
   const replacement = trailing.length > 1 && !text.endsWith("\n\n") ? `${text}\n` : text;
   const result = `${markdown.slice(0, target.start)}${replacement}${markdown.slice(target.end)}`;
+  assertOthersUnchanged(markdown, [target.start, target.end], result, [target.start, target.start + replacement.length]);
   return { ok: true, markdown: result, section: sectionAt(result, target.start, input.heading) };
 }
 
@@ -112,6 +115,33 @@ function sectionAt(markdown: string, start: number, heading: string) {
   return { heading: found?.heading ?? heading, version: found?.version ?? sectionVersion("") };
 }
 
+/** The start of the line holding `at`; a line ends at \n, \r\n or a lone \r. */
 function lineStart(markdown: string, at: number) {
-  return markdown.lastIndexOf("\n", at - 1) + 1;
+  return Math.max(markdown.lastIndexOf("\n", at - 1), markdown.lastIndexOf("\r", at - 1)) + 1;
+}
+
+/**
+ * Each heading's own text (up to the next heading of any level), for the
+ * headings outside [start, end), in order. Own text, so a parent that gains
+ * a new subsection doesn't count as changed; trailing blank lines don't count.
+ */
+function outside(markdown: string, start: number, end: number) {
+  const sections = docSections(markdown);
+  return sections.filter((section) => section.start < start || section.start >= end).map((section) => {
+    const next = sections.find((other) => other.start > section.start);
+    return `${section.heading}\u0000${markdown.slice(section.start, next ? next.start : markdown.length).replace(/\s+$/u, "")}`;
+  });
+}
+
+/**
+ * The guard behind every section edit: all other sections are exactly as they
+ * were. If they aren't (a document the reader can't split cleanly), nothing
+ * is written and the whole-document write is the way.
+ */
+function assertOthersUnchanged(before: string, beforeRange: [number, number], after: string, afterRange: [number, number]) {
+  const was = outside(before, ...beforeRange);
+  const is = outside(after, ...afterRange);
+  if (was.length !== is.length || was.some((entry, index) => entry !== is[index])) {
+    throw new PlanbanValidationError("This edit would change other sections too, so it wasn't made. Write the whole document instead (planban_write_doc).");
+  }
 }
