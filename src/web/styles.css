@@ -6166,3 +6166,49 @@ button.web-step-box { cursor: pointer; }
   /* On a phone the form comes straight after the one line; the points wait below it. */
   .web-signin-intro ul, .web-signin-intro .web-signin-local { display: none; }
 }
+
+/* The welcome a new account sees (approved 15 October 2026): what's known first, a question only when nothing is. */
+.web-welcome { max-width: 640px; margin: 4px auto 0; }
+.web-welcome > .web-h { font-size: 22px; }
+.web-back { display: inline-block; margin: 0 0 10px; border: 0; background: none; padding: 0; color: var(--text-muted); font: 13px var(--font-sans); cursor: pointer; }
+.web-choices { display: grid; gap: 10px; }
+.web-choice { display: flex; align-items: center; gap: 14px; width: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 16px; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.web-choice:hover, .web-choice:focus-visible { border-color: var(--border-strong); background: color-mix(in oklab, var(--surface-subtle) 40%, var(--surface)); }
+.web-choice-icon { display: flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 9px; background: var(--surface-subtle); color: var(--text); }
+.web-choice-text { flex: 1; min-width: 0; }
+.web-choice-text b { display: block; font-size: 14.5px; font-weight: 600; }
+.web-choice-text small { display: block; margin-top: 2px; color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
+.web-connected { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 16px; border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--border)); border-radius: 10px; background: color-mix(in oklab, var(--accent) 7%, var(--surface)); padding: 10px 14px; font-size: 13px; }
+.web-connected svg { flex: none; margin-top: 2px; color: #1f8a3b; }
+.web-watching { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; color: var(--text-muted); font-size: 12.5px; }
+.web-watching-dot { width: 8px; height: 8px; border-radius: 50%; background: #e0a100; animation: web-pulse 1.4s ease-in-out infinite; }
+@keyframes web-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .web-watching-dot { animation: none; } }
+.web-welcome .web-steps { margin-bottom: 14px; }
+.web-welcome .web-step { padding: 14px 16px; }
+.web-welcome .web-step b { font-size: 14px; }
+.web-welcome .web-step small { margin-top: 2px; font-size: 12.5px; line-height: 1.5; }
+.web-welcome .web-step .web-prompt { margin: 8px 0; }
+.web-step-later { opacity: .55; }
+/* A ticked step here is done, not cancelled: no strike-through. */
+.web-welcome .web-step.done > div > b { color: var(--text); text-decoration: none; }
+.web-welcome-boards { margin-top: 12px; border-top: 1px solid var(--border); }
+.web-welcome-board { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.web-welcome-board .web-row-main b { font-size: 13.5px; }
+.web-invite-row { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+.web-invite-row + .web-invite-row { border-top: 1px solid var(--border); }
+.web-muted-text { display: block; margin: 4px 0 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.web-welcome .web-card > b { display: block; font-size: 14px; }
+.web-welcome .web-card + .web-card { margin-top: 12px; }
+.web-first-board { display: grid; gap: 8px; }
+.web-first-board label { font-size: 13px; font-weight: 500; }
+.web-first-board input { height: 40px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); padding: 0 12px; color: var(--text); font: 15px var(--font-sans); }
+.web-first-board input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent); }
+.web-first-board .web-button { justify-content: center; min-height: 40px; }
+.web-welcome .web-foot { line-height: 1.9; }
+@media (max-width: 640px) {
+  .web-welcome > .web-h { font-size: 19px; }
+  .web-choice { padding: 14px; }
+  .web-invite-row { flex-wrap: wrap; padding: 12px; }
+  .web-invite-row .web-row-main { flex: 1 1 100%; }
+}

@@ -32,6 +32,10 @@ const PEOPLE = {
   editor: { userId: "user_maya", name: "Maya Okafor" },
   viewer: { userId: "user_jo", name: "Jo Lin" },
   newcomer: { userId: "user_nia", name: "Nia Patel" },
+  // The welcome's other starting states: nothing known, a computer just signed in, ChatGPT signed in.
+  fresh: { userId: "user_leo", name: "Leo Grant" },
+  maker: { userId: "user_ana", name: "Ana Silva" },
+  chat: { userId: "user_kai", name: "Kai Moreno" },
 } as const;
 const emailOf = (userId: string) => `${userId.replace(/^user_/, "")}@example.com`;
 
@@ -90,6 +94,15 @@ async function seed() {
   await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { email: emailOf(PEOPLE.newcomer.userId), role: "editor" });
   const link = await asPerson(owner.token, "POST", `/api/v1/boards/${boardId}/invites`, { role: "viewer" });
   process.stdout.write(`A viewer invitation link: ${String(link.link).replace(/^https?:\/\/[^/]+/, PUBLIC)}\n`);
+  // Signed-in computers and an AI app, as the welcome sees them.
+  const now = new Date().toISOString();
+  const connection = (userId: string, kind: "machine" | "oauth", name: string) => service.ctx.db.insert("connections", {
+    userId, kind, name, clientName: name, boards: "all", level: kind === "machine" ? "complete" : "plan", canAdminister: kind === "machine", createdAt: now, lastUsedAt: now,
+  });
+  for (const who of ["fresh", "maker", "chat"] as const) await service.signIn(PEOPLE[who].userId, PEOPLE[who].name);
+  await connection(PEOPLE.owner.userId, "machine", "Sam's MacBook Pro");
+  await connection(PEOPLE.maker.userId, "machine", "Ana's MacBook Air");
+  await connection(PEOPLE.chat.userId, "oauth", "ChatGPT");
   // An agent asking to sign in, as `planban online login --device` does.
   const asked = await (await deviceAuthorizationResponse(service.actionCtx, new Request(`${PUBLIC}/oauth/device`, {
     method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -147,7 +160,7 @@ createServer(async (request, response) => {
       const who = (url.searchParams.get("user") ?? "owner") as Who;
       const person = PEOPLE[who] ?? PEOPLE.owner;
       const { token } = await service.signIn(person.userId, person.name);
-      const next = url.searchParams.get("next") ?? (who === "newcomer" ? "/" : `/boards/${boardId}`);
+      const next = url.searchParams.get("next") ?? (who === "owner" || who === "editor" || who === "viewer" ? `/boards/${boardId}` : "/");
       // As the real sign-in does: the page remembers who signed in, for showing only.
       const account = JSON.stringify({ email: emailOf(person.userId), name: person.name });
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Set-Cookie": webCookie(token, 7 * 24 * 60 * 60) });
