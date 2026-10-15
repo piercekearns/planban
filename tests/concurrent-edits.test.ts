@@ -251,7 +251,7 @@ test("two agents editing different sections of a Spec both land; the same sectio
   assert.equal(report.category, "conflict");
   assert.match(report.message, /changed the "Purpose" section of the Spec of card "Alpha" since you read it/);
   assert.match((report.details as { conflict: { section: { text: string } } }).conflict.section.text, /Why, sharper\./);
-  assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes.map((change) => change.fields), [["spec:Purpose"]]);
+  assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes.map((change) => change.fields), [["spec:Purpose#0"]]);
   // A reconsidered write of that section, from its current version, settles it.
   const now = (await storage.readDocSections({ cwd, cardId: "alpha", kind: "spec" })).sections.find((section) => section.heading === "Purpose")!.version;
   await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Purpose", expectedSectionVersion: now, markdown: "## Purpose\n\nWhy, sharper, and my point.", actor: agent });
@@ -266,4 +266,16 @@ test("after many unrelated changes, a clash still never blames whoever changed a
   await storage.updateCard({ cwd, cardId: "alpha", nextAction: "Ana's", baseRevision: await revisionOf(cwd) });
   const report = await refusal(storage.updateCard({ cwd, cardId: "alpha", summary: "Mine", baseRevision: read, actor: agent }));
   assert.match(report.message, /^Not saved: Ana's agent \(Planban CLI\) changed the summary of card "Alpha"/);
+});
+
+test("with two sections of the same name, editing one never settles a refused edit to the other", async () => {
+  const cwd = await onlineBoard("Alpha");
+  const read0 = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "## Same\n\nFirst.\n\n## Same\n\nSecond.\n", expectedMtimeMs: read0.mtimeMs, actor: agent });
+  const read = await storage.readDocSections({ cwd, cardId: "alpha", kind: "spec" });
+  const [first, second] = read.sections;
+  await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Same", occurrence: 0, expectedSectionVersion: first!.version, markdown: "## Same\n\nFirst, theirs.", actor: agent });
+  await refusal(storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Same", occurrence: 0, expectedSectionVersion: first!.version, markdown: "## Same\n\nFirst, mine.", actor: agent }));
+  await storage.writeDocSection({ cwd, cardId: "alpha", kind: "spec", heading: "Same", occurrence: 1, expectedSectionVersion: second!.version, markdown: "## Same\n\nSecond, edited.", actor: agent });
+  assert.deepEqual((await storage.unresolvedChanges({ cwd })).changes.map((change) => change.fields), [["spec:Same#0"]]);
 });

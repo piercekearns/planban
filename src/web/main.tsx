@@ -4057,10 +4057,26 @@ function DetailView({
     setGroupOptimisticItems(null);
   }, [boardId, item.id, previewVersion]);
 
+  // The objective as it was when editing began, and the board revision then.
+  const objectiveStart = useRef<{ value: string; revision: number } | null>(null);
+  useEffect(() => {
+    if (objectiveEditing && objectiveStart.current === null) objectiveStart.current = { value: item.summary ?? "", revision: state.roadmap.revision };
+    if (!objectiveEditing) objectiveStart.current = null;
+  }, [objectiveEditing, item.summary, state.roadmap.revision]);
   useEffect(() => {
     setObjectiveEditing(false);
+    setObjectiveConflict(null);
     setObjectiveDraft(item.summary ?? "");
-  }, [item.id, item.summary]);
+  }, [item.id]);
+  useEffect(() => {
+    const start = objectiveStart.current;
+    // Someone else's objective landed while editing: keep the draft and offer the choice (Spec point 20).
+    if (objectiveEditing && start && (item.summary ?? "") !== start.value) {
+      setObjectiveConflict((current) => current ?? { theirs: item.summary ?? null, who: null, revision: state.roadmap.revision, choosing: true });
+      return;
+    }
+    if (!objectiveEditing) setObjectiveDraft(item.summary ?? "");
+  }, [item.summary]);
 
   useEffect(() => {
     if (!workspaceRoot) return;

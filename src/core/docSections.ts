@@ -17,7 +17,15 @@ export interface DocSection {
   end: number;
 }
 
-const HEADING = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/u;
+/** An ATX heading: up to three spaces, 1 to 6 #s, a space, the text; a closing run of #s counts only after a space. */
+const ATX = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/u;
+const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/u;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/u;
+
+function atxText(raw: string | undefined) {
+  const text = (raw ?? "").replace(/(?:^|[ \t]+)#+[ \t]*$/u, "").trim();
+  return text;
+}
 
 /** A 64-bit hash of the text, as 16 hex digits (plain JavaScript: it also runs in the service). */
 export function sectionVersion(text: string) {
@@ -32,28 +40,51 @@ export function sectionVersion(text: string) {
   return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
 }
 
-/** The sections of a document, in order; headings inside fenced code are not headings. */
+/**
+ * The sections of a document, in order, as Markdown reads its headings: ATX
+ * (## Heading) and underlined (Heading, then === or ---), any line endings;
+ * nothing inside fenced code counts.
+ */
 export function docSections(markdown: string): DocSection[] {
-  const lines = markdown.split("\n");
+  const raw = markdown.split("\n");
+  const lines = raw.map((line) => line.replace(/\r$/u, ""));
   const offsets: number[] = [];
   let at = 0;
-  for (const line of lines) {
+  for (const line of raw) {
     offsets.push(at);
     at += line.length + 1;
   }
   const headings: Array<{ line: number; level: number; heading: string }> = [];
-  let fence: string | null = null;
-  lines.forEach((line, index) => {
-    const marker = /^\s*(`{3,}|~{3,})/u.exec(line)?.[1];
-    if (marker) {
-      if (!fence) fence = marker[0]!;
-      else if (marker[0] === fence) fence = null;
-      return;
+  let fence: { char: string; length: number } | null = null;
+  let paragraph = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const marker = FENCE.exec(line)?.[1];
+    if (fence) {
+      // A fence closes only with the same character, at least as long, and nothing after it.
+      if (marker && marker[0] === fence.char && marker.length >= fence.length && /^ {0,3}(`+|~+)[ \t]*$/u.test(line)) fence = null;
+      continue;
     }
-    if (fence) return;
-    const match = HEADING.exec(line);
-    if (match) headings.push({ line: index, level: match[1]!.length, heading: match[2]! });
-  });
+    if (marker) {
+      fence = { char: marker[0]!, length: marker.length };
+      paragraph = false;
+      continue;
+    }
+    const atx = ATX.exec(line);
+    if (atx) {
+      headings.push({ line: index, level: atx[1]!.length, heading: atxText(atx[2]) });
+      paragraph = false;
+      continue;
+    }
+    const underline = SETEXT.exec(line);
+    if (underline && paragraph) {
+      // The paragraph's last line is the heading; its section starts there.
+      headings.push({ line: index - 1, level: underline[1]![0] === "=" ? 1 : 2, heading: lines[index - 1]!.trim() });
+      paragraph = false;
+      continue;
+    }
+    paragraph = line.trim() !== "" && !(paragraph === false && /^ {0,3}(?:[-*_][ \t]*){3,}$/u.test(line));
+  }
   const seen = new Map<string, number>();
   return headings.map((entry, index) => {
     const next = headings.slice(index + 1).find((other) => other.level <= entry.level);
@@ -82,8 +113,8 @@ export type SectionEdit =
  */
 export function editSection(markdown: string, input: { heading: string; occurrence?: number; expectedVersion: string | null; text: string; after?: string | null }): SectionEdit {
   const text = input.text.endsWith("\n") ? input.text : `${input.text}\n`;
-  const first = text.split("\n", 1)[0]!;
-  if (!HEADING.test(first)) throw new PlanbanValidationError("A section starts with its heading line, such as \"## Current state\".");
+  const opening = docSections(text)[0];
+  if (!opening || opening.start !== 0) throw new PlanbanValidationError("A section starts with its heading line, such as \"## Current state\".");
   const sections = docSections(markdown);
   const matching = sections.filter((section) => section.heading === input.heading);
   const target = matching[input.occurrence ?? 0];
@@ -93,8 +124,12 @@ export function editSection(markdown: string, input: { heading: string; occurren
     if (input.after && !anchor) throw new PlanbanValidationError(`No section called "${input.after}" to insert after.`);
     const at = anchor ? anchor.end : markdown.length;
     const before = markdown.slice(0, at);
-    const joined = `${before}${before && !before.endsWith("\n\n") ? (before.endsWith("\n") ? "\n" : "\n\n") : ""}${text}${markdown.slice(at) ? "\n" : ""}${markdown.slice(at)}`;
-    return { ok: true, markdown: joined, section: { heading: input.heading, version: sectionVersion(text) } };
+    const after = markdown.slice(at);
+    // A blank line before the new section, and after it when something follows.
+    const separator = !before ? "" : before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+    const body = after && !text.endsWith("\n\n") ? `${text}\n` : text;
+    const joined = `${before}${separator}${body}${after}`;
+    return { ok: true, markdown: joined, section: sectionAt(joined, before.length + separator.length, input.heading) };
   }
   if (!target) return { ok: false, reason: "missing", current: { heading: input.heading, version: null, text: "" } };
   if (matching.length > 1 && input.occurrence === undefined) {
@@ -105,5 +140,12 @@ export function editSection(markdown: string, input: { heading: string; occurren
   // Keep the blank line that separated it from the next section.
   const trailing = /\n\s*$/u.exec(current)?.[0] ?? "";
   const replacement = trailing.length > 1 && !text.endsWith("\n\n") ? `${text}\n` : text;
-  return { ok: true, markdown: `${markdown.slice(0, target.start)}${replacement}${markdown.slice(target.end)}`, section: { heading: input.heading, version: sectionVersion(replacement) } };
+  const result = `${markdown.slice(0, target.start)}${replacement}${markdown.slice(target.end)}`;
+  return { ok: true, markdown: result, section: sectionAt(result, target.start, input.heading) };
+}
+
+/** The section that starts at `start` in a document, as the next read will report it. */
+function sectionAt(markdown: string, start: number, heading: string) {
+  const found = docSections(markdown).find((section) => section.start === start) ?? docSections(markdown).find((section) => section.heading === heading);
+  return { heading: found?.heading ?? heading, version: found?.version ?? sectionVersion("") };
 }

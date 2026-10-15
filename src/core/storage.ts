@@ -1022,7 +1022,7 @@ export async function notePresence(input: { cwd: string; cardId: string; agentNa
   try {
     const online = await onlineManifest(input.cwd);
     if (!online || online.storage?.kind !== "online") return { noted: false };
-    return await onlineRequest<{ noted: boolean }>(online.storage.url, boardPath(online.storage.boardId, "/presence"), { cardId: input.cardId, ...(input.agentName ? { agentName: input.agentName } : {}) }, { timeoutMs: 5_000 });
+    return await onlineRequest<{ noted: boolean }>(online.storage.url, boardPath(online.storage.boardId, "/presence"), { cardId: input.cardId, ...(input.agentName ? { agentName: input.agentName } : {}) }, { timeoutMs: 5_000, signal: AbortSignal.timeout(5_000) });
   } catch {
     return { noted: false };
   }
@@ -1034,7 +1034,7 @@ export async function workingOnCard(input: { cwd: string; cardId: string; agentN
     const online = await onlineManifest(input.cwd);
     if (!online || online.storage?.kind !== "online") return [];
     const agent = input.agentName ? `&agent=${encodeURIComponent(input.agentName)}` : "";
-    const result = await onlineRequest<{ working: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> }>(online.storage.url, boardPath(online.storage.boardId, `/presence?card=${encodeURIComponent(input.cardId)}${agent}`), undefined, { timeoutMs: 5_000 });
+    const result = await onlineRequest<{ working: Record<string, Array<{ who: string; startedAt: string; lastActiveAt: string; note: string }>> }>(online.storage.url, boardPath(online.storage.boardId, `/presence?card=${encodeURIComponent(input.cardId)}${agent}`), undefined, { timeoutMs: 5_000, signal: AbortSignal.timeout(5_000) });
     return result.working[input.cardId] ?? [];
   } catch {
     return [];
@@ -1063,14 +1063,22 @@ export async function writeDocSection(input: {
     const { state, result } = await onlineOperation<{ doc: PlanbanDocPayload; section: { heading: string; version: string } }>(resolveProjectCwd(input.cwd), online, "writeDocSection", input);
     return { ...result.doc, section: result.section, ...(state.onlineReplay ?? {}) };
   }
-  const doc = await readDoc(input);
-  const edit = editSection(doc.markdown, { heading: input.heading, expectedVersion: input.expectedSectionVersion, text: input.markdown, ...(input.occurrence === undefined ? {} : { occurrence: input.occurrence }), ...(input.after ? { after: input.after } : {}) });
-  if (!edit.ok) {
-    const conflict: ConflictDetails = { currentRevision: (await loadState(input.cwd)).roadmap.revision, changes: [], section: edit.current, document: doc };
-    throw new PlanbanEditConflictError(`Not saved: the "${input.heading}" section ${edit.reason === "missing" ? "is no longer there" : edit.reason === "exists" ? "was added since you read it" : "changed since you read it"}.${input.actor === "agent" ? ` ${RECONCILE}` : ""}`, conflict);
+  // Another section saved at the same moment changes the file's version: read again and
+  // re-apply, since only this section's own version decides.
+  for (let attempt = 0; ; attempt += 1) {
+    const doc = await readDoc(input);
+    const edit = editSection(doc.markdown, { heading: input.heading, expectedVersion: input.expectedSectionVersion, text: input.markdown, ...(input.occurrence === undefined ? {} : { occurrence: input.occurrence }), ...(input.after ? { after: input.after } : {}) });
+    if (!edit.ok) {
+      const conflict: ConflictDetails = { currentRevision: (await loadState(input.cwd)).roadmap.revision, changes: [], section: edit.current, document: doc };
+      throw new PlanbanEditConflictError(`Not saved: the "${input.heading}" section ${edit.reason === "missing" ? "is no longer there" : edit.reason === "exists" ? "was added since you read it" : "changed since you read it"}.${input.actor === "agent" ? ` ${RECONCILE}` : ""}`, conflict);
+    }
+    try {
+      const written = await writeDoc({ cwd: input.cwd, cardId: input.cardId, kind: input.kind, markdown: edit.markdown, expectedMtimeMs: doc.exists ? doc.mtimeMs : null, actor: input.actor });
+      return { ...written, section: edit.section };
+    } catch (error) {
+      if (!(error instanceof PlanbanEditConflictError) || attempt >= 4) throw error;
+    }
   }
-  const written = await writeDoc({ cwd: input.cwd, cardId: input.cardId, kind: input.kind, markdown: edit.markdown, expectedMtimeMs: doc.exists ? doc.mtimeMs : null, actor: input.actor });
-  return { ...written, section: edit.section };
 }
 
 /** A document with each section's own version, for writeDocSection. */

@@ -725,7 +725,7 @@ export const run = internalMutation({
         outcome = await writeDoc(ctx, access.board, current, input, now, attribution, settled.length ? " (reconsidered after an earlier clash)" : "");
       } else if (op === "writeDocSection") {
         if (attribution.actor === "agent" && typeof input.cardId === "string" && (input.kind === "spec" || input.kind === "plan")) {
-          settled = await settledBy(ctx, at, [{ cardId: input.cardId, field: `${input.kind}:${String(input.heading ?? "")}` }], null);
+          settled = await settledBy(ctx, at, [{ cardId: input.cardId, field: sectionField(input) }], null);
         }
         outcome = await writeDocSection(ctx, access.board, current, input, now, attribution, settled.length ? " (reconsidered after an earlier clash)" : "");
       } else if (op === "restoreBoard" || op === "restoreCard" || op === "restoreDoc") {
@@ -915,6 +915,11 @@ export const working = internalQuery({
   },
 });
 
+/** A section's identity in an unresolved change: "spec:Heading#0" (repeated headings are told apart). */
+function sectionField(input: Record<string, unknown>) {
+  return `${String(input.kind)}:${String(input.heading ?? "").trim()}#${typeof input.occurrence === "number" ? input.occurrence : 0}`;
+}
+
 /** The unresolved changes this agent edit settles; its history says so, plainly. */
 async function settle(ctx: MutationCtx, at: BoardRows, op: string, input: Record<string, unknown>, current: PlanbanRoadmap, change: PlannedChange, actor: "user" | "agent") {
   if (actor !== "agent") return [];
@@ -933,7 +938,7 @@ async function keepRefused(ctx: MutationCtx, at: BoardRows, op: string, input: R
   // Every field the refused edit wanted is unapplied, not only the ones that clashed.
   const wanted = touchedFields(op, input, current)?.filter((entry) => entry.cardId === cardId).map((entry) => entry.field) ?? [];
   const clashing = conflict.clashes?.filter((clash) => clash.cardId === cardId).map((clash) => clash.field) ?? [];
-  const fields = conflict.section && conflict.document ? [`${conflict.document.kind}:${conflict.section.heading}`]
+  const fields = conflict.section && conflict.document ? [sectionField(input)]
     : conflict.document ? [conflict.document.kind]
     : [...new Set([...clashing, ...wanted])];
   const { baseRevision: _base, actor: _actor, idempotencyKey: _key, ...proposed } = input;

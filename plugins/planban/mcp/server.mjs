@@ -263,8 +263,11 @@ async function boardHandoff(repoId) {
 
 /** Who else is working on a card, for get_card; this agent is now working on it too. */
 async function workingFor(cwd, cardId) {
-  await notePresence({ cwd, cardId, agentName: clientAgentName ?? undefined });
-  const others = await workingOnCard({ cwd, cardId, agentName: clientAgentName ?? undefined }).catch(() => []);
+  // Both at once, each with its own 5-second limit overall.
+  const [, others] = await Promise.all([
+    notePresence({ cwd, cardId, agentName: clientAgentName ?? undefined }),
+    workingOnCard({ cwd, cardId, agentName: clientAgentName ?? undefined }).catch(() => []),
+  ]);
   return others.length ? { workingOn: others } : {};
 }
 

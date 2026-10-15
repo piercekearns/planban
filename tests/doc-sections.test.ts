@@ -40,3 +40,29 @@ test("a new section goes after a named one, or at the end; adding one that exist
   assert.ok(atEnd.ok && atEnd.markdown.endsWith("## Notes\n\nLast.\n"));
   assert.equal(editSection(doc, { heading: "Purpose", expectedVersion: null, text: "## Purpose\n\nAgain." }).ok, false);
 });
+
+test("underlined headings are sections too, so replacing one never swallows the next", () => {
+  const md = "## A\nold A\n\nB\n---\nold B\n";
+  assert.deepEqual(sectionList(md).map((section) => [section.heading, section.level]), [["A", 2], ["B", 2]]);
+  const a = sectionList(md)[0]!.version;
+  const edited = editSection(md, { heading: "A", expectedVersion: a, text: "## A\nnew A\n" });
+  assert.ok(edited.ok && edited.markdown.includes("old B"));
+  // A line of dashes after a blank line is a rule, not a heading.
+  assert.deepEqual(sectionList("## A\n\n---\n\ntext\n").map((section) => section.heading), ["A"]);
+});
+
+test("Windows line endings, longer fences, and a heading that ends in #", () => {
+  assert.deepEqual(sectionList("## A\r\nx\r\n## B\r\ny\r\n").map((section) => section.heading), ["A", "B"]);
+  assert.deepEqual(sectionList("````\n## not\n```\n## still not\n````\n## Real\n").map((section) => section.heading), ["Real"]);
+  assert.deepEqual(sectionList("## C#\n## Closed ##\n").map((section) => section.heading), ["C#", "Closed"]);
+});
+
+test("a new section's returned version is the one the next read reports", () => {
+  const md = "## A\n\nOne.\n\n## B\n\nTwo.\n";
+  const added = editSection(md, { heading: "C", expectedVersion: null, text: "## C\n\nThree.", after: "A" });
+  assert.ok(added.ok);
+  assert.equal(added.section.version, sectionList(added.markdown).find((section) => section.heading === "C")!.version);
+  const replaced = editSection(added.markdown, { heading: "C", expectedVersion: added.section.version, text: "## C\n\nThree, again." });
+  assert.ok(replaced.ok);
+  assert.equal(replaced.section.version, sectionList(replaced.markdown).find((section) => section.heading === "C")!.version);
+});

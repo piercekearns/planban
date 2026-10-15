@@ -8,6 +8,9 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { BoardRows } from "./history";
 
 export const PRESENCE_MS = 15 * 60 * 1000;
+const MAX_LIVE_PER_CONNECTION = 50;
+/** Rows quiet longer than this are removed by the hourly sweep. */
+export const PRESENCE_KEEP_MS = 24 * 60 * 60 * 1000;
 
 /** An app name as people say it, from what an MCP client calls itself ("claude-code" is "Claude"). */
 export function appName(raw: string | undefined | null) {
@@ -27,9 +30,11 @@ const TOUCH_EVERY_MS = 60 * 1000;
  * written, and at most once a minute.
  */
 export async function touchPresence(ctx: MutationCtx, at: BoardRows, entry: { cardId: string; connectionId: Id<"connections">; userId: string; app: string }, now = Date.now()) {
-  const mine = (await ctx.db.query("presence").withIndex("by_agent", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", entry.cardId).eq("connectionId", entry.connectionId)).collect())
-    .find((row) => row.app === entry.app);
+  const mine = await ctx.db.query("presence").withIndex("by_agent", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", entry.cardId).eq("connectionId", entry.connectionId).eq("app", entry.app)).first();
   if (!mine) {
+    // One connection marks at most this many cards at once: invented card ids or app names can't pile up.
+    const live = await ctx.db.query("presence").withIndex("by_connection_active", (q) => q.eq("connectionId", entry.connectionId).gte("lastActiveAt", now - PRESENCE_MS)).take(MAX_LIVE_PER_CONNECTION);
+    if (live.length >= MAX_LIVE_PER_CONNECTION) return;
     await ctx.db.insert("presence", { ...at, ...entry, startedAt: now, lastActiveAt: now });
     return;
   }
@@ -49,9 +54,9 @@ export interface Working {
 
 /** Who is working on each card now (or on one card), leaving out `except` (the asker). */
 export async function workingOn(ctx: QueryCtx, at: BoardRows, options: { cardId?: string; except?: { connectionId: string; app: string } } = {}, now = Date.now()) {
-  const rows = options.cardId
-    ? await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).eq("cardId", options.cardId!)).collect()
-    : await ctx.db.query("presence").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).collect();
+  // Only rows active in the last 15 minutes are read, however many old ones remain.
+  const rows = (await ctx.db.query("presence").withIndex("by_board_active", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation).gte("lastActiveAt", now - PRESENCE_MS)).take(500))
+    .filter((row) => !options.cardId || row.cardId === options.cardId);
   const byCard: Record<string, Working[]> = {};
   for (const row of rows) {
     if (now - row.lastActiveAt > PRESENCE_MS || (row.connectionId === options.except?.connectionId && row.app === options.except.app)) continue;
