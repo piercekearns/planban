@@ -24,8 +24,9 @@ export const CLERK_APPEARANCE = {
   elements: {
     rootBox: { width: "100%" },
     cardBox: { width: "100%", maxWidth: "none", border: "0", borderRadius: "0", boxShadow: "none", background: "transparent", overflow: "visible" },
-    card: { gap: "16px", border: "0", borderRadius: "0", boxShadow: "none", background: "transparent", padding: "0" },
-    header: { alignItems: "flex-start", gap: "4px", textAlign: "left" },
+    card: { minWidth: 0, gap: "16px", border: "0", borderRadius: "0", boxShadow: "none", background: "transparent", padding: "0" },
+    // "& > *": the header's inner column, so a long address can't widen it past the page.
+    header: { minWidth: 0, alignItems: "flex-start", gap: "4px", textAlign: "left", "& > *": { minWidth: 0, maxWidth: "100%" } },
     headerTitle: { color: "var(--text)", fontSize: "20px", fontWeight: 650, lineHeight: 1.3, letterSpacing: "-.3px" },
     headerSubtitle: { color: "var(--text-muted)", fontSize: "13px", lineHeight: 1.5 },
     main: { gap: "14px", border: "1px solid var(--border)", borderRadius: "12px", background: "var(--surface)", padding: "20px" },
