@@ -43,6 +43,7 @@ import { currentVersionInfo } from "./version";
 import { flattenRoadmapForVersion1, hierarchyRecoveryManifest } from "./hierarchyMigration";
 import { loadOnlineState, onlineCacheRoot, onlineOperation, onlineState, refuseOnline } from "./online/adapter";
 import { boardPath, onlineRequest } from "./online/client";
+import { cardSubject, changesSince, conflictMessage, lastDocChange, PlanbanEditConflictError, type ConflictDetails } from "./conflicts";
 import { assertNotStaleCopy, checkInBackground, ONLINE_NOTE, STALE_MARKER } from "./online/copyCheck";
 import { credentialsPath } from "./online/credentials";
 import { ensureBoardIdentity } from "./boardIdentity";
@@ -92,8 +93,36 @@ export async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-function assertBaseRevision(state: PlanbanResolvedState, baseRevision?: number) {
-  assertRoadmapBaseRevision(state.roadmap, baseRevision);
+/**
+ * A stale edit is refused with what changed since, who changed it on this
+ * computer, and the card as it is now, as on an online board (owner
+ * requirement, 15 October 2026).
+ */
+async function assertBaseRevision(state: PlanbanResolvedState, baseRevision?: number, cardId?: string, actor?: string) {
+  if (baseRevision === undefined || baseRevision === state.roadmap.revision) return assertRoadmapBaseRevision(state.roadmap, baseRevision);
+  // An invalid number is still a validation error.
+  assertRoadmapBaseRevision({ ...state.roadmap, revision: baseRevision }, baseRevision);
+  const { listHistory } = await import("./history");
+  const entries = (await listHistory(state).catch(() => null))?.entries ?? [];
+  const conflict: ConflictDetails = {
+    currentRevision: state.roadmap.revision, yourRevision: baseRevision,
+    changes: changesSince(entries, baseRevision, localAuthor),
+    ...(cardId ? { card: state.roadmap.roadmapItems.find((item) => item.id === cardId) ?? null } : {}),
+  };
+  throw new PlanbanEditConflictError(conflictMessage(cardSubject(state.roadmap, cardId), conflict, actor === "agent"), conflict);
+}
+
+/** A Spec or Plan changed since it was read: the document as it is now, and who last changed it. */
+async function documentConflict(state: PlanbanResolvedState, cardId: string, kind: "spec" | "plan", document: PlanbanDocPayload, actor?: string) {
+  const { listHistory } = await import("./history");
+  const entries = (await listHistory(state).catch(() => null))?.entries ?? [];
+  const conflict: ConflictDetails = { currentRevision: state.roadmap.revision, changes: changesSince(lastDocChange(entries, cardId, kind), undefined, localAuthor), document };
+  return new PlanbanEditConflictError(conflictMessage(`the ${kind === "spec" ? "Spec" : "Plan"} of ${cardSubject(state.roadmap, cardId)}`, conflict, actor === "agent"), conflict);
+}
+
+/** Who made a change on a local board, as a person would say it. */
+function localAuthor(entry: { actor: string }) {
+  return entry.actor === "agent" ? "an agent on this computer" : entry.actor === "user" ? "someone on this computer" : "Planban";
 }
 
 // Fields that only record a card's place or the time it was touched. Renumbering
@@ -454,7 +483,7 @@ export async function moveCard(input: {
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "moveCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
-  assertBaseRevision(state, input.baseRevision);
+  await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
   const item = state.roadmap.roadmapItems.find((entry) => entry.id === input.cardId);
   if (!item) throw new PlanbanNotFoundError(`Card not found: ${input.cardId}`);
   await assertCardsHoldNoFiles(state.planningRoot, [item]);
@@ -483,7 +512,7 @@ export async function updateCard(input: {
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "updateCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
-  assertBaseRevision(state, input.baseRevision);
+  await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
   const change = planUpdateCard(state.roadmap, input, { now: nowIso() });
   await assertCardsHoldNoFiles(state.planningRoot, [state.roadmap.roadmapItems.find((item) => item.id === input.cardId)!]);
   const roadmap = await saveRoadmap(state, change.roadmap, change.history);
@@ -518,7 +547,7 @@ export async function deleteArchivedCard(input: {
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "deleteArchivedCard", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
-  assertBaseRevision(state, input.baseRevision);
+  await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
   const change = planDeleteArchivedCard(state.roadmap, input);
   const roadmap = await saveRoadmap(state, change.roadmap, change.history);
   await rm(itemRoot(state.planningRoot, input.cardId), { recursive: true, force: true });
@@ -539,7 +568,7 @@ export async function reorderCards(input: {
   if (online) return (await onlineOperation(resolveProjectCwd(input.cwd), online, "reorderCards", input)).state;
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
-  assertBaseRevision(state, input.baseRevision);
+  await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
   const change = planReorderCards(state.roadmap, input, { now: nowIso() });
   assertCompletionConfirmed(state.roadmap, change.roadmap, input.actor, input.completionConfirmed);
   const roadmap = await saveRoadmap(state, change.roadmap, change.history);
@@ -573,7 +602,7 @@ export async function createCard(input: {
   }
   return withRoadmapWriteLock(input.cwd, async () => {
   const state = await loadState(input.cwd);
-  assertBaseRevision(state, input.baseRevision);
+  await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
   const change = planCreateCard(state.roadmap, input, {
     now: nowIso(),
     isIdReserved: await reservedItemIds(state.planningRoot),
@@ -611,7 +640,7 @@ export async function createGroup(input: {
   }
   return withRoadmapWriteLock(input.cwd, async () => {
     const state = await loadState(input.cwd);
-    assertBaseRevision(state, input.baseRevision);
+    await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
     const change = planCreateGroup(state.roadmap, input, {
       now: nowIso(),
       isIdReserved: await reservedItemIds(state.planningRoot),
@@ -646,7 +675,7 @@ export async function createCards(input: {
   }
   return withRoadmapWriteLock(input.cwd, async () => {
     const state = await loadState(input.cwd);
-    assertBaseRevision(state, input.baseRevision);
+    await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
     const change = planCreateCards(state.roadmap, input, {
       now: nowIso(),
       isIdReserved: await reservedItemIds(state.planningRoot),
@@ -808,7 +837,7 @@ export async function reconstructHierarchy(input: {
   if (input.baseRevision === undefined) throw new PlanbanValidationError("baseRevision is required for hierarchy reconstruction.");
   return withRoadmapWriteLock(input.cwd, async () => {
     const state = await loadState(input.cwd);
-    assertBaseRevision(state, input.baseRevision);
+    await assertBaseRevision(state, input.baseRevision, (input as { cardId?: string }).cardId, (input as { actor?: string }).actor);
     const byId = new Map(state.roadmap.roadmapItems.map((item) => [item.id, item]));
     const parentByChild = new Map<string, string>();
     const preferredIndex = new Map<string, number>();
@@ -922,10 +951,10 @@ export async function writeDoc(input: {
     if (existsBeforeWrite) {
       const currentStats = await stat(path);
       if (input.expectedMtimeMs === null || currentStats.mtimeMs !== input.expectedMtimeMs) {
-        throw new PlanbanConflictError("Document changed on disk. Reload before saving.");
+        throw await documentConflict(state, input.cardId, input.kind, { cardId: input.cardId, kind: input.kind, path, exists: true, markdown: await readFile(path, "utf8"), mtimeMs: currentStats.mtimeMs }, input.actor ?? (input.history ? input.history.actor : undefined));
       }
     } else if (input.expectedMtimeMs !== null) {
-      throw new PlanbanConflictError("Document was removed on disk. Reload before saving.");
+      throw await documentConflict(state, input.cardId, input.kind, { cardId: input.cardId, kind: input.kind, path, exists: false, markdown: "", mtimeMs: null }, input.actor ?? (input.history ? input.history.actor : undefined));
     }
   }
 

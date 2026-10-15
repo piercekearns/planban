@@ -39,7 +39,8 @@ const INSTRUCTIONS = [
   "These tools read and edit Planban Online Boards shared across devices and people.",
   "Call planban_list_boards first to find the boardId.",
   "After board access changes, request tools/list again. This stateless endpoint sends no tool-list change notifications; if your client caches discovery, reconnect or reload its MCP connection. Expanded OAuth scopes require new explicit authorization.",
-  "Card and board edits pass baseRevision, the board revision you last read. Spec and Plan writes pass expectedMtimeMs instead: that document's mtimeMs from planban_read_doc (null for a new document). If a card edit conflicts, reread the card and apply your change again only if it still makes sense. If a document write conflicts, keep your proposed text, read the document again, merge your change into the current text without dropping anyone else's edits, and write that with the new version; never resend your old text with only a newer version.",
+  "Card and board edits pass baseRevision, the board revision you last read. Spec and Plan writes pass expectedMtimeMs instead: that document's mtimeMs from planban_read_doc (null for a new document).",
+  "If an edit is refused because someone changed things since you read them, the refusal says who and when, and includes what changed, the current card or document, and its new version. Read what changed. Decide whether your change is still needed, needs adjusting given theirs, or is already covered, and apply only what is still needed against the new version; for a document, write your change into the current text. If you drop or change your edit, tell the person. Never just resend it, and never give up silently.",
   "A pasted planban:<board>/<item> token is a Planban reference: <board> is the boardId and <item> is the cardId; any quoted title beside it is display context only.",
   "Pass an idempotencyKey with each edit: a fresh one per edit, and the same one only to resend that unchanged edit after a lost reply, so it is never applied twice. A revised edit, such as one merged after a conflict, gets a new key.",
   "Serialize writes: one mutation at a time per board.",
@@ -184,7 +185,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_update_card",
     title: "Update Planban Card",
-    description: "Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Text only: refer to files by link or labelled local path, never embed them.",
+    description: "Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Text only: refer to files by link or labelled local path, never embed them. If refused because something changed since you read it, the refusal includes what changed, who changed it and the current version: apply only what is still needed, and tell the person if you drop or change your edit.",
     inputSchema: object({
       boardId,
       cardId: { type: "string" },
@@ -202,7 +203,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_move_card",
     title: "Place Planban Card",
-    description: "Change an Item's status, Group, and/or sibling rank in one mutation. Use null afterId for first position. Use status complete only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review; set completionConfirmed true.",
+    description: "Change an Item's status, Group, and/or sibling rank in one mutation. Use null afterId for first position. Use status complete only when a person on the board explicitly asks, confirms it after review or testing, or clearly waives review; set completionConfirmed true. If refused because something changed since you read it, the refusal includes what changed, who changed it and the current version: apply only what is still needed, and tell the person if you drop or change your edit.",
     inputSchema: object({
       boardId,
       cardId: { type: "string" },
@@ -218,7 +219,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_write_doc",
     title: "Write Planban Document",
-    description: "Write a card's Spec or Plan. Pass the mtimeMs from planban_read_doc as expectedMtimeMs so someone else's edit is never overwritten. Text only, up to 1 MB: refer to images and other files by GitHub link, web address or a local path labelled with its machine; embedded images and encoded data are refused.",
+    description: "Write a card's Spec or Plan. Pass the mtimeMs from planban_read_doc as expectedMtimeMs so someone else's edit is never overwritten. Text only, up to 1 MB: refer to images and other files by GitHub link, web address or a local path labelled with its machine; embedded images and encoded data are refused. If refused because something changed since you read it, the refusal includes what changed, who changed it and the current version: apply only what is still needed, and tell the person if you drop or change your edit.",
     inputSchema: object({
       boardId,
       cardId: { type: "string" },
@@ -246,7 +247,20 @@ export const TOOLS: ToolDefinition[] = [
   },
 ];
 
-class ToolError extends Error {}
+class ToolError extends Error {
+  constructor(message: string, readonly data?: ServiceErrorData) {
+    super(message);
+  }
+}
+
+/** A refusal's kind and details, in the shape the local tools use (structuredContent.error). */
+function toolErrorReport(error: ToolError) {
+  const data = error.data;
+  if (!data) return { category: "validation", message: error.message.replace(/^[a-z_]+: /u, "") };
+  const category = { conflict: "conflict", validation: "validation", not_found: "not_found", forbidden: "forbidden", unauthorized: "signed_out", rate_limited: "limit" }[data.code] ?? "error";
+  const details = { ...(data.currentRevision !== undefined ? { currentRevision: data.currentRevision } : {}), ...(data.conflict ? { conflict: data.conflict } : {}) };
+  return { category, message: data.message, ...(Object.keys(details).length ? { details } : {}) };
+}
 
 interface DiscoveryPermission { boardId: string; canWrite: boolean; canComplete: boolean }
 
@@ -293,8 +307,8 @@ export class McpService {
     } catch (error) {
       if (!(error instanceof ConvexError)) throw error;
       const data = error.data as ServiceErrorData;
-      const revision = data.currentRevision !== undefined ? ` Current revision: ${data.currentRevision}.` : "";
-      throw new ToolError(`${data.code}: ${data.message}${revision}`);
+      const revision = data.currentRevision !== undefined && !data.conflict ? ` Current revision: ${data.currentRevision}.` : "";
+      throw new ToolError(`${data.code}: ${data.message}${revision}`, data);
     }
   }
 
@@ -523,7 +537,7 @@ async function handleMessage(message: JsonRpcRequest, service: McpService, origi
         });
       } catch (error) {
         if (!(error instanceof ToolError)) throw error;
-        return rpcResult(message.id, { content: [{ type: "text", text: error.message }], isError: true });
+        return rpcResult(message.id, { content: [{ type: "text", text: error.message }], structuredContent: { error: toolErrorReport(error) }, isError: true });
       }
     }
     default:

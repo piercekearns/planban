@@ -1,7 +1,7 @@
 // The Online Board authority. Every change runs the shared planning rules from
 // src/core/boardOperations.ts inside one Convex mutation, so the revision
 // check, roadmap, documents and history version commit together or not at all.
-import { v } from "convex/values";
+import { v, type Value } from "convex/values";
 import {
   assertBaseRevision,
   assertCommittable,
@@ -20,8 +20,9 @@ import {
   type PlannedChange,
 } from "../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanHistoryPayload, PlanbanRoadmap } from "../../../src/core/types";
+import { cardSubject, changesSince, conflictMessage, MAX_CONFLICT_CHANGES, MAX_CONFLICT_DOCUMENT_CHARS, type ConflictDetails } from "../../../src/core/conflicts";
 import type { Doc } from "./_generated/dataModel";
-import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail } from "./model/errors";
@@ -127,12 +128,55 @@ function checkOwnerControlled(before: PlanbanRoadmap, after: PlanbanRoadmap, acc
   if (completes && actor === "agent" && completionConfirmed !== true) fail("validation", COMPLETION_CONFIRMATION_MESSAGE);
 }
 
-/** Every hosted edit states the revision it was based on (owner decision 10). */
-function requireBaseRevision(current: PlanbanRoadmap, input: Record<string, unknown>) {
+/**
+ * Every hosted edit states the revision it was based on (owner decision 10).
+ * A stale one is refused with what changed since, who changed it, and the
+ * card as it is now, so the agent can reconcile its intent (owner requirement,
+ * 15 October 2026).
+ */
+async function requireBaseRevision(ctx: QueryCtx, at: BoardRows, current: PlanbanRoadmap, input: Record<string, unknown>) {
   if (typeof input.baseRevision !== "number" || !Number.isInteger(input.baseRevision)) {
     fail("validation", `Online Board edits must state the board revision they were based on (baseRevision). The current revision is ${current.revision}; reread the board before editing.`, { currentRevision: current.revision });
   }
-  assertBaseRevision(current, input.baseRevision as number);
+  const base = input.baseRevision as number;
+  if (base === current.revision) return;
+  assertBaseRevision({ ...current, revision: base }, base);
+  const cardId = typeof input.cardId === "string" ? input.cardId : undefined;
+  const conflict: ConflictDetails = {
+    currentRevision: current.revision, yourRevision: base,
+    changes: await describeChanges(ctx, await recentEntries(ctx, at, (entry) => entry.roadmapRevision <= base), base),
+    ...(cardId ? { card: current.roadmapItems.find((item) => item.id === cardId) ?? null } : {}),
+  };
+  fail("conflict", conflictMessage(cardSubject(current, cardId), conflict, input.actor !== "user"), { currentRevision: current.revision, conflict: conflict as unknown as Value });
+}
+
+/** History entries newest first, until `stop` says an entry is old enough (at most a page). */
+async function recentEntries(ctx: QueryCtx, at: BoardRows, stop: (entry: PlanbanHistoryEntry) => boolean, limit = MAX_CONFLICT_CHANGES) {
+  const found: PlanbanHistoryEntry[] = [];
+  const rows = ctx.db.query("history").withIndex("by_board_version", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).order("desc");
+  for await (const row of rows) {
+    const entry = row.entry as PlanbanHistoryEntry;
+    if (stop(entry) || found.length >= limit) break;
+    found.push(entry);
+  }
+  return found;
+}
+
+/** Names who made each change, as the people on the board see them. */
+async function describeChanges(ctx: QueryCtx, entries: PlanbanHistoryEntry[], base?: number) {
+  const names = new Map<string, string>();
+  for (const entry of entries) {
+    const userId = (entry as { attribution?: { userId?: string } }).attribution?.userId;
+    if (userId && !names.has(userId)) {
+      const person = await ctx.db.query("people").withIndex("by_userId", (q) => q.eq("userId", userId)).unique();
+      names.set(userId, person?.name || person?.email || "someone on the board");
+    }
+  }
+  return changesSince(entries, base, (entry) => {
+    const attribution = (entry as { attribution?: { userId?: string; clientName?: string; actor?: string } }).attribution;
+    const name = attribution?.userId ? names.get(attribution.userId)! : "someone on the board";
+    return entry.actor === "agent" ? `${name}'s agent${attribution?.clientName ? ` (${attribution.clientName})` : ""}` : name;
+  });
 }
 
 // ---- reads --------------------------------------------------------------
@@ -572,7 +616,7 @@ export const run = internalMutation({
       } else if (op === "restoreBoard" || op === "restoreCard" || op === "restoreDoc") {
         // Restores state the revision they were based on, like any edit, and
         // pass the same completion and ownership checks.
-        requireBaseRevision(current, input);
+        await requireBaseRevision(ctx, at, current, input);
         const version = historyVersionArg(input);
         let change: PlannedChange;
         if (op === "restoreDoc") {
@@ -620,7 +664,7 @@ export const run = internalMutation({
           // Only re-parenting: status and other move fields are not accepted here.
           input = { cardId: input.cardId, parentId: input.parentId, baseRevision: input.baseRevision };
         }
-        requireBaseRevision(current, input);
+        await requireBaseRevision(ctx, at, current, input);
         const plannerInput = { ...input, actor: attribution.actor } as never;
         const retired = await retiredIds(ctx, at);
         const reserve = { now, isIdReserved: (id: string) => retired.has(id) };
@@ -687,15 +731,23 @@ async function writeDoc(ctx: MutationCtx, board: Doc<"boards">, current: Planban
   if (typeof input.markdown !== "string") fail("validation", "markdown must be a string.");
   // A document edit's base version is the document's own stamp (below); the
   // board revision is checked too when the caller states it.
-  if (input.baseRevision !== undefined) requireBaseRevision(current, input);
+  if (input.baseRevision !== undefined) await requireBaseRevision(ctx, live(board), current, input);
   const planned = planWriteDoc(current, { cardId, kind }, { now });
   const existing = await docRow(ctx, live(board), cardId, kind);
   // Documents also state the version they were based on: their stamp, or null for a new document.
   if (input.expectedMtimeMs === undefined) {
     fail("validation", "Online document edits must state the document version they were based on: expectedMtimeMs from reading it, or null for a new document (on the command line, --expected-mtime <mtimeMs> or --expected-mtime new).", { currentRevision: current.revision });
   }
-  if (existing && existing.stamp !== input.expectedMtimeMs) fail("conflict", "Document changed online. Reload before saving.", { currentRevision: current.revision });
-  if (!existing && input.expectedMtimeMs !== null) fail("conflict", "Document was removed online. Reload before saving.", { currentRevision: current.revision });
+  if ((existing && existing.stamp !== input.expectedMtimeMs) || (!existing && input.expectedMtimeMs !== null)) {
+    // The document as it is now, and who last changed it, so the agent can reconcile.
+    // A very long document is left out of the answer (read it with read_doc); its version is always there.
+    const full = docPayload(existing, cardId, kind, planned.path);
+    const document = full.markdown.length > MAX_CONFLICT_DOCUMENT_CHARS ? { ...full, markdown: "", markdownOmitted: true as const } : full;
+    const touched = (entry: PlanbanHistoryEntry) => entry.affectedDocs.some((doc) => doc.cardId === cardId && doc.kind === kind);
+    const latest = (await recentEntries(ctx, live(board), () => false, 500)).filter(touched).slice(0, 1);
+    const conflict: ConflictDetails = { currentRevision: current.revision, changes: await describeChanges(ctx, latest), document };
+    fail("conflict", conflictMessage(`the ${kind === "spec" ? "Spec" : "Plan"} of ${cardSubject(current, cardId)}`, conflict, attribution.actor === "agent"), { currentRevision: current.revision, conflict: conflict as unknown as Value });
+  }
   const change: PlannedChange = {
     roadmap: planned.roadmap ?? current,
     history: { ...planned.history, actor: attribution.actor },

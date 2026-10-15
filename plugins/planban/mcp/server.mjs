@@ -45,20 +45,20 @@ const SERVER_ICONS = [
   { src: "https://app.planban.ai/brand/icon-dark.png", mimeType: "image/png", sizes: ["512x512"], theme: "dark" },
 ];
 const PLANBAN_MCP_INSTRUCTIONS = [
-  "Prefer these tools for all Planban reads and writes.",
+  "Prefer these tools for Planban reads and writes.",
   "Pass cwd as the absolute repository path, or repoId for a registered board.",
   "Before editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style.",
-  "Serialize writes: one mutation at a time per board.",
+  "Serialize writes: one mutation at a time.",
   "Planban is an index, not file storage: link to files; planban_move_files_out tidies cards holding them.",
   "Complete is person-controlled: only when a person asks, confirms or waives review; set completionConfirmed true.",
-  "Online Boards: card edits pass baseRevision, document writes their expectedMtimeMs; after a document conflict, merge into the reread text, never resend old text; retry a lost reply with the same idempotencyKey; never edit board files.",
-  "Refusals say why: tell the person.",
+  "Online Boards: card edits pass baseRevision, document writes their expectedMtimeMs; if refused as changed, read what changed, reapply only what is still needed, tell the person if you drop it, never just resend; retry lost replies with the same idempotencyKey; never edit board files.",
+  "Refusals say why; tell the person.",
   "move_card is the canonical placement operation.",
   "After an open or the complete logical mutation batch, include the clickable Board URL from userReply.markdown in the final reply.",
   "With an in-app browser, make at most one bounded attempt to show it; never reopen the board after every write.",
-  "If boardUrlVerified is false, call planban_launch_board once to verify the URL before presenting it.",
+  "If boardUrlVerified is false, call planban_launch_board once before presenting it.",
   "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card (repoId, cardId); trust the id over any quoted title.",
-  "Board administration, recovery and the legacy set_card_parent alias appear only through explicit profiles.",
+  "Administration, recovery and legacy tools appear only through explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;
 const JsonRpcError = {
@@ -670,7 +670,7 @@ const tools = [
     name: "planban_move_card",
     title: "Place Planban Card",
     description:
-      "Place an Item in one mutation: change status, move it into or out of an existing Group, and/or set its sibling rank. Groups cannot be placed inside Groups, and Items never become Groups through movement. Use null afterId for first position. Only use status complete when the user explicitly asks, confirms review/testing, or clearly waives user-side verification; set completionConfirmed true in that case.",
+      "Place an Item in one mutation: change status, move it into or out of an existing Group, and/or set its sibling rank. Groups cannot be placed inside Groups, and Items never become Groups through movement. Use null afterId for first position. Only use status complete when the user explicitly asks, confirms review/testing, or clearly waives user-side verification; set completionConfirmed true in that case. If refused because something changed since you read it, the refusal includes what changed, who changed it and the current version: apply only what is still needed, and tell the person if you drop or change your edit.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
@@ -689,7 +689,7 @@ const tools = [
   {
     name: "planban_update_card",
     title: "Update Planban Card",
-    description: `Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Follow the installed Planban house style when owner-facing content changes. ${INDEX_RULE}`,
+    description: `Update non-status card fields such as title, summary, next action, tags, blocked-by, or metadata. Follow the installed Planban house style when owner-facing content changes. ${INDEX_RULE} If refused because something changed since you read it, the refusal includes what changed, who changed it and the current version: apply only what is still needed, and tell the person if you drop or change your edit.`,
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },
@@ -720,7 +720,7 @@ const tools = [
   {
     name: "planban_write_doc",
     title: "Write Planban Document",
-    description: `Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location. ${INDEX_RULE} Documents are limited to 1 MB; pictures stored inside a document (data: addresses) and base64 are refused.`,
+    description: `Write a card Spec or Plan with optional stale-file protection. Follow the installed Planban house style, preserve the authoritative current section, and retain exact execution or evidence detail in its proper location. ${INDEX_RULE} Documents are limited to 1 MB; pictures stored inside a document (data: addresses) and base64 are refused. If refused because something changed since you read it, the refusal includes what changed, who changed it and the current version: apply only what is still needed, and tell the person if you drop or change your edit.`,
     inputSchema: schema.object({
       ...commonBoardProperties,
       cardId: { type: "string", description: "Planban card id." },

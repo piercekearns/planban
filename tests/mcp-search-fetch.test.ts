@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleMcp } from "../online/service/convex/model/mcp";
+import { fail } from "../online/service/convex/model/errors";
+import { handleMcp, McpService } from "../online/service/convex/model/mcp";
 
 const roadmap: any = {
   revision: 3, project: { id: "deadleg", title: "Deadleg" }, updatedAt: new Date().toISOString(),
@@ -45,4 +46,15 @@ test("remote results have the local tools' shape: query matches at the top level
   assert.equal(result.boardUrl, "https://app.planban.example/boards/deadleg");
   assert.equal(result.boardUrlVerified, true);
   assert.deepEqual(result.userReply, { urlRequired: true, url: "https://app.planban.example/boards/deadleg#card=vest", markdown: "[Open the board](https://app.planban.example/boards/deadleg#card=vest)" });
+});
+
+test("a remote refusal keeps its kind and the details to reconcile, as the local tools do", async () => {
+  const conflict = { currentRevision: 5, yourRevision: 3, changes: [{ version: 9, revision: 5, at: "2026-10-15T18:00:00.000Z", by: "Ana", agent: false, summary: "Updated Choose the vest supplier", cards: ["vest"] }], card: roadmap.roadmapItems[0] };
+  // The real service wrapper, whose mutation refuses as the board does.
+  const refusing: any = new McpService({ runMutation: async () => fail("conflict", "Not saved: Ana changed card ...", { currentRevision: 5, conflict }) } as any, "connections-1" as any);
+  const response = await handleMcp(new Request("https://app.planban.example/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "planban_update_card", arguments: { boardId: "deadleg", cardId: "vest", summary: "Mine", baseRevision: 3 } } }) }), refusing, "https://app.planban.example");
+  const result = (await response.json()).result;
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.error.category, "conflict");
+  assert.deepEqual(result.structuredContent.error.details, { currentRevision: 5, conflict });
 });

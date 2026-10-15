@@ -128,3 +128,50 @@ test("a document written by an agent is recorded as the agent's, on a local boar
   const latest = (await storage.historyPayload(cwd)).entries[0]!;
   assert.equal(latest.actor, "agent");
 });
+
+test("a refused edit says who changed what since it was read, with the current card or document and its version", async () => {
+  const cwd = await onlineBoard();
+  const stale = (await storage.loadState(cwd)).roadmap.revision;
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "Ana's change", baseRevision: stale });
+
+  // A card edit from the command line, as JSON.
+  const refused = await cli(cwd, "update-card", "alpha", "--summary", "Agent's change", "--base-revision", String(stale), "-o", "json");
+  assert.equal(refused.status, 1);
+  const report = JSON.parse(refused.stdout).error;
+  assert.equal(report.category, "conflict");
+  assert.match(report.message, /^Not saved: Ana changed card "Alpha" since you read it \(Updated Alpha/);
+  assert.match(report.message, /Decide whether your change is still needed, needs adjusting given theirs, or is already covered/);
+  assert.match(report.message, /Never just resend it, and never give up silently\./);
+  const conflict = report.details.conflict;
+  assert.equal(conflict.yourRevision, stale);
+  assert.equal(conflict.currentRevision, stale + 1);
+  assert.equal(conflict.card.summary, "Ana's change");
+  assert.deepEqual(conflict.changes.map((change: { by: string; cards: string[] }) => [change.by, change.cards]), [["Ana", ["alpha"]]]);
+
+  // A document write: the document as it is now, its version, and who changed it.
+  const read = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+  await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Ana's spec", expectedMtimeMs: read.mtimeMs });
+  const docConflict = await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: "# Agent's spec", expectedMtimeMs: read.mtimeMs, actor: "agent" }).then(() => null, (error: unknown) => error);
+  const docReport = errorReport(docConflict);
+  assert.equal(docReport.category, "conflict");
+  assert.match(docReport.message, /^Not saved: Ana changed the Spec of card "Alpha" since you read it/);
+  const docDetails = (docReport.details as { conflict: { document: { markdown: string; mtimeMs: number }; changes: Array<{ by: string }> } }).conflict;
+  assert.equal(docDetails.document.markdown, "# Ana's spec");
+  assert.notEqual(docDetails.document.mtimeMs, read.mtimeMs);
+  assert.equal(docDetails.changes[0]!.by, "Ana");
+});
+
+test("on a local board, a refused edit carries the same details", async () => {
+  const cwd = join(root, "local");
+  await storage.initializeProject({ cwd, repoId: "local", title: "Local", updateAgents: false });
+  await storage.createCard({ cwd, title: "Alpha" });
+  const stale = (await storage.loadState(cwd)).roadmap.revision;
+  await storage.updateCard({ cwd, cardId: "alpha", summary: "Changed by an agent", baseRevision: stale, actor: "agent" });
+  const refused = await storage.updateCard({ cwd, cardId: "alpha", summary: "Mine", baseRevision: stale }).then(() => null, (error: unknown) => error);
+  const report = errorReport(refused);
+  assert.equal(report.category, "conflict");
+  assert.match(report.message, /^Not saved: an agent on this computer changed card "Alpha" since you read it/);
+  const conflict = (report.details as { conflict: { card: { summary: string }; changes: unknown[] } }).conflict;
+  assert.equal(conflict.card.summary, "Changed by an agent");
+  assert.equal(conflict.changes.length, 1);
+});

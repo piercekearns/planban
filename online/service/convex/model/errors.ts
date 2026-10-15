@@ -1,6 +1,6 @@
 // Domain failures cross from mutations to HTTP actions as ConvexError data,
 // which Convex preserves, and the mutation's writes are rolled back.
-import { ConvexError } from "convex/values";
+import { ConvexError, type Value } from "convex/values";
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../../../../src/core/boardOperations";
 
 export type ErrorCode = "conflict" | "validation" | "not_found" | "forbidden" | "unauthorized" | "rate_limited";
@@ -12,6 +12,8 @@ export type ServiceErrorData = {
   reason?: "wrong_email" | "expired" | "cancelled" | "unavailable";
   /** Invitations sent to another address: that address, masked ("s•••@example.com"). */
   sentTo?: string;
+  /** A refused edit: what changed since it was based, by whom, and the current card or document. */
+  conflict?: Value;
 };
 
 export function fail(code: ErrorCode, message: string, extra: Partial<ServiceErrorData> = {}): never {

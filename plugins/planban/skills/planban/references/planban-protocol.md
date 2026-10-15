@@ -155,12 +155,22 @@ owner chooses, with a free Planban account at https://app.planban.ai.
   `mtimeMs` from reading that document (`--expected-mtime <mtimeMs>`, or `new` for a
   document that doesn't exist yet). They are different numbers; `write-doc` has no
   `--base-revision`. Serialize writes.
-- **Conflicts.** If a card edit is refused because the board changed, reread the card
-  and apply your change again only if it still makes sense. If a Spec or Plan write
-  is refused because the document changed, keep your proposed text, read the document
-  again, merge your change into the current text without dropping anyone else's
-  edits, then write the merged text with the new version. Never resend your old text
-  with only a newer version: that overwrites someone's work.
+- **Conflicts.** An edit refused because something changed underneath it says who
+  changed it and when, and includes what changed since you read (`conflict.changes`),
+  the card as it is now (`conflict.card`) or the document as it is now with its new
+  version (`conflict.document`), and the board's `currentRevision`. Then:
+  1. Read what changed.
+  2. Decide whether your change is still needed, needs adjusting given theirs, or is
+     already covered.
+  3. Apply only what is still needed, against the new version. For a Spec or Plan,
+     write your change into the current text; never drop anyone else's edits.
+  4. If you drop or change your edit, say so in your reply to the person (and in the
+     card's summary or Plan when it matters later).
+
+  Never just resend the same edit with a newer version, and never give up silently:
+  a change must never quietly fail to happen. Today any change to the board makes an
+  older `baseRevision` stale, even on another card, so check whether the changes
+  touch your card before deciding.
 - **Retries.** If an edit's reply was lost, resend it unchanged with the same
   `idempotencyKey` (`--idempotency-key`): it applies once, and the result says it was
   a replay. A revised edit, such as one merged after a conflict, gets a new key.

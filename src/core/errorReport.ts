@@ -5,6 +5,7 @@
 // accounts involved). Never a secret.
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "./boardOperations";
 import { planbanCommand } from "./command";
+import { PlanbanEditConflictError } from "./conflicts";
 import { AccountInUseError, BoardOfAnotherAccountError } from "./online/accounts";
 import { OnlineAuthenticationError, PlanbanForbiddenError } from "./online/client";
 
@@ -30,6 +31,9 @@ export function errorReport(error: unknown): ErrorReport {
     return { category: "signed_out", message, details: { url: error.signIn.url, reason: error.signIn.reason, signInCommand: `${planbanCommand()} online login ${error.signIn.url}` } };
   }
   if (error instanceof PlanbanForbiddenError) return { category: "forbidden", message };
+  if (error instanceof PlanbanEditConflictError) {
+    return { category: "conflict", message, details: { currentRevision: error.conflict.currentRevision, conflict: error.conflict } };
+  }
   if (error instanceof PlanbanConflictError) {
     const currentRevision = (error as { currentRevision?: unknown }).currentRevision;
     return { category: "conflict", message, ...(typeof currentRevision === "number" ? { details: { currentRevision } } : {}) };

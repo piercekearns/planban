@@ -1,6 +1,7 @@
 import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } from "../boardOperations";
 import { readCredentials, serviceUrl, type OnlineCredentials } from "./credentials";
 import { planbanCommand } from "../command";
+import { PlanbanEditConflictError, type ConflictDetails } from "../conflicts";
 
 export class OnlineAuthenticationError extends Error {
   constructor(
@@ -101,6 +102,8 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     const payload = await response.json().catch(() => ({}));
     const message = payload.error?.message ?? `Online Board request failed (${response.status}).`;
     if (response.status === 409) {
+      // A refused edit carries what changed, by whom, and the current card or document.
+      if (payload.error?.conflict) throw new PlanbanEditConflictError(message, payload.error.conflict as ConflictDetails);
       const error = new PlanbanConflictError(message);
       Object.assign(error, { currentRevision: payload.currentRevision ?? payload.error?.currentRevision });
       throw error;

@@ -124,7 +124,9 @@ test("Spec and Plan: new, existing and deleted documents, each write stating the
     // Saving from the older read is a conflict, never a silent overwrite with a fresher stamp.
     const stale = await page(adapter, docPath, { method: "PUT", body: { markdown: "# Plan\n\nFrom an old tab.", expectedMtimeMs: read.body.mtimeMs } });
     assert.equal(stale.status, 409);
-    assert.match(stale.body.error, /changed online/);
+    // A person's own save gets the plain sentence; the page shows them what changed.
+    assert.match(stale.body.error, /^Not saved: Olive Owner changed the Plan of card "Write the plan" since you read it \(/);
+    assert.doesNotMatch(stale.body.error, /Never just resend/);
     assert.equal(typeof stale.body.currentRevision, "number");
     assert.equal(JSON.parse(log.at(-1)!.body!).expectedMtimeMs, read.body.mtimeMs);
     const asNew = await page(adapter, docPath, { method: "PUT", body: { markdown: "# Plan\n\nThought it was new.", expectedMtimeMs: null } });

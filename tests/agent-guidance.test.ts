@@ -45,7 +45,13 @@ test("no surface tells an agent to reread and retry a document conflict, or to p
     assert.doesNotMatch(text, /(?:reread|read again) and retry/iu, name);
     assert.doesNotMatch(text, /write-doc[^\n]*--base-revision|--base-revision[^\n]*write-doc(?! has no)/u, name);
   }
+  // The owner's rule for a refused edit: read what changed, reconcile, say so, never resend or give up silently.
   for (const [name, text] of surfaces.filter(([name]) => !name.endsWith("SKILL.md") && name !== "README.md")) {
-    assert.match(text, /merge/iu, `${name} says to merge a conflicting document`);
+    assert.match(text, /what changed/iu, `${name} says to read what changed`);
+    assert.match(text, /still needed/iu, `${name} says to apply only what is still needed`);
+    assert.match(text, /never just resend/iu, `${name} says never to just resend`);
+  }
+  for (const [name, text] of surfaces.filter(([name]) => !name.endsWith("SKILL.md") && name !== "README.md" && name !== "local MCP instructions")) {
+    assert.match(text, /never give up silently/iu, `${name} says never to give up silently`);
   }
 });
