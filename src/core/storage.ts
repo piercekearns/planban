@@ -1283,10 +1283,21 @@ async function readRoadmapRevision(planningRoot: string): Promise<number> {
   return (JSON.parse(await readFile(roadmapPath(planningRoot), "utf8")) as { revision?: number }).revision ?? 0;
 }
 
+/**
+ * Whether a change written to goals.next.json was committed: the board
+ * reached its revision, and that revision's history entry is a goals change
+ * (another kind of edit reaching the same number doesn't count).
+ */
+async function nextCommitted(planningRoot: string, next: { revision?: number }, roadmapRevision: number) {
+  if (next.revision === undefined || next.revision > roadmapRevision) return false;
+  const index = await readFile(join(planningRoot, "history", "index.json"), "utf8").then((raw) => JSON.parse(raw) as { entries?: Array<{ roadmapRevision?: number; operation?: string }> }, () => null);
+  return !!index?.entries?.some((entry) => entry.roadmapRevision === next.revision && entry.operation === "goals.edit");
+}
+
 /** The goals as of the board's committed revision (see nextGoalsPath). Never writes, so it is safe without the lock. */
 async function readGoalsFile(planningRoot: string, roadmapRevision: number): Promise<GoalsFile> {
   const next = await readGoalsAt(nextGoalsPath(planningRoot));
-  if (next && next.revision !== undefined && next.revision <= roadmapRevision) return next.file;
+  if (next && await nextCommitted(planningRoot, next, roadmapRevision)) return next.file;
   return (await readGoalsAt(goalsPath(planningRoot)))?.file ?? emptyGoals();
 }
 
@@ -1297,7 +1308,7 @@ async function settleGoals(planningRoot: string, roadmapRevision: number) {
     await rm(nextGoalsPath(planningRoot), { force: true });
     return;
   }
-  if (next.revision !== undefined && next.revision <= roadmapRevision) await rename(nextGoalsPath(planningRoot), goalsPath(planningRoot));
+  if (await nextCommitted(planningRoot, next, roadmapRevision)) await rename(nextGoalsPath(planningRoot), goalsPath(planningRoot));
   else await rm(nextGoalsPath(planningRoot), { force: true });
 }
 

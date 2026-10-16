@@ -11,6 +11,7 @@ import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
+import { packJson } from "./model/codec";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
 import { webConfigResponse, authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
@@ -74,22 +75,29 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
   if (parts[0] === "transfers" && method === "POST") {
     // Take Online in parts: begin (with the roadmap), parts, commit; or abort.
     const input = await body(request);
+    // The board's content travels to the mutation as packed bytes: a card's fields can be
+    // shaped in ways Convex values don't allow (over 1,024 metadata keys in Revival's history).
     if (parts.length === 1) {
       return json(await ctx.runMutation(internal.transfers.begin, {
-        connectionId, transferId: String(input.transferId ?? ""), roadmap: input.roadmap,
-        ...(typeof input.uid === "string" ? { uid: input.uid } : {}),
-        ...(input.retention === undefined ? {} : { retention: input.retention }),
-        ...(Array.isArray(input.retiredIds) ? { retiredIds: input.retiredIds.map(String) } : {}),
-        ...(input.goals === undefined ? {} : { goals: input.goals }),
+        connectionId, transferId: String(input.transferId ?? ""),
+        payload: packJson({
+          roadmap: input.roadmap,
+          ...(typeof input.uid === "string" ? { uid: input.uid } : {}),
+          ...(input.retention === undefined ? {} : { retention: input.retention }),
+          ...(Array.isArray(input.retiredIds) ? { retiredIds: input.retiredIds.map(String) } : {}),
+          ...(input.goals === undefined ? {} : { goals: input.goals }),
+        }),
       }));
     }
     const transferId = parts[1]!;
     if (parts[2] === "parts" && parts.length === 3) {
       return json(await ctx.runMutation(internal.transfers.part, {
         connectionId, transferId, seq: Number(input.seq),
-        ...(input.docs === undefined ? {} : { docs: input.docs }),
-        ...(input.history === undefined ? {} : { history: input.history }),
-        ...(input.historyDocs === undefined ? {} : { historyDocs: input.historyDocs }),
+        payload: packJson({
+          ...(input.docs === undefined ? {} : { docs: input.docs }),
+          ...(input.history === undefined ? {} : { history: input.history }),
+          ...(input.historyDocs === undefined ? {} : { historyDocs: input.historyDocs }),
+        }),
       }));
     }
     if (parts[2] === "commit" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.commit, { connectionId, transferId, partCount: Number(input.partCount) }));

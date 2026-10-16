@@ -228,6 +228,13 @@ test("a goals change that stopped part way either stands, if its revision was co
   await edit({ kind: "reword", goalId: "g1", notes: "Settled" });
   assert.equal((await storage.readGoals({ cwd })).page.context, "");
   assert.equal(await storage.pathExists(next), false);
+  // Abandoned, then another kind of edit reaches its revision number: still never happened.
+  const before = await storage.loadState(cwd);
+  await writeFile(next, JSON.stringify({ ...current, context: "Abandoned", revision: before.roadmap.revision + 1 }));
+  await storage.createCard({ cwd, title: "A card edit takes that revision" });
+  assert.equal((await storage.readGoals({ cwd })).page.context, "");
+  await edit({ kind: "reword", goalId: "g3", notes: "Settles it" });
+  assert.equal((await storage.readGoals({ cwd })).page.context, "");
   // Stopped after the revision was committed, before the rename: it stands.
   const now = await storage.loadState(cwd);
   const stored = JSON.parse(await readFile(join(now.planningRoot, "goals.json"), "utf8"));
@@ -262,6 +269,70 @@ test("a backup isn't saved without the goals when they can't be read; the next r
     bridge.control.intercept = undefined;
     await refreshBackup(bridge.url, "revival", { force: true });
     assert.match(await readFile(join(latest, "goals.json"), "utf8"), /Win clubs/);
+  } finally {
+    await bridge.close();
+  }
+});
+
+// ---- Review round 2 (16 October 2026) ----
+
+test("dismissed suggestions are kept for their full 30 days, however many there are", () => {
+  let file: GoalsFile = emptyGoals();
+  const stamp = (i: number) => ({ revision: i + 2, by: "Claude", now: "2026-10-16T00:00:00.000Z", id: `s${i}` });
+  for (let i = 0; i < 101; i += 1) {
+    const added = addSuggestion(file, { change: { kind: "add", statement: `Idea ${i}` }, reason: "Because." }, stamp(i));
+    file = decideSuggestion(added.goals!, { suggestionId: `s${i}`, decision: "dismiss" }, { revision: i + 3, by: "you", now: "2026-10-16T00:00:00.000Z" }).goals;
+  }
+  assert.equal(addSuggestion(file, { change: { kind: "add", statement: "Idea 0" }, reason: "Again." }, stamp(500)).goals, null);
+});
+
+test("online and on a computer, goals are measured the same way, so goals that fit online still fit after Take Local", async () => {
+  const bridge = await serviceBridge([["ana", "Ana"]]);
+  try {
+    await onlineLogin(bridge.url, { devUser: "ana" });
+    await takeOnline(bridge.url, cwd);
+    const notes = "Pitch each club with a design made for it. ".repeat(180);
+    let refused: unknown = null;
+    for (let i = 1; i <= 40 && !refused; i += 1) {
+      try {
+        await edit({ kind: "add", statement: `Goal ${i}`, notes });
+        await edit({ kind: "retire", goalId: (await storage.readGoals({ cwd })).page.goals.at(-1)!.id });
+      } catch (error) {
+        refused = error;
+      }
+    }
+    assert.match(String(refused), /too large to keep/);
+    await takeLocal(cwd);
+    // Back on this computer, an ordinary edit still fits.
+    await edit({ kind: "add", statement: "Short goal" });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("a backup never pairs goals from a later revision with an older board", async () => {
+  const bridge = await serviceBridge([["ana", "Ana"]]);
+  try {
+    await revivalGoals();
+    await onlineLogin(bridge.url, { devUser: "ana" });
+    await takeOnline(bridge.url, cwd);
+    // A change since the last backup, so the refresh reads the board again.
+    await storage.updateCard({ cwd, cardId: "alpha", summary: "Changed", baseRevision: await revision() });
+    let changed = false;
+    bridge.control.intercept = async (path) => {
+      if (!changed && path.endsWith("/goals")) {
+        changed = true;
+        await edit({ kind: "context", context: "Changed while backing up" });
+      }
+      return undefined;
+    };
+    await refreshBackup(bridge.url, "revival", { force: true });
+    bridge.control.intercept = undefined;
+    const latest = join(backupRoot(bridge.url, "revival"), "latest");
+    const meta = JSON.parse(await readFile(join(latest, "backup.json"), "utf8"));
+    const goals = JSON.parse(await readFile(join(latest, "goals.json"), "utf8"));
+    assert.equal(goals.context, "Changed while backing up");
+    assert.ok(Object.values(goals.changed as Record<string, { revision: number }>).every((field) => field.revision <= meta.revision));
   } finally {
     await bridge.close();
   }

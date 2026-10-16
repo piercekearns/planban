@@ -136,7 +136,8 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
   useEffect(() => { if (initial && (!page || initial.revision > page.revision)) setPage(initial); }, [initial]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Sends one change; true when it was saved. A refusal is shown and the page reads the goals again. */
-  const send = async (path: string, body: Record<string, unknown>, baseRevision?: number) => {
+  /** `form` names the open form this save came from: only that one is rebased if it is refused. */
+  const send = async (path: string, body: Record<string, unknown>, baseRevision?: number, form?: "goal" | "context") => {
     if (!page) return false;
     setBusy(true);
     setError(null);
@@ -148,19 +149,19 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
       // The message says what changed meanwhile; an open form now starts from that, keeping what was typed,
       // so saving again is the person's deliberate choice rather than a repeat refusal.
       const fresh = await reload();
-      if (fresh) {
+      if (fresh && form === "goal") {
         setEditing((open) => {
           const now = open && fresh.goals.find((goal) => goal.id === open.id);
           return open && now ? { id: open.id, revision: fresh.revision, statement: now.statement, notes: now.notes } : open;
         });
-        setContextBase((open) => (open ? { revision: fresh.revision, context: fresh.context } : open));
       }
+      if (fresh && form === "context") setContextBase((open) => (open ? { revision: fresh.revision, context: fresh.context } : open));
       return false;
     } finally {
       setBusy(false);
     }
   };
-  const edit = (change: Record<string, unknown>, baseRevision?: number) => send("/goals", { edit: change }, baseRevision);
+  const edit = (change: Record<string, unknown>, baseRevision?: number, form?: "goal" | "context") => send("/goals", { edit: change }, baseRevision, form);
 
   const onDragEnd = (event: DragEndEvent) => {
     if (!page || !event.over || event.active.id === event.over.id) return;
@@ -225,9 +226,9 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
                         const base = editing!;
                         // Only what the person changed from what they opened is sent.
                         if (statement === base.statement && notes === base.notes) { setEditing(null); return; }
-                        if (await edit({ kind: "reword", goalId: goal.id, ...(statement !== base.statement ? { statement } : {}), ...(notes !== base.notes ? { notes } : {}) }, base.revision)) setEditing(null);
+                        if (await edit({ kind: "reword", goalId: goal.id, ...(statement !== base.statement ? { statement } : {}), ...(notes !== base.notes ? { notes } : {}) }, base.revision, "goal")) setEditing(null);
                       }}
-                      onRetire={async () => { if (await edit({ kind: "retire", goalId: goal.id }, editing!.revision)) setEditing(null); }}
+                      onRetire={async () => { if (await edit({ kind: "retire", goalId: goal.id }, editing!.revision, "goal")) setEditing(null); }}
                     />
                   ))}
                 </ol>
@@ -257,7 +258,7 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
             {contextBase ? (
               <ContextForm busy={busy} initial={contextBase.context} onCancel={() => setContextBase(null)} onSave={async (context) => {
                 if (context.trim() === contextBase.context.trim()) { setContextBase(null); return; }
-                if (await edit({ kind: "context", context }, contextBase.revision)) setContextBase(null);
+                if (await edit({ kind: "context", context }, contextBase.revision, "context")) setContextBase(null);
               }} />
             ) : page.context ? (
               <div className="goals-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{page.context}</ReactMarkdown></div>

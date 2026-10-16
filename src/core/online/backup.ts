@@ -139,10 +139,12 @@ async function refreshOnce(url: string, boardId: string, root: string, options: 
         // The goals as they are now (they're small, and every change to them is a new revision).
         // If they can't be read, this refresh fails and the next one tries again: a backup is
         // never saved at this revision without them. A service from before goals has none.
-        const read = await onlineRequest<{ goals?: unknown }>(url, boardPath(boardId, "/goals")).catch((error: unknown) => {
-          if (error instanceof PlanbanNotFoundError) return {} as { goals?: unknown };
+        const read = await onlineRequest<{ goals?: unknown; revision?: number }>(url, boardPath(boardId, "/goals")).catch((error: unknown) => {
+          if (error instanceof PlanbanNotFoundError) return {} as { goals?: unknown; revision?: number };
           throw error;
         });
+        // Read after the roadmap: if the board moved on meanwhile, start again rather than save goals from a later revision.
+        if (read.revision !== undefined && read.revision !== roadmap.revision) throw new PlanbanConflictError("The board changed while it was being backed up.");
         if (read.goals) await atomicWriteFile(join(staging, "goals.json"), JSON.stringify(read.goals, null, 2) + "\n");
         else await rm(join(staging, "goals.json"), { force: true });
         const meta: BackupMeta = {

@@ -5,7 +5,8 @@ import { internal } from "./_generated/api";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { liveConnection } from "./model/access";
 import { fail } from "./model/errors";
-import { abortTransfer, beginTransfer, commitTransfer, createOnlineBoard, putPart, requireOwnConnection } from "./model/transfer";
+import { abortTransfer, beginTransfer, commitTransfer, createOnlineBoard, putPart, requireOwnConnection, type BeginInput, type PartInput } from "./model/transfer";
+import { unpackJson } from "./model/codec";
 
 const CLEANUP_BATCH = 25;
 
@@ -21,14 +22,17 @@ export const createBoard = internalMutation({
   },
 });
 
+/** The board's content arrives packed (see http.ts): Convex values limit how data may be shaped, the board doesn't. */
 export const begin = internalMutation({
-  args: { connectionId: v.id("connections"), transferId: v.string(), roadmap: v.any(), retention: v.optional(v.any()), retiredIds: v.optional(v.array(v.string())), uid: v.optional(v.string()), goals: v.optional(v.any()) },
-  handler: async (ctx, { connectionId, ...input }) => beginTransfer(ctx, await liveConnection(ctx, connectionId), input),
+  args: { connectionId: v.id("connections"), transferId: v.string(), payload: v.bytes() },
+  handler: async (ctx, { connectionId, transferId, payload }) =>
+    beginTransfer(ctx, await liveConnection(ctx, connectionId), { ...unpackJson<Omit<BeginInput, "transferId">>(payload), transferId }),
 });
 
 export const part = internalMutation({
-  args: { connectionId: v.id("connections"), transferId: v.string(), seq: v.number(), docs: v.optional(v.any()), history: v.optional(v.any()), historyDocs: v.optional(v.any()) },
-  handler: async (ctx, { connectionId, ...input }) => putPart(ctx, await liveConnection(ctx, connectionId), input),
+  args: { connectionId: v.id("connections"), transferId: v.string(), seq: v.number(), payload: v.bytes() },
+  handler: async (ctx, { connectionId, transferId, seq, payload }) =>
+    putPart(ctx, await liveConnection(ctx, connectionId), { ...unpackJson<Omit<PartInput, "transferId" | "seq">>(payload), transferId, seq }),
 });
 
 export const commit = internalMutation({

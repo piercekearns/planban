@@ -45,8 +45,14 @@ export const bundleSchema = z.object({
 });
 export type BoardBundle = z.infer<typeof bundleSchema>;
 
-/** Upload parts stay well inside one request; Revival's history alone is 126 MB. */
-const PART_BYTES = 4 * 1024 * 1024;
+/**
+ * Upload parts stay well inside one request and inside the service's one
+ * second of work per request: every history version is a whole board, which
+ * is checked, packed and stored there. Revival's versions are about 800 KB
+ * each, so a 4 MB part (about five versions) ran out of time; at 1 MB a
+ * version that size travels alone. Exported for the test that keeps it so.
+ */
+export const PART_BYTES = 1024 * 1024;
 const HISTORY_PAGE = 8;
 const DOCS_PAGE = 100;
 

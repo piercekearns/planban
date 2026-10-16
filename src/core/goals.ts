@@ -349,7 +349,8 @@ function applyChange(file: GoalsFile, change: GoalChange, stamp: Stamp): { goals
 
 const dropExpired = (file: GoalsFile, now: string) => {
   const since = Date.parse(now) - DISMISSED_FOR_DAYS * DAY_MS;
-  file.dismissed = file.dismissed.filter((entry) => Date.parse(entry.dismissedAt) >= since).slice(0, 100);
+  // Kept for their full 30 days; the goals' size limit is what bounds them.
+  file.dismissed = file.dismissed.filter((entry) => Date.parse(entry.dismissedAt) >= since);
 };
 
 /**

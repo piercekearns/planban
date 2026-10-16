@@ -27,7 +27,7 @@ import { MAX_PER_BOARD, publicUnresolved, recordUnresolved, settledBy, unresolve
 import { checkIndexValue, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "../../../src/core/contentRules";
 import { appName, touchPresence, workingOn, workingSentence } from "./model/presence";
 import type { Doc } from "./_generated/dataModel";
-import { addSuggestion, applyGoalEdit, decideSuggestion, goalsPage, MAX_GOALS_BYTES, normalizeGoals, PEOPLE_ONLY, type GoalsFile } from "../../../src/core/goals";
+import { addSuggestion, applyGoalEdit, assertGoalsSize, decideSuggestion, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile } from "../../../src/core/goals";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
@@ -1013,8 +1013,13 @@ async function changeGoals(ctx: MutationCtx, board: Doc<"boards">, current: Plan
     if (!added.goals) return { committed: current, version: 0, result: { page: goalsPage(file), revision: current.revision, notAdded: added.notAdded } };
     planned = added;
   }
+  // The same measure as on a computer, so goals that fit online still fit after Take Local.
+  try {
+    assertGoalsSize(planned.goals);
+  } catch (error) {
+    throw asServiceError(error);
+  }
   const packed = packJson(planned.goals);
-  if (sizeOf(packed) > MAX_GOALS_BYTES) fail("validation", "The board's goals are too large to keep. Shorten some notes or the context.");
   const { committed, version } = await commit(ctx, board, current, { roadmap: current, history: { actor: attribution.actor, operation: "goals.edit", summary: planned.summary, affectedCards: [] }, docWrites: [] }, attribution, now);
   const state = await stateRow(ctx, at);
   await chargeWrite(ctx, attribution.userId, sizeOf(packed));

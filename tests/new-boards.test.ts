@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createEmptyRoadmap } from "../src/core/boardOperations";
 import { createBoard, begin } from "../online/service/convex/transfers";
+import { packJson } from "../online/service/convex/model/codec";
 import { listBoards } from "../online/service/convex/boards";
 import { DAILY_NEW_BOARDS, MAX_OWNED_ONLINE_BOARDS } from "../online/service/convex/model/limits";
 
@@ -61,7 +62,7 @@ async function ownedOnline(ctx: any, userId: string, count: number, authority = 
 }
 
 const takeOnline = (ctx: any, connectionId: string, boardId: string, transferId = `transfer-${boardId}`) =>
-  run(begin, ctx, { connectionId, transferId, roadmap: createEmptyRoadmap({ repoId: boardId, title: boardId, now: new Date().toISOString() }) });
+  run(begin, ctx, { connectionId, transferId, payload: packJson({ roadmap: createEmptyRoadmap({ repoId: boardId, title: boardId, now: new Date().toISOString() }) }) });
 
 test("a person creates an empty online board on the web, owned by them, with its first history entry", async () => {
   const { ctx, rows } = store();
