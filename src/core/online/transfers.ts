@@ -658,7 +658,8 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
     historyDocs.push(...page.historyDocs);
     // A version with more documents than one response holds continues on its own pages.
     for (let more = page.moreDocs; more;) {
-      const rest: HistoryPage = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}&docsOf=${more.version}&docsCursor=${encodeURIComponent(more.cursor)}${bound}`);
+      const cursor = more.cursor ? `&docsCursor=${encodeURIComponent(more.cursor)}` : "";
+      const rest: HistoryPage = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}&docsOf=${more.version}${cursor}${bound}`);
       historyDocs.push(...rest.historyDocs);
       more = rest.moreDocs;
     }

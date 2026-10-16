@@ -67,6 +67,8 @@ export function checkConvexValue(value: unknown, where: string, depth = 0) {
 }
 
 export function memoryService() {
+  /** Paginated queries run by the function being called (Convex allows one). */
+  let paginations = 0;
   const rows: any[] = [];
   const jobs: Array<{ name: string; args: unknown }> = [];
   let sequence = 0;
@@ -142,6 +144,9 @@ export function memoryService() {
         collect: async () => ordered(),
         take: async (count: number) => ordered().slice(0, count),
         paginate: async ({ numItems, cursor, maximumBytesRead }: { numItems: number; cursor: string | null; maximumBytesRead?: number }) => {
+          // As Convex: a function may run only one paginated query.
+          paginations += 1;
+          if (paginations > 1) throw new Error("This query or mutation function ran multiple paginated queries. Convex only supports a single paginated query in each function.");
           const all = ordered();
           const start = cursor ? Number(cursor) : 0;
           let end = Math.min(start + numItems, all.length);
@@ -175,7 +180,9 @@ export function memoryService() {
     // As Convex does: arguments and results must be valid Convex values, so a board
     // shaped beyond its limits fails here, in tests, rather than on a deployment.
     checkConvexValue(args, `${getFunctionName(ref)} arguments`);
-    const result = await fn._handler(ctx, args);
+    const outer = paginations;
+    paginations = 0;
+    const result = await fn._handler(ctx, args).finally(() => { paginations = outer; });
     checkConvexValue(result, `${getFunctionName(ref)} result`);
     return result;
   };
@@ -224,6 +231,8 @@ export function memoryService() {
       const job = jobs.shift()!;
       const fn = byName.get(job.name);
       if (!fn) continue;
+      // Each scheduled job is its own function call.
+      paginations = 0;
       await fn._handler(fn.isAction ? actionCtx : ctx, job.args);
     }
   }

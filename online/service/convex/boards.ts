@@ -596,30 +596,42 @@ export const exportHistory = internalQuery({
     const { board } = await readableBoard(ctx, connectionId, boardId);
     requireLocalTransfer(board, transferId);
     const at = live(board);
-    // One version's documents a page at a time: a version can hold more than one response may.
-    const docsPage = async (version: number, cursor: string | null) => {
-      const page = await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation).eq("version", version))
-        .paginate({ numItems: 50, cursor, maximumBytesRead: PAGE_BYTES } as never) as unknown as { page: Array<Doc<"historyDocs">>; isDone: boolean; continueCursor: string };
-      const docs = page.page.map((row) => ({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) }));
-      return { docs, size: docs.reduce((sum, doc) => sum + utf8Bytes(doc.markdown), 0), more: page.isDone ? null : { version, cursor: page.continueCursor } };
-    };
+    const versionDocs = (version: number) => ctx.db.query("historyDocs")
+      .withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation).eq("version", version));
+    // One version's documents a page at a time (Convex allows one paginated query per function):
+    // for a version holding more than one response may.
     if (docsOf !== undefined) {
-      const { docs, more } = await docsPage(docsOf, docsCursor ?? null);
-      return { history: [], historyDocs: docs, ...(more ? { moreDocs: more } : {}) };
+      const page = await versionDocs(docsOf).paginate({ numItems: 50, cursor: docsCursor ?? null, maximumBytesRead: PAGE_BYTES } as never) as unknown as { page: Array<Doc<"historyDocs">>; isDone: boolean; continueCursor: string };
+      const docs = page.page.map((row) => ({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) }));
+      return { history: [], historyDocs: docs, ...(page.isDone ? {} : { moreDocs: { version: docsOf, cursor: page.continueCursor } }) };
     }
     const candidates = await historyPage(ctx, at, after, Math.min(Math.max(limit, 1), 20));
     const history: typeof candidates = [];
     const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
     let bytes = 0;
     for (const version of candidates) {
-      const { docs, size: docsSize, more } = await docsPage(version.entry.version, null);
-      const size = utf8Bytes(JSON.stringify(version.roadmap)) + docsSize;
-      // A version whose documents continue on later pages starts a page of its own.
-      if (history.length > 0 && (more || bytes + size > PAGE_BYTES)) break;
+      let size = utf8Bytes(JSON.stringify(version.roadmap));
+      const docs: typeof historyDocs = [];
+      let tooBig = false;
+      // Read as a stream, stopping once this version passes what one page may hold.
+      for await (const row of versionDocs(version.entry.version)) {
+        const markdown = unpackText(row.markdown);
+        size += utf8Bytes(markdown);
+        if (size > PAGE_BYTES) {
+          tooBig = true;
+          break;
+        }
+        docs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown });
+      }
+      if (history.length > 0 && (tooBig || bytes + size > PAGE_BYTES)) break;
+      if (tooBig) {
+        // Too big for any page: the version now, its documents on pages of their own (docsOf).
+        history.push(version);
+        return { history, historyDocs, moreDocs: { version: version.entry.version, cursor: "" } };
+      }
       history.push(version);
       historyDocs.push(...docs);
       bytes += size;
-      if (more) return { history, historyDocs, moreDocs: more };
     }
     return { history, historyDocs };
   })()),
