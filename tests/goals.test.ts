@@ -395,3 +395,38 @@ test("board content of any shape goes online and comes back: over 1,024 metadata
     await bridge.close();
   }
 });
+
+// ---- Review round 4: the online service's limits for large boards (16 October 2026) ----
+
+test("large boards: export pages count real bytes, People and export work past 1,024 cards, and a wide refused edit is kept", async () => {
+  const bridge = await serviceBridge([["ana", "Ana"], ["ben", "Ben"]]);
+  try {
+    // Over 1,024 cards, and Specs in non-Latin text.
+    for (let batch = 0; batch < 1_030; batch += 100) {
+      await storage.createCards({ cwd, titles: Array.from({ length: Math.min(100, 1_030 - batch) }, (_, i) => `Card ${batch + i}`) });
+    }
+    const wide = Array.from({ length: 3_000 }, (_, i) => `第${i}行：俱乐部的球衣设计需要更多颜色，我们下周再讨论第${i % 7}个方案。`).join("\n");
+    const spec = await storage.readDoc({ cwd, cardId: "alpha", kind: "spec" });
+    await storage.writeDoc({ cwd, cardId: "alpha", kind: "spec", markdown: `# Spec\n\n${wide}\n`, expectedMtimeMs: spec.exists ? spec.mtimeMs : null });
+    await onlineLogin(bridge.url, { devUser: "ana" });
+    await takeOnline(bridge.url, cwd);
+    const { onlineRequest, boardPath } = await import("../src/core/online/client");
+    const people = await onlineRequest<{ cards: Record<string, unknown> }>(bridge.url, boardPath("revival", "/people"));
+    assert.ok(Object.keys(people.cards).length > 1_024);
+    const page = await onlineRequest<{ docs: Array<{ markdown: string }> }>(bridge.url, boardPath("revival", "/export/docs?offset=0&limit=200"));
+    assert.ok(page.docs.length >= 1);
+    // A refused agent edit with over 1,024 metadata fields is still kept as an unresolved change.
+    const read = await revision();
+    await storage.updateCard({ cwd, cardId: "alpha", metadata: { theirs: "Ana's" }, baseRevision: read });
+    const wideMeta = { theirs: "the agent's", ...Object.fromEntries(Array.from({ length: 1_100 }, (_, i) => [`k${i}`, i])) };
+    await assert.rejects(storage.updateCard({ cwd, cardId: "alpha", metadata: wideMeta, baseRevision: read, actor: "agent" }));
+    const { changes } = await storage.unresolvedChanges({ cwd, cardId: "alpha" });
+    assert.equal(changes.length, 1);
+    assert.equal(Object.keys((changes[0]!.proposed as { metadata: object }).metadata).length, 1_101);
+    // The whole-board export of a board this size still answers, packed.
+    const whole = await onlineRequest<{ roadmap: { roadmapItems: unknown[] } }>(bridge.url, boardPath("revival", "/export"));
+    assert.ok(whole.roadmap.roadmapItems.length > 1_024);
+  } finally {
+    await bridge.close();
+  }
+});

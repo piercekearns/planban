@@ -412,7 +412,7 @@ export const unresolved = internalQuery({
       const change = publicUnresolved(row);
       changes.push({ ...change, by: await personName(ctx, row.userId, row.clientName) });
     }
-    return { changes };
+    return packed({ changes });
   },
 });
 
@@ -498,6 +498,9 @@ export const exportBoard = internalQuery({
   handler: async (ctx, { connectionId, boardId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     const at = live(board);
+    // One response holds at most 16 MiB: a board stored larger than this is exported a page at a time.
+    const stored = (await ctx.db.query("boardSizes").withIndex("by_board_generation", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).unique())?.bytes ?? 0;
+    if (stored > WHOLE_EXPORT_BYTES) fail("validation", "This board is too large to export in one response. Use the paged export: /export/meta, then /export/docs and /export/history (Planban's own export does this).");
     const roadmap = await currentRoadmap(ctx, at);
     const history = await historyPage(ctx, at, 0, 100_000);
     const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
@@ -517,6 +520,9 @@ async function storedGoals(ctx: QueryCtx, at: BoardRows): Promise<{ goals?: Goal
   const row = await stateRow(ctx, at);
   return row.goals ? { goals: normalizeGoals(unpackJson(row.goals)) } : {};
 }
+
+/** Stored (packed) size above which the whole-board export refuses: it reads and returns about this much, within Convex's 16 MiB. */
+const WHOLE_EXPORT_BYTES = 12 * 1024 * 1024;
 
 /** Paged export, first page: the roadmap, retention, retired ids and the list of history versions. */
 export const exportMeta = internalQuery({
@@ -543,6 +549,8 @@ export const exportMeta = internalQuery({
  * item so a single large one still gets through.
  */
 const PAGE_BYTES = 6 * 1024 * 1024;
+/** Pages are measured in the bytes they really take, not characters (non-Latin text takes up to four per character). */
+const utf8Bytes = (text: string) => new TextEncoder().encode(text).length;
 
 /** Paged export: current documents, a page of cards at a time. */
 export const exportDocs = internalQuery({
@@ -564,11 +572,11 @@ export const exportDocs = internalQuery({
         const row = await docRow(ctx, at, item.id, kind);
         if (!row) continue;
         const markdown = unpackText(row.markdown);
-        bytes += markdown.length;
+        bytes += utf8Bytes(markdown);
         docs.push({ cardId: item.id, kind, markdown });
       }
     }
-    return { docs, nextOffset: index < roadmap.roadmapItems.length ? index : null };
+    return packed({ docs, nextOffset: index < roadmap.roadmapItems.length ? index : null });
   },
 });
 
@@ -585,10 +593,10 @@ export const exportHistory = internalQuery({
     let bytes = 0;
     for (const version of candidates) {
       const docs = [];
-      let size = JSON.stringify(version.roadmap).length;
+      let size = utf8Bytes(JSON.stringify(version.roadmap));
       for (const row of await ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation).eq("version", version.entry.version)).collect()) {
         const markdown = unpackText(row.markdown);
-        size += markdown.length;
+        size += utf8Bytes(markdown);
         docs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown });
       }
       if (history.length > 0 && bytes + size > PAGE_BYTES) break;

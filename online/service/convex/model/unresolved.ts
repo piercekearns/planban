@@ -5,6 +5,7 @@
 // these; the web page never shows them.
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { packJson, unpackJson } from "./codec";
 import type { BoardRows } from "./history";
 
 /**
@@ -26,7 +27,8 @@ export interface UnresolvedChange {
 }
 
 export function publicUnresolved(row: Doc<"unresolvedChanges">): UnresolvedChange {
-  return { changeId: row.changeId, cardId: row.cardId, by: { userId: row.userId, app: row.clientName }, at: row.createdAt, op: row.op, proposed: row.proposed, fields: row.fields, refusedAtRevision: row.refusedAtRevision, message: row.message };
+  const proposed = row.proposedPacked ? unpackJson<unknown>(row.proposedPacked) : row.proposed;
+  return { changeId: row.changeId, cardId: row.cardId, by: { userId: row.userId, app: row.clientName }, at: row.createdAt, op: row.op, proposed, fields: row.fields, refusedAtRevision: row.refusedAtRevision, message: row.message };
 }
 
 /** Keeps a refused edit; null when the board already has as many waiting as it may (the refusal then says it wasn't kept). */
@@ -34,7 +36,9 @@ export async function recordUnresolved(ctx: MutationCtx, at: BoardRows, change: 
   const waiting = await ctx.db.query("unresolvedChanges").withIndex("by_board_card", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).take(MAX_PER_BOARD);
   if (waiting.length >= MAX_PER_BOARD) return null;
   const changeId = crypto.randomUUID();
-  await ctx.db.insert("unresolvedChanges", { ...at, changeId, ...change });
+  // The proposed edit is kept packed: an edit may be shaped beyond what Convex documents allow.
+  const { proposed, ...rest } = change as typeof change & { proposed?: unknown };
+  await ctx.db.insert("unresolvedChanges", { ...at, changeId, ...rest, proposedPacked: packJson(proposed ?? null) });
   return changeId;
 }
 

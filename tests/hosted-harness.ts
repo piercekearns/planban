@@ -73,12 +73,15 @@ export function memoryService() {
   const db: any = {
     get: async (id: string) => rows.find((row) => row._id === id) ?? null,
     insert: async (table: string, value: any) => {
+      // Stored documents follow Convex's value rules too.
+      checkConvexValue(value, `${table} document`);
       const id = `${table}-${++sequence}`;
       rows.push({ ...value, _id: id, _table: table, _creationTime: sequence });
       return id;
     },
     patch: async (id: string, patch: any) => {
       const row = rows.find((entry) => entry._id === id);
+      checkConvexValue(patch, `${row?._table ?? "row"} patch`);
       for (const [key, value] of Object.entries(patch)) {
         if (value === undefined) delete row[key];
         else row[key] = value;
@@ -86,6 +89,7 @@ export function memoryService() {
     },
     replace: async (id: string, value: any) => {
       const row = rows.find((entry) => entry._id === id);
+      checkConvexValue(value, `${row?._table ?? "row"} document`);
       for (const key of Object.keys(row)) if (!key.startsWith("_")) delete row[key];
       Object.assign(row, value);
     },

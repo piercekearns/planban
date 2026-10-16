@@ -413,8 +413,8 @@ export class McpService {
     return this.call(() => this.ctx.runQuery(internal.boards.working, { connectionId: this.connectionId, boardId, cardId }));
   }
 
-  unresolved(boardId: string, cardId?: string): Promise<{ changes: unknown[] }> {
-    return this.call(() => this.ctx.runQuery(internal.boards.unresolved, { connectionId: this.connectionId, boardId, ...(cardId ? { cardId } : {}) }));
+  async unresolved(boardId: string, cardId?: string): Promise<{ changes: unknown[] }> {
+    return unpacked(await this.call(() => this.ctx.runQuery(internal.boards.unresolved, { connectionId: this.connectionId, boardId, ...(cardId ? { cardId } : {}) })));
   }
 
   async run(boardId: string, op: string, input: Record<string, unknown>, completionConfirmed: boolean, idempotencyKey?: string) {

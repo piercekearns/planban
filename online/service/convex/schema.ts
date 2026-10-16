@@ -98,7 +98,9 @@ export default defineSchema({
     createdAt: v.string(),
     op: v.string(),
     /** What the refused edit asked for (its input, without bookkeeping). */
-    proposed: v.any(),
+    /** Older rows; new ones keep the proposal packed (proposedPacked). */
+    proposed: v.optional(v.any()),
+    proposedPacked: v.optional(v.bytes()),
     /** The fields it touched that had changed ("spec"/"plan" for a document; "*" for the whole card). */
     fields: v.array(v.string()),
     /** The board revision when it was refused. */

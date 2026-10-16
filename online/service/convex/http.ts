@@ -193,10 +193,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
   if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(unpacked(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId, ...bound })));
   if (rest[0] === "export" && rest[1] === "docs" && method === "GET") {
     const atRevision = url.searchParams.get("revision");
-    return json(await ctx.runQuery(internal.boards.exportDocs, {
+    return json(unpacked(await ctx.runQuery(internal.boards.exportDocs, {
       connectionId, boardId, offset: Number(url.searchParams.get("offset") ?? 0), limit: Number(url.searchParams.get("limit") ?? 100), ...bound,
       ...(atRevision === null ? {} : { revision: Number(atRevision) }),
-    }));
+    })));
   }
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
     return json(unpacked(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound })));
@@ -240,7 +240,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     if (rest[2] === "role" && !role) return json({ error: { code: "validation", message: "role must be viewer or editor." } }, 400);
     return json({ members: await ctx.runMutation(internal.members.update, { connectionId, boardId, userId: decodeURIComponent(rest[1]!), ...(rest[2] === "remove" ? { remove: true } : role ? { role } : {}) }) });
   }
-  if (rest[0] === "people" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.people.forBoard, { connectionId, boardId }));
+  if (rest[0] === "people" && rest.length === 1 && method === "GET") return json(unpacked(await ctx.runQuery(internal.people.forBoard, { connectionId, boardId })));
   if (rest[0] === "people" && rest[1] === "me" && rest[2] === "agents" && method === "POST") {
     const input = await body(request);
     const level = input.level === "read" || input.level === "plan" || input.level === "complete" ? input.level : null;
@@ -302,7 +302,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
   if (rest[0] === "goals" && rest.length === 1 && method === "GET") return json(unpacked(await ctx.runQuery(internal.boards.goals, { connectionId, boardId })));
   if (rest[0] === "unresolved" && rest.length === 1 && method === "GET") {
     const cardId = url.searchParams.get("card") ?? undefined;
-    return json(await ctx.runQuery(internal.boards.unresolved, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));
+    return json(unpacked(await ctx.runQuery(internal.boards.unresolved, { connectionId, boardId, ...(cardId ? { cardId } : {}) })));
   }
   // Owner decision 18: Planban is an index, not storage. Online boards hold
   // text only; files stay where they live and cards refer to them.

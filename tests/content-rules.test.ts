@@ -283,3 +283,13 @@ test("base85 and ASCII85 keep accumulating across ordinary narrow and wide wraps
     }
   }
 });
+
+test("prose in scripts without spaces between words is text, not an encoded file", () => {
+  const chinese = Array.from({ length: 300 }, (_, i) => `第${i}行：俱乐部的球衣设计需要更多颜色，我们下周再讨论第${i % 7}个方案。`).join("\n");
+  const japanese = Array.from({ length: 300 }, (_, i) => `${i}行目：クラブのユニフォームのデザインには、もっと色が必要です。`).join("\n");
+  const thai = Array.from({ length: 300 }, (_, i) => `บรรทัดที่${i}ชุดของสโมสรต้องการสีเพิ่มเติมเราจะคุยกันสัปดาห์หน้า`).join("\n");
+  for (const text of [chinese, japanese, thai]) assert.equal(embeddedFileIn(text), null);
+  // ASCII encodings are still caught, also beside such prose.
+  const base64 = Array.from({ length: 80 }, () => "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=").join("\n");
+  assert.ok(embeddedFileIn(`${chinese.slice(0, 200)}\n\n${base64}`));
+});

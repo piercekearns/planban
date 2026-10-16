@@ -2,6 +2,7 @@
 // card showing who last changed it, with a small robot when their agent did,
 // and the people list with what each person's agents may do. Names and
 // pictures come from the person's sign-in account at Clerk.
+import { packed } from "./model/codec";
 import { workingOn } from "./model/presence";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -82,7 +83,8 @@ export const forBoard = internalQuery({
     for (const [cardId, entries] of Object.entries(await workingOn(ctx, { boardId, generation: access.board.generation }))) {
       working[cardId] = entries.map(({ userId, app, startedAt }) => ({ userId, app, startedAt }));
     }
-    return { shared: members.length > 1, people, cards, working };
+    // Keyed by card: a board can have more than Convex's 1,024 fields per object, so it travels packed.
+    return packed({ shared: members.length > 1, people, cards, working });
   },
 });
 
