@@ -72,9 +72,14 @@ test("every cleanup runs, primary failure is preserved, and cleanup-only failure
   const original = new Error("original stage failure");
   const calls: string[] = [];
   const cleanups: Array<[string, () => Promise<void>]> = [["failed", async () => { calls.push("failed"); throw new Error("cleanup refused"); }], ["remaining", async () => { calls.push("remaining"); }]];
-  await assert.rejects(withVerifierCleanup(async () => { throw original; }, cleanups), (error) => error === original);
+  // The test's own refused cleanup is logged here, not to the run's output, where it read as a real failure.
+  const logged: string[] = [];
+  const log = (line: string) => { logged.push(line); };
+  await assert.rejects(withVerifierCleanup(async () => { throw original; }, cleanups, log), (error) => error === original);
   assert.deepEqual(calls, ["failed", "remaining"]);
-  await assert.rejects(withVerifierCleanup(async () => "success", cleanups), AggregateError);
+  await assert.rejects(withVerifierCleanup(async () => "success", cleanups, log), AggregateError);
+  assert.equal(logged.length, 2);
+  assert.match(logged[0], /cleanup failed: Error: cleanup refused/);
   assert.equal(await withVerifierCleanup(async () => "success", []), "success");
 });
 
