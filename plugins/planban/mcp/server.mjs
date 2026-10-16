@@ -61,7 +61,6 @@ const PLANBAN_MCP_INSTRUCTIONS = [
   "With an in-app browser, make at most one bounded attempt to show it; never reopen the board after every write.",
   "If boardUrlVerified is false, call planban_launch_board once before presenting it.",
   "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card (repoId, cardId); trust the id over any quoted title.",
-  "Weigh a board's goals with judgement (protocol: Goals); only people change them.",
   "Admin, recovery and legacy tools need explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;

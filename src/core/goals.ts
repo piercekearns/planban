@@ -394,6 +394,13 @@ export function decideSuggestion(fileInput: GoalsFile, input: { suggestionId: un
 /** Only people change goals, by every route; agents suggest. */
 export const PEOPLE_ONLY = "Only people change a board's goals. Agents can suggest a change, with a reason, for the person to accept or dismiss: planban_suggest_goal_change.";
 
+/**
+ * The Planban protocol's Goals section, shortened (owner decisions, 16 October
+ * 2026): the remote server's instructions, and the end of the Goals page as
+ * agents read it, where they look when weighing goals.
+ */
+export const GOALS_GUIDANCE = "Goals: a board may have goals, most important first (planban_get_board lists them; planban_read_goals adds notes and context). Treat them as judgement, not rules. When recommending or ranking work, prefer what serves the goals and name the goal in a few words; urgency, blockers, size and what the person asked can outweigh goal order. Work outside the goals is fine: never refuse, delay or argue against it because no goal covers it, and don't tag cards by goal. Do what the person asked. When asked what's next or to review priorities, glance at recent history: if chosen work keeps landing outside the goals, a goal has seen no work for weeks, or the person keeps choosing differently from your goal-based suggestions, suggest one change with that evidence (planban_suggest_goal_change), even if you think the goals still stand, since the person decides; don't repeat a dismissed one unless something new has happened. Only people change goals. No goals: rank as usual without mentioning goals, and don't ask for them unless the person is planning priorities.";
+
 /** The whole Goals page as text, for agents (both MCP servers and the command line). */
 export function goalsPageText(page: GoalsPage): string {
   const lines: string[] = [];
@@ -415,5 +422,6 @@ export function goalsPageText(page: GoalsPage): string {
     for (const entry of page.recentlyDismissed) lines.push(`- ${entry.summary}, dismissed ${entry.dismissedAt.slice(0, 10)}. Its reason was: ${entry.reason}`);
   }
   if (page.retired.length) lines.push("", `Retired: ${page.retired.map((goal) => `${goal.statement} (${goal.retiredAt.slice(0, 10)})`).join("; ")}`);
+  if (page.goals.length) lines.push("", GOALS_GUIDANCE);
   return lines.join("\n");
 }
