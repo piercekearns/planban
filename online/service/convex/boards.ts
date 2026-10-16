@@ -512,9 +512,9 @@ export const exportBoard = internalQuery({
     const spend = (bytes: number) => { budget -= bytes; if (budget < 0) tooLarge(); };
     const history: Awaited<ReturnType<typeof historyPage>> = [];
     for (let after = 0; ;) {
-      const page = await historyPage(ctx, at, after, 10);
+      // Each version is measured as it is rebuilt; past the budget, the export stops there.
+      const page = await historyPage(ctx, at, after, 10, (version) => { spend(utf8Bytes(JSON.stringify(version))); return true; });
       if (!page.length) break;
-      for (const version of page) spend(utf8Bytes(JSON.stringify(version)));
       history.push(...page);
       after = page.at(-1)!.entry.version;
     }
@@ -619,7 +619,14 @@ export const exportHistory = internalQuery({
       const docs = page.page.map((row) => ({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) }));
       return { history: [], historyDocs: docs, ...(page.isDone ? {} : { moreDocs: { version: docsOf, cursor: page.continueCursor } }) };
     }
-    const candidates = await historyPage(ctx, at, after, Math.min(Math.max(limit, 1), 20));
+    // Versions are measured as they are rebuilt: a page holds one version at least, then only what fits.
+    let rebuilt = 0;
+    const candidates = await historyPage(ctx, at, after, Math.min(Math.max(limit, 1), 20), (version) => {
+      const size = utf8Bytes(JSON.stringify(version.roadmap));
+      if (rebuilt > 0 && rebuilt + size > PAGE_BYTES) return false;
+      rebuilt += size;
+      return true;
+    });
     const history: typeof candidates = [];
     const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
     let bytes = 0;

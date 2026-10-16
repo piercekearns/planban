@@ -100,3 +100,37 @@ test("the whole-board export refuses, pointing to the paged export, when history
   for (let i = 0; i < 7; i += 1) await run({ cardId: `card-${i}`, summary: "Small now" });
   await assert.rejects((boards.exportBoard as any)._handler(svc.ctx, { connectionId, boardId: "shrunk" }), /too large to export in one response\. Use the paged export/);
 });
+
+test("history exports rebuild only the versions that fit: a large board's page holds one version, and only one more is rebuilt", async () => {
+  const { memoryService } = await import("./hosted-harness");
+  const boards = await import("../online/service/convex/boards");
+  const transfers = await import("../online/service/convex/transfers");
+  const { packJson, unpacked } = await import("../online/service/convex/model/codec");
+  const { createEmptyRoadmap, planCreateCard } = await import("../src/core/boardOperations");
+  const svc = memoryService();
+  const { connectionId } = await svc.signIn("owner");
+  const now = new Date().toISOString();
+  const first = planCreateCard(createEmptyRoadmap({ repoId: "wide-history", title: "Wide history", now }), { title: "Card" }, { now, isIdReserved: () => false }).roadmap;
+  // About 15 MB of board per version (150 cards with 100 KB summaries), ten versions.
+  const summary = "Discuss the next order with the club and agree how the new kit will be delivered. ".repeat(1_250);
+  const roadmap = { ...first, roadmapItems: Array.from({ length: 150 }, (_, i) => ({ ...first.roadmapItems[0]!, id: `card-${i}`, title: `Card ${i}`, summary, priority: i + 1, boardRank: i + 1 })) };
+  await (transfers.begin as any)._handler(svc.ctx, { connectionId, transferId: "wide-history-1", payload: packJson({ roadmap }) });
+  for (let i = 1; i <= 10; i += 1) {
+    const entry = { version: i, roadmapRevision: roadmap.revision, createdAt: now, actor: "user", operation: "x", summary: "Updated board", affectedCards: [], affectedDocs: [] };
+    await (transfers.part as any)._handler(svc.ctx, { connectionId, transferId: "wide-history-1", seq: i - 1, payload: packJson({ history: [{ entry, roadmap }] }) });
+  }
+  await (transfers.commit as any)._handler(svc.ctx, { connectionId, transferId: "wide-history-1", partCount: 10 });
+  let rebuilt = 0;
+  const parse = JSON.parse;
+  JSON.parse = ((text: string, ...rest: unknown[]) => { const value = parse(text, ...(rest as [])); if (value && typeof value === "object" && "roadmapItems" in value) rebuilt += 1; return value; }) as typeof JSON.parse;
+  try {
+    const page = unpacked<{ history: unknown[] }>(await (boards.exportHistory as any)._handler(svc.ctx, { connectionId, boardId: "wide-history", after: 0, limit: 8 }));
+    assert.equal(page.history.length, 1);
+    assert.ok(rebuilt <= 2, `rebuilt ${rebuilt} versions for a page of one`);
+    rebuilt = 0;
+    await assert.rejects((boards.exportBoard as any)._handler(svc.ctx, { connectionId, boardId: "wide-history" }), /too large to export in one response/);
+    assert.ok(rebuilt <= 2, `rebuilt ${rebuilt} versions before refusing`);
+  } finally {
+    JSON.parse = parse;
+  }
+});
