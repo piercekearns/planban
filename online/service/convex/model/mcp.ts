@@ -151,7 +151,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_suggest_goal_change",
     title: "Suggest a Planban Goals Change",
-    description: "Suggest one change to the board's goals, with the evidence, for a person to accept or dismiss on the Goals page. Only people change goals; agents can't edit them. A dismissed suggestion isn't shown again for 30 days.",
+    description: "Leave one suggested change to the board's goals, with the evidence, on the Goals page for a person to accept or dismiss. Ask the person in chat first and use this only if they agree, or if no person is in the conversation (an unattended run). Only people change goals; agents can't edit them. A dismissed suggestion isn't shown again for 30 days.",
     inputSchema: object({
       boardId,
       kind: { type: "string", enum: ["add", "reword", "reorder", "retire"] },

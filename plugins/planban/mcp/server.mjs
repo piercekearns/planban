@@ -642,7 +642,7 @@ const tools = [
   {
     name: "planban_suggest_goal_change",
     title: "Suggest a Planban Goals Change",
-    description: "Suggest one change to the board's goals, with the evidence, for the person to accept or dismiss on the Goals page. Only people change goals; agents can't edit them. A suggestion the person dismissed isn't shown again for 30 days.",
+    description: "Leave one suggested change to the board's goals, with the evidence, on the Goals page for the person to accept or dismiss. Ask the person in chat first and use this only if they agree, or if no person is in the conversation (an unattended run). Only people change goals; agents can't edit them. A suggestion the person dismissed isn't shown again for 30 days.",
     inputSchema: schema.object({
       ...commonBoardProperties,
       kind: { type: "string", enum: ["add", "reword", "reorder", "retire"] },
@@ -1023,7 +1023,9 @@ async function callToolImpl(name, args) {
 
   if (name === "planban_read_goals") {
     const result = await readGoals({ cwd: await cwdFromArgs(args) });
-    return textResult(goalsPageText(result.page), { ...result.page, revision: result.revision });
+    // The text in the structured part too, as the online server does: Claude Code shows agents only that part.
+    const text = goalsPageText(result.page);
+    return textResult(text, { revision: result.revision, text, ...result.page });
   }
 
   if (name === "planban_suggest_goal_change") {

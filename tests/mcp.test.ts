@@ -6,7 +6,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createCard, createGroup as createGroupCore, historyPayload, initializeProject, loadState, readDoc, writeDoc } from "../src/core/storage";
+import { createCard, createGroup as createGroupCore, editGoals, historyPayload, initializeProject, loadState, readDoc, writeDoc } from "../src/core/storage";
+import { GOALS_GUIDANCE } from "../src/core/goals";
 import { PLANBAN_MCP_VERSION } from "../src/core/version";
 
 const MCP_SERVER = join(process.cwd(), "plugins/planban/scripts/start-planban-mcp.mjs");
@@ -354,6 +355,20 @@ test("Planban MCP read tools inspect boards, cards, and docs", async () => {
     assert.equal("boardUrl" in responses[2].result.structuredContent, false, "get_card stays a focused read");
     assert.equal(responses[2].result.structuredContent.card.title, "Alpha Card");
     assert.match(responses[3].result.structuredContent.markdown, /Alpha Card Spec/);
+  });
+});
+
+test("Planban MCP Goals page carries its guidance in the structured part, which is all some agents see", async () => {
+  await withPlanbanProject(async ({ cwd, planbanHome }) => {
+    await editGoals({ cwd, edit: { kind: "add", statement: "Win clubs", notes: "" }, baseRevision: (await loadState(cwd)).roadmap.revision });
+    const responses = runMcpServer([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "planban_read_goals", arguments: { cwd } } },
+    ], { PLANBAN_HOME: planbanHome });
+    const result = responses[1].result;
+    assert.equal(result.structuredContent.goals[0].statement, "Win clubs");
+    assert.equal(result.structuredContent.text, result.content[0].text);
+    assert.ok(result.structuredContent.text.includes(GOALS_GUIDANCE));
   });
 });
 

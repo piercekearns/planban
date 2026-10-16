@@ -730,7 +730,7 @@ program
 
 program
   .command("suggest-goal-change")
-  .description("suggest one change to the goals, with the evidence, for the person to accept or dismiss; only people change goals")
+  .description("leave one suggested change to the goals, with the evidence, for the person to accept or dismiss; ask them in chat first and use this only if they agree, or in an unattended run; only people change goals")
   .requiredOption("--kind <kind>", "add, reword, reorder or retire")
   .option("--goal <goal>", "reword, reorder, retire: the goal's number or id")
   .option("--statement <text>", "add, reword: the goal in one line")

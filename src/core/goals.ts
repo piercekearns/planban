@@ -139,7 +139,7 @@ export function goalsBlock(file: GoalsFile): string | null {
   return [
     "Goals, most important first:",
     ...file.goals.map((goal, index) => `${index + 1}. ${goal.statement}`),
-    "Read the Goals page for notes and context (planban_read_goals). Only people change goals; to suggest a change, use planban_suggest_goal_change.",
+    "Read the Goals page for notes and context (planban_read_goals). Only people change goals.",
   ].join("\n");
 }
 
@@ -403,14 +403,14 @@ export function decideSuggestion(fileInput: GoalsFile, input: { suggestionId: un
 }
 
 /** Only people change goals, by every route; agents suggest. */
-export const PEOPLE_ONLY = "Only people change a board's goals. Agents can suggest a change, with a reason, for the person to accept or dismiss: planban_suggest_goal_change.";
+export const PEOPLE_ONLY = "Only people change a board's goals. An agent asks the person in chat first, and with their agreement (or in an unattended run, with no person in the conversation) can suggest a change, with a reason, for them to accept or dismiss: planban_suggest_goal_change.";
 
 /**
  * The Planban protocol's Goals section, shortened (owner decisions, 16 October
  * 2026): the remote server's instructions, and the end of the Goals page as
  * agents read it, where they look when weighing goals.
  */
-export const GOALS_GUIDANCE = "Goals: a board may have goals, most important first (planban_get_board lists them; planban_read_goals adds notes and context). Treat them as judgement, not rules. When recommending or ranking work, prefer what serves the goals and name the goal in a few words; urgency, blockers, size and what the person asked can outweigh goal order. Work outside the goals is fine: never refuse, delay or argue against it because no goal covers it, and don't tag cards by goal. Do what the person asked. When asked what's next or to review priorities, glance at recent history: if chosen work keeps landing outside the goals, a goal has seen no work for weeks, or the person keeps choosing differently from your goal-based suggestions, suggest one change with that evidence (planban_suggest_goal_change), even if you think the goals still stand, since the person decides; don't repeat a dismissed one unless something new has happened. Only people change goals. No goals: rank as usual without mentioning goals, and don't ask for them unless the person is planning priorities.";
+export const GOALS_GUIDANCE = "Goals: a board may have goals, most important first (planban_get_board lists them; planban_read_goals adds notes and context). Treat them as judgement, not rules. When recommending or ranking work, prefer what serves the goals and name the goal in a few words; urgency, blockers, size and what the person asked can outweigh goal order. Work outside the goals is fine: never refuse, delay or argue against it because no goal covers it, and don't tag cards by goal. Do what the person asked. When asked what's next or to review priorities, glance at recent history: if chosen work keeps landing outside the goals, a goal has seen no work for weeks, the person keeps choosing differently from your goal-based suggestions, or a goal looks out of date, say so briefly in chat with that evidence and ask whether the goals still say what they want, offering to suggest a change (ask even if you think the goals are right); leave one (planban_suggest_goal_change) only if they agree, or if no person is in the conversation (an unattended run). Don't repeat a dismissed one unless something new has happened. Only people change goals. No goals: rank as usual without mentioning goals, and don't ask for them unless the person is planning priorities.";
 
 /** The whole Goals page as text, for agents (both MCP servers and the command line). */
 export function goalsPageText(page: GoalsPage): string {

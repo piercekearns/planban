@@ -22,7 +22,7 @@ Planban's broader product direction is a durable planning system shared by human
 - Supports board creation, duplication, archiving, restoring, card movement, docs, history, and feedback flows.
 - Ships CLI, local API, and MCP tools so any agent host can work with Planban through structured local actions.
 - Takes a board online when you choose, so people you invite and their agents can work on it, with roles and limits on what agents may do.
-- Gives each board a Goals page: a short, ordered list of the project's goals, with notes and context. People change goals; agents weigh work against them with judgement and can only suggest changes.
+- Gives each board a Goals page: a short, ordered list of the project's goals, with notes and context. People change goals; agents weigh work against them with judgement, and raise a goal that looks out of date with you in chat rather than changing it.
 
 ## Install
 
