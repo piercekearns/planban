@@ -141,11 +141,19 @@ export function memoryService() {
         first: async () => ordered()[0] ?? null,
         collect: async () => ordered(),
         take: async (count: number) => ordered().slice(0, count),
-        paginate: async ({ numItems, cursor }: { numItems: number; cursor: string | null }) => {
+        paginate: async ({ numItems, cursor, maximumBytesRead }: { numItems: number; cursor: string | null; maximumBytesRead?: number }) => {
           const all = ordered();
           const start = cursor ? Number(cursor) : 0;
-          const page = all.slice(start, start + numItems);
-          return { page, isDone: start + numItems >= all.length, continueCursor: String(start + numItems) };
+          let end = Math.min(start + numItems, all.length);
+          // Like Convex, a page also ends once it has read maximumBytesRead (always at least one row).
+          if (maximumBytesRead !== undefined) {
+            let read = 0;
+            for (let index = start; index < end; index += 1) {
+              read += JSON.stringify(all[index], (_key, value) => (value instanceof ArrayBuffer ? "x".repeat(value.byteLength) : value)).length;
+              if (read > maximumBytesRead && index > start) { end = index; break; }
+            }
+          }
+          return { page: all.slice(start, end), isDone: end >= all.length, continueCursor: String(end) };
         },
         async *[Symbol.asyncIterator]() {
           for (const row of ordered()) yield row;

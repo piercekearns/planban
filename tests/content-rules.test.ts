@@ -293,3 +293,16 @@ test("prose in scripts without spaces between words is text, not an encoded file
   const base64 = Array.from({ length: 80 }, () => "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=").join("\n");
   assert.ok(embeddedFileIn(`${chinese.slice(0, 200)}\n\n${base64}`));
 });
+
+test("an ASCII encoding padded with text in another script is still an encoded file", () => {
+  const bytes = randomBytes(4096);
+  const pad = (lines: string[], with_: string) => lines.map((line) => line + with_).join("\n");
+  const hex = pad(bytes.toString("hex").match(/.{1,32}/g)!, "中".repeat(14));
+  const base64 = pad(bytes.toString("base64").match(/.{1,16}/g)!, "中文汉字".repeat(2));
+  // Lines of base85's alphabet (no spaces), as an encoder wraps them.
+  const alphabet = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
+  const base85 = pad(Array.from({ length: 200 }, () => Array.from(randomBytes(32), (byte) => alphabet[byte % 85]).join("")), "汉字".repeat(10));
+  for (const text of [hex, base64, base85]) assert.ok(embeddedFileIn(text), "padded payload must be refused");
+  // Technical Chinese with identifiers between the characters is prose.
+  assert.equal(embeddedFileIn(Array.from({ length: 300 }, (_, i) => `使用planban_get_board和planban_read_goals读取第${i}个看板的目标`).join("\n")), null);
+});

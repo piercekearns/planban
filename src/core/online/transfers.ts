@@ -333,7 +333,22 @@ function historyForOnline(bundle: BoardBundle): BoardBundle {
   };
   const entry = (value: BoardBundle["history"][number]["entry"]) => {
     const cleaned = withoutEmbeddedValue(value, note);
-    return passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES)) ? cleaned : bounded(value, IDS);
+    if (passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES))) return cleaned;
+    const kept = bounded(value, IDS);
+    if (passes(() => checkIndexValue(kept, "entry", MAX_DETAILS_BYTES))) return kept;
+    // A change to very many cards at once (1,000 created in one go): its lists keep as
+    // many as fit, and the summary says how many more there were.
+    const cards = kept.affectedCards ?? [];
+    const docs = kept.affectedDocs ?? [];
+    for (let room = Math.min(cards.length, 2_000); room >= 0; room = room > 100 ? Math.floor(room / 2) : room - 25) {
+      const shown = cards.slice(0, Math.max(room, 0));
+      const docsShown = docs.filter((doc) => shown.includes(doc.cardId));
+      const left = cards.length - shown.length;
+      const trimmed = { ...kept, affectedCards: shown, affectedDocs: docsShown, summary: `${String(kept.summary).slice(0, 200)}${left ? ` (and ${left} more cards)` : ""}` };
+      if (passes(() => checkIndexValue(trimmed, "entry", MAX_DETAILS_BYTES))) return trimmed;
+      if (room <= 0) break;
+    }
+    return { ...kept, affectedCards: [], affectedDocs: [], summary: `${String(kept.summary).slice(0, 200)} (${cards.length} cards)` };
   };
   const document = (markdown: string, cardId: string, kind: string) => {
     const cleaned = withoutEmbeddedFiles(markdown, note);
@@ -635,11 +650,18 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   }
   const history: BoardBundle["history"] = [];
   const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
+  type HistoryPage = { history: BoardBundle["history"]; historyDocs: NonNullable<BoardBundle["historyDocs"]>; moreDocs?: { version: number; cursor: string } };
   for (let after = 0; ;) {
-    const page: { history: BoardBundle["history"]; historyDocs: NonNullable<BoardBundle["historyDocs"]> } = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}${bound}`);
+    const page: HistoryPage = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}${bound}`);
     if (page.history.length === 0) break;
     history.push(...page.history);
     historyDocs.push(...page.historyDocs);
+    // A version with more documents than one response holds continues on its own pages.
+    for (let more = page.moreDocs; more;) {
+      const rest: HistoryPage = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}&docsOf=${more.version}&docsCursor=${encodeURIComponent(more.cursor)}${bound}`);
+      historyDocs.push(...rest.historyDocs);
+      more = rest.moreDocs;
+    }
     after = page.history.at(-1)!.entry.version;
     crashPoint("take-local:mid-download");
   }

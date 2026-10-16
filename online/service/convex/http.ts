@@ -199,7 +199,12 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     })));
   }
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
-    return json(unpacked(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound })));
+    const docsOf = url.searchParams.get("docsOf");
+    const docsCursor = url.searchParams.get("docsCursor");
+    return json(unpacked(await ctx.runQuery(internal.boards.exportHistory, {
+      connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound,
+      ...(docsOf === null ? {} : { docsOf: Number(docsOf) }), ...(docsCursor === null ? {} : { docsCursor }),
+    })));
   }
   if (rest[0] === "history" && rest.length === 2 && method === "GET") {
     return json(unpacked(await ctx.runQuery(internal.boards.historyVersion, { connectionId, boardId, version: Number(rest[1]) })));

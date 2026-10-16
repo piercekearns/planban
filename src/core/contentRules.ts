@@ -95,22 +95,13 @@ const isWordTableRow = (line: string) => /^\|.*\|$/.test(line)
  * punctuation, as uuencode, base85 and ASCII85 write. Not a web address and
  * not a Markdown rule or table border.
  */
-/**
- * Prose in a script without spaces between words (Chinese, Japanese, Thai…)
- * is not an encoding: the encodings this guards against (base64, base85, hex,
- * uuencode) are plain ASCII. A line mostly of letters from other scripts is prose.
- */
-const isNonLatinProse = (line: string) => {
-  const letters = line.match(/[^\x00-\x7F]/gu)?.length ?? 0;
-  return letters >= line.length * 0.3 && /[^\x00-\x7F]/u.test(line) && /\p{L}/u.test(line.replace(/[\x00-\x7F]/g, ""));
-};
-const isDenseLine = (line: string) => line.length >= 12 && !isNonLatinProse(line)
+const isDenseLine = (line: string) => line.length >= 12
   && (line.match(/\s/g)?.length ?? 0) <= line.length * 0.05
   && !line.includes("://") && !/^[\s|:=*#~_-]+$/.test(line) && !isWordTableRow(line)
   && ((line.match(/[^A-Za-z0-9/._~-]/g)?.length ?? 0) >= line.length * 0.1 || looksEncoded(line.replace(/[^A-Za-z0-9]/g, "")));
 /** Encoder rows sometimes have too little punctuation to start a block.
  * They can continue one, without treating ordinary words or references as payload. */
-const isCompactPayloadLine = (line: string) => line.length >= 12 && !isNonLatinProse(line)
+const isCompactPayloadLine = (line: string) => line.length >= 12
   && !/\s|:\/\//.test(line) && !/^[|:=*#~_-]+$/.test(line) && !isWordTableRow(line)
   // Relative and absolute paths are references, even when a run of encoded
   // lines happens to precede them. Base85's alphabet does not contain '/'.
@@ -182,7 +173,11 @@ const ascii85Payload = (text: string) => ascii85Frames(text).reduce((sum, frame)
 function payloadLines(text: string) {
   const lines: Array<{ index: number; payload: number; weak: number; hash?: number }> = [];
   text.split(/\r?\n/).forEach((raw, index) => {
-    const line = raw.replace(/^[\s>*+-]*(?:\d+[.)]\s+)?/, "");
+    // The encodings guarded against (base64, base85, hex, uuencode) are ASCII. Text in
+    // other scripts, many written without spaces (Chinese, Japanese, Thai), stands in
+    // for a space, so prose leaves little behind and an ASCII payload, padded or not,
+    // is judged on what remains.
+    const line = raw.replace(/[^\x00-\x7F]+/g, " ").replace(/^[\s>*+-]*(?:\d+[.)]\s+)?/, "");
     if (!line.trim()) return;
     if (isUuencodeLine(raw)) {
       lines.push({ index, payload: raw.length, weak: 0 });
