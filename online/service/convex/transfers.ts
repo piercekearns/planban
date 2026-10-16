@@ -22,7 +22,7 @@ export const createBoard = internalMutation({
 });
 
 export const begin = internalMutation({
-  args: { connectionId: v.id("connections"), transferId: v.string(), roadmap: v.any(), retention: v.optional(v.any()), retiredIds: v.optional(v.array(v.string())), uid: v.optional(v.string()) },
+  args: { connectionId: v.id("connections"), transferId: v.string(), roadmap: v.any(), retention: v.optional(v.any()), retiredIds: v.optional(v.array(v.string())), uid: v.optional(v.string()), goals: v.optional(v.any()) },
   handler: async (ctx, { connectionId, ...input }) => beginTransfer(ctx, await liveConnection(ctx, connectionId), input),
 });
 
@@ -58,7 +58,7 @@ export const importBundle = internalMutation({
   handler: async (ctx, { connectionId, transferId, bundle }) => {
     const connection = await liveConnection(ctx, connectionId);
     if (bundle?.format !== "planban-board-bundle" || bundle.version !== 1) fail("validation", "Expected a planban-board-bundle, version 1.");
-    await beginTransfer(ctx, connection, { transferId, roadmap: bundle.roadmap, retention: bundle.retention, retiredIds: bundle.retiredIds, uid: bundle.uid });
+    await beginTransfer(ctx, connection, { transferId, roadmap: bundle.roadmap, retention: bundle.retention, retiredIds: bundle.retiredIds, uid: bundle.uid, goals: bundle.goals });
     await putPart(ctx, connection, { transferId, seq: 0, docs: bundle.docs, history: bundle.history, historyDocs: bundle.historyDocs });
     return commitTransfer(ctx, connection, { transferId, partCount: 1 }, attributionOf(connection));
   },

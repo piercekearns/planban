@@ -61,6 +61,8 @@ export default defineSchema({
     boardId: v.string(),
     generation: v.number(),
     roadmap: v.bytes(),
+    /** The board's goals (src/core/goals.ts), when it has any. */
+    goals: v.optional(v.bytes()),
   }).index("by_board_generation", ["boardId", "generation"]),
 
   /**

@@ -51,6 +51,7 @@ import { ensureBoardIdentity } from "./boardIdentity";
 import type { PlanbanHistoryPayload } from "./types";
 import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
 import { checkIndexCard, checkIndexDocument, checkIndexText, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
+import { addSuggestion, applyGoalEdit, decideSuggestion, emptyGoals, goalsBlock, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile, type GoalsPage } from "./goals";
 
 import { assertCompletionConfirmed,
   assertBaseRevision as assertRoadmapBaseRevision,
@@ -1239,4 +1240,94 @@ export async function getStatus(cwdInput: string) {
     repoId: manifest.repoId,
     version: currentVersionInfo(),
   };
+}
+
+// ---- Goals (owner decisions, 16 October 2026) ------------------------------
+// Kept beside the board in goals.json, so the board file older Planban
+// versions rewrite is untouched. Every change is a board revision with a
+// history entry, so live updates, edit clashes and retries work as for cards.
+
+const goalsPath = (planningRoot: string) => join(planningRoot, "goals.json");
+
+/** A local board's goals as stored, for moving the board online; null when it has none. */
+export async function readLocalGoals(planningRoot: string): Promise<GoalsFile | null> {
+  const file = await readGoalsFile(planningRoot);
+  return file.goals.length || file.retired.length || file.context || file.suggestions.length || file.dismissed.length ? file : null;
+}
+
+async function readGoalsFile(planningRoot: string): Promise<GoalsFile> {
+  try {
+    return normalizeGoals(JSON.parse(await readFile(goalsPath(planningRoot), "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyGoals();
+    throw new PlanbanValidationError(`This board's goals file is damaged (${goalsPath(planningRoot)}). Restore it from a backup or move it aside to start the goals again.`);
+  }
+}
+
+export interface GoalsResult {
+  page: GoalsPage;
+  revision: number;
+  /** Set when a suggestion wasn't added: why. */
+  notAdded?: string | undefined;
+  suggestion?: Record<string, unknown> | undefined;
+}
+
+/** The board's whole Goals page: goals with notes, context, retired goals and suggestions. */
+export async function readGoals(input: { cwd: string }): Promise<GoalsResult> {
+  const online = await onlineManifest(input.cwd);
+  if (online && online.storage?.kind === "online") {
+    return onlineRequest<GoalsResult>(online.storage.url, boardPath(online.storage.boardId, "/goals"));
+  }
+  const state = await loadState(input.cwd);
+  return { page: goalsPage(await readGoalsFile(state.planningRoot)), revision: state.roadmap.revision };
+}
+
+/** The short Goals block for agents' board reads, or null when the board has no goals. */
+export async function readGoalsBlock(cwd: string): Promise<string | null> {
+  const { page } = await readGoals({ cwd }).catch(() => ({ page: null }));
+  if (!page || !page.goals.length) return null;
+  return goalsBlock({ ...emptyGoals(), goals: page.goals });
+}
+
+async function changeLocalGoals(
+  cwd: string,
+  actor: PlanbanHistoryActor,
+  plan: (file: GoalsFile, stamp: { revision: number; now: string }) => { goals: GoalsFile | null; summary?: string; notAdded?: string; suggestion?: Record<string, unknown> },
+): Promise<GoalsResult> {
+  return withRoadmapWriteLock(cwd, async () => {
+    const state = await loadState(cwd);
+    const file = await readGoalsFile(state.planningRoot);
+    const planned = plan(file, { revision: state.roadmap.revision + 1, now: nowIso() });
+    if (!planned.goals) return { page: goalsPage(file), revision: state.roadmap.revision, notAdded: planned.notAdded };
+    const roadmap = await saveRoadmap(state, state.roadmap, { actor, operation: "goals.edit", summary: planned.summary!, affectedCards: [] });
+    await atomicWriteFile(goalsPath(state.planningRoot), JSON.stringify(planned.goals, null, 2) + "\n");
+    return { page: goalsPage(planned.goals), revision: roadmap.revision, ...(planned.suggestion ? { suggestion: planned.suggestion } : {}) };
+  });
+}
+
+/** A person's change to the goals. Agents can't: they suggest (suggestGoalChange). */
+export async function editGoals(input: { cwd: string; edit: unknown; baseRevision?: number | undefined; actor?: PlanbanHistoryActor | undefined; idempotencyKey?: string | undefined }): Promise<GoalsResult> {
+  if (input.actor === "agent") throw new PlanbanValidationError(PEOPLE_ONLY);
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "editGoals", input)).result;
+  return changeLocalGoals(input.cwd, "user", (file, stamp) => applyGoalEdit(file, input.edit, { ...stamp, baseRevision: input.baseRevision, by: "you" }));
+}
+
+/** A person accepts or dismisses an agent's suggestion. */
+export async function decideGoalSuggestion(input: { cwd: string; suggestionId: string; decision: "accept" | "dismiss"; baseRevision?: number | undefined; actor?: PlanbanHistoryActor | undefined; idempotencyKey?: string | undefined }): Promise<GoalsResult> {
+  if (input.actor === "agent") throw new PlanbanValidationError(PEOPLE_ONLY);
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "decideGoalSuggestion", input)).result;
+  return changeLocalGoals(input.cwd, "user", (file, stamp) => decideSuggestion(file, input, { ...stamp, by: "you" }));
+}
+
+/** An agent suggests one change to the goals, with its reason, for the person to accept or dismiss. */
+export async function suggestGoalChange(input: { cwd: string; change: unknown; reason: string; agentName?: string | undefined; idempotencyKey?: string | undefined }): Promise<GoalsResult> {
+  const online = await onlineManifest(input.cwd);
+  if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "suggestGoalChange", { ...input, actor: "agent" } as typeof input)).result;
+  const by = input.agentName?.trim() ? input.agentName.trim().slice(0, 60) : "An agent";
+  return changeLocalGoals(input.cwd, "agent", (file, stamp) => {
+    const added = addSuggestion(file, input, { ...stamp, by, id: randomUUID() });
+    return added.goals ? added : { goals: null, notAdded: added.notAdded };
+  });
 }

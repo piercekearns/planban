@@ -8,7 +8,8 @@ import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoar
 import { atomicWriteFile, isAtomicWriteTemp, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
-import { loadState, pathExists, readDoc, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
+import { loadState, pathExists, readDoc, readLocalGoals, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
+import { normalizeGoals } from "../goals";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
 import { boardAccount, recordBoardAccount, recordBoardAccountAs, withIdentity } from "./accounts";
@@ -39,6 +40,8 @@ export const bundleSchema = z.object({
   retention: z.record(z.string(), z.unknown()).optional(),
   /** The board's durable identity. */
   uid: z.string().optional(),
+  /** The board's goals (goals.json), when it has any. */
+  goals: z.unknown().optional(),
 });
 export type BoardBundle = z.infer<typeof bundleSchema>;
 
@@ -155,8 +158,9 @@ export async function buildLocalBundle(cwd: string): Promise<BoardBundle> {
       if (await pathExists(path)) historyDocs.push({ version: entry.version, cardId: doc.cardId, kind: doc.kind, markdown: await readFile(path, "utf8") });
     }
   }
+  const goals = await readLocalGoals(state.planningRoot);
   return bundleSchema.parse({ format: "planban-board-bundle", version: 1, roadmap: state.roadmap, docs,
-    historyDocs, retention: history.retention, history: versions,
+    historyDocs, retention: history.retention, history: versions, ...(goals ? { goals } : {}),
   });
 }
 
@@ -494,6 +498,7 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   // different, or an older record without a fingerprint, starts it again.
   const textDigest = createHash("sha256").update(JSON.stringify({
     roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], retention: bundle.retention ?? null, parts: uploadParts(bundle),
+    ...(bundle.goals ? { goals: bundle.goals } : {}),
   })).digest("hex");
   if (journal?.phase === "uploading" && (journal.localRevision !== bundle.roadmap.revision || journal.textDigest !== textDigest)) {
     // The board changed locally since the interrupted upload: cancel it and
@@ -517,6 +522,7 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   const begun = await onlineRequest<{ state: string; receivedParts: number[] }>(url, "/api/v1/transfers", {
     transferId: journal.transferId, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], uid,
     ...(bundle.retention ? { retention: bundle.retention } : {}),
+    ...(bundle.goals ? { goals: bundle.goals } : {}),
   }, as);
   if (begun.state !== "committed") {
     const parts = uploadParts(bundle);
@@ -614,7 +620,7 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   const base = boardPath(storage.boardId, "/export");
   // During Take Local, every page must come from the generation that was frozen.
   const bound = transferId ? `&transferId=${encodeURIComponent(transferId)}` : "";
-  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown>; uid?: string }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
+  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown>; uid?: string; goals?: unknown }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
   const docs: BoardBundle["docs"] = [];
   for (let offset: number | null = 0; offset !== null;) {
     const page: { docs: BoardBundle["docs"]; nextOffset: number | null } = await onlineRequest(storage.url, `${base}/docs?offset=${offset}&limit=${DOCS_PAGE}${bound}`);
@@ -634,6 +640,7 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   const bundle = bundleSchema.parse({
     format: "planban-board-bundle", version: 1, roadmap: meta.roadmap, docs, history, historyDocs, retiredIds: meta.retiredIds,
     ...(meta.retention ? { retention: meta.retention } : {}), ...(meta.uid ? { uid: meta.uid } : {}),
+    ...(meta.goals ? { goals: meta.goals } : {}),
   });
   if (out) await writeJson(resolve(out), bundle);
   return bundle;
@@ -652,7 +659,7 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     const configured = doc.kind === "spec" ? item.specDoc : item.planDoc;
     if (!configured) throw new PlanbanValidationError(`Export document has no roadmap reference: ${key}`);
     const destination = resolveInsideRoot(root, configured);
-    const protectedPaths = [join(root, "roadmap.json"), join(root, "history"), join(root, ".planban-write.lock"), join(root, ".planban-write.queue")];
+    const protectedPaths = [join(root, "roadmap.json"), join(root, "goals.json"), join(root, "history"), join(root, ".planban-write.lock"), join(root, ".planban-write.queue")];
     if (protectedPaths.some((path) => destination === path || destination.startsWith(path + sep)) || paths.has(destination)) {
       throw new PlanbanValidationError(`Export contains a conflicting document path: ${configured}`);
     }
@@ -684,6 +691,7 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     entries: bundle.history.map(({ entry }) => entry).sort((a, b) => a.version - b.version),
   });
   if (bundle.uid) await writeBoardIdentity(root, bundle.uid);
+  if (bundle.goals) await writeJson(join(root, "goals.json"), normalizeGoals(bundle.goals));
   await writeJson(join(root, "roadmap.json"), roadmap);
   return roadmap;
 }
@@ -988,7 +996,7 @@ export async function restoreBackup(folder: string, cwdInput: string, repoId: st
   const cwd = resolve(cwdInput);
   if (await readManifest(cwd)) throw new PlanbanValidationError("This directory already has a board. Restore into an empty directory.");
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(repoId)) throw new PlanbanValidationError("Choose a board id: lowercase letters, digits and dashes.");
-  const { roadmap, docs } = await readBackup(folder);
+  const { roadmap, docs, goals } = await readBackup(folder);
   // A restored board is a separate copy, never the online board itself
   // (owner request, 15 October 2026): it takes a new id, so taking it online
   // makes a second board, and its name says where it came from.
@@ -1000,6 +1008,7 @@ export async function restoreBackup(folder: string, cwdInput: string, repoId: st
   const title = `${roadmap.project.title} (copy restored from a backup${day ? ` of ${day}` : ""})`;
   const restored = await stageBundle(root, bundleSchema.parse({
     format: "planban-board-bundle", version: 1, roadmap: { ...roadmap, project: { ...roadmap.project, id: repoId, title } }, docs, history: [],
+    ...(goals ? { goals } : {}),
   }));
   const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId, storage: { kind: "local", root } };
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });

@@ -136,6 +136,11 @@ async function refreshOnce(url: string, boardId: string, root: string, options: 
           if (!after.unchanged) throw new PlanbanConflictError("The board changed while it was being backed up.");
         }
         await atomicWriteFile(join(staging, "roadmap.json"), JSON.stringify(roadmap, null, 2) + "\n");
+        // The goals as they are now (they're small, and every change to them is a new revision).
+        // If they can't be read just now, the last copy of them stays.
+        const read = await onlineRequest<{ goals?: unknown }>(url, boardPath(boardId, "/goals")).catch(() => null);
+        if (read?.goals) await atomicWriteFile(join(staging, "goals.json"), JSON.stringify(read.goals, null, 2) + "\n");
+        else if (read) await rm(join(staging, "goals.json"), { force: true });
         const meta: BackupMeta = {
           version: 1, url: serviceUrl(url), boardId, revision: roadmap.revision,
           historyVersion: Math.max(complete ? previous!.historyVersion : 0, ...covered.map((entry) => entry.version)),
@@ -181,5 +186,6 @@ export async function readBackup(folder: string) {
     if (!match) continue;
     docs.push({ cardId: decodeURIComponent(match[1]!), kind: match[2] as "spec" | "plan", markdown: await readFile(join(folder, "docs", name), "utf8") });
   }
-  return { roadmap, docs };
+  const goals = await readFile(join(folder, "goals.json"), "utf8").then((raw) => JSON.parse(raw) as unknown, () => null);
+  return { roadmap, docs, goals };
 }

@@ -80,6 +80,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
         ...(typeof input.uid === "string" ? { uid: input.uid } : {}),
         ...(input.retention === undefined ? {} : { retention: input.retention }),
         ...(Array.isArray(input.retiredIds) ? { retiredIds: input.retiredIds.map(String) } : {}),
+        ...(input.goals === undefined ? {} : { goals: input.goals }),
       }));
     }
     const transferId = parts[1]!;
@@ -290,6 +291,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     const agentName = url.searchParams.get("agent") ?? undefined;
     return json(await ctx.runQuery(internal.boards.working, { connectionId, boardId, ...(cardId ? { cardId } : {}), ...(agentName ? { agentName } : {}) }));
   }
+  if (rest[0] === "goals" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.boards.goals, { connectionId, boardId }));
   if (rest[0] === "unresolved" && rest.length === 1 && method === "GET") {
     const cardId = url.searchParams.get("card") ?? undefined;
     return json(await ctx.runQuery(internal.boards.unresolved, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));

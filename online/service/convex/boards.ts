@@ -27,6 +27,7 @@ import { MAX_PER_BOARD, publicUnresolved, recordUnresolved, settledBy, unresolve
 import { checkIndexValue, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "../../../src/core/contentRules";
 import { appName, touchPresence, workingOn, workingSentence } from "./model/presence";
 import type { Doc } from "./_generated/dataModel";
+import { addSuggestion, applyGoalEdit, decideSuggestion, goalsPage, MAX_GOALS_BYTES, normalizeGoals, PEOPLE_ONLY, type GoalsFile } from "../../../src/core/goals";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
 import { packJson, packText, unpackJson, unpackText } from "./model/codec";
@@ -41,6 +42,7 @@ export const BOARD_OPERATIONS = [
   "createCard", "createCards", "createGroup", "updateCard", "moveCard",
   "setCardParent", "reorderCards", "deleteArchivedCard", "writeDoc",
   "restoreBoard", "restoreCard", "restoreDoc", "dropChange", "writeDocSection",
+  "editGoals", "suggestGoalChange", "decideGoalSuggestion",
 ] as const;
 export type BoardOperation = (typeof BOARD_OPERATIONS)[number];
 
@@ -384,6 +386,22 @@ export const readDoc = internalQuery({
 });
 
 /** Agents' refused edits still waiting on this board, or one card (Spec point 20). For agent tools only. */
+async function goalsOf(ctx: QueryCtx, at: BoardRows): Promise<GoalsFile> {
+  const row = await stateRow(ctx, at);
+  return normalizeGoals(row.goals ? unpackJson(row.goals) : null);
+}
+
+/** The board's Goals page, for people and agents; the stored goals too, for backups. */
+export const goals = internalQuery({
+  args: { connectionId: v.id("connections"), boardId: v.string() },
+  handler: async (ctx, { connectionId, boardId }) => {
+    const { board } = await readableBoard(ctx, connectionId, boardId);
+    const file = await goalsOf(ctx, live(board));
+    const stored = file.goals.length || file.retired.length || file.context || file.suggestions.length || file.dismissed.length;
+    return { page: goalsPage(file), revision: board.revision, ...(stored ? { goals: file } : {}) };
+  },
+});
+
 export const unresolved = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string(), cardId: v.optional(v.string()) },
   handler: async (ctx, { connectionId, boardId, cardId }) => {
@@ -490,9 +508,15 @@ export const exportBoard = internalQuery({
       format: "planban-board-bundle", version: 1, roadmap, docs: await allDocs(ctx, at, roadmap), history, historyDocs,
       retiredIds: [...await retiredIds(ctx, at)],
       ...(board.retention === undefined ? {} : { retention: board.retention }),
+      ...await storedGoals(ctx, at),
     };
   },
 });
+
+async function storedGoals(ctx: QueryCtx, at: BoardRows): Promise<{ goals?: GoalsFile }> {
+  const row = await stateRow(ctx, at);
+  return row.goals ? { goals: normalizeGoals(unpackJson(row.goals)) } : {};
+}
 
 /** Paged export, first page: the roadmap, retention, retired ids and the list of history versions. */
 export const exportMeta = internalQuery({
@@ -508,6 +532,7 @@ export const exportMeta = internalQuery({
       roadmap: await currentRoadmap(ctx, at), retiredIds: [...await retiredIds(ctx, at)], historyVersions: versions,
       ...(board.retention === undefined ? {} : { retention: board.retention }),
       ...(board.uid ? { uid: board.uid } : {}),
+      ...await storedGoals(ctx, at),
     };
   },
 });
@@ -716,7 +741,9 @@ export const run = internalMutation({
     // An agent's earlier refused edits that this one settles (Spec point 20).
     let settled: Array<{ row: Doc<"unresolvedChanges">; fieldsLeft: string[] }> = [];
     try {
-      if (op === "dropChange") {
+      if (op === "editGoals" || op === "suggestGoalChange" || op === "decideGoalSuggestion") {
+        outcome = await changeGoals(ctx, access.board, current, op, input, now, attribution);
+      } else if (op === "dropChange") {
         outcome = await dropChange(ctx, access.board, current, input, now, attribution);
       } else if (op === "writeDoc") {
         if (attribution.actor === "agent" && typeof input.cardId === "string" && (input.kind === "spec" || input.kind === "plan")) {
@@ -966,6 +993,36 @@ async function keepRefused(ctx: MutationCtx, at: BoardRows, op: string, input: R
 }
 
 /** Drops an unresolved change, with the reason, into the card's history. */
+/**
+ * Goals (owner decisions, 16 October 2026): people change them, from their own
+ * sign-in; agents only suggest. Each change is a board revision with a history
+ * entry, like any edit, so live updates, clashes and retries work the same.
+ */
+async function changeGoals(ctx: MutationCtx, board: Doc<"boards">, current: PlanbanRoadmap, op: string, input: Record<string, unknown>, now: string, attribution: Attribution) {
+  if (op !== "suggestGoalChange" && attribution.actor !== "user") fail("forbidden", PEOPLE_ONLY);
+  const at = live(board);
+  const file = await goalsOf(ctx, at);
+  const agentClient = attribution.actor === "agent" ? appName(typeof input.agentName === "string" ? input.agentName : attribution.clientName) : null;
+  const stamp = { revision: current.revision + 1, baseRevision: typeof input.baseRevision === "number" ? input.baseRevision : undefined, by: await personName(ctx, attribution.userId, agentClient), now };
+  let planned: { goals: GoalsFile; summary: string; suggestion?: unknown };
+  if (op === "editGoals") planned = applyGoalEdit(file, input.edit, stamp);
+  else if (op === "decideGoalSuggestion") planned = decideSuggestion(file, { suggestionId: input.suggestionId, decision: input.decision }, stamp);
+  else {
+    const added = addSuggestion(file, { change: input.change, reason: input.reason }, { ...stamp, id: crypto.randomUUID() });
+    // Nothing new to show the person: no revision, no history entry.
+    if (!added.goals) return { committed: current, version: 0, result: { page: goalsPage(file), revision: current.revision, notAdded: added.notAdded } };
+    planned = added;
+  }
+  const packed = packJson(planned.goals);
+  if (sizeOf(packed) > MAX_GOALS_BYTES) fail("validation", "The board's goals are too large to keep. Shorten some notes or the context.");
+  const { committed, version } = await commit(ctx, board, current, { roadmap: current, history: { actor: attribution.actor, operation: "goals.edit", summary: planned.summary, affectedCards: [] }, docWrites: [] }, attribution, now);
+  const state = await stateRow(ctx, at);
+  await chargeWrite(ctx, attribution.userId, sizeOf(packed));
+  await ctx.db.patch(state._id, { goals: packed });
+  await addStored(ctx, at, sizeOf(packed) - (state.goals ? sizeOf(state.goals) : 0));
+  return { committed, version, result: { page: goalsPage(planned.goals), revision: committed.revision, ...(planned.suggestion ? { suggestion: planned.suggestion } : {}) } };
+}
+
 async function dropChange(ctx: MutationCtx, board: Doc<"boards">, current: PlanbanRoadmap, input: Record<string, unknown>, now: string, attribution: Attribution) {
   const changeId = String(input.changeId ?? "");
   const reason = typeof input.reason === "string" ? input.reason.trim() : "";

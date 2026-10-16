@@ -10,6 +10,7 @@ import {
   normalizeRoadmap,
 } from "../../../../src/core/boardOperations";
 import type { PlanbanHistoryEntry, PlanbanRoadmap } from "../../../../src/core/types";
+import { checkedGoals, type GoalsFile } from "../../../../src/core/goals";
 import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -36,6 +37,7 @@ export interface BeginInput {
   roadmap: unknown;
   retention?: unknown;
   retiredIds?: string[];
+  goals?: unknown;
 }
 
 export interface PartInput {
@@ -103,8 +105,10 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
     return { transferId: existing.transferId, boardId: existing.boardId, state: existing.state, receivedParts: parts.map((part) => part.seq) };
   }
   let roadmap: PlanbanRoadmap;
+  let goals: GoalsFile | null = null;
   try {
     roadmap = normalizeRoadmap(input.roadmap);
+    if (input.goals !== undefined && input.goals !== null) goals = checkedGoals(input.goals);
     assertCommittable(roadmap);
     // Planban is an index, not storage (owner decision 18): the board arrives as text only.
     checkCards(roadmap);
@@ -147,10 +151,11 @@ export async function beginTransfer(ctx: MutationCtx, connection: Doc<"connectio
   const generation = await nextGeneration(ctx);
   const at = { boardId, generation };
   // Take Online counts towards the account's daily import limit and the board's size limit.
-  await chargeImport(ctx, connection.userId, sizeOf(input.roadmap) + sizeOf(input.retiredIds ?? []) + sizeOf(input.retention ?? null));
+  await chargeImport(ctx, connection.userId, sizeOf(input.roadmap) + sizeOf(input.retiredIds ?? []) + sizeOf(input.retention ?? null) + sizeOf(goals));
   const packedRoadmap = packJson(roadmap);
-  await ctx.db.insert("boardState", { ...at, roadmap: packedRoadmap });
-  await addStored(ctx, at, sizeOf(packedRoadmap));
+  const packedGoals = goals ? packJson(goals) : undefined;
+  await ctx.db.insert("boardState", { ...at, roadmap: packedRoadmap, ...(packedGoals ? { goals: packedGoals } : {}) });
+  await addStored(ctx, at, sizeOf(packedRoadmap) + (packedGoals ? sizeOf(packedGoals) : 0));
   const live = new Set(roadmap.roadmapItems.map((item) => item.id));
   for (const cardId of new Set(input.retiredIds ?? [])) {
     if (!live.has(cardId)) await reserveRetiredId(ctx, at, cardId);
