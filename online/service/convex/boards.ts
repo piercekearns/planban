@@ -481,12 +481,15 @@ export const historyDoc = internalQuery({
   },
 });
 
-async function allDocs(ctx: Parameters<typeof currentRoadmap>[0], at: BoardRows, roadmap: PlanbanRoadmap) {
+async function allDocs(ctx: Parameters<typeof currentRoadmap>[0], at: BoardRows, roadmap: PlanbanRoadmap, spend: (bytes: number) => void = () => undefined) {
   const docs: BoardBundle["docs"] = [];
   for (const item of roadmap.roadmapItems) {
     for (const kind of ["spec", "plan"] as const) {
       const row = await docRow(ctx, at, item.id, kind);
-      if (row) docs.push({ cardId: item.id, kind, markdown: unpackText(row.markdown) });
+      if (!row) continue;
+      const markdown = unpackText(row.markdown);
+      spend(utf8Bytes(markdown));
+      docs.push({ cardId: item.id, kind, markdown });
     }
   }
   return docs;
@@ -503,20 +506,30 @@ export const exportBoard = internalQuery({
     const stored = (await ctx.db.query("boardSizes").withIndex("by_board_generation", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).unique())?.bytes ?? 0;
     if (stored > WHOLE_EXPORT_BYTES) tooLarge();
     const roadmap = await currentRoadmap(ctx, at);
-    const history = await historyPage(ctx, at, 0, 100_000);
+    // Assembled against a running budget: history unpacks to a whole board per version, which can
+    // far exceed what is stored, so it stops as soon as the export would pass the limit.
+    let budget = WHOLE_EXPORT_BYTES - utf8Bytes(JSON.stringify(roadmap));
+    const spend = (bytes: number) => { budget -= bytes; if (budget < 0) tooLarge(); };
+    const history: Awaited<ReturnType<typeof historyPage>> = [];
+    for (let after = 0; ;) {
+      const page = await historyPage(ctx, at, after, 10);
+      if (!page.length) break;
+      for (const version of page) spend(utf8Bytes(JSON.stringify(version)));
+      history.push(...page);
+      after = page.at(-1)!.entry.version;
+    }
     const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
     for await (const row of ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation))) {
-      historyDocs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) });
+      const markdown = unpackText(row.markdown);
+      spend(utf8Bytes(markdown));
+      historyDocs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown });
     }
     const bundle = {
-      format: "planban-board-bundle", version: 1, roadmap, docs: await allDocs(ctx, at, roadmap), history, historyDocs,
+      format: "planban-board-bundle", version: 1, roadmap, docs: await allDocs(ctx, at, roadmap, spend), history, historyDocs,
       retiredIds: [...await retiredIds(ctx, at)],
       ...(board.retention === undefined ? {} : { retention: board.retention }),
       ...await storedGoals(ctx, at),
     };
-    // History unpacks to a whole board per version, which can far exceed what is stored:
-    // measured as assembled (the packed response is smaller still), so it never fails at the limit instead.
-    if (utf8Bytes(JSON.stringify(bundle)) > WHOLE_EXPORT_BYTES) tooLarge();
     return bundle;
   })()),
 });
@@ -601,7 +614,8 @@ export const exportHistory = internalQuery({
     // One version's documents a page at a time (Convex allows one paginated query per function):
     // for a version holding more than one response may.
     if (docsOf !== undefined) {
-      const page = await versionDocs(docsOf).paginate({ numItems: 50, cursor: docsCursor ?? null, maximumBytesRead: PAGE_BYTES } as never) as unknown as { page: Array<Doc<"historyDocs">>; isDone: boolean; continueCursor: string };
+      // At most five documents (each at most 1 MB of text): the compressed bytes read say little about the expanded size.
+      const page = await versionDocs(docsOf).paginate({ numItems: 5, cursor: docsCursor ?? null, maximumBytesRead: PAGE_BYTES } as never) as unknown as { page: Array<Doc<"historyDocs">>; isDone: boolean; continueCursor: string };
       const docs = page.page.map((row) => ({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) }));
       return { history: [], historyDocs: docs, ...(page.isDone ? {} : { moreDocs: { version: docsOf, cursor: page.continueCursor } }) };
     }
