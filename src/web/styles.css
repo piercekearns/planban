@@ -242,10 +242,10 @@ button {
 .app-header {
   flex: 0 0 auto;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 18px 24px 8px;
+  gap: 16px;
+  padding: 12px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   backdrop-filter: blur(18px);
@@ -256,11 +256,6 @@ button {
 
 .board-screen > .app-header {
   padding-left: 16px;
-}
-
-.app-header.has-update {
-  padding-top: 13px;
-  padding-bottom: 13px;
 }
 
 .dashboard-wordmark img {
@@ -290,21 +285,11 @@ h1 {
 .header-controls {
   position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  align-self: flex-end;
-  justify-content: flex-end;
-  gap: 5px;
-  min-height: 53px;
-  padding-bottom: 0;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 10px;
 }
 
-.header-controls.has-update {
-  align-self: center;
-  justify-content: space-between;
-}
-
-.header-update-row,
 .header-actions {
   display: flex;
   align-items: center;
@@ -313,24 +298,24 @@ h1 {
 
 .header-actions {
   gap: 5px;
-}
-
-.board-title-group {
-  min-width: 0;
-  flex: 1 1 auto;
 }
 
 .board-title-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .board-title-row .board-picker {
   min-width: 0;
   max-width: 100%;
 }
+
+/* The board's name: bold, about 22px, with a small ▾. */
+.app-header .board-picker-trigger { font-size: 22px; font-weight: 700; }
+.app-header .board-picker-trigger svg { width: 14px; height: 14px; }
 
 .board-title-row .board-picker-trigger span {
   overflow: hidden;
@@ -342,32 +327,22 @@ h1 {
   padding-left: 4px;
 }
 
-.board-home-row {
-  display: flex;
-  align-items: center;
-  min-height: 24px;
-  margin-bottom: 3px;
-}
-
-.board-home-button {
+/* The card stack on its own, with nothing behind it; a ring only for the keyboard. */
+.board-home-mark {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  min-height: 24px;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 4px;
+  background: none;
   padding: 0;
+  margin-right: 4px;
   cursor: pointer;
 }
-
-.board-home-button:hover,
-.board-home-button:focus-visible {
-  background: var(--surface-subtle);
-  color: var(--text);
-}
+.board-home-mark:focus { outline: none; }
+.board-home-mark:focus-visible { outline: 2px solid var(--focus, #2563eb); outline-offset: 3px; }
+.board-home-mark:hover { opacity: .75; }
+.card-stack-mark, .card-stack-mark img { display: block; }
 
 .board-header-tools {
   display: inline-flex;
@@ -5706,12 +5681,8 @@ button.content-edit-action:hover {
 
 @media (max-width: 760px) {
   .app-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto;
-    align-items: center;
-    gap: 4px 8px;
-    padding: 16px;
+    gap: 8px;
+    padding: 12px 16px;
   }
 
   .detail-header { padding: 16px; }
@@ -5742,27 +5713,7 @@ button.content-edit-action:hover {
     margin-left: 0;
   }
 
-  .app-header .board-title-group { display: contents; }
-  .app-header .board-home-row {
-    grid-column: 1;
-    grid-row: 1;
-    margin-bottom: 0;
-  }
-  .app-header .board-title-row {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  .app-header .header-controls {
-    grid-column: 2;
-    grid-row: 1 / 3;
-    min-height: 52px;
-    align-self: stretch;
-    justify-content: flex-end;
-  }
-
-  .app-header .header-controls.has-update { justify-content: space-between; }
-
-  .header-actions { align-self: flex-end; }
+  .app-header .board-picker-trigger { font-size: 19px; }
 
   .detail-header { align-items: flex-start; flex-wrap: wrap; }
   .detail-header-actions { flex: 1 1 100%; justify-content: flex-end; }
@@ -5866,6 +5817,11 @@ button.content-edit-action:hover {
 .board-location-pill.busy { color: var(--text); }
 .board-location-account { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 720px) { .board-location-account { display: none; } }
+/* On a phone, the header's location is its icon alone, so a long board name has room. */
+@media (max-width: 640px) {
+  .app-header .board-location-pill { padding: 4px; margin-left: 2px; }
+  .app-header .board-location-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
 .online-board-account { margin: 8px 0 0; color: var(--text-muted); font: 400 12px/18px var(--font-sans); }
 .switch-account-text { margin: 0; font: 400 13px/20px var(--font-sans); }
 .online-board-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
@@ -6127,19 +6083,6 @@ a.web-delete-account-email { display: inline-flex; align-items: center; justify-
 /* An empty list's one line, at the size of the rows around it. */
 .online-board-section > p.muted { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 19px; }
 
-/* The board's header on the web (approved mockup section 8): Planban / Your boards / the board, in one row; on a phone, "Planban ‹ Your boards" above the board's name. */
-.web-board-title { display: flex; align-items: center; gap: 8px; }
-.web-board-title .board-home-row { gap: 8px; min-height: 0; margin-bottom: 0; }
-.web-crumb-mark { display: inline-flex; border: 0; background: none; padding: 0; cursor: pointer; }
-.web-crumb { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; color: var(--text-muted); font: 13px var(--font-sans); white-space: nowrap; cursor: pointer; }
-.web-crumb:hover { color: var(--text); }
-.web-crumb::before, .web-crumb::after { content: "/"; color: var(--border-strong); }
-@media (max-width: 760px) {
-  .web-crumb { gap: 3px; font-size: 12.5px; }
-  .web-crumb::before { content: "‹"; color: var(--text-muted); font-size: 15px; }
-  .web-crumb::after { content: none; }
-  .web-board-title .board-title-row { margin-top: 2px; }
-}
 /* A card's back arrow stays beside its board name and title on a phone. */
 @media (max-width: 640px) {
   .detail-header { gap: 8px 10px; padding: 12px; }

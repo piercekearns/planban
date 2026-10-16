@@ -7,11 +7,12 @@ import { PlanbanConflictError, PlanbanNotFoundError, PlanbanValidationError } fr
 import { planbanCommand } from "./command";
 import { PlanbanEditConflictError } from "./conflicts";
 import { AccountInUseError } from "./online/accounts";
-import { OnlineAuthenticationError, PlanbanForbiddenError } from "./online/client";
+import { OnlineAuthenticationError, PlanbanForbiddenError, PlanbanUpdateRequiredError } from "./online/client";
+import { UPDATE_HOW } from "./clientVersion";
 
 export type ErrorCategory =
   | "conflict" | "validation" | "not_found" | "signed_out" | "forbidden" | "limit"
-  | "account_in_use" | "other_account" | "error";
+  | "account_in_use" | "other_account" | "update_required" | "error";
 
 export interface ErrorReport {
   category: ErrorCategory;
@@ -28,6 +29,8 @@ export function errorReport(error: unknown): ErrorReport {
     return { category: "signed_out", message, details: { url: error.signIn.url, reason: error.signIn.reason, ...(error.signIn.account !== undefined ? { account: error.signIn.account } : {}), signInCommand: `${planbanCommand()} online sign-in ${error.signIn.url}` } };
   }
   if (error instanceof PlanbanForbiddenError) return { category: "forbidden", message };
+  // The service needs a newer Planban for this: the person updates, with Update on the board page.
+  if (error instanceof PlanbanUpdateRequiredError) return { category: "update_required", message, details: { howToUpdate: UPDATE_HOW } };
   if (error instanceof PlanbanEditConflictError) {
     return { category: "conflict", message, details: { currentRevision: error.conflict.currentRevision, conflict: error.conflict } };
   }

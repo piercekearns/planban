@@ -27,6 +27,7 @@ import { MAX_PER_BOARD, publicUnresolved, recordUnresolved, settledBy, unresolve
 import { checkIndexValue, MAX_CARD_BYTES, MAX_DOCUMENT_BYTES } from "../../../src/core/contentRules";
 import { appName, touchPresence, workingOn, workingSentence } from "./model/presence";
 import type { Doc } from "./_generated/dataModel";
+import { boardFeatures } from "../../../src/core/clientVersion";
 import { addSuggestion, applyGoalEdit, assertGoalsSize, decideSuggestion, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile } from "../../../src/core/goals";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
@@ -360,8 +361,10 @@ export const getBoard = internalQuery({
   handler: async (ctx, { connectionId, boardId, since }) => packed(await (async () => {
     const { board, role } = await readableBoard(ctx, connectionId, boardId);
     if (since !== undefined && since === board.revision) return { unchanged: true as const, revision: board.revision, authority: board.authority };
-    // The role lets the web page show a viewer a board they can read but not change.
-    return { roadmap: await currentRoadmap(ctx, live(board)), authority: board.authority, role };
+    // The role lets the web page show a viewer a board they can read but not change. The
+    // features let a computer's older Planban say it can't show everything (16 October 2026).
+    const goals = await goalsOf(ctx, live(board));
+    return { roadmap: await currentRoadmap(ctx, live(board)), authority: board.authority, role, features: boardFeatures({ hasGoals: hasGoalsContent(goals) }) };
   })()),
 });
 
@@ -392,13 +395,17 @@ async function goalsOf(ctx: QueryCtx, at: BoardRows): Promise<GoalsFile> {
 }
 
 /** The board's Goals page, for people and agents; the stored goals too, for backups. */
+/** Anything on the Goals page: goals, retired ones, the Context, or suggestions. */
+function hasGoalsContent(file: GoalsFile) {
+  return Boolean(file.goals.length || file.retired.length || file.context || file.suggestions.length || file.dismissed.length);
+}
+
 export const goals = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string() },
   handler: async (ctx, { connectionId, boardId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     const file = await goalsOf(ctx, live(board));
-    const stored = file.goals.length || file.retired.length || file.context || file.suggestions.length || file.dismissed.length;
-    return { page: goalsPage(file), revision: board.revision, ...(stored ? { goals: file } : {}) };
+    return { page: goalsPage(file), revision: board.revision, ...(hasGoalsContent(file) ? { goals: file } : {}) };
   })()),
 });
 

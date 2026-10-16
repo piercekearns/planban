@@ -28,6 +28,7 @@ const goalsModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "sr
 
 const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, historyPayload, loadState, moveCard, notePresence, readDoc, readDocSections, readGoals, readGoalsBlock, reconstructHierarchy, setCardParent, suggestGoalChange, unresolvedChanges, updateCard, workingOnCard, writeDoc, writeDocSection } = storageModule;
 const { goalsPageText } = goalsModule;
+const { UPDATE_HOW } = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/clientVersion.ts")).href);
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { queryWorkItems } = queryModule;
@@ -941,10 +942,12 @@ async function callToolImpl(name, args) {
     const state = await loadState(cwd);
     const attention = stalenessAttention(await boardStaleness(state), state.roadmap.roadmapItems);
     const goals = await readGoalsBlock(cwd);
+    // A board using features this Planban can't show: say so plainly, and how to update.
+    const behind = state.planbanBehind ? `${state.planbanBehind.notice} ${UPDATE_HOW}` : null;
     return await boardResult(
-      withLine(withLine(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, goals), stalenessLine(attention)),
+      withLine(withLine(withLine(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, behind), goals), stalenessLine(attention)),
       state.manifest.repoId,
-      { ...summarizeBoard(state), attention, ...(goals ? { goals } : {}) },
+      { ...summarizeBoard(state), attention, ...(goals ? { goals } : {}), ...(behind ? { planbanBehind: { ...state.planbanBehind, notice: behind } } : {}) },
     );
   }
 

@@ -276,7 +276,9 @@ export function LocationPill({ status }: { status: OnlineStatus | null }) {
     : status.location === "online"
       ? [<Cloud key="i" size={12} />, "Online"]
       : [<Laptop key="i" size={12} />, older ? "On this Mac · older copy" : "On this Mac"];
-  return <span className={`board-location-pill ${status.location === "moving" ? "busy" : ""}`} title={email ? `Signed in as ${email}` : undefined}>{icon}<span>{text}</span>{email ? <span className="board-location-account">· Signed in as {email}</span> : null}</span>;
+  // On a phone the board header shows the icon only (owner decision, 16 October 2026); the
+  // words stay for screen readers, and the tooltip says them too.
+  return <span className={`board-location-pill ${status.location === "moving" ? "busy" : ""}`} title={email ? `${text} · Signed in as ${email}` : text}>{icon}<span className="board-location-text">{text}</span>{email ? <span className="board-location-account">· Signed in as {email}</span> : null}</span>;
 }
 
 function useEscape(onClose: () => void) {
