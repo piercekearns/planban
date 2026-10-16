@@ -38,7 +38,7 @@ const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 
 /** The protocol's Goals section, shortened (owner decisions, 16 October 2026). */
-export const GOALS_GUIDANCE = "Goals: a board may have goals, most important first (planban_get_board lists them; planban_read_goals adds notes and context). Treat them as judgement, not rules. When recommending or ranking work, prefer what serves the goals and name the goal in a few words; urgency, blockers, size and what the person asked can outweigh goal order. Work outside the goals is fine: never refuse, delay or argue against it because no goal covers it, and don't tag cards by goal. Do what the person asked. When asked what's next or to review priorities, glance at recent history: if chosen work keeps landing outside the goals, a goal has seen no work for weeks, or the person keeps choosing differently from your goal-based suggestions, suggest one change with that evidence (planban_suggest_goal_change); don't repeat a dismissed one unless something new has happened. Only people change goals. No goals: rank as usual, and don't ask for goals unless the person is planning priorities.";
+export const GOALS_GUIDANCE = "Goals: a board may have goals, most important first (planban_get_board lists them; planban_read_goals adds notes and context). Treat them as judgement, not rules. When recommending or ranking work, prefer what serves the goals and name the goal in a few words; urgency, blockers, size and what the person asked can outweigh goal order. Work outside the goals is fine: never refuse, delay or argue against it because no goal covers it, and don't tag cards by goal. Do what the person asked. When asked what's next or to review priorities, glance at recent history: if chosen work keeps landing outside the goals, a goal has seen no work for weeks, or the person keeps choosing differently from your goal-based suggestions, suggest one change with that evidence (planban_suggest_goal_change), even if you think the goals still stand, since the person decides; don't repeat a dismissed one unless something new has happened. Only people change goals. No goals: rank as usual without mentioning goals, and don't ask for them unless the person is planning priorities.";
 
 const INSTRUCTIONS = [
   "These tools read and edit Planban Online Boards shared across devices and people.",
@@ -143,7 +143,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: "planban_read_goals",
     title: "Read Planban Goals",
-    description: "The board's whole Goals page: its goals in order with their notes, the Context section, suggestions waiting for the person, suggestions dismissed in the last 30 days, and retired goals.",
+    description: "Only when a board read lists goals: the board's whole Goals page, its goals in order with their notes, the Context section, suggestions waiting for the person, suggestions dismissed in the last 30 days, and retired goals.",
     inputSchema: object({ boardId }, ["boardId"]),
     annotations: read,
   },

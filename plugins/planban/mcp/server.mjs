@@ -636,7 +636,7 @@ const tools = [
   {
     name: "planban_read_goals",
     title: "Read Planban Goals",
-    description: "The board's whole Goals page: its goals in order with their notes, the Context section, suggestions waiting for the person, suggestions dismissed in the last 30 days, and retired goals. Board reads list only the goal statements.",
+    description: "Only when a board read lists goals: the board's whole Goals page, its goals in order with their notes, the Context section, suggestions waiting for the person, suggestions dismissed in the last 30 days, and retired goals. Board reads list only the goal statements.",
     inputSchema: schema.object(commonBoardProperties),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },

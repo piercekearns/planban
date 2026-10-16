@@ -498,10 +498,11 @@ judgement, not rules.
 - When asked what's next or to review priorities, glance at recent board history. If
   chosen work keeps landing outside the goals, a goal has seen no work for weeks, or
   the person keeps picking differently from your goal-based suggestions, suggest one
-  change to the goals, with that evidence. Don't repeat a dismissed suggestion unless
-  something new has happened.
-- No goals: rank as usual. Don't ask for goals unless the person is planning
-  priorities.
+  change to the goals with `suggest_goal_change`, with that evidence, even if you
+  think the goals still stand: the person decides. Don't repeat a dismissed suggestion
+  unless something new has happened.
+- No goals: rank as usual, and don't mention goals. Don't ask for goals unless the
+  person is planning priorities.
 
 Board reads (`get_board`, `status`) list the goal statements when there are any;
 `read_goals` returns the whole Goals page, with notes, context, suggestions waiting

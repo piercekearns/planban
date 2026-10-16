@@ -475,3 +475,33 @@ test("a read that stalls is given up after its time limit and tried once more, n
     assert.equal(attempts, 2);
   });
 });
+
+test("goals on the web: the page reads them and the owner changes them; a viewer only reads", async () => {
+  await withServiceEnv(async () => {
+    const { service, owner, boardId, adapter } = await ownerWithBoard();
+    const empty = await page(adapter, boardPath(boardId, "/goals"));
+    assert.equal(empty.status, 200, JSON.stringify(empty.body));
+    assert.deepEqual(empty.body.goals, []);
+    const added = await page(adapter, boardPath(boardId, "/goals"), { method: "POST", body: { edit: { kind: "add", statement: "Ship the first 300 vests" }, baseRevision: empty.body.revision } });
+    assert.equal(added.status, 200, JSON.stringify(added.body));
+    assert.deepEqual(added.body.goals.map((goal: Json) => goal.statement), ["Ship the first 300 vests"]);
+    // A page that read an older revision is still fine for a different part of the goals.
+    const context = await page(adapter, boardPath(boardId, "/goals"), { method: "POST", body: { edit: { kind: "context", context: "Part-time until June." }, baseRevision: empty.body.revision } });
+    assert.equal(context.status, 200, JSON.stringify(context.body));
+    assert.equal((await page(adapter, boardPath(boardId, "/state"))).body.roadmap.revision, context.body.revision);
+    // A suggestion from an agent, decided on the page.
+    const suggested = await service.browserSend(owner.token)(`/api/v1/boards/${boardId}/ops/suggestGoalChange`, { method: "POST", headers: { "X-Planban-Client": "web", "Content-Type": "application/json" }, body: JSON.stringify({ change: { kind: "retire", goal: "1" }, reason: "Done.", actor: "agent" }) });
+    assert.equal(suggested.status, 200, await suggested.clone().text());
+    const waiting = (await page(adapter, boardPath(boardId, "/goals"))).body.suggestions;
+    assert.equal(waiting.length, 1);
+    const dismissed = await page(adapter, boardPath(boardId, `/goals/suggestions/${waiting[0].id}`), { method: "POST", body: { decision: "dismiss", baseRevision: context.body.revision } });
+    assert.equal(dismissed.status, 200, JSON.stringify(dismissed.body));
+    assert.equal(dismissed.body.recentlyDismissed.length, 1);
+    const viewer = await service.signIn("user_viewer", "Vera Viewer");
+    await addMember(service, owner.token, boardId, "user_viewer", "viewer");
+    const viewerPage = service.adapterFor(viewer.token, {});
+    assert.equal((await page(viewerPage, boardPath(boardId, "/goals"))).body.goals.length, 1);
+    const refused = await page(viewerPage, boardPath(boardId, "/goals"), { method: "POST", body: { edit: { kind: "add", statement: "Mine" } } });
+    assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  });
+});

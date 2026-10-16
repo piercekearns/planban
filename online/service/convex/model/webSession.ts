@@ -75,6 +75,7 @@ const WEB_ROUTES: ReadonlyArray<readonly [string, string]> = [
   ["GET", "boards/*/invites"],
   ["GET", "boards/*/people"],
   ["GET", "boards/*/members"],
+  ["GET", "boards/*/goals"],
   ["POST", "live-token"],
   ["POST", "boards"],
   ["POST", "boards/*/ops/*"],
