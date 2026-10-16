@@ -1,3 +1,4 @@
+import { PEOPLE_ONLY } from "../core/goals";
 import express from "express";
 import { spawn } from "node:child_process";
 import { urlOpener } from "../core/openUrl";
@@ -1352,6 +1353,10 @@ export async function startServer(options: ServeOptions) {
   });
 
   // Goals (owner decisions, 16 October 2026): the page reads them; people change them here.
+  // Only the board page in a browser may change them: it names itself, and the browser marks
+  // its requests same-origin. Agents use the suggestion tool instead (PEOPLE_ONLY).
+  const fromBoardPage = (req: express.Request) => req.header("X-Planban-Client") === "web"
+    && req.header("Sec-Fetch-Site")?.trim().toLowerCase() === "same-origin" && req.body?.actor !== "agent";
   app.get("/api/boards/:repoId/goals", async (req, res, next) => {
     try {
       const { page, revision } = await readGoals({ cwd: await boardCwd(req.params.repoId) });
@@ -1363,9 +1368,13 @@ export async function startServer(options: ServeOptions) {
 
   app.post("/api/boards/:repoId/goals", async (req, res, next) => {
     try {
+      if (!fromBoardPage(req)) {
+        res.status(403).json({ error: PEOPLE_ONLY });
+        return;
+      }
       const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value } = await runApiMutation(req, cwdForBoard, () => editGoals({
-        cwd: cwdForBoard, edit: req.body?.edit, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: parseActor(req.body?.actor),
+        cwd: cwdForBoard, edit: req.body?.edit, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: "user",
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: value.revision });
       res.json({ ...value.page, revision: value.revision });
@@ -1376,6 +1385,10 @@ export async function startServer(options: ServeOptions) {
 
   app.post("/api/boards/:repoId/goals/suggestions/:id", async (req, res, next) => {
     try {
+      if (!fromBoardPage(req)) {
+        res.status(403).json({ error: PEOPLE_ONLY });
+        return;
+      }
       const decision = req.body?.decision;
       if (decision !== "accept" && decision !== "dismiss") {
         res.status(422).json({ error: "decision is accept or dismiss" });
@@ -1383,7 +1396,7 @@ export async function startServer(options: ServeOptions) {
       }
       const cwdForBoard = await boardCwd(req.params.repoId, false);
       const { value } = await runApiMutation(req, cwdForBoard, () => decideGoalSuggestion({
-        cwd: cwdForBoard, suggestionId: req.params.id, decision, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: parseActor(req.body?.actor),
+        cwd: cwdForBoard, suggestionId: req.params.id, decision, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: "user",
       }));
       sendEvent("state", { repoId: req.params.repoId, revision: value.revision });
       res.json({ ...value.page, revision: value.revision });

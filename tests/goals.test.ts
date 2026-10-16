@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as storage from "../src/core/storage";
-import { addSuggestion, decideSuggestion, emptyGoals, goalsBlock, type GoalsFile } from "../src/core/goals";
+import { addSuggestion, applyGoalEdit, assertGoalsSize, decideSuggestion, emptyGoals, goalsBlock, type GoalsFile } from "../src/core/goals";
 import { onlineLogin } from "../src/core/online/login";
 import { resetCopyChecks } from "../src/core/online/copyCheck";
 import { backupRoot, refreshBackup } from "../src/core/online/backup";
@@ -159,6 +159,109 @@ test("online: the same rules on the service, and goals move with the board, into
     assert.equal(back.goals[0]!.statement, "Keep clubs for life");
     assert.match(back.context, /club-only market/);
     assert.match(await readFile(join((await storage.loadState(cwd)).planningRoot, "goals.json"), "utf8"), /Faster building, when apt/);
+  } finally {
+    await bridge.close();
+  }
+});
+
+// ---- Review round 1 (16 October 2026) ----
+
+test("the local server lets only the board page change goals; an agent's request is refused, whatever it says", async () => {
+  await revivalGoals();
+  const { createServer } = await import("node:http");
+  const { startServer } = await import("../src/server/server");
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = (reservation.address() as any).port;
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const server = await startServer({ cwd, port, useVite: false });
+  try {
+    const post = (headers: Record<string, string>, body: unknown) => fetch(`${server.url}/api/boards/revival/goals`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+    const edit = { edit: { kind: "context", context: "Changed by an agent" } };
+    assert.equal((await post({}, edit)).status, 403);
+    assert.equal((await post({ "X-Planban-Client": "web" }, edit)).status, 403);
+    assert.equal((await post({ "X-Planban-Client": "web", "Sec-Fetch-Site": "same-origin" }, { ...edit, actor: "agent" })).status, 403);
+    const decide = await fetch(`${server.url}/api/boards/revival/goals/suggestions/x`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "accept" }) });
+    assert.equal(decide.status, 403);
+    assert.equal((await storage.readGoals({ cwd })).page.context, "");
+    const page = await post({ "X-Planban-Client": "web", "Sec-Fetch-Site": "same-origin", Origin: server.url }, { edit: { kind: "context", context: "From the page" } });
+    assert.equal(page.status, 200, await page.clone().text());
+    assert.equal((await storage.readGoals({ cwd })).page.context, "From the page");
+  } finally {
+    await server.close();
+  }
+});
+
+test("retiring never drops an earlier retired goal; the goals' size limit refuses instead of trimming", () => {
+  let file: GoalsFile = emptyGoals();
+  const stamp = (revision: number) => ({ revision, by: "you", now: new Date(Date.UTC(2026, 9, 1, 0, revision)).toISOString() });
+  for (let i = 1; i <= 60; i += 1) {
+    file = applyGoalEdit(file, { kind: "add", statement: `Goal ${i}`, notes: "Notes kept" }, stamp(i * 2)).goals;
+    file = applyGoalEdit(file, { kind: "retire", goalId: `g${i}` }, stamp(i * 2 + 1)).goals;
+  }
+  assert.equal(file.retired.length, 60);
+  assert.equal(applyGoalEdit(file, { kind: "restore", goalId: "g1" }, stamp(200)).goals.goals[0]!.notes, "Notes kept");
+  const huge = { ...file, context: "x".repeat(300 * 1024) };
+  assert.throws(() => assertGoalsSize(huge), /too large to keep/);
+});
+
+test("accepting a suggestion is checked against what the person read, like any edit", () => {
+  let file: GoalsFile = { ...emptyGoals(), goals: [{ id: "g1", statement: "Win clubs", notes: "", createdAt: "", updatedAt: "" }] };
+  const added = addSuggestion(file, { change: { kind: "reword", goal: "1", statement: "Win more clubs" }, reason: "Growth." }, { revision: 2, by: "Claude", now: "2026-10-16T00:00:00.000Z", id: "s1" });
+  file = added.goals!;
+  // Someone rewords the goal at revision 3; the person read the page at revision 2.
+  file = applyGoalEdit(file, { kind: "reword", goalId: "g1", statement: "Win university clubs" }, { revision: 3, baseRevision: 2, by: "Sam", now: "2026-10-16T00:01:00.000Z" }).goals;
+  assert.throws(() => decideSuggestion(file, { suggestionId: "s1", decision: "accept" }, { revision: 4, baseRevision: 2, by: "you", now: "2026-10-16T00:02:00.000Z" }), /changed by Sam since you read it/);
+  // Having seen the new wording, accepting is the person's choice.
+  assert.equal(decideSuggestion(file, { suggestionId: "s1", decision: "accept" }, { revision: 4, baseRevision: 3, by: "you", now: "2026-10-16T00:02:00.000Z" }).goals.goals[0]!.statement, "Win more clubs");
+});
+
+test("a goals change that stopped part way either stands, if its revision was committed, or never happened", async () => {
+  await revivalGoals();
+  const state = await storage.loadState(cwd);
+  const next = join(state.planningRoot, "goals.next.json");
+  const { writeFile } = await import("node:fs/promises");
+  const current = JSON.parse(await readFile(join(state.planningRoot, "goals.json"), "utf8"));
+  // Stopped before the board's revision was committed: it never happened.
+  await writeFile(next, JSON.stringify({ ...current, context: "Never committed", revision: state.roadmap.revision + 1 }));
+  assert.equal((await storage.readGoals({ cwd })).page.context, "");
+  await edit({ kind: "reword", goalId: "g1", notes: "Settled" });
+  assert.equal((await storage.readGoals({ cwd })).page.context, "");
+  assert.equal(await storage.pathExists(next), false);
+  // Stopped after the revision was committed, before the rename: it stands.
+  const now = await storage.loadState(cwd);
+  const stored = JSON.parse(await readFile(join(now.planningRoot, "goals.json"), "utf8"));
+  await writeFile(next, JSON.stringify({ ...stored, context: "Committed", revision: now.roadmap.revision }));
+  assert.equal((await storage.readGoals({ cwd })).page.context, "Committed");
+  await edit({ kind: "reword", goalId: "g2", notes: "After" });
+  assert.equal((await storage.readGoals({ cwd })).page.context, "Committed");
+});
+
+test("a retried suggestion with the same key is added once, on a computer as online", async () => {
+  await revivalGoals();
+  const first = await storage.suggestGoalChange({ cwd, change: { kind: "add", statement: "Win back lapsed clubs" }, reason: "Three haven't reordered.", idempotencyKey: "suggest-once-1" });
+  await storage.decideGoalSuggestion({ cwd, suggestionId: first.page.suggestions[0]!.id, decision: "accept" });
+  const retried = await storage.suggestGoalChange({ cwd, change: { kind: "add", statement: "Win back lapsed clubs" }, reason: "Three haven't reordered.", idempotencyKey: "suggest-once-1" });
+  assert.equal(retried.page.suggestions.length, 1);
+  assert.equal((await storage.readGoals({ cwd })).page.suggestions.length, 0);
+  assert.equal((await statements()).filter((statement) => statement === "Win back lapsed clubs").length, 1);
+});
+
+test("a backup isn't saved without the goals when they can't be read; the next refresh gets them", async () => {
+  const bridge = await serviceBridge([["ana", "Ana"]]);
+  try {
+    await revivalGoals();
+    await onlineLogin(bridge.url, { devUser: "ana" });
+    await takeOnline(bridge.url, cwd);
+    const latest = join(backupRoot(bridge.url, "revival"), "latest");
+    const { rm: remove } = await import("node:fs/promises");
+    await remove(backupRoot(bridge.url, "revival"), { recursive: true, force: true });
+    bridge.control.intercept = async (path) => (path.endsWith("/goals") ? { status: 503, body: { error: { message: "Unavailable" } } } : undefined);
+    assert.equal(await refreshBackup(bridge.url, "revival", { force: true }), null);
+    assert.equal(await storage.pathExists(join(latest, "roadmap.json")), false);
+    bridge.control.intercept = undefined;
+    await refreshBackup(bridge.url, "revival", { force: true });
+    assert.match(await readFile(join(latest, "goals.json"), "utf8"), /Win clubs/);
   } finally {
     await bridge.close();
   }

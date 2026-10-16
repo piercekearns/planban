@@ -11,7 +11,6 @@ export const MAX_GOALS = 20;
 export const MAX_STATEMENT_CHARS = 200;
 export const MAX_NOTES_BYTES = 8 * 1024;
 export const MAX_CONTEXT_BYTES = 32 * 1024;
-export const MAX_RETIRED = 50;
 export const MAX_OPEN_SUGGESTIONS = 10;
 export const MAX_REASON_CHARS = 500;
 /** A dismissed suggestion isn't shown again, if identical, for this long. */
@@ -111,6 +110,13 @@ export const hasGoals = (file: GoalsFile) => file.goals.length > 0;
 
 /** All of a board's goals, stored, stay small: text only, like the rest of the board. */
 export const MAX_GOALS_BYTES = 256 * 1024;
+
+/** The goals stay within their size limit; a change that would pass it is refused, never trimmed. */
+export function assertGoalsSize(file: GoalsFile) {
+  if (new TextEncoder().encode(JSON.stringify(file)).length > MAX_GOALS_BYTES) {
+    throw new PlanbanValidationError("The board's goals are too large to keep. Shorten some notes or the context, or remove long retired goals' notes.");
+  }
+}
 
 /** Goals arriving from elsewhere (a board taken online): tidied, and checked as text only and within size. */
 export function checkedGoals(input: unknown): GoalsFile {
@@ -333,7 +339,8 @@ function applyChange(file: GoalsFile, change: GoalChange, stamp: Stamp): { goals
     case "retire": {
       const index = file.goals.findIndex((entry) => entry.id === change.goalId);
       const [goal] = file.goals.splice(index, 1) as [Goal];
-      file.retired = [{ ...goal, retiredAt: stamp.now }, ...file.retired].slice(0, MAX_RETIRED);
+      // Every retired goal stays restorable; the goals' overall size limit is what bounds the list.
+      file.retired = [{ ...goal, retiredAt: stamp.now }, ...file.retired];
       mark(file, `goal:${goal.id}:state`, stamp);
       return { goals: file, summary: `Goals: retired ${quoted(goal.statement)}` };
     }
@@ -386,8 +393,9 @@ export function decideSuggestion(fileInput: GoalsFile, input: { suggestionId: un
     return { goals: file, summary: `Goals: dismissed ${suggestion.by}'s suggestion to ${suggestion.summary}` };
   }
   if (input.decision !== "accept") throw new PlanbanValidationError("decision is accept or dismiss.");
-  // Checked against the goals as they are now: the goal it names may have been retired meanwhile.
-  const applied = applyChange(file, parseGoalChange(file, suggestion.change, true), { ...stamp, baseRevision: undefined });
+  // Checked against the goals as they are now (the goal it names may have been retired meanwhile),
+  // and like any edit against what the person read: a part changed since then is a clash.
+  const applied = applyChange(file, parseGoalChange(file, suggestion.change, true), stamp);
   return { goals: applied.goals, summary: `${applied.summary} (${suggestion.by}'s suggestion, accepted)` };
 }
 

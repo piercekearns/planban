@@ -24,7 +24,7 @@ import {
   protocolDir,
   roadmapPath,
 } from "./paths";
-import { appendLineDurably, atomicWriteFile, withBoardWriteLock } from "./persistence";
+import { appendLineDurably, atomicWriteFile, idempotencyFingerprint, runIdempotentBoardMutation, withBoardWriteLock } from "./persistence";
 import { buildAgentContext, PLANBAN_INSTALL_URL } from "./protocol";
 import { resolvePlanbanProjectDir } from "../../plugins/planban/scripts/project-dir.mjs";
 import { registerBoardFromState } from "./registry";
@@ -52,7 +52,7 @@ import type { PlanbanHistoryPayload } from "./types";
 import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
 import { checkIndexCard, checkIndexDocument, checkIndexText, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
 import { appName } from "./agentNames";
-import { addSuggestion, applyGoalEdit, decideSuggestion, emptyGoals, goalsBlock, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile, type GoalsPage } from "./goals";
+import { addSuggestion, applyGoalEdit, assertGoalsSize, decideSuggestion, emptyGoals, goalsBlock, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile, type GoalsPage } from "./goals";
 
 import { assertCompletionConfirmed,
   assertBaseRevision as assertRoadmapBaseRevision,
@@ -1249,20 +1249,56 @@ export async function getStatus(cwdInput: string) {
 // history entry, so live updates, edit clashes and retries work as for cards.
 
 const goalsPath = (planningRoot: string) => join(planningRoot, "goals.json");
+/**
+ * A change is written here first, stamped with the board revision it makes,
+ * then the board's revision and history, then it becomes goals.json. If
+ * anything stops in between, the stamp says whether the revision was
+ * committed: if so the change stands, if not it never happened.
+ */
+const nextGoalsPath = (planningRoot: string) => join(planningRoot, "goals.next.json");
+
+async function readGoalsAt(path: string): Promise<{ file: GoalsFile; revision?: number } | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { revision?: unknown };
+    return { file: normalizeGoals(parsed), ...(typeof parsed.revision === "number" ? { revision: parsed.revision } : {}) };
+  } catch {
+    throw new PlanbanValidationError(`This board's goals file is damaged (${path}). Restore it from a backup or move it aside to start the goals again.`);
+  }
+}
 
 /** A local board's goals as stored, for moving the board online; null when it has none. */
-export async function readLocalGoals(planningRoot: string): Promise<GoalsFile | null> {
-  const file = await readGoalsFile(planningRoot);
+export async function readLocalGoals(planningRoot: string, roadmapRevision?: number): Promise<GoalsFile | null> {
+  const file = await readGoalsFile(planningRoot, roadmapRevision ?? (await readRoadmapRevision(planningRoot)));
   return file.goals.length || file.retired.length || file.context || file.suggestions.length || file.dismissed.length ? file : null;
 }
 
-async function readGoalsFile(planningRoot: string): Promise<GoalsFile> {
-  try {
-    return normalizeGoals(JSON.parse(await readFile(goalsPath(planningRoot), "utf8")));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyGoals();
-    throw new PlanbanValidationError(`This board's goals file is damaged (${goalsPath(planningRoot)}). Restore it from a backup or move it aside to start the goals again.`);
+async function readRoadmapRevision(planningRoot: string): Promise<number> {
+  return (JSON.parse(await readFile(roadmapPath(planningRoot), "utf8")) as { revision?: number }).revision ?? 0;
+}
+
+/** The goals as of the board's committed revision (see nextGoalsPath). Never writes, so it is safe without the lock. */
+async function readGoalsFile(planningRoot: string, roadmapRevision: number): Promise<GoalsFile> {
+  const next = await readGoalsAt(nextGoalsPath(planningRoot));
+  if (next && next.revision !== undefined && next.revision <= roadmapRevision) return next.file;
+  return (await readGoalsAt(goalsPath(planningRoot)))?.file ?? emptyGoals();
+}
+
+/** Under the board lock: settles a change that stopped part way, one way or the other. */
+async function settleGoals(planningRoot: string, roadmapRevision: number) {
+  const next = await readGoalsAt(nextGoalsPath(planningRoot)).catch(() => null);
+  if (!next) {
+    await rm(nextGoalsPath(planningRoot), { force: true });
+    return;
   }
+  if (next.revision !== undefined && next.revision <= roadmapRevision) await rename(nextGoalsPath(planningRoot), goalsPath(planningRoot));
+  else await rm(nextGoalsPath(planningRoot), { force: true });
 }
 
 export interface GoalsResult {
@@ -1280,7 +1316,7 @@ export async function readGoals(input: { cwd: string }): Promise<GoalsResult> {
     return onlineRequest<GoalsResult>(online.storage.url, boardPath(online.storage.boardId, "/goals"));
   }
   const state = await loadState(input.cwd);
-  return { page: goalsPage(await readGoalsFile(state.planningRoot)), revision: state.roadmap.revision };
+  return { page: goalsPage(await readGoalsFile(state.planningRoot, state.roadmap.revision)), revision: state.roadmap.revision };
 }
 
 /** The short Goals block for agents' board reads, or null when the board has no goals. */
@@ -1293,17 +1329,33 @@ export async function readGoalsBlock(cwd: string): Promise<string | null> {
 async function changeLocalGoals(
   cwd: string,
   actor: PlanbanHistoryActor,
+  request: { op: string; input: unknown; idempotencyKey?: string | undefined },
   plan: (file: GoalsFile, stamp: { revision: number; now: string }) => { goals: GoalsFile | null; summary?: string; notAdded?: string; suggestion?: Record<string, unknown> },
 ): Promise<GoalsResult> {
-  return withRoadmapWriteLock(cwd, async () => {
-    const state = await loadState(cwd);
-    const file = await readGoalsFile(state.planningRoot);
-    const planned = plan(file, { revision: state.roadmap.revision + 1, now: nowIso() });
-    if (!planned.goals) return { page: goalsPage(file), revision: state.roadmap.revision, notAdded: planned.notAdded };
-    const roadmap = await saveRoadmap(state, state.roadmap, { actor, operation: "goals.edit", summary: planned.summary!, affectedCards: [] });
-    await atomicWriteFile(goalsPath(state.planningRoot), JSON.stringify(planned.goals, null, 2) + "\n");
-    return { page: goalsPage(planned.goals), revision: roadmap.revision, ...(planned.suggestion ? { suggestion: planned.suggestion } : {}) };
+  const { planningRoot } = await loadState(cwd);
+  // A retry with the same key after a lost reply returns the first answer and changes nothing again.
+  const { value } = await runIdempotentBoardMutation({
+    planningRoot, idempotencyKey: request.idempotencyKey, scope: `goals.${request.op}`, fingerprint: idempotencyFingerprint(request.input),
+    run: () => withRoadmapWriteLock(cwd, async () => {
+      const state = await loadState(cwd);
+      await settleGoals(state.planningRoot, state.roadmap.revision);
+      const file = await readGoalsFile(state.planningRoot, state.roadmap.revision);
+      const planned = plan(file, { revision: state.roadmap.revision + 1, now: nowIso() });
+      if (!planned.goals) return { page: goalsPage(file), revision: state.roadmap.revision, notAdded: planned.notAdded } as GoalsResult;
+      assertGoalsSize(planned.goals);
+      await atomicWriteFile(nextGoalsPath(state.planningRoot), JSON.stringify({ ...planned.goals, revision: state.roadmap.revision + 1 }, null, 2) + "\n");
+      let roadmap: PlanbanRoadmap;
+      try {
+        roadmap = await saveRoadmap(state, state.roadmap, { actor, operation: "goals.edit", summary: planned.summary!, affectedCards: [] });
+      } catch (error) {
+        await rm(nextGoalsPath(state.planningRoot), { force: true });
+        throw error;
+      }
+      await rename(nextGoalsPath(state.planningRoot), goalsPath(state.planningRoot));
+      return { page: goalsPage(planned.goals), revision: roadmap.revision, ...(planned.suggestion ? { suggestion: planned.suggestion } : {}) } as GoalsResult;
+    }),
   });
+  return value;
 }
 
 /** A person's change to the goals. Agents can't: they suggest (suggestGoalChange). */
@@ -1311,7 +1363,8 @@ export async function editGoals(input: { cwd: string; edit: unknown; baseRevisio
   if (input.actor === "agent") throw new PlanbanValidationError(PEOPLE_ONLY);
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "editGoals", input)).result;
-  return changeLocalGoals(input.cwd, "user", (file, stamp) => applyGoalEdit(file, input.edit, { ...stamp, baseRevision: input.baseRevision, by: "you" }));
+  return changeLocalGoals(input.cwd, "user", { op: "edit", input: { edit: input.edit, baseRevision: input.baseRevision }, idempotencyKey: input.idempotencyKey },
+    (file, stamp) => applyGoalEdit(file, input.edit, { ...stamp, baseRevision: input.baseRevision, by: "you" }));
 }
 
 /** A person accepts or dismisses an agent's suggestion. */
@@ -1319,7 +1372,8 @@ export async function decideGoalSuggestion(input: { cwd: string; suggestionId: s
   if (input.actor === "agent") throw new PlanbanValidationError(PEOPLE_ONLY);
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "decideGoalSuggestion", input)).result;
-  return changeLocalGoals(input.cwd, "user", (file, stamp) => decideSuggestion(file, input, { ...stamp, by: "you" }));
+  return changeLocalGoals(input.cwd, "user", { op: "decide", input: { suggestionId: input.suggestionId, decision: input.decision, baseRevision: input.baseRevision }, idempotencyKey: input.idempotencyKey },
+    (file, stamp) => decideSuggestion(file, input, { ...stamp, baseRevision: input.baseRevision, by: "you" }));
 }
 
 /** An agent suggests one change to the goals, with its reason, for the person to accept or dismiss. */
@@ -1327,7 +1381,7 @@ export async function suggestGoalChange(input: { cwd: string; change: unknown; r
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "suggestGoalChange", { ...input, actor: "agent" } as typeof input)).result;
   const by = appName(input.agentName);
-  return changeLocalGoals(input.cwd, "agent", (file, stamp) => {
+  return changeLocalGoals(input.cwd, "agent", { op: "suggest", input: { change: input.change, reason: input.reason }, idempotencyKey: input.idempotencyKey }, (file, stamp) => {
     const added = addSuggestion(file, input, { ...stamp, by, id: randomUUID() });
     return added.goals ? added : { goals: null, notAdded: added.notAdded };
   });

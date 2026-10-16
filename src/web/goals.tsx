@@ -118,9 +118,11 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
   const [page, setPage] = useState<GoalsPageData | null>(initial);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
+  // An open form remembers the revision and wording it opened with: its save is checked
+  // against what the person saw, so a live refresh meanwhile can't hide someone else's change.
+  const [editing, setEditing] = useState<{ id: string; revision: number; statement: string; notes: string } | null>(null);
+  const [contextBase, setContextBase] = useState<{ revision: number; context: string } | null>(null);
   const [adding, setAdding] = useState(false);
-  const [editingContext, setEditingContext] = useState(false);
   const [openNotes, setOpenNotes] = useState<Set<string>>(() => new Set(initial?.goals[0]?.notes && !phone ? [initial.goals[0].id] : []));
   const [retiredOpen, setRetiredOpen] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 3 } }));
@@ -128,27 +130,37 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
   const reload = async () => {
     const fresh = await request<GoalsPageData>(boardPath(boardId, "/goals")).catch(() => null);
     if (fresh) setPage(fresh);
+    return fresh;
   };
   useEffect(() => { if (!page) void reload(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (initial && (!page || initial.revision > page.revision)) setPage(initial); }, [initial]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Sends one change; true when it was saved. A refusal is shown and the page reads the goals again. */
-  const send = async (path: string, body: Record<string, unknown>) => {
+  const send = async (path: string, body: Record<string, unknown>, baseRevision?: number) => {
     if (!page) return false;
     setBusy(true);
     setError(null);
     try {
-      setPage(await request<GoalsPageData>(boardPath(boardId, path), { method: "POST", body: JSON.stringify({ ...body, baseRevision: page.revision }) }));
+      setPage(await request<GoalsPageData>(boardPath(boardId, path), { method: "POST", body: JSON.stringify({ ...body, baseRevision: baseRevision ?? page.revision }) }));
       return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Not saved.");
-      await reload();
+      // The message says what changed meanwhile; an open form now starts from that, keeping what was typed,
+      // so saving again is the person's deliberate choice rather than a repeat refusal.
+      const fresh = await reload();
+      if (fresh) {
+        setEditing((open) => {
+          const now = open && fresh.goals.find((goal) => goal.id === open.id);
+          return open && now ? { id: open.id, revision: fresh.revision, statement: now.statement, notes: now.notes } : open;
+        });
+        setContextBase((open) => (open ? { revision: fresh.revision, context: fresh.context } : open));
+      }
       return false;
     } finally {
       setBusy(false);
     }
   };
-  const edit = (change: Record<string, unknown>) => send("/goals", { edit: change });
+  const edit = (change: Record<string, unknown>, baseRevision?: number) => send("/goals", { edit: change }, baseRevision);
 
   const onDragEnd = (event: DragEndEvent) => {
     if (!page || !event.over || event.active.id === event.over.id) return;
@@ -203,16 +215,19 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
                       goal={goal}
                       viewOnly={viewOnly}
                       busy={busy}
-                      editing={editing === goal.id}
+                      editing={editing?.id === goal.id}
+                      base={editing?.id === goal.id ? editing : null}
                       notesOpen={openNotes.has(goal.id)}
                       onToggleNotes={() => toggleNotes(goal.id)}
-                      onEdit={() => { setEditing(goal.id); setAdding(false); }}
+                      onEdit={() => { setEditing({ id: goal.id, revision: page.revision, statement: goal.statement, notes: goal.notes }); setAdding(false); }}
                       onCancel={() => setEditing(null)}
                       onSave={async (statement, notes) => {
-                        if (statement === goal.statement && notes === goal.notes) { setEditing(null); return; }
-                        if (await edit({ kind: "reword", goalId: goal.id, ...(statement !== goal.statement ? { statement } : {}), ...(notes !== goal.notes ? { notes } : {}) })) setEditing(null);
+                        const base = editing!;
+                        // Only what the person changed from what they opened is sent.
+                        if (statement === base.statement && notes === base.notes) { setEditing(null); return; }
+                        if (await edit({ kind: "reword", goalId: goal.id, ...(statement !== base.statement ? { statement } : {}), ...(notes !== base.notes ? { notes } : {}) }, base.revision)) setEditing(null);
                       }}
-                      onRetire={async () => { if (await edit({ kind: "retire", goalId: goal.id })) setEditing(null); }}
+                      onRetire={async () => { if (await edit({ kind: "retire", goalId: goal.id }, editing!.revision)) setEditing(null); }}
                     />
                   ))}
                 </ol>
@@ -237,10 +252,13 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
           <section className="goals-shell" aria-label="Context">
             <div className="goals-section-head">
               <h2>Context</h2>
-              {!viewOnly && !editingContext ? <button className="icon-button" aria-label="Edit the context" onClick={() => setEditingContext(true)}><Pencil size={14} /></button> : null}
+              {!viewOnly && !contextBase ? <button className="icon-button" aria-label="Edit the context" onClick={() => setContextBase({ revision: page.revision, context: page.context })}><Pencil size={14} /></button> : null}
             </div>
-            {editingContext ? (
-              <ContextForm busy={busy} initial={page.context} onCancel={() => setEditingContext(false)} onSave={async (context) => { if (await edit({ kind: "context", context })) setEditingContext(false); }} />
+            {contextBase ? (
+              <ContextForm busy={busy} initial={contextBase.context} onCancel={() => setContextBase(null)} onSave={async (context) => {
+                if (context.trim() === contextBase.context.trim()) { setContextBase(null); return; }
+                if (await edit({ kind: "context", context }, contextBase.revision)) setContextBase(null);
+              }} />
             ) : page.context ? (
               <div className="goals-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{page.context}</ReactMarkdown></div>
             ) : (
@@ -272,8 +290,10 @@ export function GoalsPage({ boardId, boardTitle, viewOnly, phone, request, initi
   );
 }
 
-function GoalRow({ goal, viewOnly, busy, editing, notesOpen, onToggleNotes, onEdit, onCancel, onSave, onRetire }: {
+function GoalRow({ goal, base, viewOnly, busy, editing, notesOpen, onToggleNotes, onEdit, onCancel, onSave, onRetire }: {
   goal: PageGoal;
+  /** What the open form started from (the revision the person read). */
+  base: { statement: string; notes: string } | null;
   viewOnly: boolean;
   busy: boolean;
   editing: boolean;
@@ -295,7 +315,7 @@ function GoalRow({ goal, viewOnly, busy, editing, notesOpen, onToggleNotes, onEd
       )}
       <span className="goal-number">{goal.number}.</span>
       {editing ? (
-        <GoalForm busy={busy} initialStatement={goal.statement} initialNotes={goal.notes} submitLabel="Save" onCancel={onCancel} onSave={onSave} onRetire={onRetire} />
+        <GoalForm busy={busy} initialStatement={base?.statement ?? goal.statement} initialNotes={base?.notes ?? goal.notes} submitLabel="Save" onCancel={onCancel} onSave={onSave} onRetire={onRetire} />
       ) : (
         <>
           {viewOnly ? <span className="goal-statement">{goal.statement}</span> : (
@@ -324,6 +344,10 @@ function GoalForm({ busy, initialStatement, initialNotes, submitLabel, onCancel,
 }) {
   const [statement, setStatement] = useState(initialStatement);
   const [notes, setNotes] = useState(initialNotes);
+  // A field the person hasn't touched follows the version the form is based on, if that moves.
+  const touched = useRef({ statement: false, notes: false });
+  useEffect(() => { if (!touched.current.statement) setStatement(initialStatement); }, [initialStatement]);
+  useEffect(() => { if (!touched.current.notes) setNotes(initialNotes); }, [initialNotes]);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => input.current?.focus(), []);
   const save = () => { if (statement.trim()) void onSave(statement.trim(), notes.trim()); };
@@ -336,12 +360,12 @@ function GoalForm({ busy, initialStatement, initialNotes, submitLabel, onCancel,
         maxLength={200}
         placeholder="The goal, in one line"
         aria-label="Goal"
-        onChange={(event) => setStatement(event.target.value)}
+        onChange={(event) => { touched.current.statement = true; setStatement(event.target.value); }}
         onKeyDown={(event) => { if (event.key === "Escape") onCancel(); }}
       />
       <label className="goal-field-label">
         Notes
-        <textarea className="goal-field notes" value={notes} placeholder="Optional: what it means in practice" onChange={(event) => setNotes(event.target.value)} />
+        <textarea className="goal-field notes" value={notes} placeholder="Optional: what it means in practice" onChange={(event) => { touched.current.notes = true; setNotes(event.target.value); }} />
       </label>
       <div className="goal-edit-bar">
         <button type="submit" className="goals-btn sm primary" disabled={busy || !statement.trim()}>{submitLabel}</button>
@@ -354,9 +378,11 @@ function GoalForm({ busy, initialStatement, initialNotes, submitLabel, onCancel,
 
 function ContextForm({ busy, initial, onCancel, onSave }: { busy: boolean; initial: string; onCancel: () => void; onSave: (context: string) => Promise<void> }) {
   const [context, setContext] = useState(initial);
+  const touched = useRef(false);
+  useEffect(() => { if (!touched.current) setContext(initial); }, [initial]);
   return (
     <form className="goal-form context" onSubmit={(event) => { event.preventDefault(); void onSave(context); }}>
-      <textarea className="goal-field notes context" aria-label="Context" autoFocus value={context} onChange={(event) => setContext(event.target.value)} />
+      <textarea className="goal-field notes context" aria-label="Context" autoFocus value={context} onChange={(event) => { touched.current = true; setContext(event.target.value); }} />
       <div className="goal-edit-bar">
         <button type="submit" className="goals-btn sm primary" disabled={busy}>Save</button>
         <button type="button" className="goals-btn sm" onClick={onCancel}>Cancel</button>

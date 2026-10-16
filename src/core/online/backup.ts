@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { PlanbanDocPayload, PlanbanHistoryPayload, PlanbanRoadmap } from "../types";
-import { PlanbanConflictError } from "../boardOperations";
+import { PlanbanConflictError, PlanbanNotFoundError } from "../boardOperations";
 import { defaultPlanbanRoot } from "../paths";
 import { atomicWriteFile, withBoardWriteLock } from "../persistence";
 import { boardPath, onlineRequest } from "./client";
@@ -137,10 +137,14 @@ async function refreshOnce(url: string, boardId: string, root: string, options: 
         }
         await atomicWriteFile(join(staging, "roadmap.json"), JSON.stringify(roadmap, null, 2) + "\n");
         // The goals as they are now (they're small, and every change to them is a new revision).
-        // If they can't be read just now, the last copy of them stays.
-        const read = await onlineRequest<{ goals?: unknown }>(url, boardPath(boardId, "/goals")).catch(() => null);
-        if (read?.goals) await atomicWriteFile(join(staging, "goals.json"), JSON.stringify(read.goals, null, 2) + "\n");
-        else if (read) await rm(join(staging, "goals.json"), { force: true });
+        // If they can't be read, this refresh fails and the next one tries again: a backup is
+        // never saved at this revision without them. A service from before goals has none.
+        const read = await onlineRequest<{ goals?: unknown }>(url, boardPath(boardId, "/goals")).catch((error: unknown) => {
+          if (error instanceof PlanbanNotFoundError) return {} as { goals?: unknown };
+          throw error;
+        });
+        if (read.goals) await atomicWriteFile(join(staging, "goals.json"), JSON.stringify(read.goals, null, 2) + "\n");
+        else await rm(join(staging, "goals.json"), { force: true });
         const meta: BackupMeta = {
           version: 1, url: serviceUrl(url), boardId, revision: roadmap.revision,
           historyVersion: Math.max(complete ? previous!.historyVersion : 0, ...covered.map((entry) => entry.version)),
