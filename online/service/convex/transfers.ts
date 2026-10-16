@@ -6,7 +6,7 @@ import { internalMutation, type MutationCtx } from "./_generated/server";
 import { liveConnection } from "./model/access";
 import { fail } from "./model/errors";
 import { abortTransfer, beginTransfer, commitTransfer, createOnlineBoard, putPart, requireOwnConnection, type BeginInput, type PartInput } from "./model/transfer";
-import { unpackJson } from "./model/codec";
+import { packed, unpackJson } from "./model/codec";
 
 const CLEANUP_BATCH = 25;
 
@@ -37,10 +37,10 @@ export const part = internalMutation({
 
 export const commit = internalMutation({
   args: { connectionId: v.id("connections"), transferId: v.string(), partCount: v.number() },
-  handler: async (ctx, { connectionId, ...input }) => {
+  handler: async (ctx, { connectionId, ...input }) => packed(await (async () => {
     const connection = await liveConnection(ctx, connectionId);
     return commitTransfer(ctx, connection, input, attributionOf(connection));
-  },
+  })()),
 });
 
 export const abort = internalMutation({
@@ -58,14 +58,15 @@ export const abort = internalMutation({
 
 /** Small boards: begin, one part and commit in a single transaction. */
 export const importBundle = internalMutation({
-  args: { connectionId: v.id("connections"), transferId: v.string(), bundle: v.any() },
-  handler: async (ctx, { connectionId, transferId, bundle }) => {
+  args: { connectionId: v.id("connections"), transferId: v.string(), payload: v.bytes() },
+  handler: async (ctx, { connectionId, transferId, payload }) => packed(await (async () => {
+    const bundle = unpackJson<Record<string, any>>(payload);
     const connection = await liveConnection(ctx, connectionId);
     if (bundle?.format !== "planban-board-bundle" || bundle.version !== 1) fail("validation", "Expected a planban-board-bundle, version 1.");
     await beginTransfer(ctx, connection, { transferId, roadmap: bundle.roadmap, retention: bundle.retention, retiredIds: bundle.retiredIds, uid: bundle.uid, goals: bundle.goals });
     await putPart(ctx, connection, { transferId, seq: 0, docs: bundle.docs, history: bundle.history, historyDocs: bundle.historyDocs });
     return commitTransfer(ctx, connection, { transferId, partCount: 1 }, attributionOf(connection));
-  },
+  })()),
 });
 
 async function deleteSome(ctx: MutationCtx, table: "boardState" | "docs" | "history" | "historyPayloads" | "historyDocs" | "retiredIds" | "boardFingerprints" | "cardChanges" | "boardSizes" | "presence" | "unresolvedChanges", boardId: string, generation: number) {

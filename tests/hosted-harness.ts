@@ -53,6 +53,19 @@ function compare(a: unknown, b: unknown) {
   return (a as any) < (b as any) ? -1 : 1;
 }
 
+/** Convex's limits on values passed to and returned from functions (https://docs.convex.dev/production/state/limits). */
+export function checkConvexValue(value: unknown, where: string, depth = 0) {
+  if (depth > 64) throw new Error(`${where}: Convex values nest at most 64 levels`);
+  if (Array.isArray(value)) {
+    if (value.length > 8192) throw new Error(`${where}: Convex arrays hold at most 8192 items`);
+    for (const item of value) checkConvexValue(item, where, depth + 1);
+  } else if (value && typeof value === "object" && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) {
+    const keys = Object.keys(value);
+    if (keys.length > 1024) throw new Error(`${where}: Object has too many fields (${keys.length} > maximum number 1024)`);
+    for (const key of keys) checkConvexValue((value as Record<string, unknown>)[key], where, depth + 1);
+  }
+}
+
 export function memoryService() {
   const rows: any[] = [];
   const jobs: Array<{ name: string; args: unknown }> = [];
@@ -147,7 +160,12 @@ export function memoryService() {
   const call = async (ref: any, args: any) => {
     const fn = byName.get(getFunctionName(ref));
     if (!fn) throw new Error(`No handler for ${getFunctionName(ref)}`);
-    return fn._handler(ctx, args);
+    // As Convex does: arguments and results must be valid Convex values, so a board
+    // shaped beyond its limits fails here, in tests, rather than on a deployment.
+    checkConvexValue(args, `${getFunctionName(ref)} arguments`);
+    const result = await fn._handler(ctx, args);
+    checkConvexValue(result, `${getFunctionName(ref)} result`);
+    return result;
   };
   const actionCtx: any = {
     runQuery: call,

@@ -11,7 +11,7 @@ import type { ServiceErrorData } from "./model/errors";
 import { liveTokensConfigured, publicJwks, signLiveToken } from "./model/liveToken";
 import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
-import { packJson } from "./model/codec";
+import { packJson, unpacked } from "./model/codec";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
 import { webConfigResponse, authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
@@ -100,7 +100,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
         }),
       }));
     }
-    if (parts[2] === "commit" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.commit, { connectionId, transferId, partCount: Number(input.partCount) }));
+    if (parts[2] === "commit" && parts.length === 3) return json(unpacked(await ctx.runMutation(internal.transfers.commit, { connectionId, transferId, partCount: Number(input.partCount) })));
     if (parts[2] === "abort" && parts.length === 3) return json(await ctx.runMutation(internal.transfers.abort, { connectionId, transferId }));
   }
   if (parts[0] === "copy-check" && parts.length === 1 && method === "POST") {
@@ -178,19 +178,19 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     return json(await ctx.runMutation(internal.transfers.createBoard, { connectionId, title: String(input.title ?? "") }), 201);
   }
   if (parts[1] === "import" && parts.length === 2 && method === "POST") {
-    return json(await ctx.runMutation(internal.transfers.importBundle, { connectionId, transferId: crypto.randomUUID(), bundle: await body(request) }), 201);
+    return json(unpacked(await ctx.runMutation(internal.transfers.importBundle, { connectionId, transferId: crypto.randomUUID(), payload: packJson(await body(request)) })), 201);
   }
 
   const boardId = parts[1]!;
   const rest = parts.slice(2);
   if (rest.length === 0 && method === "GET") {
     const since = url.searchParams.get("since");
-    return json(await ctx.runQuery(internal.boards.getBoard, { connectionId, boardId, ...(since === null ? {} : { since: Number(since) }) }));
+    return json(unpacked(await ctx.runQuery(internal.boards.getBoard, { connectionId, boardId, ...(since === null ? {} : { since: Number(since) }) })));
   }
-  if (rest[0] === "export" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.boards.exportBoard, { connectionId, boardId }));
+  if (rest[0] === "export" && rest.length === 1 && method === "GET") return json(unpacked(await ctx.runQuery(internal.boards.exportBoard, { connectionId, boardId })));
   const transfer = url.searchParams.get("transferId");
   const bound = transfer === null ? {} : { transferId: transfer };
-  if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId, ...bound }));
+  if (rest[0] === "export" && rest[1] === "meta" && method === "GET") return json(unpacked(await ctx.runQuery(internal.boards.exportMeta, { connectionId, boardId, ...bound })));
   if (rest[0] === "export" && rest[1] === "docs" && method === "GET") {
     const atRevision = url.searchParams.get("revision");
     return json(await ctx.runQuery(internal.boards.exportDocs, {
@@ -199,10 +199,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     }));
   }
   if (rest[0] === "export" && rest[1] === "history" && method === "GET") {
-    return json(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound }));
+    return json(unpacked(await ctx.runQuery(internal.boards.exportHistory, { connectionId, boardId, after: Number(url.searchParams.get("after") ?? 0), limit: Number(url.searchParams.get("limit") ?? 8), ...bound })));
   }
   if (rest[0] === "history" && rest.length === 2 && method === "GET") {
-    return json(await ctx.runQuery(internal.boards.historyVersion, { connectionId, boardId, version: Number(rest[1]) }));
+    return json(unpacked(await ctx.runQuery(internal.boards.historyVersion, { connectionId, boardId, version: Number(rest[1]) })));
   }
   if (rest[0] === "history" && rest.length === 6 && rest[2] === "cards" && rest[4] === "docs" && method === "GET") {
     const kind = rest[5] === "spec" || rest[5] === "plan" ? rest[5] : null;
@@ -282,10 +282,10 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     const idempotencyKey = request.headers.get("Idempotency-Key");
     // Completing a card states that a person confirmed it, in the body as on MCP.
     const completionConfirmed: boolean = typeof input === "object" && input !== null && (input as { completionConfirmed?: unknown }).completionConfirmed === true;
-    const ran = await ctx.runMutation(internal.boards.run, {
-      connectionId, boardId, op: rest[1]!, input, ...(completionConfirmed ? { completionConfirmed } : {}),
+    const ran = unpacked<{ refused?: ServiceErrorData } & Record<string, unknown>>(await ctx.runMutation(internal.boards.run, {
+      connectionId, boardId, op: rest[1]!, payload: packJson(input), ...(completionConfirmed ? { completionConfirmed } : {}),
       ...(idempotencyKey ? { idempotencyKey, requestHash: await sha256Hex(`${boardId}\n${rest[1]}\n${raw}`) } : {}),
-    });
+    }));
     // A refused agent edit, kept as an unresolved change: a conflict, like any other.
     if ("refused" in ran && ran.refused) return json({ error: ran.refused }, 409);
     return json(ran);
@@ -299,7 +299,7 @@ export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenti
     const agentName = url.searchParams.get("agent") ?? undefined;
     return json(await ctx.runQuery(internal.boards.working, { connectionId, boardId, ...(cardId ? { cardId } : {}), ...(agentName ? { agentName } : {}) }));
   }
-  if (rest[0] === "goals" && rest.length === 1 && method === "GET") return json(await ctx.runQuery(internal.boards.goals, { connectionId, boardId }));
+  if (rest[0] === "goals" && rest.length === 1 && method === "GET") return json(unpacked(await ctx.runQuery(internal.boards.goals, { connectionId, boardId })));
   if (rest[0] === "unresolved" && rest.length === 1 && method === "GET") {
     const cardId = url.searchParams.get("card") ?? undefined;
     return json(await ctx.runQuery(internal.boards.unresolved, { connectionId, boardId, ...(cardId ? { cardId } : {}) }));

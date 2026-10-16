@@ -415,10 +415,15 @@ export async function saveRoadmap(
     summary: "Saved roadmap",
     affectedCards: roadmap.roadmapItems.map((item) => item.id),
   },
+  /** Set only by a goals change, whose own pending file this write commits. */
+  options: { goalsChange?: boolean } = {},
 ) {
   if (state.manifest.storage?.kind === "online") refuseOnline("Raw roadmap saving");
   await guardLocalCopy(state.planningRoot, state.cwd, state.manifest.repoId);
   return withBoardWriteLock(state.planningRoot, async () => {
+  // A goals change that stopped part way is settled before any other write moves the
+  // board on, while its history entry is certainly still there to say whether it happened.
+  if (!options.goalsChange) await settleGoals(state.planningRoot, await readRoadmapRevision(state.planningRoot).catch(() => state.roadmap.revision));
   assertCommittable(roadmap);
   await assertIndexWrite(state, roadmap);
   if (history !== false) await ensureHistoryBaseline(state);
@@ -790,6 +795,7 @@ export async function exportFlatVersion1(input: {
       specDoc: item.specDoc ? exportedDocPath(item.id, "spec") : null,
       planDoc: item.planDoc ? exportedDocPath(item.id, "plan") : null,
     }));
+    await settleGoals(state.planningRoot, state.roadmap.revision);
     const historyEntry = await recordHistoryVersion(state, state.roadmap, {
       actor: input.actor ?? "user",
       operation: "roadmap.export.flat-v1.snapshot",
@@ -978,6 +984,8 @@ export async function writeDoc(input: {
   });
   if (input.history !== false) {
     const latestState = await loadState(input.cwd);
+    // Like every write: an unfinished goals change is settled before history moves on.
+    await settleGoals(latestState.planningRoot, latestState.roadmap.revision);
     await recordHistoryVersion(latestState, latestState.roadmap, input.history ?? { ...planned.history, ...(input.actor ? { actor: input.actor } : {}) });
   }
   return { cardId: input.cardId, kind: input.kind, path, exists: true, markdown: input.markdown, mtimeMs: stats.mtimeMs };
@@ -1357,7 +1365,7 @@ async function changeLocalGoals(
       await atomicWriteFile(nextGoalsPath(state.planningRoot), JSON.stringify({ ...planned.goals, revision: state.roadmap.revision + 1 }, null, 2) + "\n");
       let roadmap: PlanbanRoadmap;
       try {
-        roadmap = await saveRoadmap(state, state.roadmap, { actor, operation: "goals.edit", summary: planned.summary!, affectedCards: [] });
+        roadmap = await saveRoadmap(state, state.roadmap, { actor, operation: "goals.edit", summary: planned.summary!, affectedCards: [] }, { goalsChange: true });
       } catch (error) {
         await rm(nextGoalsPath(state.planningRoot), { force: true });
         throw error;

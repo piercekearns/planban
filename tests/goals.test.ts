@@ -337,3 +337,61 @@ test("a backup never pairs goals from a later revision with an older board", asy
     await bridge.close();
   }
 });
+
+test("suggested goals 1 to 4 on an empty board, accepted in order, end up in that order", () => {
+  let file: GoalsFile = emptyGoals();
+  const names = ["Win clubs", "Onboard and deliver without the owner", "Keep clubs for life", "Faster building"];
+  names.forEach((statement, i) => {
+    const added = addSuggestion(file, { change: { kind: "add", statement, position: i + 1 }, reason: "From the agreed plan." }, { revision: i + 2, by: "Claude", now: "2026-10-16T00:00:00.000Z", id: `s${i}` });
+    file = added.goals!;
+  });
+  names.forEach((_, i) => { file = decideSuggestion(file, { suggestionId: `s${i}`, decision: "accept" }, { revision: 10 + i, by: "you", now: "2026-10-16T00:00:00.000Z" }).goals; });
+  assert.deepEqual(file.goals.map((goal) => goal.statement), names);
+});
+
+// ---- Review round 3 (16 October 2026) ----
+
+test("a committed goals change still waiting to be renamed survives later edits and history pruning", async () => {
+  await storage.editGoals({ cwd, edit: { kind: "context", context: "Old context" }, baseRevision: await revision() });
+  const state = await storage.loadState(cwd);
+  const path = join(state.planningRoot, "goals.json");
+  const old = await readFile(path, "utf8");
+  await storage.editGoals({ cwd, edit: { kind: "context", context: "Committed new context" }, baseRevision: await revision() });
+  // The disk as a crash between committing the revision and the rename leaves it.
+  const { rename: move, writeFile } = await import("node:fs/promises");
+  await move(path, join(state.planningRoot, "goals.next.json"));
+  await writeFile(path, old);
+  assert.equal((await storage.readGoals({ cwd })).page.context, "Committed new context");
+  for (let i = 0; i < 102; i += 1) await storage.updateCard({ cwd, cardId: "alpha", summary: `Edit ${i}`, baseRevision: await revision() });
+  assert.equal((await storage.readGoals({ cwd })).page.context, "Committed new context");
+});
+
+test("board content of any shape goes online and comes back: over 1,024 metadata fields, and over 1,024 changed goal fields", async () => {
+  const bridge = await serviceBridge([["ana", "Ana"]]);
+  try {
+    const wide = Object.fromEntries(Array.from({ length: 1_100 }, (_, i) => [`field${i}`, i]));
+    await storage.updateCard({ cwd, cardId: "alpha", metadata: wide, baseRevision: await revision() });
+    await storage.updateCard({ cwd, cardId: "alpha", metadata: { narrow: true }, baseRevision: await revision() });
+    await onlineLogin(bridge.url, { devUser: "ana" });
+    await takeOnline(bridge.url, cwd);
+    // An edit with that shape online, and reads of the board and its history.
+    await storage.updateCard({ cwd, cardId: "alpha", metadata: wide, baseRevision: await revision() });
+    assert.equal(Object.keys((await storage.loadState(cwd)).roadmap.roadmapItems[0]!.metadata!).length, 1_100);
+    const history = await storage.historyPayload(cwd);
+    assert.ok(history.entries.length > 0);
+    // Goals whose record of changed fields passes 1,024 entries.
+    for (let i = 0; i < 345; i += 1) {
+      await edit({ kind: "add", statement: `Goal ${i}` });
+      const id = (await storage.readGoals({ cwd })).page.goals.at(-1)!.id;
+      await edit({ kind: "reword", goalId: id, statement: `Goal ${i} reworded`, notes: "Note." });
+      await edit({ kind: "retire", goalId: id });
+    }
+    assert.ok((await storage.readGoals({ cwd })).page.retired.length >= 345);
+    await refreshBackup(bridge.url, "revival", { force: true });
+    await takeLocal(cwd);
+    assert.equal(Object.keys((await storage.loadState(cwd)).roadmap.roadmapItems[0]!.metadata!).length, 1_100);
+    assert.ok((await storage.readGoals({ cwd })).page.retired.length >= 345);
+  } finally {
+    await bridge.close();
+  }
+});

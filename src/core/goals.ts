@@ -192,9 +192,11 @@ export function parseGoalChange(file: GoalsFile, input: unknown, forAgent = fals
     if (!Number.isInteger(n) || n < 1) throw new PlanbanValidationError("position is a goal number: 1 for the top.");
     return Math.min(n, max);
   };
+  // Where an added goal goes is kept as asked and placed when it is applied: suggestions for
+  // goals 1 to 4 on an empty board, accepted in order, end up as goals 1 to 4.
   if (kind === "add") {
     const notes = raw.notes === undefined ? undefined : notesText(raw.notes, "The goal's notes");
-    return { kind, statement: oneLine(raw.statement, "A goal"), ...(notes ? { notes } : {}), ...(raw.position !== undefined ? { position: position(raw.position, file.goals.length + 1) } : {}) };
+    return { kind, statement: oneLine(raw.statement, "A goal"), ...(notes ? { notes } : {}), ...(raw.position !== undefined ? { position: position(raw.position, MAX_GOALS) } : {}) };
   }
   if (kind === "reword") {
     const goal = findGoal(file, raw.goalId ?? raw.goal);

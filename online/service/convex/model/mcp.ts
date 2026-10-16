@@ -16,6 +16,7 @@ import { emptyGoals, goalsBlock, goalsPageText, GOALS_GUIDANCE, type GoalsPage }
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { sha256Hex } from "./auth";
+import { packJson, unpacked } from "./codec";
 import type { ServiceErrorData } from "./errors";
 
 const MODERN_VERSION = "2026-07-28";
@@ -386,7 +387,7 @@ export class McpService {
   }
 
   async getBoard(boardId: string): Promise<PlanbanRoadmap> {
-    const board = await this.call(() => this.ctx.runQuery(internal.boards.getBoard, { connectionId: this.connectionId, boardId }));
+    const board = unpacked(await this.call(() => this.ctx.runQuery(internal.boards.getBoard, { connectionId: this.connectionId, boardId })));
     return (board as { roadmap: PlanbanRoadmap }).roadmap;
   }
 
@@ -395,8 +396,8 @@ export class McpService {
   }
 
 
-  goals(boardId: string): Promise<{ page: GoalsPage; revision: number }> {
-    return this.call(() => this.ctx.runQuery(internal.boards.goals, { connectionId: this.connectionId, boardId }));
+  async goals(boardId: string): Promise<{ page: GoalsPage; revision: number }> {
+    return unpacked(await this.call(() => this.ctx.runQuery(internal.boards.goals, { connectionId: this.connectionId, boardId })));
   }
 
   history(boardId: string): Promise<PlanbanHistoryPayload> {
@@ -418,10 +419,10 @@ export class McpService {
 
   async run(boardId: string, op: string, input: Record<string, unknown>, completionConfirmed: boolean, idempotencyKey?: string) {
     const requestHash = idempotencyKey ? await sha256Hex(`${boardId}\n${op}\n${JSON.stringify(input)}\n${completionConfirmed}`) : undefined;
-    const ran = await this.call(() => this.ctx.runMutation(internal.boards.run, {
-      connectionId: this.connectionId, boardId, op, input, completionConfirmed,
+    const ran = unpacked<{ roadmap: PlanbanRoadmap; result: unknown; replayed?: boolean; originalRevision?: number } | { refused: ServiceErrorData }>(await this.call(() => this.ctx.runMutation(internal.boards.run, {
+      connectionId: this.connectionId, boardId, op, payload: packJson(input), completionConfirmed,
       ...(idempotencyKey ? { idempotencyKey, requestHash } : {}),
-    })) as { roadmap: PlanbanRoadmap; result: unknown; replayed?: boolean; originalRevision?: number } | { refused: ServiceErrorData };
+    })));
     // A refused agent edit, kept as an unresolved change, is a tool error like any conflict.
     if ("refused" in ran) throw new ToolError(`conflict: ${ran.refused.message}`, ran.refused);
     return ran;

@@ -30,7 +30,7 @@ import type { Doc } from "./_generated/dataModel";
 import { addSuggestion, applyGoalEdit, assertGoalsSize, decideSuggestion, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile } from "../../../src/core/goals";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { asAgent, boardAccess, liveConnection, reaches, refusalFor, type BoardAccess } from "./model/access";
-import { packJson, packText, unpackJson, unpackText } from "./model/codec";
+import { packed, packJson, packText, unpackJson, unpackText } from "./model/codec";
 import { asServiceError, fail, type ServiceErrorData } from "./model/errors";
 import { checkCards, checkDocuments } from "./model/indexRules";
 import { addStored, chargeWrite, sizeOf } from "./model/limits";
@@ -357,12 +357,12 @@ async function readableBoard(ctx: Parameters<typeof boardAccess>[0], connectionI
 /** The board. With `since` equal to the current revision, returns only the revision: no roadmap is read. */
 export const getBoard = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string(), since: v.optional(v.number()) },
-  handler: async (ctx, { connectionId, boardId, since }) => {
+  handler: async (ctx, { connectionId, boardId, since }) => packed(await (async () => {
     const { board, role } = await readableBoard(ctx, connectionId, boardId);
     if (since !== undefined && since === board.revision) return { unchanged: true as const, revision: board.revision, authority: board.authority };
     // The role lets the web page show a viewer a board they can read but not change.
     return { roadmap: await currentRoadmap(ctx, live(board)), authority: board.authority, role };
-  },
+  })()),
 });
 
 /** A single small row: what live updates subscribe to. */
@@ -394,12 +394,12 @@ async function goalsOf(ctx: QueryCtx, at: BoardRows): Promise<GoalsFile> {
 /** The board's Goals page, for people and agents; the stored goals too, for backups. */
 export const goals = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string() },
-  handler: async (ctx, { connectionId, boardId }) => {
+  handler: async (ctx, { connectionId, boardId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     const file = await goalsOf(ctx, live(board));
     const stored = file.goals.length || file.retired.length || file.context || file.suggestions.length || file.dismissed.length;
     return { page: goalsPage(file), revision: board.revision, ...(stored ? { goals: file } : {}) };
-  },
+  })()),
 });
 
 export const unresolved = internalQuery({
@@ -464,12 +464,12 @@ async function historyDocAt(ctx: Parameters<typeof currentRoadmap>[0], at: Board
 /** The board as it stood at a history version, for reading. */
 export const historyVersion = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string(), version: v.number() },
-  handler: async (ctx, { connectionId, boardId, version }) => {
+  handler: async (ctx, { connectionId, boardId, version }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     const roadmap = await roadmapAtVersion(ctx, live(board), version);
     if (!roadmap) fail("not_found", `History version not found: v${version}`);
     return { roadmap };
-  },
+  })()),
 });
 
 export const historyDoc = internalQuery({
@@ -495,7 +495,7 @@ async function allDocs(ctx: Parameters<typeof currentRoadmap>[0], at: BoardRows,
 /** The whole board as one bundle. Large boards use the paged export below. */
 export const exportBoard = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string() },
-  handler: async (ctx, { connectionId, boardId }): Promise<BoardBundle> => {
+  handler: async (ctx, { connectionId, boardId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     const at = live(board);
     const roadmap = await currentRoadmap(ctx, at);
@@ -510,7 +510,7 @@ export const exportBoard = internalQuery({
       ...(board.retention === undefined ? {} : { retention: board.retention }),
       ...await storedGoals(ctx, at),
     };
-  },
+  })()),
 });
 
 async function storedGoals(ctx: QueryCtx, at: BoardRows): Promise<{ goals?: GoalsFile }> {
@@ -521,7 +521,7 @@ async function storedGoals(ctx: QueryCtx, at: BoardRows): Promise<{ goals?: Goal
 /** Paged export, first page: the roadmap, retention, retired ids and the list of history versions. */
 export const exportMeta = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string(), transferId: v.optional(v.string()) },
-  handler: async (ctx, { connectionId, boardId, transferId }) => {
+  handler: async (ctx, { connectionId, boardId, transferId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     requireLocalTransfer(board, transferId);
     const at = live(board);
@@ -534,7 +534,7 @@ export const exportMeta = internalQuery({
       ...(board.uid ? { uid: board.uid } : {}),
       ...await storedGoals(ctx, at),
     };
-  },
+  })()),
 });
 
 /**
@@ -575,7 +575,7 @@ export const exportDocs = internalQuery({
 /** Paged export: history versions after `after`, each with its roadmap and document bodies. */
 export const exportHistory = internalQuery({
   args: { connectionId: v.id("connections"), boardId: v.string(), after: v.number(), limit: v.number(), transferId: v.optional(v.string()) },
-  handler: async (ctx, { connectionId, boardId, after, limit, transferId }) => {
+  handler: async (ctx, { connectionId, boardId, after, limit, transferId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     requireLocalTransfer(board, transferId);
     const at = live(board);
@@ -597,7 +597,7 @@ export const exportHistory = internalQuery({
       bytes += size;
     }
     return { history, historyDocs };
-  },
+  })()),
 });
 
 // ---- writes -------------------------------------------------------------
@@ -703,12 +703,14 @@ export const run = internalMutation({
     connectionId: v.id("connections"),
     boardId: v.string(),
     op: v.string(),
-    input: v.any(),
+    /** The operation's input, packed (see packed() in model/codec.ts). */
+    payload: v.bytes(),
     completionConfirmed: v.optional(v.boolean()),
     idempotencyKey: v.optional(v.string()),
     requestHash: v.optional(v.string()),
   },
-  handler: async (ctx, { connectionId, boardId, op, input: rawInput, completionConfirmed, idempotencyKey, requestHash }) => {
+  handler: async (ctx, { connectionId, boardId, op, payload, completionConfirmed, idempotencyKey, requestHash }) => packed(await (async () => {
+    const rawInput = unpackJson<unknown>(payload);
     const access = await readableBoard(ctx, connectionId, boardId);
     const at = live(access.board);
     // A retry of an edit that already happened returns its original result.
@@ -897,7 +899,7 @@ export const run = internalMutation({
       });
     }
     return { roadmap: outcome.committed, result: outcome.result };
-  },
+  })()),
 });
 
 /** The cards an edit worked on: the card it names, or the ones it created. */
