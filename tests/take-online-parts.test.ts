@@ -78,3 +78,25 @@ test("a history version holding more documents than one response comes back over
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+test("the whole-board export refuses, pointing to the paged export, when history makes it too large even after the board shrank", async () => {
+  const { memoryService } = await import("./hosted-harness");
+  const boards = await import("../online/service/convex/boards");
+  const transfers = await import("../online/service/convex/transfers");
+  const { packJson, unpacked } = await import("../online/service/convex/model/codec");
+  const { createEmptyRoadmap, planCreateCard } = await import("../src/core/boardOperations");
+  const svc = memoryService();
+  const { connectionId } = await svc.signIn("owner");
+  const now = new Date().toISOString();
+  const first = planCreateCard(createEmptyRoadmap({ repoId: "shrunk", title: "Shrunk", now }), { title: "Card" }, { now, isIdReserved: () => false }).roadmap;
+  const roadmap = { ...first, roadmapItems: Array.from({ length: 7 }, (_, i) => ({ ...first.roadmapItems[0]!, id: `card-${i}`, title: `Card ${i}`, priority: i + 1, boardRank: i + 1 })) };
+  await (transfers.begin as any)._handler(svc.ctx, { connectionId, transferId: "shrunk-board-1", payload: packJson({ roadmap }) });
+  await (transfers.commit as any)._handler(svc.ctx, { connectionId, transferId: "shrunk-board-1", partCount: 0 });
+  let seed = 12345;
+  const word = () => Array.from({ length: 6 }, () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return String.fromCharCode(97 + (seed % 26)); }).join("");
+  const run = async (input: Record<string, unknown>) => unpacked<any>(await (boards.run as any)._handler(svc.ctx, { connectionId, boardId: "shrunk", op: "updateCard", payload: packJson({ ...input, baseRevision: svc.rows.find((row: any) => row._table === "boards").revision }) }));
+  for (let i = 0; i < 7; i += 1) await run({ cardId: `card-${i}`, summary: Array.from({ length: 15_000 }, word).join(" ") });
+  for (let i = 0; i < 50; i += 1) await run({ cardId: "card-0", title: `Renamed ${i}` });
+  for (let i = 0; i < 7; i += 1) await run({ cardId: `card-${i}`, summary: "Small now" });
+  await assert.rejects((boards.exportBoard as any)._handler(svc.ctx, { connectionId, boardId: "shrunk" }), /too large to export in one response\. Use the paged export/);
+});

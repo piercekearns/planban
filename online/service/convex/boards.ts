@@ -498,26 +498,26 @@ export const exportBoard = internalQuery({
   handler: async (ctx, { connectionId, boardId }) => packed(await (async () => {
     const { board } = await readableBoard(ctx, connectionId, boardId);
     const at = live(board);
-    // One response holds at most 16 MiB. History unpacks to a whole board per version, so the
-    // estimate is the board's size for every version plus what is stored; past it, use the paged export.
+    const tooLarge = () => fail("validation", "This board is too large to export in one response. Use the paged export: /export/meta, then /export/docs and /export/history (Planban's own export does this).");
+    // What is stored is read whole: past the limit, refuse before reading it.
     const stored = (await ctx.db.query("boardSizes").withIndex("by_board_generation", (q) => q.eq("boardId", at.boardId).eq("generation", at.generation)).unique())?.bytes ?? 0;
+    if (stored > WHOLE_EXPORT_BYTES) tooLarge();
     const roadmap = await currentRoadmap(ctx, at);
-    // The highest version number: at least the number kept, so the estimate errs on the safe side.
-    const versions = board.historyVersion ?? 0;
-    if (stored + utf8Bytes(JSON.stringify(roadmap)) * (versions + 1) > WHOLE_EXPORT_BYTES) {
-      fail("validation", "This board is too large to export in one response. Use the paged export: /export/meta, then /export/docs and /export/history (Planban's own export does this).");
-    }
     const history = await historyPage(ctx, at, 0, 100_000);
     const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
     for await (const row of ctx.db.query("historyDocs").withIndex("by_board_version", (q) => q.eq("boardId", boardId).eq("generation", board.generation))) {
       historyDocs.push({ version: row.version, cardId: row.cardId, kind: row.kind, markdown: unpackText(row.markdown) });
     }
-    return {
+    const bundle = {
       format: "planban-board-bundle", version: 1, roadmap, docs: await allDocs(ctx, at, roadmap), history, historyDocs,
       retiredIds: [...await retiredIds(ctx, at)],
       ...(board.retention === undefined ? {} : { retention: board.retention }),
       ...await storedGoals(ctx, at),
     };
+    // History unpacks to a whole board per version, which can far exceed what is stored:
+    // measured as assembled (the packed response is smaller still), so it never fails at the limit instead.
+    if (utf8Bytes(JSON.stringify(bundle)) > WHOLE_EXPORT_BYTES) tooLarge();
+    return bundle;
   })()),
 });
 
