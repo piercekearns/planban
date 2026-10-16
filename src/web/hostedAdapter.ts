@@ -304,6 +304,30 @@ export function createHostedAdapter(options: HostedAdapterOptions) {
       },
     },
 
+    // Goals: the page reads them, and people change them or decide an agent's suggestion.
+    {
+      method: "GET", pattern: ["boards", ":board", "goals"], handle: async ({ board }, request) => {
+        const goals = await get<{ page: Record<string, unknown>; revision: number }>(serviceBoard(board!, "/goals"), request);
+        return goals.ok ? reply({ ...goals.value.page, revision: goals.value.revision }) : goals.reply;
+      },
+    },
+    {
+      method: "POST", pattern: ["boards", ":board", "goals"], handle: async ({ board }, request) => {
+        const outcome = await op(board!, "editGoals", { edit: request.body.edit, baseRevision: request.body.baseRevision }, request);
+        if (!outcome.ok) return outcome.reply;
+        const result = outcome.value.result as { page: Record<string, unknown>; revision: number };
+        return reply({ ...result.page, revision: result.revision });
+      },
+    },
+    {
+      method: "POST", pattern: ["boards", ":board", "goals", "suggestions", ":suggestion"], handle: async ({ board, suggestion }, request) => {
+        const outcome = await op(board!, "decideGoalSuggestion", { suggestionId: suggestion, decision: request.body.decision, baseRevision: request.body.baseRevision }, request);
+        if (!outcome.ok) return outcome.reply;
+        const result = outcome.value.result as { page: Record<string, unknown>; revision: number };
+        return reply({ ...result.page, revision: result.revision });
+      },
+    },
+
     // History: the list, a version as page state, and an old Spec or Plan.
     {
       method: "GET", pattern: ["boards", ":board", "history"], handle: async ({ board }, request) => {

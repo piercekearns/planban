@@ -24,7 +24,11 @@ import {
   exportFlatVersion1,
   reconstructHierarchy,
   readManifest,
+  readGoals,
+  readGoalsBlock,
+  suggestGoalChange,
 } from "./core/storage";
+import { goalsPageText } from "./core/goals";
 import { PLANBAN_STATUSES, type PlanbanStatus } from "./core/types";
 import { queryWorkItems, workItemQueryFromSearchParams } from "./core/workItemQuery";
 import { friendlyPath } from "./core/indexCheck";
@@ -258,7 +262,10 @@ program
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (options) => {
-    print(await getStatus(cwdOption(options.cwd)), options);
+    const status = await getStatus(cwdOption(options.cwd));
+    // The goal statements only, when the board has goals.
+    const goals = status.initialized ? await readGoalsBlock(status.cwd) : null;
+    print({ ...status, ...(goals ? { goals } : {}) }, options);
   });
 
 program
@@ -710,6 +717,36 @@ program
   .option("--cwd <path>", "project directory")
   .option("-o, --output <format>", "output format")
   .action(async (changeId, options) => print(await dropChange({ cwd: cwdOption(options.cwd), changeId, reason: options.reason, baseRevision: options.baseRevision, actor: "agent", idempotencyKey: options.idempotencyKey }), options));
+
+program
+  .command("goals")
+  .description("the board's Goals page: goals in order with notes, context, suggestions waiting and recently dismissed, retired goals")
+  .option("--cwd <path>", "project directory")
+  .option("-o, --output <format>", "output format")
+  .action(async (options) => {
+    const result = await readGoals({ cwd: cwdOption(options.cwd) });
+    print(options.output === "json" ? { ...result.page, revision: result.revision } : goalsPageText(result.page), options);
+  });
+
+program
+  .command("suggest-goal-change")
+  .description("suggest one change to the goals, with the evidence, for the person to accept or dismiss; only people change goals")
+  .requiredOption("--kind <kind>", "add, reword, reorder or retire")
+  .option("--goal <goal>", "reword, reorder, retire: the goal's number or id")
+  .option("--statement <text>", "add, reword: the goal in one line")
+  .option("--notes <text>", "add, reword: optional notes")
+  .option("--position <n>", "add, reorder: where it goes, 1 for the top")
+  .requiredOption("--reason <reason>", "why, with evidence the person can check")
+  .option("--idempotency-key <key>", "reuse only to retry the same suggestion after a lost reply")
+  .option("--cwd <path>", "project directory")
+  .option("-o, --output <format>", "output format")
+  .action(async (options) => {
+    const result = await suggestGoalChange({
+      cwd: cwdOption(options.cwd), reason: options.reason, agentName: process.env.PLANBAN_AGENT_NAME, idempotencyKey: options.idempotencyKey,
+      change: { kind: options.kind, goal: options.goal, statement: options.statement, notes: options.notes, position: options.position },
+    });
+    print(options.output === "json" ? result : result.notAdded ?? `Suggested to ${result.page.suggestions.at(-1)?.summary}. It waits at the top of the Goals page for the person to accept or dismiss.`, options);
+  });
 
 program
   .command("read-doc")

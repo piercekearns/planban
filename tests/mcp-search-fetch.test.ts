@@ -11,6 +11,7 @@ const service: any = {
   listBoards: async () => [{ boardId: "deadleg", title: "Deadleg" }],
   getBoard: async () => roadmap,
   readDoc: async () => ({ markdown: "## Purpose\nOne supplier for 300 units." }),
+  goals: async () => ({ page: { goals: [], context: "", retired: [], suggestions: [], recentlyDismissed: [] }, revision: 3 }),
 };
 const call = async (name: string, args: Record<string, unknown>) => {
   const response = await handleMcp(new Request("https://app.planban.example/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) }), service, "https://app.planban.example");

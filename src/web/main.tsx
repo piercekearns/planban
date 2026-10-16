@@ -43,6 +43,7 @@ import {
   X,
   Settings,
   Link2,
+  Target,
 } from "lucide-react";
 import {
   closestCorners,
@@ -121,6 +122,7 @@ import { liveRefreshDecision } from "./liveSync";
 import { capabilities } from "./capabilities";
 import { Dropdown } from "./Dropdown";
 import { useKeyboardInset, usePhoneLayout } from "./phoneLayout";
+import { GoalsPage, GoalsStrip, useGoals } from "./goals";
 import { latestRequestGate } from "./latestRequest";
 import { AccountMenu, ApprovePage, HostedDashboard, InvitePage, JoinedNote, SignInPage, webScreen } from "./hostedScreens";
 import { Wordmark } from "./Wordmark";
@@ -1901,6 +1903,7 @@ function BoardPicker({
 }
 
 function BoardMoreMenu({
+  onOpenGoals,
   onOpenSettings,
   onOpenConnections,
   webAddress,
@@ -1911,6 +1914,7 @@ function BoardMoreMenu({
   showArchived,
   onToggleArchived,
 }: {
+  onOpenGoals?: () => void;
   onOpenSettings?: () => void;
   onOpenConnections?: () => void;
   /** An online board's address on the web page, for the installed app's "Open on the web". */
@@ -1941,6 +1945,7 @@ function BoardMoreMenu({
       </TooltipButton>
       {open ? (
         <div className="board-more-popover" role="menu">
+          {onOpenGoals ? <button role="menuitem" onClick={() => choose(onOpenGoals)}><Target size={14} /><span>Goals</span></button> : null}
           {onOpenSettings ? <button role="menuitem" onClick={() => choose(onOpenSettings)}><Settings size={14} /><span>Board settings</span></button> : null}
           {onOpenConnections ? <button role="menuitem" onClick={() => choose(onOpenConnections)}><Link2 size={14} /><span>Your connections</span></button> : null}
           {webAddress ? <button role="menuitem" onClick={() => choose(() => { window.open(webAddress, "_blank", "noopener,noreferrer"); })}><ExternalLink size={14} /><span>Open on the web</span></button> : null}
@@ -4992,6 +4997,17 @@ function BoardView({
   const isPreviewing = preview !== null;
   const boardKind = boards.find((board) => board.repoId === boardId)?.kind;
   const isDemoBoard = boardKind === "demo";
+  // The board's goals (owner decisions, 16 October 2026): read again with each revision; "#goals" opens their page.
+  const [goals] = useGoals(boardId, state.roadmap.revision, api);
+  const [goalsOpen, setGoalsOpen] = useState(() => window.location.hash === "#goals");
+  const openGoals = () => {
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}#goals`);
+    setGoalsOpen(true);
+  };
+  const closeGoals = () => {
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+    setGoalsOpen(false);
+  };
   const online = useOnlineStatus(isDemoBoard ? null : boardId, state.roadmap.revision);
   const boardPeople = useBoardPeople(isDemoBoard ? null : boardId, online.status?.location === "online", `${state.roadmap.revision}:${online.status?.location}`);
   const isActivityLab = activityLabIsEnabled(boardId, boardKind, window.location.search);
@@ -5752,6 +5768,20 @@ function BoardView({
     }
   }
 
+  if (goalsOpen && !isDemoBoard) {
+    return (
+      <GoalsPage
+        boardId={boardId}
+        boardTitle={state.roadmap.project.title}
+        viewOnly={viewOnly}
+        phone={phone}
+        request={api}
+        initial={goals}
+        onBack={closeGoals}
+      />
+    );
+  }
+
   if (selectedItem) {
     return (
       <BoardPeopleContext.Provider value={boardPeople.people}>
@@ -5841,6 +5871,7 @@ function BoardView({
               {projection === "main" ? <ListTree size={15} /> : <FolderTree size={15} />}
             </TooltipButton>
             <BoardMoreMenu
+              {...(!isDemoBoard ? { onOpenGoals: openGoals } : {})}
               {...(!isDemoBoard && online.status ? { onOpenSettings: () => setSettingsOpen(true) } : {})}
               {...(!isDemoBoard && online.status?.signedIn.length ? { onOpenConnections: () => setOnlineScreen("connections") } : {})}
               {...(!capabilities.hosted && online.status?.location === "online" && online.status.url && online.status.boardId ? { webAddress: boardWebAddress(online.status.url, online.status.boardId) } : {})}
@@ -5947,6 +5978,7 @@ function BoardView({
         </section>
       ) : null}
 
+      {!isDemoBoard && goals ? <GoalsStrip goals={goals.goals} phone={phone} onOpen={openGoals} /> : null}
       {queryActive ? (
         <section className="query-results" aria-label="Filtered Work Items">
           <header><div><span>Query results</span><b>{queryResult.matches.length} matching {queryResult.matches.length === 1 ? "Work Item" : "Work Items"}</b><small>WIP {queryResult.wip} · {queryResult.context.length} muted {queryResult.context.length === 1 ? "ancestor" : "ancestors"}</small></div><button onClick={clearQuery}>Clear</button></header>

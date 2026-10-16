@@ -393,3 +393,27 @@ export function decideSuggestion(fileInput: GoalsFile, input: { suggestionId: un
 
 /** Only people change goals, by every route; agents suggest. */
 export const PEOPLE_ONLY = "Only people change a board's goals. Agents can suggest a change, with a reason, for the person to accept or dismiss: planban_suggest_goal_change.";
+
+/** The whole Goals page as text, for agents (both MCP servers and the command line). */
+export function goalsPageText(page: GoalsPage): string {
+  const lines: string[] = [];
+  if (!page.goals.length) lines.push("This board has no goals.");
+  else {
+    lines.push("Goals, most important first:");
+    for (const goal of page.goals) {
+      lines.push(`${goal.number}. ${goal.statement} (id ${goal.id})`);
+      if (goal.notes) lines.push(...goal.notes.split("\n").map((line) => `   ${line}`));
+    }
+  }
+  if (page.context) lines.push("", "Context:", page.context);
+  if (page.suggestions.length) {
+    lines.push("", "Suggestions waiting for the person:");
+    for (const entry of page.suggestions) lines.push(`- ${entry.by}, ${entry.createdAt.slice(0, 10)}: ${entry.summary}. Why: ${entry.reason}`);
+  }
+  if (page.recentlyDismissed.length) {
+    lines.push("", "Dismissed in the last 30 days (don't suggest these again unless something new has happened):");
+    for (const entry of page.recentlyDismissed) lines.push(`- ${entry.summary}, dismissed ${entry.dismissedAt.slice(0, 10)}. Its reason was: ${entry.reason}`);
+  }
+  if (page.retired.length) lines.push("", `Retired: ${page.retired.map((goal) => `${goal.statement} (${goal.retiredAt.slice(0, 10)})`).join("; ")}`);
+  return lines.join("\n");
+}

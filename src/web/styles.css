@@ -6240,3 +6240,94 @@ a.web-delete-account-email { display: inline-flex; align-items: center; justify-
 .doc-conflict-choice { justify-content: flex-end; }
 @media (max-width: 720px) { .doc-conflict-compare { grid-template-columns: 1fr; } }
 .group-objective-theirs { margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); font: 400 13px/20px var(--font-sans); white-space: pre-wrap; }
+
+/* ---- Goals (owner decisions, 16 October 2026): the line above the columns and the Goals page ---- */
+.goals-strip { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--bg); font-size: 12.5px; color: var(--text-muted); min-width: 0; }
+.goals-strip.folded { height: 30px; }
+.goals-strip button { border: 0; background: none; font: inherit; color: inherit; cursor: pointer; padding: 0; }
+.goals-strip .goals-strip-label { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; text-transform: uppercase; font-weight: 600; color: var(--text-muted); border-radius: 5px; }
+.goals-strip .goals-strip-label:hover { color: var(--text); }
+.goals-strip .goals-strip-list { flex: 1 1 auto; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); opacity: .82; }
+.goals-strip .goals-strip-list:hover { opacity: 1; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.goals-strip-list .n { color: var(--text-faint); font-variant-numeric: tabular-nums; margin-right: 3px; }
+.goals-strip-list .sep { color: var(--text-faint); margin: 0 9px; }
+.goals-strip .goals-strip-open { flex: 0 0 auto; font-size: 12px; color: var(--accent); }
+.goals-strip .goals-strip-open:hover { text-decoration: underline; }
+.goals-strip button:focus-visible, .goals-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.goals-row { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 8px; padding: 11px 14px; border: 0; border-bottom: 1px solid var(--border); background: var(--bg); font: inherit; font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; text-align: left; }
+.goals-row svg { color: var(--text-muted); }
+
+.goals-screen { min-height: 100vh; background: var(--bg); color: var(--text); }
+.goals-head { display: flex; align-items: center; gap: 14px; padding: 16px 24px 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg); }
+.goals-head h1 { margin: 0; font-size: 20px; line-height: 1.25; font-weight: 600; }
+.goals-eyebrow { margin: 0 0 3px; text-transform: uppercase; font-size: 10px; font-weight: 600; color: var(--text-muted); }
+.goals-body { padding: 16px 0 48px; }
+.goals-shell { margin: 0 auto 12px; width: min(980px, calc(100% - 32px)); border: 1px solid var(--border); border-radius: 8px; background: var(--card-surface); box-shadow: var(--shadow-card); }
+.goals-section-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; }
+.goals-section-head h2 { margin: 0; font-size: 11px; text-transform: uppercase; font-weight: 600; color: var(--text-muted); }
+.goals-section-head .icon-button { margin-left: auto; }
+.goals-error { margin: 0 auto 12px; width: min(980px, calc(100% - 32px)); border: 1px solid var(--danger-text); background: var(--danger-tint); color: var(--text); border-radius: 7px; padding: 9px 12px; font-size: 13px; line-height: 1.5; }
+.goals-notice { margin: 12px 16px 4px; border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent); background: var(--accent-soft); border-radius: 7px; padding: 9px 12px; font-size: 13px; line-height: 1.5; display: flex; gap: 12px; align-items: center; }
+.goals-notice > span:first-child { flex: 1; }
+.goals-notice-actions { display: inline-flex; gap: 6px; flex: 0 0 auto; }
+.goals-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.goals-btn.sm { height: 26px; padding: 0 9px; font-size: 12px; }
+.goals-btn.primary { background: var(--color-background-button-primary); color: var(--color-text-button-primary); border-color: var(--color-background-button-primary); }
+.goals-btn:disabled { opacity: .55; cursor: default; }
+.goals-empty { margin: 0; padding: 4px 16px 14px; font-size: 13.5px; line-height: 1.55; color: var(--text-muted); }
+.goals-list { list-style: none; margin: 0; padding: 0; }
+.goal-row { display: grid; grid-template-columns: 22px 24px minmax(0, 1fr) auto; align-items: start; gap: 4px; padding: 9px 12px 9px 8px; border-top: 1px solid var(--color-token-border-light); background: var(--card-surface); }
+.goal-row:first-child { border-top: 0; }
+.goal-row:hover { background: color-mix(in oklab, var(--text) 2%, var(--card-surface)); }
+.goal-row.dragging { position: relative; z-index: 2; box-shadow: var(--shadow-pop); }
+.goal-row.editing { box-shadow: inset 3px 0 0 var(--accent); }
+.goal-grip { display: inline-flex; align-items: center; justify-content: center; padding: 2px 0 0; border: 0; background: none; color: var(--text-faint); cursor: grab; touch-action: none; border-radius: 4px; }
+.goal-grip:active { cursor: grabbing; }
+.goal-number { font-size: 15px; font-weight: 600; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.goal-row.editing .goal-number { padding-top: 8px; }
+.goal-statement { border: 0; background: none; padding: 0; margin: 0; font: inherit; font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--text); text-align: left; cursor: text; }
+button.goal-statement:hover { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.goal-notes-toggle { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; font: inherit; font-size: 12px; color: var(--text-muted); padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.goal-notes-toggle:hover { background: var(--surface-subtle); color: var(--text); }
+.goal-notes { grid-column: 3 / 5; margin: 4px 0 2px; font-size: 14px; line-height: 1.6; color: var(--text); opacity: .86; }
+.goal-notes p { margin: 0 0 6px; }
+.goal-grip:focus-visible, .goal-statement:focus-visible, .goal-notes-toggle:focus-visible, .goals-add:focus-visible, .goals-link:focus-visible, .goals-retired-toggle:focus-visible, .goal-retire:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.goal-form { grid-column: 3 / 5; min-width: 0; }
+.goal-form.context { padding: 0 16px 14px; }
+.goals-shell > .goal-form { padding: 10px 14px 12px 54px; border-top: 1px solid var(--color-token-border-light); }
+.goal-field { width: 100%; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; padding: 7px 10px; }
+.goal-field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.goal-field.statement { font-size: 15px; font-weight: 600; }
+.goal-field.notes { display: block; font-size: 14px; line-height: 1.55; min-height: 96px; margin-top: 4px; resize: vertical; }
+.goal-field.context { min-height: 200px; margin-top: 0; }
+.goal-field-label { display: block; font-size: 11px; font-weight: 600; color: var(--text-muted); margin: 10px 0 0; }
+.goal-edit-bar { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+.goal-retire { margin-left: auto; border: 0; border-left: 1px solid var(--border); background: none; color: var(--danger-text); font: inherit; font-size: 12.5px; font-weight: 500; padding: 4px 6px 4px 14px; border-radius: 0 6px 6px 0; cursor: pointer; }
+.goal-retire:hover { background: var(--danger-tint); }
+.goals-add { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px 12px 38px; border: 0; border-top: 1px solid var(--color-token-border-light); background: none; font: inherit; font-size: 14px; color: var(--text-muted); text-align: left; cursor: pointer; border-radius: 0 0 8px 8px; }
+.goals-add:hover { color: var(--text); background: color-mix(in oklab, var(--text) 2%, transparent); }
+.goals-markdown { padding: 2px 16px 18px; font-size: 15px; line-height: 1.6; }
+.goals-markdown p { margin: 0 0 10px; }
+.goals-markdown > :last-child { margin-bottom: 0; }
+.goals-markdown strong { font-weight: 600; }
+.goals-retired-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 11px 16px; border: 0; background: none; font: inherit; font-size: 13px; color: var(--text-muted); cursor: pointer; text-align: left; border-radius: 8px; }
+.goals-retired-toggle:hover { color: var(--text); }
+.goals-retired { list-style: none; margin: 0; padding: 0 16px 12px 38px; }
+.goals-retired li { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-muted); padding: 6px 0; flex-wrap: wrap; }
+.goals-retired .when { font-size: 12px; color: var(--text-faint); }
+.goals-link { margin-left: auto; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--text-muted); padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.goals-link:hover { background: var(--surface-subtle); color: var(--text); }
+
+.goals-screen.phone .goals-head { padding: 10px 14px 10px 10px; }
+.goals-screen.phone .goals-head h1 { font-size: 18px; }
+.goals-screen.phone .goals-body { padding: 10px 0 32px; }
+.goals-screen.phone .goals-shell, .goals-screen.phone .goals-error { width: calc(100% - 20px); }
+.goals-screen.phone .goal-row { grid-template-columns: 22px 22px minmax(0, 1fr) auto; padding: 10px 10px 10px 6px; }
+.goals-screen.phone .goal-statement, .goals-screen.phone .goal-number { font-size: 14.5px; }
+.goals-screen.phone .goal-notes { font-size: 13.5px; }
+.goals-screen.phone .goals-notice { margin: 10px 10px 2px; flex-wrap: wrap; font-size: 12.5px; gap: 8px; }
+.goals-screen.phone .goals-notice-actions { margin-left: auto; }
+.goals-screen.phone .goals-add { padding-left: 30px; }
+.goals-screen.phone .goals-shell > .goal-form { padding-left: 14px; }
+.goals-screen.phone .goals-markdown { font-size: 14px; }
+.goals-screen.phone .goal-grip { min-width: 22px; min-height: 28px; }

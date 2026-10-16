@@ -51,6 +51,7 @@ import { ensureBoardIdentity } from "./boardIdentity";
 import type { PlanbanHistoryPayload } from "./types";
 import { assertCardsHoldNoFiles, cardFolder, cardsHoldingFiles, PlanbanCardHoldsFilesError } from "./cardFiles";
 import { checkIndexCard, checkIndexDocument, checkIndexText, checkIndexValue, MAX_DETAILS_BYTES } from "./contentRules";
+import { appName } from "./agentNames";
 import { addSuggestion, applyGoalEdit, decideSuggestion, emptyGoals, goalsBlock, goalsPage, normalizeGoals, PEOPLE_ONLY, type GoalsFile, type GoalsPage } from "./goals";
 
 import { assertCompletionConfirmed,
@@ -1325,7 +1326,7 @@ export async function decideGoalSuggestion(input: { cwd: string; suggestionId: s
 export async function suggestGoalChange(input: { cwd: string; change: unknown; reason: string; agentName?: string | undefined; idempotencyKey?: string | undefined }): Promise<GoalsResult> {
   const online = await onlineManifest(input.cwd);
   if (online) return (await onlineOperation<GoalsResult>(resolveProjectCwd(input.cwd), online, "suggestGoalChange", { ...input, actor: "agent" } as typeof input)).result;
-  const by = input.agentName?.trim() ? input.agentName.trim().slice(0, 60) : "An agent";
+  const by = appName(input.agentName);
   return changeLocalGoals(input.cwd, "agent", (file, stamp) => {
     const added = addSuggestion(file, input, { ...stamp, by, id: randomUUID() });
     return added.goals ? added : { goals: null, notAdded: added.notAdded };

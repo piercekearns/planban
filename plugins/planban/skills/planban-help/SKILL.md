@@ -65,6 +65,7 @@ Then list common actions:
 - sign this computer in without a browser here: approve a link on your phone instead
 - see which Planban accounts are signed in here and which boards use each, add one, sign one out, or change the default for new boards (several can be signed in at once)
 - restore a board from this computer's automatic backup of an online board, as a separate copy
+- see the board's goals, or suggest a change to them for the person to accept (only people change goals; open Goals above the board's columns to edit them)
 - check whether Planban has updates
 - archive or delete a local board (an online board is deleted by its owner at app.planban.ai, after taking it local)
 - delete a Planban account: email hello@planban.ai (the web page's profile menu, Delete account)

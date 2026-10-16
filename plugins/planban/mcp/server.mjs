@@ -24,8 +24,10 @@ const contentRulesModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_RO
 const moveFilesOutModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/moveFilesOut.ts")).href);
 const errorReportModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/errorReport.ts")).href);
 const accountsModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/online/accounts.ts")).href);
+const goalsModule = await import(pathToFileURL(resolve(PLANBAN_RUNTIME_ROOT, "src/core/goals.ts")).href);
 
-const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, loadState, moveCard, notePresence, readDoc, readDocSections, reconstructHierarchy, setCardParent, unresolvedChanges, updateCard, workingOnCard, writeDoc, writeDocSection } = storageModule;
+const { cardAncestry, createCard, createCards, createGroup, dropChange, exportFlatVersion1, getStatus, historyPayload, loadState, moveCard, notePresence, readDoc, readDocSections, readGoals, readGoalsBlock, reconstructHierarchy, setCardParent, suggestGoalChange, unresolvedChanges, updateCard, workingOnCard, writeDoc, writeDocSection } = storageModule;
+const { goalsPageText } = goalsModule;
 const { archiveBoard, deleteBoard, duplicateBoard, listAllBoards, listBoards, resolveBoardCwd, restoreBoard } = registryModule;
 const { PLANBAN_STATUSES } = typesModule;
 const { queryWorkItems } = queryModule;
@@ -47,19 +49,20 @@ const SERVER_ICONS = [
 ];
 const PLANBAN_MCP_INSTRUCTIONS = [
   "Prefer these tools for Planban reads and writes.",
-  "Pass cwd as the absolute repository path, or repoId for a registered board.",
+  "Pass cwd (absolute repository path) or repoId.",
   "Before editing owner-facing content, read .planban/agent-context.md and follow the Planban protocol and Planban house style.",
-  "Serialize writes: one mutation at a time.",
+  "Serialize writes, one at a time.",
   "Planban is an index, not file storage: link to files; planban_move_files_out tidies cards holding them.",
   "Complete is person-controlled: only when a person asks, confirms or waives review; set completionConfirmed true.",
-  "Online Boards: card edits pass baseRevision, document writes their expectedMtimeMs; if refused as changed, read what changed, reapply only what is still needed, tell the person if you drop it, never just resend; retry lost replies with the same idempotencyKey; never edit board files.",
+  "Online Boards: card edits pass baseRevision, document writes their expectedMtimeMs; if refused as changed, reapply only what is still needed, tell the person if you drop it, never just resend; retry lost replies with the same idempotencyKey; never edit board files.",
   "Refusals say why; tell the person.",
   "move_card is the canonical placement operation.",
   "After an open or the complete logical mutation batch, include the clickable Board URL from userReply.markdown in the final reply.",
   "With an in-app browser, make at most one bounded attempt to show it; never reopen the board after every write.",
   "If boardUrlVerified is false, call planban_launch_board once before presenting it.",
   "A planban:<board>/<item> token is a Planban reference: resolve it with planban_get_card (repoId, cardId); trust the id over any quoted title.",
-  "Administration, recovery and legacy tools appear only through explicit profiles.",
+  "Weigh a board's goals with judgement (protocol: Goals); only people change them.",
+  "Admin, recovery and legacy tools need explicit profiles.",
 ].join(" ");
 const SERVER_VERSION = PLANBAN_MCP_VERSION;
 let clientAgentName = null;
@@ -621,6 +624,39 @@ const tools = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   {
+    name: "planban_history",
+    title: "Planban Board History",
+    description: "List recent changes to the board, newest first: what changed, when, and whether a person or an agent made it.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      limit: { type: "number", description: "Most recent entries to return. Defaults to 20." },
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "planban_read_goals",
+    title: "Read Planban Goals",
+    description: "The board's whole Goals page: its goals in order with their notes, the Context section, suggestions waiting for the person, suggestions dismissed in the last 30 days, and retired goals. Board reads list only the goal statements.",
+    inputSchema: schema.object(commonBoardProperties),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: "planban_suggest_goal_change",
+    title: "Suggest a Planban Goals Change",
+    description: "Suggest one change to the board's goals, with the evidence, for the person to accept or dismiss on the Goals page. Only people change goals; agents can't edit them. A suggestion the person dismissed isn't shown again for 30 days.",
+    inputSchema: schema.object({
+      ...commonBoardProperties,
+      kind: { type: "string", enum: ["add", "reword", "reorder", "retire"] },
+      goal: { type: "string", description: "reword, reorder, retire: the goal's number on the Goals page, or its id." },
+      statement: { type: "string", description: "add, reword: the goal in one line." },
+      notes: { type: "string", description: "add, reword: optional notes for the goal." },
+      position: { type: "number", description: "add, reorder: where it goes, 1 for the top." },
+      reason: { type: "string", description: "Why, with evidence the person can check, in a sentence or two." },
+      idempotencyKey: { type: "string", description: "Reuse only to retry the same suggestion after a lost reply." },
+    }, ["kind", "reason"]),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: "planban_export_flat_v1",
     title: "Export Recoverable Flat Version-1 Board",
     description: "Create a deliberate history-backed flat version-1 export without changing the live hierarchy.",
@@ -853,11 +889,12 @@ async function callToolImpl(name, args) {
     const status = await getStatus(await cwdFromArgs(args));
     const board = status.initialized ? await projectStaleness(status.cwd) : null;
     const attention = board ? stalenessAttention(board.staleness, board.items) : null;
+    const goals = status.initialized ? await readGoalsBlock(status.cwd) : null;
     return await boardResult(
-      withLine(status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`, attention && stalenessLine(attention)),
+      withLine(withLine(status.initialized ? `Planban is initialized for ${status.cwd}.` : `Planban is not initialized for ${status.cwd}.`, attention && stalenessLine(attention)), goals),
       status.initialized ? status.repoId : null,
       // The Planban accounts signed in on this computer and which boards use each (emails only).
-      { ...status, ...(attention ? { attention } : {}), onlineAccounts: await accountsModule.listAccounts().catch(() => []) },
+      { ...status, ...(attention ? { attention } : {}), ...(goals ? { goals } : {}), onlineAccounts: await accountsModule.listAccounts().catch(() => []) },
     );
   }
 
@@ -904,10 +941,11 @@ async function callToolImpl(name, args) {
     const cwd = await cwdFromArgs(args);
     const state = await loadState(cwd);
     const attention = stalenessAttention(await boardStaleness(state), state.roadmap.roadmapItems);
+    const goals = await readGoalsBlock(cwd);
     return await boardResult(
-      withLine(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, stalenessLine(attention)),
+      withLine(withLine(`Loaded Planban board ${state.manifest.repoId} at revision ${state.roadmap.revision}.`, goals), stalenessLine(attention)),
       state.manifest.repoId,
-      { ...summarizeBoard(state), attention },
+      { ...summarizeBoard(state), attention, ...(goals ? { goals } : {}) },
     );
   }
 
@@ -975,6 +1013,28 @@ async function callToolImpl(name, args) {
       baseRevision: optionalRevision(args.baseRevision, "baseRevision"), actor: "agent", idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey"),
     });
     return await boardResult(`Dropped unresolved change ${args.changeId}.`, state.manifest.repoId, compactBoardSummary(state));
+  }
+
+  if (name === "planban_history") {
+    const history = await historyPayload(await cwdFromArgs(args));
+    const limit = typeof args.limit === "number" && args.limit > 0 ? Math.min(Math.floor(args.limit), 200) : 20;
+    const entries = [...history.entries].sort((a, b) => b.version - a.version).slice(0, limit);
+    return textResult(`${entries.length} most recent change${entries.length === 1 ? "" : "s"} of ${history.entries.length} kept.`, { currentVersion: history.currentVersion, entries });
+  }
+
+  if (name === "planban_read_goals") {
+    const result = await readGoals({ cwd: await cwdFromArgs(args) });
+    return textResult(goalsPageText(result.page), { ...result.page, revision: result.revision });
+  }
+
+  if (name === "planban_suggest_goal_change") {
+    const cwd = await cwdFromArgs(args);
+    const kind = requireString(args.kind, "kind");
+    const change = { kind, goal: optionalString(args.goal, "goal"), statement: optionalString(args.statement, "statement"), notes: optionalString(args.notes, "notes"), position: args.position };
+    const result = await suggestGoalChange({ cwd, change, reason: requireString(args.reason, "reason"), agentName: clientAgentName ?? undefined, idempotencyKey: optionalString(args.idempotencyKey, "idempotencyKey") });
+    if (result.notAdded) return textResult(result.notAdded, { added: false, note: result.notAdded });
+    const shown = result.page.suggestions.at(-1);
+    return textResult(`Suggested to ${shown?.summary ?? "change the goals"}. It waits at the top of the Goals page for the person to accept or dismiss; tell them.`, { added: true, suggestion: shown, revision: result.revision });
   }
 
   if (name === "planban_export_flat_v1") {

@@ -57,6 +57,9 @@ import {
   createGroup,
   deleteArchivedCard,
   historyPayload,
+  readGoals,
+  editGoals,
+  decideGoalSuggestion,
   loadHistoryState,
   exportFlatVersion1,
   reconstructHierarchy,
@@ -1343,6 +1346,47 @@ export async function startServer(options: ServeOptions) {
       }));
       sendEvent("state", { repoId: req.params.repoId, doc: payload.path });
       res.json(payload);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Goals (owner decisions, 16 October 2026): the page reads them; people change them here.
+  app.get("/api/boards/:repoId/goals", async (req, res, next) => {
+    try {
+      const { page, revision } = await readGoals({ cwd: await boardCwd(req.params.repoId) });
+      res.json({ ...page, revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/boards/:repoId/goals", async (req, res, next) => {
+    try {
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
+      const { value } = await runApiMutation(req, cwdForBoard, () => editGoals({
+        cwd: cwdForBoard, edit: req.body?.edit, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: parseActor(req.body?.actor),
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: value.revision });
+      res.json({ ...value.page, revision: value.revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/boards/:repoId/goals/suggestions/:id", async (req, res, next) => {
+    try {
+      const decision = req.body?.decision;
+      if (decision !== "accept" && decision !== "dismiss") {
+        res.status(422).json({ error: "decision is accept or dismiss" });
+        return;
+      }
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
+      const { value } = await runApiMutation(req, cwdForBoard, () => decideGoalSuggestion({
+        cwd: cwdForBoard, suggestionId: req.params.id, decision, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: parseActor(req.body?.actor),
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: value.revision });
+      res.json({ ...value.page, revision: value.revision });
     } catch (error) {
       next(error);
     }

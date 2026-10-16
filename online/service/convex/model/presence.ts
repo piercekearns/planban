@@ -13,13 +13,7 @@ const MAX_LIVE_PER_CONNECTION = 50;
 export const PRESENCE_KEEP_MS = 24 * 60 * 60 * 1000;
 
 /** An app name as people say it, from what an MCP client calls itself ("claude-code" is "Claude"). */
-export function appName(raw: string | undefined | null) {
-  const name = (raw ?? "").trim();
-  if (/claude/i.test(name)) return "Claude";
-  if (/codex/i.test(name)) return "Codex";
-  if (/chatgpt|openai/i.test(name)) return "ChatGPT";
-  return name.slice(0, 40) || "An agent";
-}
+export { appName } from "../../../../src/core/agentNames";
 
 /** Within this long, another touch by the same agent writes nothing: reads stay cheap and don't contend. */
 const TOUCH_EVERY_MS = 60 * 1000;

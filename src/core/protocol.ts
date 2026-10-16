@@ -42,7 +42,9 @@ Board URL (the port can differ; verify it through \`planban_launch_board\` befor
 
 ## Planban tools
 
-Planban is exposed as MCP tools whose names end in \`planban_<operation>\`: status, list_boards, launch_board, get_board, query_cards, get_card, read_doc, create_card, create_cards, create_group, move_card, update_card, write_doc, move_files_out. Pass \`cwd\` as this repo's absolute path. Linked git worktrees resolve to the main checkout's board automatically, so pass the worktree path when working in one.
+Planban is exposed as MCP tools whose names end in \`planban_<operation>\`: status, list_boards, launch_board, get_board, query_cards, get_card, read_doc, create_card, create_cards, create_group, move_card, update_card, write_doc, move_files_out, history, read_goals, suggest_goal_change. Pass \`cwd\` as this repo's absolute path. Linked git worktrees resolve to the main checkout's board automatically, so pass the worktree path when working in one.
+
+If the board has goals, board reads list them. Weigh them with judgement, as the Planban protocol's Goals section says: work outside them is fine, and only people change them (suggest a change with \`planban_suggest_goal_change\`).
 
 ## Planban references
 

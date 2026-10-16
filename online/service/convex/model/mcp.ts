@@ -12,6 +12,7 @@ import { cardAncestry } from "../../../../src/core/boardOperations";
 import { queryWorkItems, type WorkItemQuery } from "../../../../src/core/workItemQuery";
 import { internal } from "../_generated/api";
 import { HOW_TO_REFER } from "../../../../src/core/contentRules";
+import { emptyGoals, goalsBlock, goalsPageText, type GoalsPage } from "../../../../src/core/goals";
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { sha256Hex } from "./auth";
@@ -36,6 +37,9 @@ const SERVER_INFO = {
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 
+/** The protocol's Goals section, shortened (owner decisions, 16 October 2026). */
+export const GOALS_GUIDANCE = "Goals: a board may have goals, most important first (planban_get_board lists them; planban_read_goals adds notes and context). Treat them as judgement, not rules. When recommending or ranking work, prefer what serves the goals and name the goal in a few words; urgency, blockers, size and what the person asked can outweigh goal order. Work outside the goals is fine: never refuse, delay or argue against it because no goal covers it, and don't tag cards by goal. Do what the person asked. When asked what's next or to review priorities, glance at recent history: if chosen work keeps landing outside the goals, a goal has seen no work for weeks, or the person keeps choosing differently from your goal-based suggestions, suggest one change with that evidence (planban_suggest_goal_change); don't repeat a dismissed one unless something new has happened. Only people change goals. No goals: rank as usual, and don't ask for goals unless the person is planning priorities.";
+
 const INSTRUCTIONS = [
   "These tools read and edit Planban Online Boards shared across devices and people.",
   "Call planban_list_boards first to find the boardId.",
@@ -52,6 +56,7 @@ const INSTRUCTIONS = [
   "A refusal says why: a viewer can't change the board; the person's agents may be limited to read or plan (they can change that in the board's People settings); this connection may reach only some boards; some steps are for the owner's own sign-in. Tell the person instead of working around it.",
   "Deleting cards and taking a board back to Local Mode are not available to agents.",
   `Planban is an index, not storage: boards hold text only (cards, Specs, Plans and history). Never put files, images or encoded data in a card or document. ${HOW_TO_REFER} Edits that embed files are refused.`,
+  GOALS_GUIDANCE,
 ].join(" ");
 
 type JsonSchema = Record<string, unknown>;
@@ -133,6 +138,29 @@ export const TOOLS: ToolDefinition[] = [
     title: "Drop Planban Unresolved Change",
     description: "Drop an unresolved change that is no longer needed (already covered, or overtaken), with a short reason. The card's history records it. Tell the person too.",
     inputSchema: object({ boardId, changeId: { type: "string" }, reason: { type: "string", description: "Why it is dropped, in a sentence." }, baseRevision, idempotencyKey }, ["boardId", "changeId", "reason", "baseRevision"]),
+    annotations: write,
+  },
+  {
+    name: "planban_read_goals",
+    title: "Read Planban Goals",
+    description: "The board's whole Goals page: its goals in order with their notes, the Context section, suggestions waiting for the person, suggestions dismissed in the last 30 days, and retired goals.",
+    inputSchema: object({ boardId }, ["boardId"]),
+    annotations: read,
+  },
+  {
+    name: "planban_suggest_goal_change",
+    title: "Suggest a Planban Goals Change",
+    description: "Suggest one change to the board's goals, with the evidence, for a person to accept or dismiss on the Goals page. Only people change goals; agents can't edit them. A dismissed suggestion isn't shown again for 30 days.",
+    inputSchema: object({
+      boardId,
+      kind: { type: "string", enum: ["add", "reword", "reorder", "retire"] },
+      goal: { type: "string", description: "reword, reorder, retire: the goal's number on the Goals page, or its id." },
+      statement: { type: "string", description: "add, reword: the goal in one line." },
+      notes: { type: "string", description: "add, reword: optional notes for the goal." },
+      position: { type: "number", description: "add, reorder: where it goes, 1 for the top." },
+      reason: { type: "string", description: "Why, with evidence the person can check, in a sentence or two." },
+      idempotencyKey,
+    }, ["boardId", "kind", "reason"]),
     annotations: write,
   },
   {
@@ -367,6 +395,10 @@ export class McpService {
   }
 
 
+  goals(boardId: string): Promise<{ page: GoalsPage; revision: number }> {
+    return this.call(() => this.ctx.runQuery(internal.boards.goals, { connectionId: this.connectionId, boardId }));
+  }
+
   history(boardId: string): Promise<PlanbanHistoryPayload> {
     return this.call(() => this.ctx.runQuery(internal.boards.history, { connectionId: this.connectionId, boardId }));
   }
@@ -435,8 +467,28 @@ async function callTool(service: McpService, origin: string, name: string, args:
   switch (name) {
     case "planban_list_boards":
       return { boards: await service.listBoards() };
-    case "planban_get_board":
-      return compactBoard(await service.getBoard(stringArg(args, "boardId")));
+    case "planban_get_board": {
+      const boardIdArg = stringArg(args, "boardId");
+      const [roadmap, { page }] = await Promise.all([service.getBoard(boardIdArg), service.goals(boardIdArg)]);
+      // The goal statements only, when the board has goals; planban_read_goals has the rest.
+      const goals = goalsBlock({ ...emptyGoals(), goals: page.goals });
+      const board = compactBoard(roadmap);
+      const { roadmapItems, ...head } = board;
+      return goals ? { ...head, goals, roadmapItems } : board;
+    }
+    case "planban_read_goals": {
+      const { page, revision } = await service.goals(stringArg(args, "boardId"));
+      return { revision, text: goalsPageText(page), ...page };
+    }
+    case "planban_suggest_goal_change": {
+      const boardIdArg = stringArg(args, "boardId");
+      const key = typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined;
+      const change = { kind: args.kind, goal: args.goal, statement: args.statement, notes: args.notes, position: args.position };
+      const outcome = await service.run(boardIdArg, "suggestGoalChange", { change, reason: args.reason, actor: "agent" }, false, key);
+      const result = outcome.result as { notAdded?: string; page: GoalsPage };
+      if (result.notAdded) return { added: false, note: result.notAdded };
+      return { added: true, suggestion: result.page.suggestions.at(-1), note: "It waits at the top of the Goals page for a person to accept or dismiss; tell them.", ...handoff(origin, boardIdArg) };
+    }
     case "planban_query_cards": {
       const { boardId: _id, ...query } = args;
       const roadmap = await service.getBoard(stringArg(args, "boardId"));

@@ -260,8 +260,8 @@ Do any of these only when the person asks.
 The local tools (the Planban plugin, through this computer) and the remote tools
 (`https://app.planban.ai/mcp`, for ChatGPT, claude.ai and apps without the plugin)
 share names and arguments for: list_boards, get_board, query_cards, get_card,
-read_doc, create_card, create_cards, create_group, move_card, update_card and
-write_doc. Differences:
+read_doc, create_card, create_cards, create_group, move_card, update_card,
+write_doc, history, read_goals and suggest_goal_change. Differences:
 
 - **Local only:** status, launch_board and move_files_out. Three more sets appear
   only when the person sets `PLANBAN_MCP_PROFILE` (comma-separated, or `full` for
@@ -269,7 +269,7 @@ write_doc. Differences:
   (export_flat_v1, reconstruct_hierarchy) and `legacy` (set_card_parent, an old alias
   of move_card). Local tools take `cwd` or `repoId`.
 - **Both, for online boards:** unresolved_changes and drop_change.
-- **Remote only:** history, and search and fetch (for ChatGPT and claude.ai). Remote
+- **Remote only:** search and fetch (for ChatGPT and claude.ai). Remote
   tools take `boardId`, from list_boards. Deleting cards and taking a board local are
   not available remotely.
 
@@ -483,6 +483,31 @@ Follow this protocol exactly:
 - A landing is a card event: whoever merges a PR, pushes to a release branch or
   retires a branch updates every In Progress Item that names it, before reporting the
   landing.
+
+## Goals
+
+A board may have goals, most important first, plus context. Treat them as
+judgement, not rules.
+
+- When recommending or ranking work, prefer what serves the goals and say which goal
+  in a few words. Higher goals usually win, but urgency, blockers, size and what the
+  person asked can outweigh order.
+- Work outside the goals is fine. Never refuse, delay or argue against work because
+  no goal covers it. Don't tag or relabel cards by goal.
+- Do what the person asked. Goals shape your suggestions, not their choices.
+- When asked what's next or to review priorities, glance at recent board history. If
+  chosen work keeps landing outside the goals, a goal has seen no work for weeks, or
+  the person keeps picking differently from your goal-based suggestions, suggest one
+  change to the goals, with that evidence. Don't repeat a dismissed suggestion unless
+  something new has happened.
+- No goals: rank as usual. Don't ask for goals unless the person is planning
+  priorities.
+
+Board reads (`get_board`, `status`) list the goal statements when there are any;
+`read_goals` returns the whole Goals page, with notes, context, suggestions waiting
+and those dismissed in the last 30 days. Only people change goals: suggest a change
+with `suggest_goal_change` and a reason, and tell the person it is waiting on the
+Goals page.
 
 ## Updating Roadmap State
 
