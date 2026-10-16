@@ -12,7 +12,11 @@ test("the accepted board and detail simplification remains visible in the produc
     readFile(stylesPath, "utf8"),
   ]);
 
-  assert.match(web, /label="All Boards"/u);
+  // One-line board header (owner decision, 16 October 2026): the card stack back to all
+  // boards, no breadcrumb and no separate row with a house button.
+  assert.match(web, /label="Your boards" tooltipPlacement="bottom" className="board-home-mark"[\s\S]*?<CardStackMark \/>/u);
+  assert.doesNotMatch(web, /web-crumb|board-home-row|<Home size/u);
+  assert.match(web, /!capabilities\.hosted && updateStatus\?\.updateAvailable/u);
   assert.match(web, /"See all Items"/u);
   assert.match(web, /"Return to Main Board"/u);
   assert.match(web, /function BoardMoreMenu/u);

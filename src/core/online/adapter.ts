@@ -8,6 +8,7 @@ import type { PlanbanProjectManifest, PlanbanResolvedState, PlanbanRoadmap } fro
 import { refreshBackup } from "./backup";
 import { boardPath, onlineRequest } from "./client";
 import { serviceUrl } from "./credentials";
+import { BEHIND_NOTICE, unknownFeatures } from "../clientVersion";
 
 export type OnlineStorage = Extract<NonNullable<PlanbanProjectManifest["storage"]>, { kind: "online" }>;
 
@@ -23,6 +24,17 @@ export function onlineState(cwd: string, manifest: PlanbanProjectManifest, roadm
     roadmapPath: join(planningRoot, "snapshot.json"), manifest, roadmap: normalizeRoadmap(roadmap) };
 }
 
+// The features each online board uses, as its last read said (16 October 2026), so the
+// notice that this Planban can't show them all survives edits, which don't repeat them.
+const boardFeaturesSeen = new Map<string, string[]>();
+const featuresKey = (storage: OnlineStorage) => `${serviceUrl(storage.url)}\n${storage.boardId}`;
+
+function withBehindNotice(state: PlanbanResolvedState, storage: OnlineStorage) {
+  const unknown = unknownFeatures(boardFeaturesSeen.get(featuresKey(storage)));
+  if (unknown.length) state.planbanBehind = { notice: BEHIND_NOTICE, features: unknown };
+  return state;
+}
+
 export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManifest) {
   if (manifest.storage?.kind !== "online") throw new Error("Expected an Online Board.");
   const storage = manifest.storage;
@@ -30,16 +42,19 @@ export async function loadOnlineState(cwd: string, manifest: PlanbanProjectManif
   const linked = await boardAccount(storage.url, storage.boardId);
   const unlinkedDefault = linked ? undefined : (await readCredentials()).services[serviceUrl(storage.url)];
   const pinned = unlinkedDefault ? await withIdentity(storage.url, unlinkedDefault) : undefined;
-  const { roadmap } = await onlineRequest<{ roadmap: PlanbanRoadmap }>(storage.url, boardPath(storage.boardId), undefined, pinned ? { credentials: pinned } : {}).catch(async (error: unknown) => {
+  type BoardRead = { roadmap: PlanbanRoadmap; features?: string[] };
+  const { roadmap, features } = await onlineRequest<BoardRead>(storage.url, boardPath(storage.boardId), undefined, pinned ? { credentials: pinned } : {}).catch(async (error: unknown) => {
     // "Not found" for a board not yet linked here may mean another signed-in account is the one.
-    if (error instanceof PlanbanNotFoundError) return findBoardAccount<{ roadmap: PlanbanRoadmap }>(storage.url, storage.boardId, boardPath(storage.boardId), error);
+    if (error instanceof PlanbanNotFoundError) return findBoardAccount<BoardRead>(storage.url, storage.boardId, boardPath(storage.boardId), error);
     throw error;
   });
   if (pinned?.person && !(await boardAccount(storage.url, storage.boardId))) {
     await recordBoardAccountAs(storage.url, storage.boardId, pinned).catch(() => undefined);
   }
   void refreshBackup(manifest.storage.url, manifest.storage.boardId);
-  return onlineState(cwd, manifest, roadmap);
+  // Features a newer Planban added to this board, which this one can't show.
+  boardFeaturesSeen.set(featuresKey(storage), features ?? []);
+  return withBehindNotice(onlineState(cwd, manifest, roadmap), storage);
 }
 
 export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectManifest, op: string, input: { cwd: string; idempotencyKey?: string | undefined }) {
@@ -54,7 +69,7 @@ export async function onlineOperation<T>(cwd: string, manifest: PlanbanProjectMa
     { idempotencyKey: idempotencyKey ?? randomUUID() });
   // Every machine that changes an Online Board keeps a local backup of it.
   void refreshBackup(manifest.storage.url, manifest.storage.boardId);
-  const state = onlineState(cwd, manifest, response.roadmap);
+  const state = withBehindNotice(onlineState(cwd, manifest, response.roadmap), manifest.storage);
   if (response.replayed) state.onlineReplay = { replayed: true, ...(response.originalRevision === undefined ? {} : { originalRevision: response.originalRevision }) };
   return { state, result: response.result };
 }

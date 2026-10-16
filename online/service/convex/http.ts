@@ -13,6 +13,7 @@ import { handleMcp, McpService } from "./model/mcp";
 import { INDEX_NOT_STORAGE } from "../../../src/core/contentRules";
 import { packJson, unpacked } from "./model/codec";
 import { requestedMemberRole } from "../../../src/core/memberRoles";
+import { PLANBAN_VERSION_HEADER, refusedForVersion, UPDATE_REQUIRED_CODE, UPDATE_REQUIRED_STATUS } from "../../../src/core/clientVersion";
 import { tokenResponse, revocationResponse } from "./model/oauthHttp";
 import { webConfigResponse, authorizationResponse, registrationResponse, consentResponse, approvalResponse, machineStartResponse, machineLaunchResponse, machineCancelResponse, consentValidityResponse, enrollmentConfigured, CLI_REDIRECT_PORTS, PLANBAN_SCOPES } from "./model/oauthConsent";
 import { MACHINE_CLIENT_ID } from "./oauth";
@@ -60,11 +61,24 @@ const unauthorized = () => json(
   { "WWW-Authenticate": 'Bearer realm="planban"' },
 );
 
+/**
+ * A computer's Planban too old for this request (owner decision, 16 October 2026): a
+ * plain message pointing at Update, never a raw error. The web page is served with the
+ * service, so it is always current.
+ */
+function tooOldFor(request: Request, op?: string): Response | null {
+  if (request.headers.get("X-Planban-Client") === "web") return null;
+  const refused = refusedForVersion(request.headers.get(PLANBAN_VERSION_HEADER), op);
+  return refused ? json({ error: { code: UPDATE_REQUIRED_CODE, message: refused } }, UPDATE_REQUIRED_STATUS) : null;
+}
+
 export async function handleApi(ctx: ActionCtx, request: Request, auth: Authenticated): Promise<Response> {
   const url = new URL(request.url);
   const parts = url.pathname.replace(/^\/api\/v1\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   const method = request.method;
   const { connectionId } = auth;
+  const outdated = tooOldFor(request, parts[0] === "boards" && parts[2] === "ops" ? parts[3] : undefined);
+  if (outdated) return outdated;
 
   if (parts[0] === "me" && parts.length === 1 && method === "GET") return json(await ctx.runQuery(internal.boards.me, { connectionId }));
   if (parts[0] === "live-token" && parts.length === 1 && method === "POST") {

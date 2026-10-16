@@ -3,6 +3,8 @@ import { accountCredentials, readCredentials, serviceUrl, type OnlineCredentials
 import { boardAccount } from "./boardLinks";
 import { planbanCommand } from "../command";
 import { PlanbanEditConflictError, type ConflictDetails } from "../conflicts";
+import { PLANBAN_VERSION_HEADER, UPDATE_REQUIRED_MESSAGE, UPDATE_REQUIRED_STATUS } from "../clientVersion";
+import { PLANBAN_VERSION } from "../version";
 
 export class OnlineAuthenticationError extends Error {
   constructor(
@@ -13,6 +15,15 @@ export class OnlineAuthenticationError extends Error {
   ) {
     super(message);
     this.name = "OnlineAuthenticationError";
+  }
+}
+
+/** The service needs a newer Planban for this (16 October 2026). Its message is plain and points at Update. */
+export class PlanbanUpdateRequiredError extends Error {
+  readonly statusCode = UPDATE_REQUIRED_STATUS;
+  constructor(message = UPDATE_REQUIRED_MESSAGE) {
+    super(message);
+    this.name = "PlanbanUpdateRequiredError";
   }
 }
 
@@ -114,6 +125,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     method: body === undefined ? "GET" : raw ? "PUT" : "POST",
     headers: {
       Authorization: `Bearer ${credentials.accessToken}`, "Content-Type": raw ? "application/octet-stream" : "application/json",
+      [PLANBAN_VERSION_HEADER]: PLANBAN_VERSION,
       ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
     },
     ...(payload === undefined ? {} : { body: payload }),
@@ -151,6 +163,7 @@ async function authorizedResponse(urlInput: string, path: string, body: unknown,
     if (response.status === 404) throw new PlanbanNotFoundError(message);
     if (response.status === 401) throw loginRequired(url, "expired", linked?.email);
     if (response.status === 403) throw new PlanbanForbiddenError(message);
+    if (response.status === UPDATE_REQUIRED_STATUS) throw new PlanbanUpdateRequiredError(payload.error?.message);
     // A daily limit (owner decision 18): kept as 429 so the board page and agents see a limit, not a failure.
     if (response.status === 429) throw Object.assign(new Error(message), { name: "OnlineLimitError", statusCode: 429 });
     throw new Error(message);

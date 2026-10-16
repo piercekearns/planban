@@ -26,7 +26,7 @@ import {
   FolderTree,
   HelpCircle,
   History,
-  Home,
+  Info,
   Loader2,
   ListTree,
   Minimize2,
@@ -125,7 +125,7 @@ import { useKeyboardInset, usePhoneLayout } from "./phoneLayout";
 import { GoalsPage, GoalsStrip, useGoals } from "./goals";
 import { latestRequestGate } from "./latestRequest";
 import { AccountMenu, ApprovePage, HostedDashboard, InvitePage, JoinedNote, SignInPage, webScreen } from "./hostedScreens";
-import { Wordmark } from "./Wordmark";
+import { CardStackMark } from "./Wordmark";
 import { captureAddressSecrets } from "./webAccount";
 
 // On the web, an invitation's token or a sign-in request in the address is
@@ -194,6 +194,8 @@ interface PlanbanState {
   staleness?: { cards: Record<string, StalenessSignal[]> };
   /** On the web: the person's role on this board. */
   hosted?: { boardId: string; role: "owner" | "editor" | "viewer" | null; authority: string | null };
+  /** On a computer: the online board uses features this Planban can't show (16 October 2026). */
+  planbanBehind?: { notice: string; features: string[] };
   cwd: string;
   manifest: { repoId: string };
   manifestPath: string;
@@ -5819,39 +5821,28 @@ function BoardView({
     <StalenessContext.Provider value={stalenessCards}>
     <BoardPeopleContext.Provider value={boardPeople.people}>
     <main className={`board-screen ${online.status?.location === "local" && online.status.stale ? "older-copy" : ""}`}>
-      <header className={`app-header ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
-        <div className={`board-title-group ${capabilities.hosted ? "web-board-title" : ""}`}>
-          <div className="board-home-row">
-            {capabilities.hosted ? (
-              // The web page's way back (approved mockup section 8): Planban / Your boards / this board.
-              <>
-                <button className="web-crumb-mark" aria-label="Your boards" onClick={() => onSelectBoard(null)}><Wordmark height={17} /></button>
-                <button className="web-crumb" onClick={() => onSelectBoard(null)}>Your boards</button>
-              </>
-            ) : (
-              <TooltipButton label="All Boards" className="board-home-button" onClick={() => onSelectBoard(null)}>
-                <Home size={15} />
-              </TooltipButton>
-            )}
-          </div>
-          <div className="board-title-row">
-            <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
-            <LocationPill status={online.status} />
-          </div>
+      {/* One line (owner decision, 16 October 2026): the card stack back to all boards, the
+          board's name opening the switcher, and where it lives; then Update (on a computer,
+          only when there is one) and the board's tools. */}
+      <header className="app-header">
+        <div className="board-title-row">
+          <TooltipButton label="Your boards" tooltipPlacement="bottom" className="board-home-mark" onClick={() => onSelectBoard(null)}>
+            <CardStackMark />
+          </TooltipButton>
+          <BoardPicker boards={boards} currentRepoId={boardId} onSelectBoard={onSelectBoard} />
+          <LocationPill status={online.status} />
         </div>
-        <div className={`header-controls ${updateStatus?.updateAvailable ? "has-update" : ""}`}>
-          {updateStatus?.updateAvailable ? (
-            <div className="header-update-row">
-              <button
-                className="toolbar-button update-available-button"
-                onClick={() => {
-                  setUpdateOpen(true);
-                  void loadUpdateStatus().catch(() => undefined);
-                }}
-              >
-                <span>Update Available</span>
-              </button>
-            </div>
+        <div className="header-controls">
+          {!capabilities.hosted && updateStatus?.updateAvailable ? (
+            <button
+              className="toolbar-button update-available-button"
+              onClick={() => {
+                setUpdateOpen(true);
+                void loadUpdateStatus().catch(() => undefined);
+              }}
+            >
+              <span>Update</span>
+            </button>
           ) : null}
           <div className="header-actions">
             <TooltipButton
@@ -5887,6 +5878,18 @@ function BoardView({
         </div>
       </header>
       {capabilities.hosted ? <JoinedNote /> : null}
+      {!capabilities.hosted && state.planbanBehind ? (
+        <div className="older-copy-banner planban-behind-banner" role="status">
+          <Info size={16} />
+          <div className="grow">
+            <b>Your Planban is behind this board</b>
+            <p>{state.planbanBehind.notice}</p>
+          </div>
+          <div className="acts">
+            <button className="online-board-button primary-accent" onClick={() => { setUpdateOpen(true); void loadUpdateStatus().catch(() => undefined); }}>Update</button>
+          </div>
+        </div>
+      ) : null}
       {capabilities.olderCopyCheck ? <OlderCopyBanner repoId={boardId} boardTitle={state.roadmap.project.title} status={online.status} reload={online.reload} /> : null}
 
       {isActivityLab ? (

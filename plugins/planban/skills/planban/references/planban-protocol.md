@@ -255,6 +255,16 @@ Do any of these only when the person asks.
   Delete account). It removes the boards the person owns, for everyone on them,
   within 30 days. Their edits on other people's boards stay, without their name.
 
+### An older Planban on an online board
+
+The online service keeps accepting older versions' actions, and new features are added
+alongside existing ones. When a board uses something this Planban can't show, board
+reads say "This board uses features your Planban doesn't have yet. Update to see
+everything." When the service needs a newer Planban for an action, the action is
+refused with a plain message saying so (error category `update_required`). Tell the
+person once, in plain words, and suggest they update with Update on the board page
+in Planban on their computer. Don't retry a refused action, and don't work around it.
+
 ### Tools on each surface
 
 The local tools (the Planban plugin, through this computer) and the remote tools

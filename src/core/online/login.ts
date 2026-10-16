@@ -10,6 +10,15 @@ import { onlineRequest } from "./client";
 import { rememberIdentity } from "./accounts";
 import { readCredentials } from "./credentials";
 import { PlanbanValidationError } from "../boardOperations";
+import { PLANBAN_VERSION_HEADER } from "../clientVersion";
+import { PLANBAN_VERSION } from "../version";
+
+// Sign-in requests name this Planban's version too, like every other request (16 October 2026).
+const fetch: typeof globalThis.fetch = (input, init = {}) => {
+  const headers = new Headers(init.headers);
+  headers.set(PLANBAN_VERSION_HEADER, PLANBAN_VERSION);
+  return globalThis.fetch(input, { ...init, headers });
+};
 
 export interface LoginOptions {
   /** Development sign-in only: a connection limited to one board. */
