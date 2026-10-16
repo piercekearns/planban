@@ -13,7 +13,7 @@ import { historyDocPath, historyIndexPath, historyRoadmapPath, manifestPath } fr
 import { manifestSchema } from "../src/core/schema";
 import { listBoards, registerBoardFromCwd, duplicateBoard } from "../src/core/registry";
 import { credentialsRoot, onlineStatus, readCredentials, saveCredentials, serviceUrl } from "../src/core/online/credentials";
-import { onlineRequest, OnlineAuthenticationError } from "../src/core/online/client";
+import { onlineRequest, OnlineAuthenticationError, PlanbanForbiddenError } from "../src/core/online/client";
 import { revokeToken as revokeServiceToken } from "../online/service/convex/oauth";
 import { onlineLogin } from "../src/core/online/login";
 import { attachOnline, buildLocalBundle, exportOnline, keepLocalCopy, keepSeparateBoard, PlanbanConfirmationNeeded, PlanbanNotReadyForOnline, PlanbanTakeOnlineStopped, restoreBackup, stopTakeOnline, takeLocal, takeOnline, type BoardBundle } from "../src/core/online/transfers";
@@ -411,12 +411,12 @@ test.beforeEach(async () => {
   fake = await fakeService();
   await storage.initializeProject({ cwd, repoId: "demo", title: "Demo board", updateAgents: false });
   await storage.createCard({ cwd, title: "Alpha", specMarkdown: "# Original spec", planMarkdown: "# Original plan" });
-  await saveCredentials(fake.url, { clientId: "cli", accessToken: "access-0", refreshToken: "refresh-0", expiresAt: new Date(Date.now() + 3600_000).toISOString(), person: "owner" });
+  await saveCredentials(fake.url, { clientId: "cli", accessToken: "access-0", refreshToken: "refresh-0", expiresAt: new Date(Date.now() + 3600_000).toISOString(), person: "dev-owner" });
 });
 
 test.afterEach(async () => {
   await fake.close();
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   process.env.PLANBAN_HOME = originalHome;
   delete process.env.PLANBAN_ONLINE_TEST_PASSWORD;
   assert.deepEqual(fake.errors, []);
@@ -472,7 +472,7 @@ test("machine wait closes a hanging opener and sends PKCE-owned cancellation wit
 test("failed credential save invokes real machine revocation and preserves existing file and independent machine", async () => {
   const file = join(credentialsRoot(), "credentials.json"), original = "malformed existing private fixture file";
   await writeFile(file, original);
-  await assert.rejects(onlineLogin(fake.url, { openBrowser: async (url) => { await fetch((await fetch(url, { redirect: "manual" })).headers.get("location")!); } }));
+  await assert.rejects(onlineLogin(fake.url, { switchAccount: true, openBrowser: async (url) => { await fetch((await fetch(url, { redirect: "manual" })).headers.get("location")!); } }));
   assert.equal(await readFile(file, "utf8"), original);
   assert.ok(fake.issuedMachines.find(r => r._id === "issued").revokedAt);
   assert.equal(fake.issuedMachines.find(r => r._id === "unrelated").revokedAt, undefined);
@@ -483,7 +483,7 @@ test("actual hung browser-opening child does not keep the CLI process alive afte
   const pidFile = join(root, "owned-opener.pid");
   const script = `import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module'; import {writeFileSync} from 'node:fs';
     const actualSpawn=cp.spawn; cp.spawn=()=>{ const child=actualSpawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); writeFileSync(process.env.OPENER_PID_FILE,String(child.pid)); return child; }; syncBuiltinESMExports();
-    const {onlineLogin}=await import('./src/core/online/login.ts'); try { await onlineLogin(process.env.FIXTURE_URL); process.exitCode=3; } catch(error) { if(!String(error).includes('timed out')) throw error; }`;
+    const {onlineLogin}=await import('./src/core/online/login.ts'); try { await onlineLogin(process.env.FIXTURE_URL, { switchAccount: true }); process.exitCode=3; } catch(error) { if(!String(error).includes('timed out')) throw error; }`;
   try {
     await execFileAsync(process.execPath, ["--import", "tsx/esm", "--input-type=module", "-e", script], { env: { ...process.env, FIXTURE_URL: fake.url, OPENER_PID_FILE: pidFile }, timeout: 4000 });
     const pid = Number(await readFile(pidFile, "utf8"));
@@ -496,7 +496,7 @@ test("actual hung browser-opening child does not keep the CLI process alive afte
 
 test("malformed machine lease fails before browser opening and leaves existing credentials untouched", async () => {
   const before = await readCredentials(); fake.setMachineLease(300001);
-  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("invalid lease opened browser") }), /valid bounded/);
+  await assert.rejects(onlineLogin(fake.url, { switchAccount: true, openBrowser: async () => assert.fail("invalid lease opened browser") }), /valid bounded/);
   assert.deepEqual(await readCredentials(), before);
 });
 
@@ -522,7 +522,7 @@ test("CLI refuses provider, wrong-purpose or refreshing tokens before saving cre
 
 test("the sign-in server's endpoints must belong to it", async () => {
   fake.setMetadataOrigin("https://other.example");
-  await assert.rejects(onlineLogin(fake.url, { openBrowser: async () => assert.fail("no browser should open") }), /must belong to it/);
+  await assert.rejects(onlineLogin(fake.url, { switchAccount: true, openBrowser: async () => assert.fail("no browser should open") }), /must belong to it/);
   assert.equal(fake.requests.some((req) => req.path === "/oauth/token"), false);
 });
 
@@ -565,7 +565,7 @@ test("documents preserve online stamps and stale roadmap or document edits confl
 });
 
 test("hosted errors retain domain classes, access status and revision details", async () => {
-  for (const [status, type] of [[400, storage.PlanbanValidationError], [404, storage.PlanbanNotFoundError], [409, storage.PlanbanConflictError], [403, OnlineAuthenticationError]] as const) {
+  for (const [status, type] of [[400, storage.PlanbanValidationError], [404, storage.PlanbanNotFoundError], [409, storage.PlanbanConflictError], [403, PlanbanForbiddenError]] as const) {
     await assert.rejects(onlineRequest(fake.url, `/error/${status}`), (error: any) => error instanceof type && (status !== 409 || error.currentRevision === 19));
   }
 });
@@ -737,8 +737,9 @@ test("an Online Board without a sign-in tells the page which service to sign in 
     const missingBody = await missing.json();
     assert.deepEqual([missingBody.signInNeeded, missingBody.signedOut], [serviceUrl(fake.url), "missing"]);
     // Agents and terminals still get the command in the message.
-    assert.match(missingBody.error, /online login/);
-    assert.equal(missingBody.signInCommand, `${planbanCommand()} online login ${serviceUrl(fake.url)}`);
+    // The board names the account it uses (here one whose email this test sign-in never learned).
+    assert.match(missingBody.error, /online sign-in/);
+    assert.equal(missingBody.signInCommand, `${planbanCommand()} online sign-in ${serviceUrl(fake.url)}`);
     // The page can only start sign-in for a service this computer already trusts, never one a board's files name.
     const untrusted = await fetch(`${server.url}/api/online/sign-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: "https://planban-login.example" }) });
     assert.equal(untrusted.status, 422);
@@ -1128,7 +1129,7 @@ test("signing in checks the machine's local boards for stale copies", async () =
   // On the second machine, its own registry lists its local copy.
   await registerBoardFromCwd(second);
   resetCopyChecks();
-  const result: any = await onlineLogin(fake.url, { openBrowser: async (authorizeUrl) => {
+  const result: any = await onlineLogin(fake.url, { switchAccount: true, openBrowser: async (authorizeUrl) => {
     await fetch((await fetch(authorizeUrl, { redirect: "manual" })).headers.get("location")!);
   } });
   assert.ok(result.staleLocalCopies?.some((copy: { repoId: string; onlineBoard: string }) => copy.repoId === "demo" && copy.onlineBoard === "demo"));
@@ -1593,6 +1594,6 @@ test("taking a shared board local says who loses access, and only goes ahead whe
 
 test("a sign-in the service no longer accepts asks the person to sign in again", async () => {
   fake.rejectAccess();
-  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), (error: any) => error instanceof OnlineAuthenticationError && error.message.includes("online login"));
+  await assert.rejects(onlineRequest(fake.url, "/api/v1/me"), (error: any) => error instanceof OnlineAuthenticationError && error.message.includes("online sign-in"));
   assert.equal(fake.requests.filter((req) => req.path === "/api/v1/me").length, 1, "no retry loop");
 });

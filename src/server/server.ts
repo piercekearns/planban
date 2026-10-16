@@ -1,3 +1,4 @@
+import { PEOPLE_ONLY } from "../core/goals";
 import express from "express";
 import { spawn } from "node:child_process";
 import { urlOpener } from "../core/openUrl";
@@ -57,6 +58,9 @@ import {
   createGroup,
   deleteArchivedCard,
   historyPayload,
+  readGoals,
+  editGoals,
+  decideGoalSuggestion,
   loadHistoryState,
   exportFlatVersion1,
   reconstructHierarchy,
@@ -77,6 +81,7 @@ import { updatePreflight } from "../core/updatePreflight";
 import { runPlanbanUpdate, type UpdateRunSnapshot } from "../core/updateRunner";
 import { PlanbanActivityStore } from "../core/activity";
 import { collectStaleness } from "../core/stalenessSources";
+import { PlanbanEditConflictError } from "../core/conflicts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const WEB_ROOT = resolve(PACKAGE_ROOT, "src/web");
@@ -1347,6 +1352,59 @@ export async function startServer(options: ServeOptions) {
     }
   });
 
+  // Goals (owner decisions, 16 October 2026): the page reads them; people change them here.
+  // Only the board page in a browser may change them: it names itself, and the browser marks
+  // its requests same-origin. Agents use the suggestion tool instead (PEOPLE_ONLY).
+  const fromBoardPage = (req: express.Request) => req.header("X-Planban-Client") === "web"
+    && req.header("Sec-Fetch-Site")?.trim().toLowerCase() === "same-origin" && req.body?.actor !== "agent";
+  app.get("/api/boards/:repoId/goals", async (req, res, next) => {
+    try {
+      const { page, revision } = await readGoals({ cwd: await boardCwd(req.params.repoId) });
+      res.json({ ...page, revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/boards/:repoId/goals", async (req, res, next) => {
+    try {
+      if (!fromBoardPage(req)) {
+        res.status(403).json({ error: PEOPLE_ONLY });
+        return;
+      }
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
+      const { value } = await runApiMutation(req, cwdForBoard, () => editGoals({
+        cwd: cwdForBoard, edit: req.body?.edit, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: "user",
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: value.revision });
+      res.json({ ...value.page, revision: value.revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/boards/:repoId/goals/suggestions/:id", async (req, res, next) => {
+    try {
+      if (!fromBoardPage(req)) {
+        res.status(403).json({ error: PEOPLE_ONLY });
+        return;
+      }
+      const decision = req.body?.decision;
+      if (decision !== "accept" && decision !== "dismiss") {
+        res.status(422).json({ error: "decision is accept or dismiss" });
+        return;
+      }
+      const cwdForBoard = await boardCwd(req.params.repoId, false);
+      const { value } = await runApiMutation(req, cwdForBoard, () => decideGoalSuggestion({
+        cwd: cwdForBoard, suggestionId: req.params.id, decision, baseRevision: optionalBaseRevision(req.body?.baseRevision), actor: "user",
+      }));
+      sendEvent("state", { repoId: req.params.repoId, revision: value.revision });
+      res.json({ ...value.page, revision: value.revision });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/boards/:repoId/history", async (req, res, next) => {
     try {
       res.json(await historyPayload(await boardCwd(req.params.repoId)));
@@ -1750,7 +1808,9 @@ export async function startServer(options: ServeOptions) {
           : 500;
     // A missing or ended Online Board sign-in: the board page offers Sign in for this service.
     const signIn = error instanceof OnlineAuthenticationError ? error.signIn : undefined;
-    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online login ${signIn.url}` } : {}) });
+    // A refused edit on an online board: what changed, by whom, and the current value, for the page.
+    const conflict = error instanceof PlanbanEditConflictError ? error.conflict : undefined;
+    res.status(responseStatus).json({ error: message, ...(signIn ? { signInNeeded: signIn.url, signedOut: signIn.reason, signInCommand: `${planbanCommand()} online sign-in ${signIn.url}`, ...(signIn.account !== undefined ? { signInAccount: signIn.account } : {}) } : {}), ...(conflict ? { conflict, currentRevision: conflict.currentRevision } : {}) });
   });
 
   try {

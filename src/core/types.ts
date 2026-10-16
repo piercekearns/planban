@@ -73,6 +73,11 @@ export interface PlanbanResolvedState {
    * the roadmap as it was right after the edit is no longer available.
    */
   onlineReplay?: { replayed: true; originalRevision?: number } | undefined;
+  /**
+   * Online Boards only: the board uses features this Planban can't show
+   * (16 October 2026). The notice is for people and agents alike.
+   */
+  planbanBehind?: { notice: string; features: string[] } | undefined;
   cwd: string;
   manifestPath: string;
   agentContextPath: string;
@@ -89,6 +94,9 @@ export interface PlanbanDocPayload {
   exists: boolean;
   markdown: string;
   mtimeMs: number | null;
+  /** An online write retried with the same idempotency key: applied once, earlier. */
+  replayed?: true | undefined;
+  originalRevision?: number | undefined;
 }
 
 export type PlanbanHistoryActor = "user" | "agent" | "import" | "system";

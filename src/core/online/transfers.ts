@@ -8,13 +8,15 @@ import { agentContextPath, defaultPlanbanRoot, defaultPlanningRoot, detachedBoar
 import { atomicWriteFile, isAtomicWriteTemp, LOCK_DIR, QUEUE_DIR, withBoardWriteLock } from "../persistence";
 import { registerBoardFromState } from "../registry";
 import { roadmapSchema } from "../schema";
-import { loadState, pathExists, readDoc, readManifest, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
+import { loadState, pathExists, readDoc, readLocalGoals, readManifest, refreshAgentsBlock, resolveProjectCwd, resolvePlanningRoot, saveRoadmap } from "../storage";
+import { normalizeGoals } from "../goals";
 import type { PlanbanProjectManifest, PlanbanResolvedState } from "../types";
 import { loadOnlineState, onlineState } from "./adapter";
-import { boardPath, onlineRequest, requireCredentials } from "./client";
+import { boardAccount, recordBoardAccount, recordBoardAccountAs, withIdentity } from "./accounts";
+import { boardCredentials, boardPath, onlineRequest, requireCredentials } from "./client";
 import { markIndependent, readOnlineNote, readStaleMarker, removeOnlineNote, writeOnlineNote, type StaleCopy } from "./copyCheck";
 import { readBackup, refreshBackup } from "./backup";
-import { serviceUrl } from "./credentials";
+import { chosenAccount, serviceUrl, signedInAs, type OnlineCredentials } from "./credentials";
 import { checkBoardIsIndex, machineName, type IndexReport } from "../indexCheck";
 import { checkIndexCard, checkIndexDocument, checkIndexValue, embeddedFileIn, MAX_DETAILS_BYTES, withoutEmbeddedFiles, withoutEmbeddedValue } from "../contentRules";
 import { buildAgentContext } from "../protocol";
@@ -38,11 +40,19 @@ export const bundleSchema = z.object({
   retention: z.record(z.string(), z.unknown()).optional(),
   /** The board's durable identity. */
   uid: z.string().optional(),
+  /** The board's goals (goals.json), when it has any. */
+  goals: z.unknown().optional(),
 });
 export type BoardBundle = z.infer<typeof bundleSchema>;
 
-/** Upload parts stay well inside one request; Revival's history alone is 126 MB. */
-const PART_BYTES = 4 * 1024 * 1024;
+/**
+ * Upload parts stay well inside one request and inside the service's one
+ * second of work per request: every history version is a whole board, which
+ * is checked, packed and stored there. Revival's versions are about 800 KB
+ * each, so a 4 MB part (about five versions) ran out of time; at 1 MB a
+ * version that size travels alone. Exported for the test that keeps it so.
+ */
+export const PART_BYTES = 1024 * 1024;
 const HISTORY_PAGE = 8;
 const DOCS_PAGE = 100;
 
@@ -76,6 +86,8 @@ const journalSchema = z.object({
   startedAt: z.string(),
   /** Take Online: the account that started the upload. Only it can see, finish or cancel that upload. */
   userId: z.string().optional(),
+  /** The email of the account that started it, to name it if it has to sign in again. */
+  email: z.string().optional(),
   /** Take Online: a fingerprint of everything the upload sends, so a resumed upload sends exactly the same. */
   textDigest: z.string().optional(),
 });
@@ -109,6 +121,8 @@ async function publishManifest(cwd: string, manifest: PlanbanProjectManifest, st
     repoId: manifest.repoId, planningRoot: state.planningRoot, roadmapPath: state.roadmapPath, manifestPath: state.manifestPath,
     online: manifest.storage?.kind === "online" ? manifest.storage : undefined,
   }));
+  // Older projects carry the 1.x wording ("live state lives on this device"); bring it up to date.
+  await refreshAgentsBlock(cwd);
   await registerBoardFromState(state);
 }
 
@@ -150,8 +164,9 @@ export async function buildLocalBundle(cwd: string): Promise<BoardBundle> {
       if (await pathExists(path)) historyDocs.push({ version: entry.version, cardId: doc.cardId, kind: doc.kind, markdown: await readFile(path, "utf8") });
     }
   }
+  const goals = await readLocalGoals(state.planningRoot, state.roadmap.revision);
   return bundleSchema.parse({ format: "planban-board-bundle", version: 1, roadmap: state.roadmap, docs,
-    historyDocs, retention: history.retention, history: versions,
+    historyDocs, retention: history.retention, history: versions, ...(goals ? { goals } : {}),
   });
 }
 
@@ -212,6 +227,8 @@ export interface MoveProgress {
 
 export interface MoveOptions {
   onProgress?: (progress: MoveProgress) => void;
+  /** Take Online as this signed-in account (email); the default account otherwise. */
+  account?: string | undefined;
   /** Stops a Take Online before it commits; the board stays on this machine. */
   signal?: AbortSignal;
 }
@@ -316,7 +333,22 @@ function historyForOnline(bundle: BoardBundle): BoardBundle {
   };
   const entry = (value: BoardBundle["history"][number]["entry"]) => {
     const cleaned = withoutEmbeddedValue(value, note);
-    return passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES)) ? cleaned : bounded(value, IDS);
+    if (passes(() => checkIndexValue(cleaned, "entry", MAX_DETAILS_BYTES))) return cleaned;
+    const kept = bounded(value, IDS);
+    if (passes(() => checkIndexValue(kept, "entry", MAX_DETAILS_BYTES))) return kept;
+    // A change to very many cards at once (1,000 created in one go): its lists keep as
+    // many as fit, and the summary says how many more there were.
+    const cards = kept.affectedCards ?? [];
+    const docs = kept.affectedDocs ?? [];
+    for (let room = Math.min(cards.length, 2_000); room >= 0; room = room > 100 ? Math.floor(room / 2) : room - 25) {
+      const shown = cards.slice(0, Math.max(room, 0));
+      const docsShown = docs.filter((doc) => shown.includes(doc.cardId));
+      const left = cards.length - shown.length;
+      const trimmed = { ...kept, affectedCards: shown, affectedDocs: docsShown, summary: `${String(kept.summary).slice(0, 200)}${left ? ` (and ${left} more cards)` : ""}` };
+      if (passes(() => checkIndexValue(trimmed, "entry", MAX_DETAILS_BYTES))) return trimmed;
+      if (room <= 0) break;
+    }
+    return { ...kept, affectedCards: [], affectedDocs: [], summary: `${String(kept.summary).slice(0, 200)} (${cards.length} cards)` };
   };
   const document = (markdown: string, cardId: string, kind: string) => {
     const cleaned = withoutEmbeddedFiles(markdown, note);
@@ -349,7 +381,8 @@ export class PlanbanConfirmationNeeded extends PlanbanValidationError {
  */
 export async function takeOnline(urlInput: string, cwdInput: string, options: MoveOptions = {}) {
   const url = serviceUrl(urlInput);
-  await requireCredentials(url);
+  // The account this move runs as, for every request it makes; the board is linked to it.
+  let pinned = await withIdentity(url, options.account ? await chosenAccount(url, options.account) : await requireCredentials(url));
   const cwd = resolveProjectCwd(cwdInput);
   const manifest = await readManifest(cwd);
   if (!manifest?.enabled) throw new PlanbanValidationError(`Planban is not initialized in ${cwd}`);
@@ -369,15 +402,21 @@ export async function takeOnline(urlInput: string, cwdInput: string, options: Mo
       const report = await indexReport(await buildLocalBundle(cwd), planningRoot);
       if (!report.clean) throw new PlanbanNotReadyForOnline(report);
     }
+    // Resuming continues as the account that started the upload, and only as it.
+    if (journal?.userId && journal.userId !== pinned.person) {
+      const starter = await signedInAs(url, journal.userId);
+      if (!starter) throw new PlanbanValidationError(otherAccountMessage(journal));
+      pinned = starter;
+    }
     if (journal?.phase !== "committed") {
       try {
-        journal = await uploadBoard(url, cwd, planningRoot, boardId, journal, options);
+        journal = await uploadBoard(url, cwd, planningRoot, boardId, journal, { ...options, credentials: pinned });
       } catch (error) {
         throw await abandonUpload(url, planningRoot, error);
       }
     }
     options.onProgress?.({ step: "switch", message: "Switching this project to the online board" });
-    const result = await finishTakeOnline(cwd, manifest, planningRoot, journal!);
+    const result = await finishTakeOnline(cwd, manifest, planningRoot, journal!, pinned);
     options.onProgress?.({ step: "done", message: "The board is online" });
     return result;
   });
@@ -403,7 +442,8 @@ async function cancelUpload(url: string, journal: TransferJournal): Promise<Canc
   let credentials: Awaited<ReturnType<typeof requireCredentials>>;
   let me: { userId: string };
   try {
-    credentials = await requireCredentials(url);
+    // The account that started the upload, if it is signed in here; otherwise the default (which then can't cancel it).
+    credentials = (await signedInAs(url, journal.userId)) ?? await requireCredentials(url);
     me = await onlineRequest<{ userId: string }>(url, "/api/v1/me", undefined, { credentials });
   } catch {
     return "uncertain";
@@ -419,7 +459,7 @@ async function cancelUpload(url: string, journal: TransferJournal): Promise<Canc
 }
 
 const otherAccountMessage = (journal: TransferJournal) =>
-  `This board's move online was started while signed in to ${journal.url} as another account (${journal.userId}). Sign in as that account to finish or stop it; nothing has been changed.`;
+  `This board's move online was started while signed in to ${journal.url} as ${journal.email ?? `another account (${journal.userId})`}, which isn't signed in here now. Sign in as that account to finish or stop it: ${planbanCommand()} online sign-in ${journal.url}. Nothing has been changed.`;
 
 /**
  * After a failed upload: cancel it on the service, which removes the
@@ -468,7 +508,8 @@ export async function stopTakeOnline(cwdInput: string) {
 }
 
 /** Uploads the board under a transfer journal, ending committed. Resumable. */
-async function uploadBoard(url: string, cwd: string, planningRoot: string, boardId: string, journal: TransferJournal | null, options: MoveOptions): Promise<TransferJournal> {
+async function uploadBoard(url: string, cwd: string, planningRoot: string, boardId: string, journal: TransferJournal | null, options: MoveOptions & { credentials: OnlineCredentials }): Promise<TransferJournal> {
+  const as = { credentials: options.credentials };
   options.onProgress?.({ step: "prepare", message: "Preparing the board" });
   // History cannot be tidied, so anything embedded in an old version is noted instead.
   const bundle = historyForOnline(await buildLocalBundle(cwd));
@@ -478,6 +519,7 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   // different, or an older record without a fingerprint, starts it again.
   const textDigest = createHash("sha256").update(JSON.stringify({
     roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], retention: bundle.retention ?? null, parts: uploadParts(bundle),
+    ...(bundle.goals ? { goals: bundle.goals } : {}),
   })).digest("hex");
   if (journal?.phase === "uploading" && (journal.localRevision !== bundle.roadmap.revision || journal.textDigest !== textDigest)) {
     // The board changed locally since the interrupted upload: cancel it and
@@ -491,8 +533,9 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
     else if (outcome === "uncertain") throw new PlanbanValidationError("Planban could not reach the online service to replace an earlier unfinished upload of this board. Nothing has changed; try again when online.");
   }
   if (!journal) {
-    const me = await onlineRequest<{ userId: string }>(url, "/api/v1/me");
-    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId, textDigest };
+    const me = await onlineRequest<{ userId: string; person?: { email?: string } }>(url, "/api/v1/me", undefined, as);
+    const email = me.person?.email ?? as.credentials?.email;
+    journal = { version: 1, direction: "online", transferId: randomUUID(), url, boardId, localRevision: bundle.roadmap.revision, phase: "uploading", startedAt: new Date().toISOString(), userId: me.userId, ...(email ? { email } : {}), textDigest };
     await writeJournal(planningRoot, journal);
   }
   crashPoint("take-online:after-journal");
@@ -500,7 +543,8 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
   const begun = await onlineRequest<{ state: string; receivedParts: number[] }>(url, "/api/v1/transfers", {
     transferId: journal.transferId, roadmap: bundle.roadmap, retiredIds: bundle.retiredIds ?? [], uid,
     ...(bundle.retention ? { retention: bundle.retention } : {}),
-  });
+    ...(bundle.goals ? { goals: bundle.goals } : {}),
+  }, as);
   if (begun.state !== "committed") {
     const parts = uploadParts(bundle);
     const received = new Set(begun.receivedParts);
@@ -509,13 +553,13 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
     for (const [seq, part] of parts.entries()) {
       if (received.has(seq)) continue;
       options.signal?.throwIfAborted();
-      await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/parts`, { seq, ...part });
+      await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/parts`, { seq, ...part }, as);
       crashPoint("take-online:after-part");
       received.add(seq);
       copying(received.size);
     }
     options.signal?.throwIfAborted();
-    await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/commit`, { partCount: parts.length });
+    await onlineRequest(url, `/api/v1/transfers/${encodeURIComponent(journal.transferId)}/commit`, { partCount: parts.length }, as);
   }
   crashPoint("take-online:after-commit");
   journal = {
@@ -529,7 +573,7 @@ async function uploadBoard(url: string, cwd: string, planningRoot: string, board
 }
 
 /** Switches the project to the online board once the upload has committed. Safe to repeat. */
-async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, planningRoot: string, journal: TransferJournal) {
+async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, planningRoot: string, journal: TransferJournal, pinned: OnlineCredentials) {
   const { url, boardId } = journal;
   const snapshot = journal.snapshot!;
   let unsyncedLocalChanges = journal.unsyncedLocalChanges ?? [];
@@ -543,7 +587,9 @@ async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, p
   }
   crashPoint("take-online:after-rename");
   await atomicWriteFile(join(planningRoot, "ONLINE-BOARD.txt"), `Authority moved to ${url}, board ${boardId}.\nThe roadmap snapshot, documents and history here are recovery evidence. Do not edit them.\n`);
-  const roadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(url, boardPath(boardId))).roadmap;
+  // Linked first, so every request for the board (this one included) uses the account that took it online.
+  await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
+  const roadmap = (await onlineRequest<{ roadmap: PlanbanResolvedState["roadmap"] }>(url, boardPath(boardId), undefined, { credentials: pinned })).roadmap;
   const onlineManifest: PlanbanProjectManifest = { ...manifest, storage: { kind: "online", url, boardId } };
   // The note is written before the project switches, while the record of the
   // move still exists, so a retry after any crash writes it again.
@@ -553,6 +599,8 @@ async function finishTakeOnline(cwd: string, manifest: PlanbanProjectManifest, p
   crashPoint("take-online:after-publish");
   await rm(transferJournalPath(planningRoot), { force: true });
   await refreshBackup(url, boardId, { force: true });
+  // Which account this board went online under, kept on this computer only.
+  await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
   return { boardId, url, localSnapshot: snapshot, onlineNote, ...(unsyncedLocalChanges.length ? { unsyncedLocalChanges } : {}) };
 }
 
@@ -593,7 +641,7 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   const base = boardPath(storage.boardId, "/export");
   // During Take Local, every page must come from the generation that was frozen.
   const bound = transferId ? `&transferId=${encodeURIComponent(transferId)}` : "";
-  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown>; uid?: string }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
+  const meta = await onlineRequest<{ roadmap: unknown; retiredIds: string[]; retention?: Record<string, unknown>; uid?: string; goals?: unknown }>(storage.url, `${base}/meta${transferId ? `?transferId=${encodeURIComponent(transferId)}` : ""}`);
   const docs: BoardBundle["docs"] = [];
   for (let offset: number | null = 0; offset !== null;) {
     const page: { docs: BoardBundle["docs"]; nextOffset: number | null } = await onlineRequest(storage.url, `${base}/docs?offset=${offset}&limit=${DOCS_PAGE}${bound}`);
@@ -602,17 +650,26 @@ export async function exportOnline(cwd: string, out?: string, transferId?: strin
   }
   const history: BoardBundle["history"] = [];
   const historyDocs: NonNullable<BoardBundle["historyDocs"]> = [];
+  type HistoryPage = { history: BoardBundle["history"]; historyDocs: NonNullable<BoardBundle["historyDocs"]>; moreDocs?: { version: number; cursor: string } };
   for (let after = 0; ;) {
-    const page: { history: BoardBundle["history"]; historyDocs: NonNullable<BoardBundle["historyDocs"]> } = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}${bound}`);
+    const page: HistoryPage = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}${bound}`);
     if (page.history.length === 0) break;
     history.push(...page.history);
     historyDocs.push(...page.historyDocs);
+    // A version with more documents than one response holds continues on its own pages.
+    for (let more = page.moreDocs; more;) {
+      const cursor = more.cursor ? `&docsCursor=${encodeURIComponent(more.cursor)}` : "";
+      const rest: HistoryPage = await onlineRequest(storage.url, `${base}/history?after=${after}&limit=${HISTORY_PAGE}&docsOf=${more.version}${cursor}${bound}`);
+      historyDocs.push(...rest.historyDocs);
+      more = rest.moreDocs;
+    }
     after = page.history.at(-1)!.entry.version;
     crashPoint("take-local:mid-download");
   }
   const bundle = bundleSchema.parse({
     format: "planban-board-bundle", version: 1, roadmap: meta.roadmap, docs, history, historyDocs, retiredIds: meta.retiredIds,
     ...(meta.retention ? { retention: meta.retention } : {}), ...(meta.uid ? { uid: meta.uid } : {}),
+    ...(meta.goals ? { goals: meta.goals } : {}),
   });
   if (out) await writeJson(resolve(out), bundle);
   return bundle;
@@ -631,7 +688,7 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     const configured = doc.kind === "spec" ? item.specDoc : item.planDoc;
     if (!configured) throw new PlanbanValidationError(`Export document has no roadmap reference: ${key}`);
     const destination = resolveInsideRoot(root, configured);
-    const protectedPaths = [join(root, "roadmap.json"), join(root, "history"), join(root, ".planban-write.lock"), join(root, ".planban-write.queue")];
+    const protectedPaths = [join(root, "roadmap.json"), join(root, "goals.json"), join(root, "goals.next.json"), join(root, "history"), join(root, ".planban-write.lock"), join(root, ".planban-write.queue")];
     if (protectedPaths.some((path) => destination === path || destination.startsWith(path + sep)) || paths.has(destination)) {
       throw new PlanbanValidationError(`Export contains a conflicting document path: ${configured}`);
     }
@@ -663,6 +720,7 @@ async function stageBundle(root: string, bundle: BoardBundle) {
     entries: bundle.history.map(({ entry }) => entry).sort((a, b) => a.version - b.version),
   });
   if (bundle.uid) await writeBoardIdentity(root, bundle.uid);
+  if (bundle.goals) await writeJson(join(root, "goals.json"), normalizeGoals(bundle.goals));
   await writeJson(join(root, "roadmap.json"), roadmap);
   return roadmap;
 }
@@ -689,11 +747,12 @@ function confirmRemoving(others: Array<{ userId: string; role: string }>) {
   );
 }
 
-/** Everyone on an Online Board except the caller: who would lose access if it were taken local. */
+/** Everyone on an Online Board except the caller (the board's own account here): who would lose access if it were taken local. */
 export async function othersOnBoard(url: string, boardId: string) {
+  const credentials = await boardCredentials(url, boardId);
   const [{ members }, me] = await Promise.all([
-    onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members")),
-    onlineRequest<{ userId: string }>(url, "/api/v1/me"),
+    onlineRequest<{ members: Array<{ userId: string; role: string }> }>(url, boardPath(boardId, "/members"), undefined, { credentials }),
+    onlineRequest<{ userId: string }>(url, "/api/v1/me", undefined, { credentials }),
   ]);
   return members.filter((member) => member.userId !== me.userId);
 }
@@ -800,27 +859,38 @@ export async function takeLocal(cwdInput: string, options: {
   });
 }
 
-export async function attachOnline(urlInput: string, boardId: string, cwdInput: string, options: { replaceStaleCopy?: boolean } = {}) {
+export async function attachOnline(urlInput: string, boardId: string, cwdInput: string, options: { replaceStaleCopy?: boolean; account?: string | undefined } = {}) {
   const url = serviceUrl(urlInput);
   const cwd = resolve(cwdInput);
   const existing = await readManifest(cwd);
   if (!boardId.trim()) throw new PlanbanValidationError("boardId is required.");
+  // A folder holding another board is refused before anything changes, the board's account link included.
+  const replacing = !!existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId);
+  const planningRoot = replacing && existing.storage?.kind !== "online" ? resolvePlanningRoot(existing) : null;
+  const marker = planningRoot ? await readStaleMarker(planningRoot) : null;
+  if (replacing && (!options.replaceStaleCopy || !marker || marker.url !== url || marker.boardId !== boardId)) {
+    throw new PlanbanValidationError("This directory already has a different board. Use an empty directory or its existing board transfer command.");
+  }
+  // The account this attach uses: the one named, or the board's own if it is
+  // already linked here (it keeps it), or else the default, linked before the board is read.
+  const earlierLink = await boardAccount(url, boardId);
+  const relink = !!options.account || !earlierLink;
+  const chosen = options.account ? await chosenAccount(url, options.account) : earlierLink ? null : await requireCredentials(url).catch(() => null);
+  const pinned = chosen ? await withIdentity(url, chosen) : null;
+  if (relink && pinned) await recordBoardAccountAs(url, boardId, pinned);
+  const undoLink = () => relink ? recordBoardAccount(url, boardId, earlierLink).catch(() => undefined) : Promise.resolve();
   let staleCopy: { snapshot: string; report: string; unsyncedChanges: StaleCopy["unsyncedChanges"] } | undefined;
-  if (existing && (existing.storage?.kind !== "online" || existing.storage.url !== url || existing.storage.boardId !== boardId)) {
-    const planningRoot = existing.storage?.kind === "online" ? null : resolvePlanningRoot(existing);
-    const marker = planningRoot ? await readStaleMarker(planningRoot) : null;
-    if (!options.replaceStaleCopy || !marker || marker.url !== url || marker.boardId !== boardId) {
-      throw new PlanbanValidationError("This directory already has a different board. Use an empty directory or its existing board transfer command.");
-    }
+  if (replacing) {
     // Check the online board is reachable before setting the local copy aside.
-    await loadOnlineState(cwd, { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } });
-    staleCopy = await setStaleCopyAside(planningRoot!, marker);
+    await loadOnlineState(cwd, { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } }).catch(async (error: unknown) => { await undoLink(); throw error; });
+    staleCopy = await setStaleCopyAside(planningRoot!, marker!);
   }
   const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId: boardId, storage: { kind: "online", url, boardId } };
-  const state = await loadOnlineState(cwd, manifest);
+  const state = await loadOnlineState(cwd, manifest).catch(async (error: unknown) => { await undoLink(); throw error; });
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, state);
   const onlineNote = await leaveOnlineNote(cwd, { url, boardId, title: state.roadmap.project.title, onlineSince: new Date().toISOString() });
+  if (relink && pinned) await recordBoardAccountAs(url, boardId, pinned).catch(() => undefined);
   await refreshBackup(url, boardId, { force: true });
   return { boardId, url, cwd, onlineNote, ...(staleCopy ? { staleCopy } : {}) };
 }
@@ -955,15 +1025,26 @@ export async function restoreBackup(folder: string, cwdInput: string, repoId: st
   const cwd = resolve(cwdInput);
   if (await readManifest(cwd)) throw new PlanbanValidationError("This directory already has a board. Restore into an empty directory.");
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(repoId)) throw new PlanbanValidationError("Choose a board id: lowercase letters, digits and dashes.");
+  const { roadmap, docs, goals } = await readBackup(folder);
+  // A restored board is a separate copy, never the online board itself
+  // (owner request, 15 October 2026): it takes a new id, so taking it online
+  // makes a second board, and its name says where it came from.
+  if (repoId === roadmap.project.id) throw new PlanbanValidationError(`The restored copy needs its own id, not ${repoId}, the id of the online board it was backed up from. Choose another id.`);
   const root = join(defaultPlanbanRoot(), "repos", repoId);
   if (await pathExists(root)) throw new PlanbanValidationError(`A local board folder already exists at ${root}. Choose another id.`);
-  const { roadmap, docs } = await readBackup(folder);
+  const savedAt = await readFile(join(folder, "backup.json"), "utf8").then((text) => String(JSON.parse(text).savedAt ?? ""), () => "");
+  const day = /^\d{4}-\d{2}-\d{2}/.exec(savedAt)?.[0] ?? /^\d{4}-\d{2}-\d{2}$/.exec(basename(resolve(folder)))?.[0];
+  const title = `${roadmap.project.title} (copy restored from a backup${day ? ` of ${day}` : ""})`;
   const restored = await stageBundle(root, bundleSchema.parse({
-    format: "planban-board-bundle", version: 1, roadmap: { ...roadmap, project: { ...roadmap.project, id: repoId } }, docs, history: [],
+    format: "planban-board-bundle", version: 1, roadmap: { ...roadmap, project: { ...roadmap.project, id: repoId, title } }, docs, history: [],
+    ...(goals ? { goals } : {}),
   }));
   const manifest: PlanbanProjectManifest = { version: 1, enabled: true, repoId, storage: { kind: "local", root } };
   await mkdir(dirname(manifestPath(cwd)), { recursive: true });
   await publishManifest(cwd, manifest, { cwd, manifest, manifestPath: manifestPath(cwd), agentContextPath: agentContextPath(cwd), planningRoot: root, roadmapPath: join(root, "roadmap.json"), roadmap: restored });
-  return { repoId, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length };
+  return {
+    repoId, title, planningRoot: root, cards: restored.roadmapItems.length, docs: docs.length,
+    message: `Made "${title}", a separate local board (${repoId}) copied from a backup of the online board ${roadmap.project.id}. It is not linked to that board; taking it online makes a second, separate board.`,
+  };
 }
 
